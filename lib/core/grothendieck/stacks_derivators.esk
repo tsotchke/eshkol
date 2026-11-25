@@ -1,0 +1,1649 @@
+;;; core.grothendieck.stacks_derivators -- Grothendieck Era 3A:
+;;;   *Pursuing Stacks* (1983), *Les Derivateurs* (1991), Test Categories,
+;;;   Higher Stacks (Cech Hypercover Descent), and Lurie's Quasi-Categories.
+;;;
+;;; Usage: (require core.grothendieck.stacks_derivators)
+;;;
+;;; All internal and exported symbols carry the `gpst-` prefix to prevent
+;;; cross-module name collisions. Exact rational arithmetic is maintained
+;;; throughout via `(vector ...)` / `(make-vector ...)` row-major matrices.
+
+(require stdlib)
+
+(provide
+  ;; 1. Exact rational matrix & vector primitives (handles 0-dim spaces cleanly)
+  gpst-mat-zero gpst-mat-identity gpst-mat-from-rows gpst-mat-rows gpst-mat-cols
+  gpst-mat-ref gpst-mat-set! gpst-mat-equal? gpst-mat-zero?
+  gpst-mat-add gpst-mat-sub gpst-mat-neg gpst-mat-scale gpst-mat-mul
+  gpst-mat-rank gpst-mat-solve gpst-mat-block
+
+  ;; 2. Truncated Simplicial Sets, Horn Filling, Lurie Hierarchy & Homotopy Hypothesis
+  gpst-make-sset gpst-sset? gpst-sset-vertices gpst-sset-edges gpst-sset-triangles
+  gpst-sset-valid? gpst-nerve-from-category
+  gpst-nerve-arrow gpst-nerve-poset3 gpst-nerve-groupoid-z2 gpst-nerve-groupoid-s3
+  gpst-nerve-indiscrete-groupoid2 gpst-sset-bare-inner-horn
+  gpst-sset-weak-kan-z2 gpst-sset-weak-quasicat-arrow
+  gpst-check-horns
+  gpst-horn-inner-filled gpst-horn-inner-missing
+  gpst-horn-outer-filled gpst-horn-outer-missing
+  gpst-horn-unique-inner? gpst-horn-classification
+  gpst-horn-missing-inner gpst-horn-missing-outer
+  gpst-horn-max-inner-fillers gpst-horn-weak-infinity?
+
+  ;; 3. Grothendieck Test Categories (Delta Asphericity & Barycentric Subdivision)
+  gpst-make-complex gpst-complex? gpst-complex-simplices
+  gpst-standard-simplex-complex gpst-boundary-simplex-complex
+  gpst-barycentric-subdivision gpst-complex-euler gpst-complex-pi0
+  gpst-complex-betti gpst-test-aspheric?
+
+  ;; 4. Higher Stacks & Cech Hypercover Descent (A la Poursuite des Champs)
+  gpst-make-group gpst-group? gpst-group-elements gpst-group-id
+  gpst-group-mul gpst-group-inv gpst-group-zn gpst-group-s3
+  gpst-make-stack-instance gpst-stack-instance?
+  gpst-stack-cocycle-violations gpst-stack-gauge-equivalent?
+  gpst-stack-automorphisms gpst-verify-stack-descent
+  gpst-stack-s1-torsor-instance gpst-stack-s1-trivial-presheaf-instance
+  gpst-stack-triple-overlap-instance
+
+  ;; 5. Grothendieck Derivators (1991): Chain Complexes, hocolim, holim,
+  ;;    Functorial Mapping Cone, Beck-Chevalley & Triangulated Non-Uniqueness
+  gpst-make-chain-complex gpst-chain-complex?
+  gpst-chain-min-deg gpst-chain-max-deg gpst-chain-dim gpst-chain-diff
+  gpst-chain-valid? gpst-chain-homology gpst-chain-euler gpst-chain-acyclic?
+  gpst-chain-zero gpst-chain-concentrated gpst-chain-shift
+  gpst-make-chain-map gpst-chain-map? gpst-chain-map-src gpst-chain-map-dst
+  gpst-chain-map-at gpst-chain-map-valid? gpst-chain-map-id
+  gpst-chain-map-compose gpst-chain-map-equal? gpst-chain-map-sub
+  gpst-chain-homotopic-with? gpst-chain-homotopic?
+  gpst-mapping-cone gpst-mapping-cone-incl gpst-mapping-cone-proj
+  gpst-chain-quasi-iso?
+  gpst-derivator-cone-map
+  gpst-derivator-hocolim gpst-derivator-hocolim-incls
+  gpst-derivator-holim gpst-derivator-holim-projs
+  gpst-derivator-bicartesian-check
+  gpst-verify-triangulated-nonuniqueness)
+
+;; ===========================================================================
+;; Utility helpers (gpst- internal)
+;; ===========================================================================
+
+(define (gpst-range n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+(define (gpst-range-from a b)
+  (let loop ((i (- b 1)) (acc '()))
+    (if (< i a) acc (loop (- i 1) (cons i acc)))))
+
+(define (gpst-all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (gpst-all? pred (cdr xs)))
+        (else #f)))
+
+(define (gpst-any? pred xs)
+  (cond ((null? xs) #f)
+        ((pred (car xs)) #t)
+        (else (gpst-any? pred (cdr xs)))))
+
+(define (gpst-filter pred xs)
+  (let loop ((l xs) (acc '()))
+    (cond ((null? l) (reverse acc))
+          ((pred (car l)) (loop (cdr l) (cons (car l) acc)))
+          (else (loop (cdr l) acc)))))
+
+(define (gpst-foldl fn init xs)
+  (let loop ((l xs) (acc init))
+    (if (null? l) acc (loop (cdr l) (fn acc (car l))))))
+
+(define (gpst-member? x xs)
+  (cond ((null? xs) #f)
+        ((equal? x (car xs)) #t)
+        (else (gpst-member? x (cdr xs)))))
+
+(define (gpst-assoc-val key alist default)
+  (cond ((null? alist) default)
+        ((equal? key (car (car alist))) (cdr (car alist)))
+        (else (gpst-assoc-val key (cdr alist) default))))
+
+(define (gpst-index-of x xs)
+  (let loop ((l xs) (i 0))
+    (cond ((null? l) #f)
+          ((equal? x (car l)) i)
+          (else (loop (cdr l) (+ i 1))))))
+
+(define (gpst-remove-nth xs idx)
+  (let loop ((l xs) (i 0) (acc '()))
+    (cond ((null? l) (reverse acc))
+          ((= i idx) (loop (cdr l) (+ i 1) acc))
+          (else (loop (cdr l) (+ i 1) (cons (car l) acc))))))
+
+(define (gpst-list-lt? a b)
+  (cond ((and (null? a) (null? b)) #f)
+        ((null? a) #t)
+        ((null? b) #f)
+        ((< (car a) (car b)) #t)
+        ((> (car a) (car b)) #f)
+        (else (gpst-list-lt? (cdr a) (cdr b)))))
+
+(define (gpst-sort-lists xs)
+  (let ((insert (lambda (x sorted)
+                  (let loop ((l sorted) (acc '()))
+                    (cond ((null? l) (reverse (cons x acc)))
+                          ((gpst-list-lt? x (car l))
+                           (append (reverse acc) (cons x l)))
+                          (else (loop (cdr l) (cons (car l) acc))))))))
+    (gpst-foldl (lambda (acc x) (insert x acc)) '() xs)))
+
+;; ===========================================================================
+;; 1. Exact Rational Matrix Algebra (Supports 0-row and 0-col matrices!)
+;;    Representation: (vector 'gpst-mat rows cols data)
+;;    where data is a vector of `rows` row-vectors of length `cols`.
+;; ===========================================================================
+
+(define (gpst-mat-zero rows cols)
+  (let ((data (make-vector rows #f)))
+    (let loop ((r 0))
+      (if (< r rows)
+          (begin
+            (vector-set! data r (make-vector cols 0))
+            (loop (+ r 1)))))
+    (vector 'gpst-mat rows cols data)))
+
+(define (gpst-mat-rows m) (vector-ref m 1))
+(define (gpst-mat-cols m) (vector-ref m 2))
+(define (gpst-mat-data m) (vector-ref m 3))
+
+(define (gpst-mat-ref m r c)
+  (vector-ref (vector-ref (gpst-mat-data m) r) c))
+
+(define (gpst-mat-set! m r c val)
+  (vector-set! (vector-ref (gpst-mat-data m) r) c val))
+
+(define (gpst-mat-from-rows rows-list cols)
+  (let* ((r (length rows-list))
+         (m (gpst-mat-zero r cols)))
+    (let loop ((rs rows-list) (i 0))
+      (if (not (null? rs))
+          (let ((row (car rs)))
+            (let cloop ((cs row) (j 0))
+              (if (not (null? cs))
+                  (begin
+                    (gpst-mat-set! m i j (car cs))
+                    (cloop (cdr cs) (+ j 1)))))
+            (loop (cdr rs) (+ i 1)))))
+    m))
+
+(define (gpst-mat-identity n)
+  (let ((m (gpst-mat-zero n n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (gpst-mat-set! m i i 1) (loop (+ i 1)))))
+    m))
+
+(define (gpst-mat-copy m)
+  (let* ((r (gpst-mat-rows m))
+         (c (gpst-mat-cols m))
+         (out (gpst-mat-zero r c)))
+    (let rloop ((i 0))
+      (if (< i r)
+          (begin
+            (let cloop ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpst-mat-set! out i j (gpst-mat-ref m i j))
+                    (cloop (+ j 1)))))
+            (rloop (+ i 1)))))
+    out))
+
+(define (gpst-mat-equal? a b)
+  (and (= (gpst-mat-rows a) (gpst-mat-rows b))
+       (= (gpst-mat-cols a) (gpst-mat-cols b))
+       (let ((r (gpst-mat-rows a)) (c (gpst-mat-cols a)))
+         (let rloop ((i 0))
+           (if (>= i r) #t
+               (let cloop ((j 0))
+                 (cond ((>= j c) (rloop (+ i 1)))
+                       ((= (gpst-mat-ref a i j) (gpst-mat-ref b i j)) (cloop (+ j 1)))
+                       (else #f))))))))
+
+(define (gpst-mat-zero? m)
+  (let ((r (gpst-mat-rows m)) (c (gpst-mat-cols m)))
+    (let rloop ((i 0))
+      (if (>= i r) #t
+          (let cloop ((j 0))
+            (cond ((>= j c) (rloop (+ i 1)))
+                  ((= (gpst-mat-ref m i j) 0) (cloop (+ j 1)))
+                  (else #f)))))))
+
+(define (gpst-mat-add a b)
+  (let* ((r (gpst-mat-rows a)) (c (gpst-mat-cols a))
+         (out (gpst-mat-zero r c)))
+    (let rloop ((i 0))
+      (if (< i r)
+          (begin
+            (let cloop ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpst-mat-set! out i j (+ (gpst-mat-ref a i j) (gpst-mat-ref b i j)))
+                    (cloop (+ j 1)))))
+            (rloop (+ i 1)))))
+    out))
+
+(define (gpst-mat-sub a b)
+  (let* ((r (gpst-mat-rows a)) (c (gpst-mat-cols a))
+         (out (gpst-mat-zero r c)))
+    (let rloop ((i 0))
+      (if (< i r)
+          (begin
+            (let cloop ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpst-mat-set! out i j (- (gpst-mat-ref a i j) (gpst-mat-ref b i j)))
+                    (cloop (+ j 1)))))
+            (rloop (+ i 1)))))
+    out))
+
+(define (gpst-mat-scale s m)
+  (let* ((r (gpst-mat-rows m)) (c (gpst-mat-cols m))
+         (out (gpst-mat-zero r c)))
+    (let rloop ((i 0))
+      (if (< i r)
+          (begin
+            (let cloop ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpst-mat-set! out i j (* s (gpst-mat-ref m i j)))
+                    (cloop (+ j 1)))))
+            (rloop (+ i 1)))))
+    out))
+
+(define (gpst-mat-neg m) (gpst-mat-scale -1 m))
+
+(define (gpst-mat-mul a b)
+  (let* ((r (gpst-mat-rows a))
+         (k (gpst-mat-cols a))
+         (c (gpst-mat-cols b))
+         (out (gpst-mat-zero r c)))
+    (let rloop ((i 0))
+      (if (< i r)
+          (begin
+            (let cloop ((j 0))
+              (if (< j c)
+                  (begin
+                    (let kloop ((t 0) (acc 0))
+                      (if (>= t k)
+                          (gpst-mat-set! out i j acc)
+                          (kloop (+ t 1) (+ acc (* (gpst-mat-ref a i t) (gpst-mat-ref b t j))))))
+                    (cloop (+ j 1)))))
+            (rloop (+ i 1)))))
+    out))
+
+;; Assemble a block matrix from a list of rows of gpst-mat blocks.
+(define (gpst-mat-block block-rows)
+  (let* ((row-heights (map (lambda (brow) (gpst-mat-rows (car brow))) block-rows))
+         (col-widths (map gpst-mat-cols (car block-rows)))
+         (tot-r (gpst-foldl + 0 row-heights))
+         (tot-c (gpst-foldl + 0 col-widths))
+         (out (gpst-mat-zero tot-r tot-c)))
+    (let rbloop ((brows block-rows) (r-off 0))
+      (if (not (null? brows))
+          (let ((brow (car brows))
+                (rh (gpst-mat-rows (car (car brows)))))
+            (let cbloop ((blocks brow) (c-off 0))
+              (if (not (null? blocks))
+                  (let* ((blk (car blocks))
+                         (br (gpst-mat-rows blk))
+                         (bc (gpst-mat-cols blk)))
+                    (let iloop ((i 0))
+                      (if (< i br)
+                          (begin
+                            (let jloop ((j 0))
+                              (if (< j bc)
+                                  (begin
+                                    (gpst-mat-set! out (+ r-off i) (+ c-off j) (gpst-mat-ref blk i j))
+                                    (jloop (+ j 1)))))
+                            (iloop (+ i 1)))))
+                    (cbloop (cdr blocks) (+ c-off bc)))))
+            (rbloop (cdr brows) (+ r-off rh)))))
+    out))
+
+;; Exact rational Gaussian elimination rank (handles 0xN, Mx0, 0x0 cleanly).
+(define (gpst-mat-rank m)
+  (let ((rows (gpst-mat-rows m))
+        (cols (gpst-mat-cols m)))
+    (if (or (= rows 0) (= cols 0))
+        0
+        (let ((a (gpst-mat-copy m)))
+          (let loop ((row 0) (col 0) (rk 0))
+            (if (or (>= row rows) (>= col cols))
+                rk
+                (let ((piv (let find ((i row))
+                             (cond ((>= i rows) #f)
+                                   ((not (= (gpst-mat-ref a i col) 0)) i)
+                                   (else (find (+ i 1)))))))
+                  (if (not piv)
+                      (loop row (+ col 1) rk)
+                      (begin
+                        ;; Swap row and piv
+                        (if (not (= piv row))
+                            (let ((d (gpst-mat-data a))
+                                  (tmp (vector-ref (gpst-mat-data a) row)))
+                              (vector-set! d row (vector-ref d piv))
+                              (vector-set! d piv tmp)))
+                        (let ((pv (gpst-mat-ref a row col)))
+                          (let elim ((i (+ row 1)))
+                            (if (< i rows)
+                                (let ((f (gpst-mat-ref a i col)))
+                                  (if (not (= f 0))
+                                      (let ((ratio (/ f pv)))
+                                        (let csub ((j col))
+                                          (if (< j cols)
+                                              (begin
+                                                (gpst-mat-set! a i j
+                                                  (- (gpst-mat-ref a i j)
+                                                     (* ratio (gpst-mat-ref a row j))))
+                                                (csub (+ j 1)))))))
+                                  (elim (+ i 1))))))
+                        (loop (+ row 1) (+ col 1) (+ rk 1)))))))))))
+
+;; Exact rational solver for A * x = b (returns vector x of length cols, or #f if inconsistent).
+(define (gpst-mat-solve m rhs)
+  (let ((rows (gpst-mat-rows m))
+        (cols (gpst-mat-cols m)))
+    (cond
+      ((= rows 0) (make-vector cols 0))
+      ((= cols 0)
+       (if (let chk ((i 0))
+             (cond ((>= i rows) #t)
+                   ((= (vector-ref rhs i) 0) (chk (+ i 1)))
+                   (else #f)))
+           (make-vector 0 0)
+           #f))
+      (else
+       (let ((aug (gpst-mat-zero rows (+ cols 1))))
+         (let iloop ((i 0))
+           (if (< i rows)
+               (begin
+                 (let jloop ((j 0))
+                   (if (< j cols)
+                       (begin
+                         (gpst-mat-set! aug i j (gpst-mat-ref m i j))
+                         (jloop (+ j 1)))))
+                 (gpst-mat-set! aug i cols (vector-ref rhs i))
+                 (iloop (+ i 1)))))
+         (let ((piv-cols (make-vector rows -1)))
+           (let ((rk
+                  (let loop ((row 0) (col 0))
+                    (if (or (>= row rows) (>= col cols))
+                        row
+                        (let ((piv (let find ((i row))
+                                     (cond ((>= i rows) #f)
+                                           ((not (= (gpst-mat-ref aug i col) 0)) i)
+                                           (else (find (+ i 1)))))))
+                          (if (not piv)
+                              (loop row (+ col 1))
+                              (begin
+                                (if (not (= piv row))
+                                    (let ((d (gpst-mat-data aug))
+                                          (tmp (vector-ref (gpst-mat-data aug) row)))
+                                      (vector-set! d row (vector-ref d piv))
+                                      (vector-set! d piv tmp)))
+                                (let ((pv (gpst-mat-ref aug row col)))
+                                  (let norm ((j col))
+                                    (if (<= j cols)
+                                        (begin
+                                          (gpst-mat-set! aug row j (/ (gpst-mat-ref aug row j) pv))
+                                          (norm (+ j 1)))))
+                                  (let elim ((i 0))
+                                    (if (< i rows)
+                                        (begin
+                                          (if (not (= i row))
+                                              (let ((f (gpst-mat-ref aug i col)))
+                                                (if (not (= f 0))
+                                                    (let csub ((j col))
+                                                      (if (<= j cols)
+                                                          (begin
+                                                            (gpst-mat-set! aug i j
+                                                              (- (gpst-mat-ref aug i j)
+                                                                 (* f (gpst-mat-ref aug row j))))
+                                                            (csub (+ j 1))))))))
+                                          (elim (+ i 1))))))
+                                (vector-set! piv-cols row col)
+                                (loop (+ row 1) (+ col 1)))))))))
+             ;; Check consistency of zero rows
+             (let chk ((i rk))
+               (cond ((>= i rows)
+                      (let ((sol (make-vector cols 0)))
+                        (let fill ((r 0))
+                          (if (< r rk)
+                              (begin
+                                (vector-set! sol (vector-ref piv-cols r) (gpst-mat-ref aug r cols))
+                                (fill (+ r 1)))))
+                        sol))
+                     ((= (gpst-mat-ref aug i cols) 0) (chk (+ i 1)))
+                     (else #f))))))))))
+
+;; ===========================================================================
+;; 2. Pursuing Stacks: Truncated Simplicial Sets, Lurie Quasi-Categories,
+;;    Kan Complexes (infinity-Groupoids) & Horn-Filling Verifier
+;; ===========================================================================
+;;
+;; Representation:
+;;   (vector 'gpst-sset vertices edges triangles)
+;;   - vertices:  list of vertex IDs
+;;   - edges:     list of (list edge-id src tgt), where d1(e)=src, d0(e)=tgt
+;;   - triangles: list of (list tri-id d0-edge-id d1-edge-id d2-edge-id)
+;;
+;; Simplicial identities for a 2-simplex sigma = (id d0 d1 d2):
+;;   d0(d1 sigma) = d0(d0 sigma)   (tgt(d1) = tgt(d0))
+;;   d0(d2 sigma) = d1(d0 sigma)   (tgt(d2) = src(d0))
+;;   d1(d2 sigma) = d1(d1 sigma)   (src(d2) = src(d1))
+
+(define (gpst-make-sset vertices edges triangles)
+  (vector 'gpst-sset vertices edges triangles))
+
+(define (gpst-sset? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'gpst-sset)))
+
+(define (gpst-sset-vertices X) (vector-ref X 1))
+(define (gpst-sset-edges X) (vector-ref X 2))
+(define (gpst-sset-triangles X) (vector-ref X 3))
+
+(define (gpst-edge-id e) (car e))
+(define (gpst-edge-src e) (cadr e))   ;; d1(e)
+(define (gpst-edge-tgt e) (caddr e))  ;; d0(e)
+
+(define (gpst-tri-id t) (car t))
+(define (gpst-tri-d0 t) (cadr t))
+(define (gpst-tri-d1 t) (caddr t))
+(define (gpst-tri-d2 t) (cadddr t))
+
+(define (gpst-find-edge X eid)
+  (let loop ((es (gpst-sset-edges X)))
+    (cond ((null? es) #f)
+          ((equal? (gpst-edge-id (car es)) eid) (car es))
+          (else (loop (cdr es))))))
+
+(define (gpst-sset-valid? X)
+  (and (gpst-sset? X)
+       (let ((vs (gpst-sset-vertices X))
+             (es (gpst-sset-edges X))
+             (ts (gpst-sset-triangles X)))
+         (and
+           ;; All edge faces exist in X_0
+           (gpst-all? (lambda (e)
+                        (and (gpst-member? (gpst-edge-src e) vs)
+                             (gpst-member? (gpst-edge-tgt e) vs)))
+                      es)
+           ;; All 2-simplex faces exist in X_1 and satisfy all 3 simplicial identities
+           (gpst-all? (lambda (t)
+                        (let ((e0 (gpst-find-edge X (gpst-tri-d0 t)))
+                              (e1 (gpst-find-edge X (gpst-tri-d1 t)))
+                              (e2 (gpst-find-edge X (gpst-tri-d2 t))))
+                          (and e0 e1 e2
+                               (equal? (gpst-edge-tgt e1) (gpst-edge-tgt e0))   ;; d0 d1 = d0 d0
+                               (equal? (gpst-edge-tgt e2) (gpst-edge-src e0))   ;; d0 d2 = d1 d0
+                               (equal? (gpst-edge-src e2) (gpst-edge-src e1)))));; d1 d2 = d1 d1
+                      ts)))))
+
+;; Build the 2-truncated nerve N(C) of a finite category:
+;;   objs:    list of object IDs
+;;   mors:    list of (list mor-id src tgt) including identity morphisms
+;;   comp-fn: (comp-fn g-id f-id) -> (g o f)-id whenever src(g) = tgt(f)
+(define (gpst-nerve-from-category objs mors comp-fn)
+  (let ((tris '())
+        (idx 0))
+    (for-each
+      (lambda (e2)
+        (for-each
+          (lambda (e0)
+            (if (equal? (gpst-edge-tgt e2) (gpst-edge-src e0))
+                (let* ((f-id (gpst-edge-id e2))
+                       (g-id (gpst-edge-id e0))
+                       (h-id (comp-fn g-id f-id)))
+                  (set! tris (cons (list (list 'tri idx g-id h-id f-id) g-id h-id f-id) tris))
+                  (set! idx (+ idx 1)))))
+          mors))
+      mors)
+    (gpst-make-sset objs mors (reverse tris))))
+
+;; Canonical finite nerves & negative controls:
+
+;; 1. Nerve of Delta^1 (0 -> 1): Lurie quasi-category, NOT Kan!
+(define (gpst-nerve-arrow)
+  (let ((mors (list (list 'id0 0 0) (list 'id1 1 1) (list 'f01 0 1))))
+    (gpst-nerve-from-category
+      '(0 1)
+      mors
+      (lambda (g f)
+        (cond ((eq? g 'id0) f)
+              ((eq? g 'id1) f)
+              ((eq? f 'id0) g)
+              ((eq? f 'id1) g)
+              (else 'f01))))))
+
+;; 2. Nerve of Poset (0 -> 1 -> 2) = N(Delta^2): Lurie quasi-category, NOT Kan!
+(define (gpst-nerve-poset3)
+  (let ((mors (list (list 'id0 0 0) (list 'id1 1 1) (list 'id2 2 2)
+                    (list 'f01 0 1) (list 'f12 1 2) (list 'f02 0 2))))
+    (gpst-nerve-from-category
+      '(0 1 2)
+      mors
+      (lambda (g f)
+        (cond ((or (eq? g 'id0) (eq? g 'id1) (eq? g 'id2)) f)
+              ((or (eq? f 'id0) (eq? f 'id1) (eq? f 'id2)) g)
+              (else 'f02))))))
+
+;; 3. Nerve of B(Z/2Z) (1-object groupoid): Kan complex / infinity-groupoid!
+(define (gpst-nerve-groupoid-z2)
+  (let ((mors (list (list 'e 'pt 'pt) (list 'g 'pt 'pt))))
+    (gpst-nerve-from-category
+      '(pt)
+      mors
+      (lambda (x y)
+        (if (eq? x y) 'e 'g)))))
+
+;; 4. Nerve of B(S_3) (1-object non-abelian groupoid of order 6): Kan complex!
+(define (gpst-nerve-groupoid-s3)
+  (let* ((G (gpst-group-s3))
+         (elems (gpst-group-elements G))
+         (mors (map (lambda (x) (list x 'pt 'pt)) elems)))
+    (gpst-nerve-from-category
+      '(pt)
+      mors
+      (lambda (x y) (gpst-group-mul G x y)))))
+
+;; 5. Nerve of 2-object indiscrete groupoid I (0 <-> 1): Kan complex!
+(define (gpst-nerve-indiscrete-groupoid2)
+  (let ((mors (list (list 'id0 0 0) (list 'id1 1 1)
+                    (list 'u01 0 1) (list 'v10 1 0))))
+    (gpst-nerve-from-category
+      '(0 1)
+      mors
+      (lambda (g f)
+        (cond ((or (eq? g 'id0) (eq? g 'id1)) f)
+              ((or (eq? f 'id0) (eq? f 'id1)) g)
+              ((and (eq? g 'v10) (eq? f 'u01)) 'id0)
+              ((and (eq? g 'u01) (eq? f 'v10)) 'id1)
+              (else 'id0))))))
+
+;; 6. Negative Control: Bare inner horn Lambda^2_1 (0 -> 1 -> 2 without 2-simplex filler)
+(define (gpst-sset-bare-inner-horn)
+  (gpst-make-sset
+    '(0 1 2)
+    (list (list 'id0 0 0) (list 'id1 1 1) (list 'id2 2 2)
+          (list 'f01 0 1) (list 'f12 1 2))
+    (list (list 't0 'id0 'id0 'id0)
+          (list 't1 'id1 'id1 'id1)
+          (list 't2 'id2 'id2 'id2)
+          (list 't3 'f01 'f01 'id0)
+          (list 't4 'id1 'f01 'f01)
+          (list 't5 'f12 'f12 'id1)
+          (list 't6 'id2 'f12 'f12))))
+
+;; 7. Non-Strict Weak infinity-Groupoid (Kan complex with TWO distinct 2-simplex witnesses
+;;    filling the same inner horn (g, g)): proves genuine weak homotopy composition!
+(define (gpst-sset-weak-kan-z2)
+  (let* ((base (gpst-nerve-groupoid-z2))
+         (extra-tri (list 'weak-homotopy-2cell 'g 'e 'g)))
+    (gpst-make-sset
+      (gpst-sset-vertices base)
+      (gpst-sset-edges base)
+      (cons extra-tri (gpst-sset-triangles base)))))
+
+;; 8. Non-Strict Weak Quasi-Category (NOT Kan, with TWO distinct inner horn fillers):
+(define (gpst-sset-weak-quasicat-arrow)
+  (let* ((base (gpst-nerve-arrow))
+         (extra-tri (list 'weak-2cell-on-f01 'id1 'f01 'f01)))
+    (gpst-make-sset
+      (gpst-sset-vertices base)
+      (gpst-sset-edges base)
+      (cons extra-tri (gpst-sset-triangles base)))))
+
+;; Exact Horn-Filling Verifier:
+;; Enumerates ALL compatible horns Lambda^2_0 (outer left), Lambda^2_1 (inner),
+;; and Lambda^2_2 (outer right), counts fillers for each, collects explicit
+;; missing witnesses, and performs the exact 3-way structural classification.
+(define (gpst-check-horns X)
+  (if (not (gpst-sset-valid? X))
+      (vector 'gpst-horn-report 0 0 0 0 #f 'err-invalid-simplicial-set '() '() 0)
+      (let* ((es (gpst-sset-edges X))
+             (ts (gpst-sset-triangles X))
+             (inner-filled 0)
+             (inner-missing 0)
+             (outer-filled 0)
+             (outer-missing 0)
+             (unique-inner #t)
+             (max-inner-fillers 0)
+             (missing-inner '())
+             (missing-outer '()))
+        ;; Lambda^2_1 (inner): (e0, e2) with src(e0) = tgt(e2), filled by d0=e0, d2=e2
+        (for-each
+          (lambda (e2)
+            (for-each
+              (lambda (e0)
+                (if (equal? (gpst-edge-tgt e2) (gpst-edge-src e0))
+                    (let* ((id0 (gpst-edge-id e0))
+                           (id2 (gpst-edge-id e2))
+                           (fillers (gpst-filter
+                                      (lambda (t)
+                                        (and (equal? (gpst-tri-d0 t) id0)
+                                             (equal? (gpst-tri-d2 t) id2)))
+                                      ts))
+                           (cnt (length fillers)))
+                      (if (> cnt max-inner-fillers) (set! max-inner-fillers cnt))
+                      (if (= cnt 0)
+                          (begin
+                            (set! inner-missing (+ inner-missing 1))
+                            (set! unique-inner #f)
+                            (set! missing-inner (cons (list 'lambda-2-1 id0 id2) missing-inner)))
+                          (begin
+                            (set! inner-filled (+ inner-filled 1))
+                            (if (> cnt 1) (set! unique-inner #f)))))))
+              es))
+          es)
+        ;; Lambda^2_0 (outer left): (e1, e2) with src(e1) = src(e2), filled by d1=e1, d2=e2
+        (for-each
+          (lambda (e2)
+            (for-each
+              (lambda (e1)
+                (if (equal? (gpst-edge-src e2) (gpst-edge-src e1))
+                    (let* ((id1 (gpst-edge-id e1))
+                           (id2 (gpst-edge-id e2))
+                           (fillers (gpst-filter
+                                      (lambda (t)
+                                        (and (equal? (gpst-tri-d1 t) id1)
+                                             (equal? (gpst-tri-d2 t) id2)))
+                                      ts)))
+                      (if (null? fillers)
+                          (begin
+                            (set! outer-missing (+ outer-missing 1))
+                            (set! missing-outer (cons (list 'lambda-2-0 id1 id2) missing-outer)))
+                          (set! outer-filled (+ outer-filled 1))))))
+              es))
+          es)
+        ;; Lambda^2_2 (outer right): (e0, e1) with tgt(e0) = tgt(e1), filled by d0=e0, d1=e1
+        (for-each
+          (lambda (e0)
+            (for-each
+              (lambda (e1)
+                (if (equal? (gpst-edge-tgt e0) (gpst-edge-tgt e1))
+                    (let* ((id0 (gpst-edge-id e0))
+                           (id1 (gpst-edge-id e1))
+                           (fillers (gpst-filter
+                                      (lambda (t)
+                                        (and (equal? (gpst-tri-d0 t) id0)
+                                             (equal? (gpst-tri-d1 t) id1)))
+                                      ts)))
+                      (if (null? fillers)
+                          (begin
+                            (set! outer-missing (+ outer-missing 1))
+                            (set! missing-outer (cons (list 'lambda-2-2 id0 id1) missing-outer)))
+                          (set! outer-filled (+ outer-filled 1))))))
+              es))
+          es)
+        (let ((cls (cond ((> inner-missing 0) 'not-quasi-category)
+                         ((> outer-missing 0) 'quasi-category-not-kan)
+                         (else 'kan-complex))))
+          (vector 'gpst-horn-report
+                  inner-filled inner-missing
+                  outer-filled outer-missing
+                  unique-inner cls
+                  (reverse missing-inner)
+                  (reverse missing-outer)
+                  max-inner-fillers)))))
+
+(define (gpst-horn-inner-filled r) (vector-ref r 1))
+(define (gpst-horn-inner-missing r) (vector-ref r 2))
+(define (gpst-horn-outer-filled r) (vector-ref r 3))
+(define (gpst-horn-outer-missing r) (vector-ref r 4))
+(define (gpst-horn-unique-inner? r) (vector-ref r 5))
+(define (gpst-horn-classification r) (vector-ref r 6))
+(define (gpst-horn-missing-inner r) (vector-ref r 7))
+(define (gpst-horn-missing-outer r) (vector-ref r 8))
+(define (gpst-horn-max-inner-fillers r) (vector-ref r 9))
+(define (gpst-horn-weak-infinity? r)
+  (and (= (gpst-horn-inner-missing r) 0)
+       (not (gpst-horn-unique-inner? r))
+       (> (gpst-horn-max-inner-fillers r) 1)))
+
+;; ===========================================================================
+;; 3. Grothendieck Test Categories: Delta^n Asphericity & Barycentric Subdivision
+;; ===========================================================================
+;;
+;; Abstract finite simplicial complex: (vector 'gpst-complex simplices)
+;; where `simplices` is a sorted list of non-empty sorted lists of integer vertices.
+
+(define (gpst-make-complex simplices)
+  (vector 'gpst-complex (gpst-sort-lists simplices)))
+
+(define (gpst-complex? x)
+  (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'gpst-complex)))
+
+(define (gpst-complex-simplices K) (vector-ref K 1))
+
+(define (gpst-nonempty-subsets xs)
+  (if (null? xs)
+      '()
+      (let* ((rest (gpst-nonempty-subsets (cdr xs)))
+             (x (car xs))
+             (with-x (cons (list x) (map (lambda (s) (cons x s)) rest))))
+        (append with-x rest))))
+
+;; Standard n-simplex Delta^n (all non-empty subsets of {0, ..., n})
+(define (gpst-standard-simplex-complex n)
+  (gpst-make-complex (gpst-nonempty-subsets (gpst-range (+ n 1)))))
+
+;; Boundary partial(Delta^n) = S^{n-1} (all proper non-empty subsets of {0, ..., n})
+(define (gpst-boundary-simplex-complex n)
+  (let ((all (gpst-nonempty-subsets (gpst-range (+ n 1)))))
+    (gpst-make-complex (gpst-filter (lambda (s) (<= (length s) n)) all))))
+
+;; Strict subset test on sorted integer lists
+(define (gpst-strict-subset? a b)
+  (and (< (length a) (length b))
+       (gpst-all? (lambda (x) (gpst-member? x b)) a)))
+
+;; Barycentric subdivision Sd(K): order complex of strict chains in the face poset of K
+(define (gpst-barycentric-subdivision K)
+  (let* ((simps (gpst-complex-simplices K))
+         (n (length simps))
+         (vsimps (list->vector simps)))
+    (let ((chains '()))
+      (letrec ((extend (lambda (chain last-idx)
+                         (set! chains (cons (reverse chain) chains))
+                         (let loop ((j 0))
+                           (if (< j n)
+                               (begin
+                                 (if (gpst-strict-subset? (vector-ref vsimps last-idx) (vector-ref vsimps j))
+                                     (extend (cons j chain) j))
+                                 (loop (+ j 1))))))))
+        (let start ((i 0))
+          (if (< i n)
+              (begin
+                (extend (list i) i)
+                (start (+ i 1))))))
+      (gpst-make-complex chains))))
+
+(define (gpst-complex-simplices-of-dim K d)
+  (gpst-filter (lambda (s) (= (length s) (+ d 1))) (gpst-complex-simplices K)))
+
+(define (gpst-complex-max-dim K)
+  (gpst-foldl (lambda (acc s) (max acc (- (length s) 1))) -1 (gpst-complex-simplices K)))
+
+;; Euler characteristic chi(K) = sum_{d >= 0} (-1)^d |K_d|
+(define (gpst-complex-euler K)
+  (gpst-foldl (lambda (acc s)
+                (let ((d (- (length s) 1)))
+                  (+ acc (if (even? d) 1 -1))))
+              0
+              (gpst-complex-simplices K)))
+
+;; Connected components pi_0(K) via exact DFS on the 1-skeleton
+(define (gpst-complex-pi0 K)
+  (let* ((verts (map car (gpst-complex-simplices-of-dim K 0)))
+         (edges (gpst-complex-simplices-of-dim K 1))
+         (visited '())
+         (comps 0))
+    (letrec ((dfs (lambda (v)
+                    (if (not (gpst-member? v visited))
+                        (begin
+                          (set! visited (cons v visited))
+                          (for-each
+                            (lambda (e)
+                              (cond ((equal? (car e) v) (dfs (cadr e)))
+                                    ((equal? (cadr e) v) (dfs (car e)))))
+                            edges))))))
+      (for-each
+        (lambda (v)
+          (if (not (gpst-member? v visited))
+              (begin
+                (set! comps (+ comps 1))
+                (dfs v))))
+        verts))
+    comps))
+
+;; Exact rational simplicial homology Betti numbers (b_0, b_1, ..., b_max)
+(define (gpst-complex-betti K)
+  (let ((md (gpst-complex-max-dim K)))
+    (if (< md 0)
+        '()
+        (let* ((skels (list->vector (map (lambda (d) (gpst-complex-simplices-of-dim K d))
+                                         (gpst-range (+ md 1)))))
+               (dims (list->vector (map (lambda (d) (length (vector-ref skels d)))
+                                        (gpst-range (+ md 1)))))
+               (ranks (make-vector (+ md 2) 0)))
+          (let dloop ((d 1))
+            (if (<= d md)
+                (let* ((cols-s (vector-ref skels d))
+                       (rows-s (vector-ref skels (- d 1)))
+                       (M (gpst-mat-zero (length rows-s) (length cols-s))))
+                  (let cloop ((cs cols-s) (j 0))
+                    (if (not (null? cs))
+                        (let ((sigma (car cs)))
+                          (let floop ((i 0))
+                            (if (<= i d)
+                                (let* ((face (gpst-remove-nth sigma i))
+                                       (r (gpst-index-of face rows-s))
+                                       (sgn (if (even? i) 1 -1)))
+                                  (if r
+                                      (gpst-mat-set! M r j (+ (gpst-mat-ref M r j) sgn)))
+                                  (floop (+ i 1)))))
+                          (cloop (cdr cs) (+ j 1)))))
+                  (vector-set! ranks d (gpst-mat-rank M))
+                  (dloop (+ d 1)))))
+          (map (lambda (d)
+                 (- (- (vector-ref dims d) (vector-ref ranks d))
+                    (vector-ref ranks (+ d 1))))
+               (gpst-range (+ md 1)))))))
+
+;; Grothendieck test-category asphericity report:
+;;   (vector 'gpst-aspheric-report status euler pi0 betti)
+(define (gpst-test-aspheric? K)
+  (let* ((chi (gpst-complex-euler K))
+         (p0 (gpst-complex-pi0 K))
+         (betti (gpst-complex-betti K))
+         (reduced-zero (and (not (null? betti))
+                            (= (car betti) 1)
+                            (gpst-all? (lambda (b) (= b 0)) (cdr betti))))
+         (status (if (and (= chi 1) (= p0 1) reduced-zero)
+                     'aspheric-contractible
+                     'non-aspheric)))
+    (vector 'gpst-aspheric-report status chi p0 betti)))
+
+;; ===========================================================================
+;; 4. Higher Stacks & Cech Hypercover Descent (A la Poursuite des Champs)
+;; ===========================================================================
+
+(define (gpst-make-group name elements id mul-fn inv-fn)
+  (vector 'gpst-group name elements id mul-fn inv-fn))
+
+(define (gpst-group? x)
+  (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'gpst-group)))
+
+(define (gpst-group-elements G) (vector-ref G 2))
+(define (gpst-group-id G) (vector-ref G 3))
+(define (gpst-group-mul G a b) ((vector-ref G 4) a b))
+(define (gpst-group-inv G a) ((vector-ref G 5) a))
+
+;; Cyclic group Z/nZ
+(define (gpst-group-zn n)
+  (gpst-make-group
+    (list 'Z/ n)
+    (gpst-range n)
+    0
+    (lambda (a b) (modulo (+ a b) n))
+    (lambda (a) (modulo (- n a) n))))
+
+;; Symmetric group S_3 (non-abelian, order 6, permutations of (0 1 2) acting on left)
+(define (gpst-perm-compose p q)
+  (list (list-ref p (car q))
+        (list-ref p (cadr q))
+        (list-ref p (caddr q))))
+
+(define (gpst-perm-inverse p)
+  (let ((inv (make-vector 3 0)))
+    (vector-set! inv (car p) 0)
+    (vector-set! inv (cadr p) 1)
+    (vector-set! inv (caddr p) 2)
+    (list (vector-ref inv 0) (vector-ref inv 1) (vector-ref inv 2))))
+
+(define (gpst-group-s3)
+  (gpst-make-group
+    'S3
+    '((0 1 2) (1 0 2) (0 2 1) (2 1 0) (1 2 0) (2 0 1))
+    '(0 1 2)
+    gpst-perm-compose
+    gpst-perm-inverse))
+
+;; Stack Descent Instance:
+;;   (vector 'gpst-stack-instance cover doubles triples group cocycle global-catalog)
+;;   - cover:          list of open indices, e.g. '(0 1 2)
+;;   - doubles:        list of pairs (i j) where U_i cap U_j is non-empty
+;;   - triples:        list of triples (i j k) where U_i cap U_j cap U_k is non-empty
+;;   - group:          structure group G (gpst-group)
+;;   - cocycle:        alist of ((i j) . g_ij)
+;;   - global-catalog: list of (list class-label representative-cocycle) representing
+;;                     the isomorphism classes of global objects in F(X)
+(define (gpst-make-stack-instance cover doubles triples group cocycle global-catalog)
+  (vector 'gpst-stack-instance cover doubles triples group cocycle global-catalog))
+
+(define (gpst-stack-instance? x)
+  (and (vector? x) (= (vector-length x) 7) (eq? (vector-ref x 0) 'gpst-stack-instance)))
+
+;; Check 1-cocycle / 2-cocycle descent axioms:
+;;   (a) g_ii = id on diagonal overlaps (i i)
+;;   (b) g_ji = g_ij^{-1} on symmetric overlaps (i j) and (j i)
+;;   (c) g_ij * g_jk = g_ik on ALL triple overlaps (i j k)
+(define (gpst-stack-cocycle-violations inst)
+  (let* ((doubles (vector-ref inst 2))
+         (triples (vector-ref inst 3))
+         (G (vector-ref inst 4))
+         (coc (vector-ref inst 5))
+         (id (gpst-group-id G))
+         (viols '()))
+    ;; Check double overlaps: existence, diagonal, symmetry
+    (for-each
+      (lambda (p)
+        (let ((i (car p)) (j (cadr p))
+              (gij (gpst-assoc-val p coc #f)))
+          (if (not gij)
+              (set! viols (cons (list 'missing-transition p) viols))
+              (begin
+                (if (and (equal? i j) (not (equal? gij id)))
+                    (set! viols (cons (list 'diagonal-mismatch p gij id) viols)))
+                (let ((gji (gpst-assoc-val (list j i) coc #f)))
+                  (if (and gji (not (equal? (gpst-group-mul G gij gji) id)))
+                      (set! viols (cons (list 'symmetry-mismatch p gij gji) viols))))))))
+      doubles)
+    ;; Check triple overlaps: g_ij * g_jk = g_ik
+    (for-each
+      (lambda (tr)
+        (let* ((i (car tr)) (j (cadr tr)) (k (caddr tr))
+               (gij (gpst-assoc-val (list i j) coc #f))
+               (gjk (gpst-assoc-val (list j k) coc #f))
+               (gik (gpst-assoc-val (list i k) coc #f)))
+          (if (or (not gij) (not gjk) (not gik))
+              (set! viols (cons (list 'missing-triple-transition tr) viols))
+              (let ((lhs (gpst-group-mul G gij gjk)))
+                (if (not (equal? lhs gik))
+                    (set! viols (cons (list 'triple-cocycle-obstruction tr lhs gik) viols)))))))
+      triples)
+    (reverse viols)))
+
+;; Exhaustive search over gauge transformations {h_i in G}_{i in cover}:
+;; Returns all gauge maps h = ((i . h_i) ...) satisfying h_i * c1_ij * h_j^{-1} = c2_ij
+;; on every double overlap (i j).
+(define (gpst-stack-find-gauges cover doubles G c1 c2)
+  (let ((elems (gpst-group-elements G))
+        (matches '()))
+    (letrec ((search (lambda (rem assigned)
+                       (if (null? rem)
+                           (if (gpst-all?
+                                 (lambda (p)
+                                   (let* ((i (car p)) (j (cadr p))
+                                          (hi (gpst-assoc-val i assigned #f))
+                                          (hj (gpst-assoc-val j assigned #f))
+                                          (g1 (gpst-assoc-val p c1 #f))
+                                          (g2 (gpst-assoc-val p c2 #f))
+                                          (conj (gpst-group-mul G hi
+                                                  (gpst-group-mul G g1 (gpst-group-inv G hj)))))
+                                     (equal? conj g2)))
+                                 doubles)
+                               (set! matches (cons (reverse assigned) matches)))
+                           (let ((u (car rem)))
+                             (for-each
+                               (lambda (h)
+                                 (search (cdr rem) (cons (cons u h) assigned)))
+                               elems))))))
+      (search cover '()))
+    (reverse matches)))
+
+;; Are two cocycles gauge-equivalent (2-isomorphic descent data)?
+(define (gpst-stack-gauge-equivalent? cover doubles G c1 c2)
+  (not (null? (gpst-stack-find-gauges cover doubles G c1 c2))))
+
+;; 2-automorphism group of a descent datum (gauge self-equivalences)
+(define (gpst-stack-automorphisms cover doubles G coc)
+  (gpst-stack-find-gauges cover doubles G coc coc))
+
+;; Verify stack descent:
+;;   1. Fails closed with (vector 'err-cocycle-obstruction violations) on any cocycle failure.
+;;   2. Searches global-catalog for gauge-equivalent global objects realizing the descent datum.
+;;   3. If none exists in F(X), classifies strictly as (vector 'presheaf-not-stack aut-order).
+;;   4. If a unique isomorphism class realizes the datum, returns:
+;;      (vector 'stack-descent-effective matched-class aut-order gauge-witness)
+(define (gpst-verify-stack-descent inst)
+  (let ((viols (gpst-stack-cocycle-violations inst)))
+    (if (not (null? viols))
+        (vector 'err-cocycle-obstruction viols)
+        (let* ((cover (vector-ref inst 1))
+               (doubles (vector-ref inst 2))
+               (G (vector-ref inst 4))
+               (coc (vector-ref inst 5))
+               (catalog (vector-ref inst 6))
+               (auts (gpst-stack-automorphisms cover doubles G coc))
+               (matched '()))
+          (for-each
+            (lambda (entry)
+              (let* ((label (car entry))
+                     (rep-coc (cadr entry))
+                     (gauges (gpst-stack-find-gauges cover doubles G coc rep-coc)))
+                (if (not (null? gauges))
+                    (set! matched (cons (list label (car gauges)) matched)))))
+            catalog)
+          (cond
+            ((null? matched)
+             (vector 'presheaf-not-stack (length auts) 'missing-global-gluing))
+            ((= (length matched) 1)
+             (vector 'stack-descent-effective
+                     (car (car matched))
+                     (length auts)
+                     (cadr (car matched))))
+            (else
+             (vector 'err-non-unique-gluing-classes (map car matched))))))))
+
+;; Helper: build symmetric S^1 3-open cover cocycle from (g01, g12, g20)
+;; Cover: U_0, U_1, U_2 around S^1; double overlaps (0 1), (1 2), (2 0) & inverses & diagonals;
+;; triple overlap U_012 = empty! Holonomy around S^1 is g01 * g12 * g20.
+(define (gpst-s1-doubles)
+  '((0 0) (1 1) (2 2) (0 1) (1 0) (1 2) (2 1) (2 0) (0 2)))
+
+(define (gpst-make-s1-cocycle G g01 g12 g20)
+  (let ((id (gpst-group-id G)))
+    (list (cons '(0 0) id) (cons '(1 1) id) (cons '(2 2) id)
+          (cons '(0 1) g01) (cons '(1 0) (gpst-group-inv G g01))
+          (cons '(1 2) g12) (cons '(2 1) (gpst-group-inv G g12))
+          (cons '(2 0) g20) (cons '(0 2) (gpst-group-inv G g20)))))
+
+;; Conjugacy class representatives of G as global G-torsors on S^1
+(define (gpst-s1-torsor-catalog G)
+  (let ((id (gpst-group-id G))
+        (elems (gpst-group-elements G))
+        (reps '()))
+    (for-each
+      (lambda (x)
+        (let ((already (gpst-any?
+                         (lambda (r)
+                           (gpst-any?
+                             (lambda (h)
+                               (equal? (gpst-group-mul G h (gpst-group-mul G x (gpst-group-inv G h)))
+                                       r))
+                             elems))
+                         reps)))
+          (if (not already) (set! reps (cons x reps)))))
+      elems)
+    (map (lambda (r)
+           (list (list 'torsor-holonomy-class r)
+                 (gpst-make-s1-cocycle G id id r)))
+         (reverse reps))))
+
+;; Genuine Stack of Principal G-Torsors on S^1 covered by 3 opens
+(define (gpst-stack-s1-torsor-instance G g01 g12 g20)
+  (gpst-make-stack-instance
+    '(0 1 2)
+    (gpst-s1-doubles)
+    '()
+    G
+    (gpst-make-s1-cocycle G g01 g12 g20)
+    (gpst-s1-torsor-catalog G)))
+
+;; Separated Presheaf of Globally Trivial G-Bundles on S^1 (NOT a stack!):
+;; Only the globally trivial torsor exists in F(S^1), so non-trivial holonomy
+;; descent data cannot glue globally despite matching locally!
+(define (gpst-stack-s1-trivial-presheaf-instance G g01 g12 g20)
+  (let ((id (gpst-group-id G)))
+    (gpst-make-stack-instance
+      '(0 1 2)
+      (gpst-s1-doubles)
+      '()
+      G
+      (gpst-make-s1-cocycle G g01 g12 g20)
+      (list (list 'globally-trivial-bundle (gpst-make-s1-cocycle G id id id))))))
+
+;; 3-Open Cover WITH Non-Empty Triple Overlap U_012 (for explicit 2-cocycle g01*g12 = g02 check)
+(define (gpst-stack-triple-overlap-instance G g01 g12 g02)
+  (let* ((id (gpst-group-id G))
+         (doubles '((0 0) (1 1) (2 2) (0 1) (1 0) (1 2) (2 1) (0 2) (2 0)))
+         (triples '((0 1 2) (1 2 0) (2 0 1) (0 2 1) (2 1 0) (1 0 2)))
+         (coc (list (cons '(0 0) id) (cons '(1 1) id) (cons '(2 2) id)
+                    (cons '(0 1) g01) (cons '(1 0) (gpst-group-inv G g01))
+                    (cons '(1 2) g12) (cons '(2 1) (gpst-group-inv G g12))
+                    (cons '(0 2) g02) (cons '(2 0) (gpst-group-inv G g02))))
+         (triv-coc (list (cons '(0 0) id) (cons '(1 1) id) (cons '(2 2) id)
+                         (cons '(0 1) id) (cons '(1 0) id)
+                         (cons '(1 2) id) (cons '(2 1) id)
+                         (cons '(0 2) id) (cons '(2 0) id))))
+    (gpst-make-stack-instance
+      '(0 1 2) doubles triples G coc
+      (list (list 'trivializable-disk-torsor triv-coc)))))
+
+;; ===========================================================================
+;; 5. Les Derivateurs (1991): Rational Chain Complexes, Homotopy Kan Extensions
+;;    (hocolim / holim), Functorial Mapping Cone & Triangulated Non-Uniqueness
+;; ===========================================================================
+;;
+;; Chain complex over Q (homological grading, d_k: C_k -> C_{k-1}):
+;;   (vector 'gpst-chain min-deg dims diffs)
+;;   - min-deg: lowest degree stored (integer, may be negative, e.g. -1 for holim!)
+;;   - dims:    vector of non-negative integers, length L; C_{min-deg + i} has dim (vector-ref dims i)
+;;   - diffs:   vector of length L; (vector-ref diffs i) is d_{min-deg + i}: C_{min+i} -> C_{min+i-1}
+;;              (with i=0 having a 0 x dim_0 zero matrix).
+
+(define (gpst-make-chain-complex min-deg dims-list diffs-list)
+  (vector 'gpst-chain min-deg (list->vector dims-list) (list->vector diffs-list)))
+
+(define (gpst-chain-complex? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'gpst-chain)))
+
+(define (gpst-chain-min-deg C) (vector-ref C 1))
+(define (gpst-chain-len C) (vector-length (vector-ref C 2)))
+(define (gpst-chain-max-deg C) (+ (gpst-chain-min-deg C) (- (gpst-chain-len C) 1)))
+
+(define (gpst-chain-dim C deg)
+  (let ((idx (- deg (gpst-chain-min-deg C))))
+    (if (and (>= idx 0) (< idx (gpst-chain-len C)))
+        (vector-ref (vector-ref C 2) idx)
+        0)))
+
+;; Differential d_deg: C_deg -> C_{deg-1}
+(define (gpst-chain-diff C deg)
+  (let ((idx (- deg (gpst-chain-min-deg C))))
+    (if (and (>= idx 0) (< idx (gpst-chain-len C)))
+        (vector-ref (vector-ref C 3) idx)
+        (gpst-mat-zero (gpst-chain-dim C (- deg 1)) (gpst-chain-dim C deg)))))
+
+(define (gpst-chain-valid? C)
+  (and (gpst-chain-complex? C)
+       (let ((lo (gpst-chain-min-deg C))
+             (hi (gpst-chain-max-deg C)))
+         (let loop ((k lo))
+           (if (> k hi)
+               #t
+               (let ((dk (gpst-chain-diff C k))
+                     (dm (gpst-chain-diff C (- k 1))))
+                 (and (= (gpst-mat-cols dk) (gpst-chain-dim C k))
+                      (= (gpst-mat-rows dk) (gpst-chain-dim C (- k 1)))
+                      (gpst-mat-zero? (gpst-mat-mul dm dk))
+                      (loop (+ k 1)))))))))
+
+;; Exact homology dimensions as alist ((deg . betti_deg) ...) over [min-deg .. max-deg]
+(define (gpst-chain-homology C)
+  (let ((lo (gpst-chain-min-deg C))
+        (hi (gpst-chain-max-deg C)))
+    (map (lambda (k)
+           (let* ((dimk (gpst-chain-dim C k))
+                  (rk-out (gpst-mat-rank (gpst-chain-diff C k)))
+                  (rk-in (gpst-mat-rank (gpst-chain-diff C (+ k 1)))))
+             (cons k (- (- dimk rk-out) rk-in))))
+         (gpst-range-from lo (+ hi 1)))))
+
+;; Exact Euler characteristic sum_k (-1)^k dim(C_k) = sum_k (-1)^k H_k(C)
+(define (gpst-chain-euler C)
+  (let ((lo (gpst-chain-min-deg C))
+        (hi (gpst-chain-max-deg C)))
+    (gpst-foldl (lambda (acc k)
+                  (+ acc (* (if (even? k) 1 -1) (gpst-chain-dim C k))))
+                0
+                (gpst-range-from lo (+ hi 1)))))
+
+(define (gpst-chain-acyclic? C)
+  (gpst-all? (lambda (p) (= (cdr p) 0)) (gpst-chain-homology C)))
+
+(define (gpst-chain-zero)
+  (gpst-make-chain-complex 0 '(0) (list (gpst-mat-zero 0 0))))
+
+;; Chain complex concentrated in a single degree `deg` with dimension `dim`
+(define (gpst-chain-concentrated deg dim)
+  (gpst-make-chain-complex deg (list dim) (list (gpst-mat-zero 0 dim))))
+
+;; Homological shift C[1]: (C[1])_k = C_{k-1}, d^{C[1]}_k = -d^C_{k-1}
+(define (gpst-chain-shift C)
+  (let* ((lo (+ (gpst-chain-min-deg C) 1))
+         (hi (+ (gpst-chain-max-deg C) 1))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-complex
+      lo
+      (map (lambda (k) (gpst-chain-dim C (- k 1))) degs)
+      (map (lambda (k) (gpst-mat-neg (gpst-chain-diff C (- k 1)))) degs))))
+
+;; Chain map f: A -> B
+;;   (vector 'gpst-chain-map src dst min-deg maps-vec)
+(define (gpst-make-chain-map src dst min-deg maps-list)
+  (vector 'gpst-chain-map src dst min-deg (list->vector maps-list)))
+
+(define (gpst-chain-map? x)
+  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'gpst-chain-map)))
+
+(define (gpst-chain-map-src f) (vector-ref f 1))
+(define (gpst-chain-map-dst f) (vector-ref f 2))
+
+(define (gpst-chain-map-at f deg)
+  (let* ((lo (vector-ref f 3))
+         (mv (vector-ref f 4))
+         (idx (- deg lo)))
+    (if (and (>= idx 0) (< idx (vector-length mv)))
+        (vector-ref mv idx)
+        (gpst-mat-zero (gpst-chain-dim (gpst-chain-map-dst f) deg)
+                       (gpst-chain-dim (gpst-chain-map-src f) deg)))))
+
+(define (gpst-chain-map-range f)
+  (let ((A (gpst-chain-map-src f))
+        (B (gpst-chain-map-dst f)))
+    (cons (min (gpst-chain-min-deg A) (gpst-chain-min-deg B))
+          (max (gpst-chain-max-deg A) (gpst-chain-max-deg B)))))
+
+(define (gpst-chain-map-valid? f)
+  (and (gpst-chain-map? f)
+       (let* ((A (gpst-chain-map-src f))
+              (B (gpst-chain-map-dst f))
+              (rng (gpst-chain-map-range f))
+              (lo (car rng))
+              (hi (cdr rng)))
+         (gpst-all?
+           (lambda (k)
+             (let ((fk (gpst-chain-map-at f k))
+                   (fkm1 (gpst-chain-map-at f (- k 1)))
+                   (dAk (gpst-chain-diff A k))
+                   (dBk (gpst-chain-diff B k)))
+               (and (= (gpst-mat-rows fk) (gpst-chain-dim B k))
+                    (= (gpst-mat-cols fk) (gpst-chain-dim A k))
+                    (gpst-mat-equal? (gpst-mat-mul dBk fk)
+                                     (gpst-mat-mul fkm1 dAk)))))
+           (gpst-range-from lo (+ hi 2))))))
+
+(define (gpst-chain-map-id C)
+  (let* ((lo (gpst-chain-min-deg C))
+         (hi (gpst-chain-max-deg C))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-map C C lo (map (lambda (k) (gpst-mat-identity (gpst-chain-dim C k))) degs))))
+
+(define (gpst-chain-map-compose g f)
+  (let* ((A (gpst-chain-map-src f))
+         (C (gpst-chain-map-dst g))
+         (lo (min (gpst-chain-min-deg A) (gpst-chain-min-deg C)))
+         (hi (max (gpst-chain-max-deg A) (gpst-chain-max-deg C)))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-map
+      A C lo
+      (map (lambda (k) (gpst-mat-mul (gpst-chain-map-at g k) (gpst-chain-map-at f k))) degs))))
+
+(define (gpst-chain-map-sub f g)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (lo (min (gpst-chain-min-deg A) (gpst-chain-min-deg B)))
+         (hi (max (gpst-chain-max-deg A) (gpst-chain-max-deg B)))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-map
+      A B lo
+      (map (lambda (k) (gpst-mat-sub (gpst-chain-map-at f k) (gpst-chain-map-at g k))) degs))))
+
+(define (gpst-chain-map-equal? f g)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (lo (min (gpst-chain-min-deg A) (gpst-chain-min-deg B)))
+         (hi (max (gpst-chain-max-deg A) (gpst-chain-max-deg B))))
+    (gpst-all? (lambda (k) (gpst-mat-equal? (gpst-chain-map-at f k) (gpst-chain-map-at g k)))
+               (gpst-range-from lo (+ hi 1)))))
+
+;; Verify explicit chain homotopy s = ((k . S_k) ...), S_k: A_k -> B_{k+1},
+;; checking f_k - g_k = d^B_{k+1} S_k + S_{k-1} d^A_k in every degree k.
+(define (gpst-chain-homotopic-with? f g s-alist)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (lo (min (gpst-chain-min-deg A) (gpst-chain-min-deg B)))
+         (hi (max (gpst-chain-max-deg A) (gpst-chain-max-deg B)))
+         (s-at (lambda (k)
+                 (gpst-assoc-val k s-alist
+                   (gpst-mat-zero (gpst-chain-dim B (+ k 1)) (gpst-chain-dim A k))))))
+    (gpst-all?
+      (lambda (k)
+        (let* ((diff (gpst-mat-sub (gpst-chain-map-at f k) (gpst-chain-map-at g k)))
+               (t1 (gpst-mat-mul (gpst-chain-diff B (+ k 1)) (s-at k)))
+               (t2 (gpst-mat-mul (s-at (- k 1)) (gpst-chain-diff A k))))
+          (gpst-mat-equal? diff (gpst-mat-add t1 t2))))
+      (gpst-range-from (- lo 1) (+ hi 2)))))
+
+;; Decide exact existence of ANY rational chain homotopy s: f ~ g via linear system over Q!
+(define (gpst-chain-homotopic? f g)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (lo (min (gpst-chain-min-deg A) (gpst-chain-min-deg B)))
+         (hi (max (gpst-chain-max-deg A) (gpst-chain-max-deg B)))
+         (degs (gpst-range-from lo (+ hi 1)))
+         ;; Variables: entries of S_k (dim B_{k+1} x dim A_k) for k in lo-1..hi
+         (s-degs (gpst-range-from (- lo 1) (+ hi 1)))
+         (s-offsets '())
+         (nvars 0))
+    (for-each
+      (lambda (k)
+        (let ((r (gpst-chain-dim B (+ k 1)))
+              (c (gpst-chain-dim A k)))
+          (set! s-offsets (cons (list k nvars r c) s-offsets))
+          (set! nvars (+ nvars (* r c)))))
+      s-degs)
+    (let* ((s-info (lambda (k)
+                     (let loop ((l s-offsets))
+                       (cond ((null? l) #f)
+                             ((= (car (car l)) k) (car l))
+                             (else (loop (cdr l)))))))
+           ;; Equations: for each k in degs, (dim B_k x dim A_k) equations
+           (neqs (gpst-foldl (lambda (acc k)
+                               (+ acc (* (gpst-chain-dim B k) (gpst-chain-dim A k))))
+                             0 degs))
+           (M (gpst-mat-zero neqs nvars))
+           (rhs (make-vector neqs 0))
+           (eq-row 0))
+      (for-each
+        (lambda (k)
+          (let* ((rb (gpst-chain-dim B k))
+                 (ca (gpst-chain-dim A k))
+                 (dk-diff (gpst-mat-sub (gpst-chain-map-at f k) (gpst-chain-map-at g k)))
+                 (dBp1 (gpst-chain-diff B (+ k 1)))
+                 (dAk (gpst-chain-diff A k))
+                 (sk-inf (s-info k))
+                 (skm1-inf (s-info (- k 1))))
+            (let iloop ((i 0))
+              (if (< i rb)
+                  (begin
+                    (let jloop ((j 0))
+                      (if (< j ca)
+                          (begin
+                            ;; Term 1: (d^B_{k+1} S_k)_{i,j} = sum_t dBp1[i,t] * S_k[t,j]
+                            (if sk-inf
+                                (let ((off (cadr sk-inf))
+                                      (sr (caddr sk-inf))
+                                      (sc (cadddr sk-inf)))
+                                  (let tloop ((t 0))
+                                    (if (< t sr)
+                                        (let ((coef (gpst-mat-ref dBp1 i t)))
+                                          (if (not (= coef 0))
+                                              (let ((col (+ off (+ (* t sc) j))))
+                                                (gpst-mat-set! M eq-row col
+                                                  (+ (gpst-mat-ref M eq-row col) coef))))
+                                          (tloop (+ t 1)))))))
+                            ;; Term 2: (S_{k-1} d^A_k)_{i,j} = sum_u S_{k-1}[i,u] * dAk[u,j]
+                            (if skm1-inf
+                                (let ((off (cadr skm1-inf))
+                                      (sc (cadddr skm1-inf)))
+                                  (let uloop ((u 0))
+                                    (if (< u sc)
+                                        (let ((coef (gpst-mat-ref dAk u j)))
+                                          (if (not (= coef 0))
+                                              (let ((col (+ off (+ (* i sc) u))))
+                                                (gpst-mat-set! M eq-row col
+                                                  (+ (gpst-mat-ref M eq-row col) coef))))
+                                          (uloop (+ u 1)))))))
+                            (vector-set! rhs eq-row (gpst-mat-ref dk-diff i j))
+                            (set! eq-row (+ eq-row 1))
+                            (jloop (+ j 1)))))
+                    (iloop (+ i 1)))))))
+        degs)
+      (if (gpst-mat-solve M rhs) #t #f))))
+
+;; Mapping Cone Cone(u) for u: A -> B
+;;   Cone(u)_k = A_{k-1} (+) B_k
+;;   d^Cone_k = [ -d^A_{k-1}   0     ]
+;;              [  u_{k-1}     d^B_k ]
+(define (gpst-mapping-cone u)
+  (let* ((A (gpst-chain-map-src u))
+         (B (gpst-chain-map-dst u))
+         (lo (min (+ (gpst-chain-min-deg A) 1) (gpst-chain-min-deg B)))
+         (hi (max (+ (gpst-chain-max-deg A) 1) (gpst-chain-max-deg B)))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-complex
+      lo
+      (map (lambda (k) (+ (gpst-chain-dim A (- k 1)) (gpst-chain-dim B k))) degs)
+      (map (lambda (k)
+             (gpst-mat-block
+               (list (list (gpst-mat-neg (gpst-chain-diff A (- k 1)))
+                           (gpst-mat-zero (gpst-chain-dim A (- k 2)) (gpst-chain-dim B k)))
+                     (list (gpst-chain-map-at u (- k 1))
+                           (gpst-chain-diff B k)))))
+           degs))))
+
+;; Canonical inclusion i: B -> Cone(u)
+(define (gpst-mapping-cone-incl u)
+  (let* ((A (gpst-chain-map-src u))
+         (B (gpst-chain-map-dst u))
+         (C (gpst-mapping-cone u))
+         (lo (gpst-chain-min-deg C))
+         (hi (gpst-chain-max-deg C))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-map
+      B C lo
+      (map (lambda (k)
+             (gpst-mat-block
+               (list (list (gpst-mat-zero (gpst-chain-dim A (- k 1)) (gpst-chain-dim B k)))
+                     (list (gpst-mat-identity (gpst-chain-dim B k))))))
+           degs))))
+
+;; Canonical projection p: Cone(u) -> A[1]
+(define (gpst-mapping-cone-proj u)
+  (let* ((A (gpst-chain-map-src u))
+         (B (gpst-chain-map-dst u))
+         (A1 (gpst-chain-shift A))
+         (C (gpst-mapping-cone u))
+         (lo (gpst-chain-min-deg C))
+         (hi (gpst-chain-max-deg C))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-map
+      C A1 lo
+      (map (lambda (k)
+             (gpst-mat-block
+               (list (list (gpst-mat-identity (gpst-chain-dim A (- k 1)))
+                           (gpst-mat-zero (gpst-chain-dim A (- k 1)) (gpst-chain-dim B k))))))
+           degs))))
+
+;; Quasi-isomorphism check: u is a quasi-isomorphism iff Cone(u) is acyclic!
+(define (gpst-chain-quasi-iso? u)
+  (and (gpst-chain-map-valid? u)
+       (gpst-chain-acyclic? (gpst-mapping-cone u))))
+
+;; Functorial Mapping Cone in Grothendieck Derivator D(. -> .):
+;; Given morphism of arrows (f, g): (u: A -> B) -> (u': A' -> B') with u' o f = g o u,
+;; produces the canonical strictly functorial cone morphism Cone(f, g): Cone(u) -> Cone(u').
+;; Fails closed with 'err-noncommuting-square if u' o f != g o u!
+(define (gpst-derivator-cone-map u u-prime f g)
+  (if (not (gpst-chain-map-equal? (gpst-chain-map-compose u-prime f)
+                                  (gpst-chain-map-compose g u)))
+      'err-noncommuting-square
+      (let* ((C1 (gpst-mapping-cone u))
+             (C2 (gpst-mapping-cone u-prime))
+             (A (gpst-chain-map-src u))
+             (B (gpst-chain-map-dst u))
+             (Ap (gpst-chain-map-src u-prime))
+             (Bp (gpst-chain-map-dst u-prime))
+             (lo (min (gpst-chain-min-deg C1) (gpst-chain-min-deg C2)))
+             (hi (max (gpst-chain-max-deg C1) (gpst-chain-max-deg C2)))
+             (degs (gpst-range-from lo (+ hi 1))))
+        (gpst-make-chain-map
+          C1 C2 lo
+          (map (lambda (k)
+                 (gpst-mat-block
+                   (list (list (gpst-chain-map-at f (- k 1))
+                               (gpst-mat-zero (gpst-chain-dim Ap (- k 1)) (gpst-chain-dim B k)))
+                         (list (gpst-mat-zero (gpst-chain-dim Bp k) (gpst-chain-dim A (- k 1)))
+                               (gpst-chain-map-at g k)))))
+               degs)))))
+
+;; Left Homotopy Kan Extension p_! (Homotopy Pushout):
+;;   hocolim(B <-f- A -g-> C) = Cone(A -> B (+) C) via (f, -g)
+;;   P_k = A_{k-1} (+) B_k (+) C_k
+;;   d^P_k = [ -d^A_{k-1}   0     0   ]
+;;           [  f_{k-1}     d^B_k 0   ]
+;;           [ -g_{k-1}     0     d^C_k ]
+(define (gpst-derivator-hocolim f g)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (C (gpst-chain-map-dst g))
+         (lo (min (+ (gpst-chain-min-deg A) 1)
+                  (min (gpst-chain-min-deg B) (gpst-chain-min-deg C))))
+         (hi (max (+ (gpst-chain-max-deg A) 1)
+                  (max (gpst-chain-max-deg B) (gpst-chain-max-deg C))))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-complex
+      lo
+      (map (lambda (k)
+             (+ (gpst-chain-dim A (- k 1))
+                (+ (gpst-chain-dim B k) (gpst-chain-dim C k))))
+           degs)
+      (map (lambda (k)
+             (gpst-mat-block
+               (list (list (gpst-mat-neg (gpst-chain-diff A (- k 1)))
+                           (gpst-mat-zero (gpst-chain-dim A (- k 2)) (gpst-chain-dim B k))
+                           (gpst-mat-zero (gpst-chain-dim A (- k 2)) (gpst-chain-dim C k)))
+                     (list (gpst-chain-map-at f (- k 1))
+                           (gpst-chain-diff B k)
+                           (gpst-mat-zero (gpst-chain-dim B (- k 1)) (gpst-chain-dim C k)))
+                     (list (gpst-mat-neg (gpst-chain-map-at g (- k 1)))
+                           (gpst-mat-zero (gpst-chain-dim C (- k 1)) (gpst-chain-dim B k))
+                           (gpst-chain-diff C k)))))
+           degs))))
+
+;; Canonical inclusions (cons i_B i_C) into hocolim(B <-f- A -g-> C)
+(define (gpst-derivator-hocolim-incls f g)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (C (gpst-chain-map-dst g))
+         (P (gpst-derivator-hocolim f g))
+         (lo (gpst-chain-min-deg P))
+         (hi (gpst-chain-max-deg P))
+         (degs (gpst-range-from lo (+ hi 1)))
+         (iB (gpst-make-chain-map
+               B P lo
+               (map (lambda (k)
+                      (gpst-mat-block
+                        (list (list (gpst-mat-zero (gpst-chain-dim A (- k 1)) (gpst-chain-dim B k)))
+                              (list (gpst-mat-identity (gpst-chain-dim B k)))
+                              (list (gpst-mat-zero (gpst-chain-dim C k) (gpst-chain-dim B k))))))
+                    degs)))
+         (iC (gpst-make-chain-map
+               C P lo
+               (map (lambda (k)
+                      (gpst-mat-block
+                        (list (list (gpst-mat-zero (gpst-chain-dim A (- k 1)) (gpst-chain-dim C k)))
+                              (list (gpst-mat-zero (gpst-chain-dim B k) (gpst-chain-dim C k)))
+                              (list (gpst-mat-identity (gpst-chain-dim C k))))))
+                    degs))))
+    (cons iB iC)))
+
+;; Right Homotopy Kan Extension p_* (Homotopy Pullback):
+;;   holim(B -f-> D <-g- C) = Cocone(B (+) C -> D)
+;;   Q_k = B_k (+) C_k (+) D_{k+1}
+;;   d^Q_k = [ d^B_k   0      0       ]
+;;           [ 0       d^C_k  0       ]
+;;           [ f_k    -g_k   -d^D_{k+1} ]
+(define (gpst-derivator-holim f g)
+  (let* ((B (gpst-chain-map-src f))
+         (C (gpst-chain-map-src g))
+         (D (gpst-chain-map-dst f))
+         (lo (min (- (gpst-chain-min-deg D) 1)
+                  (min (gpst-chain-min-deg B) (gpst-chain-min-deg C))))
+         (hi (max (- (gpst-chain-max-deg D) 1)
+                  (max (gpst-chain-max-deg B) (gpst-chain-max-deg C))))
+         (degs (gpst-range-from lo (+ hi 1))))
+    (gpst-make-chain-complex
+      lo
+      (map (lambda (k)
+             (+ (gpst-chain-dim B k)
+                (+ (gpst-chain-dim C k) (gpst-chain-dim D (+ k 1)))))
+           degs)
+      (map (lambda (k)
+             (gpst-mat-block
+               (list (list (gpst-chain-diff B k)
+                           (gpst-mat-zero (gpst-chain-dim B (- k 1)) (gpst-chain-dim C k))
+                           (gpst-mat-zero (gpst-chain-dim B (- k 1)) (gpst-chain-dim D (+ k 1))))
+                     (list (gpst-mat-zero (gpst-chain-dim C (- k 1)) (gpst-chain-dim B k))
+                           (gpst-chain-diff C k)
+                           (gpst-mat-zero (gpst-chain-dim C (- k 1)) (gpst-chain-dim D (+ k 1))))
+                     (list (gpst-chain-map-at f k)
+                           (gpst-mat-neg (gpst-chain-map-at g k))
+                           (gpst-mat-neg (gpst-chain-diff D (+ k 1)))))))
+           degs))))
+
+;; Canonical projections (cons p_B p_C) from holim(B -f-> D <-g- C)
+(define (gpst-derivator-holim-projs f g)
+  (let* ((B (gpst-chain-map-src f))
+         (C (gpst-chain-map-src g))
+         (D (gpst-chain-map-dst f))
+         (Q (gpst-derivator-holim f g))
+         (lo (gpst-chain-min-deg Q))
+         (hi (gpst-chain-max-deg Q))
+         (degs (gpst-range-from lo (+ hi 1)))
+         (pB (gpst-make-chain-map
+               Q B lo
+               (map (lambda (k)
+                      (gpst-mat-block
+                        (list (list (gpst-mat-identity (gpst-chain-dim B k))
+                                    (gpst-mat-zero (gpst-chain-dim B k) (gpst-chain-dim C k))
+                                    (gpst-mat-zero (gpst-chain-dim B k) (gpst-chain-dim D (+ k 1)))))))
+                    degs)))
+         (pC (gpst-make-chain-map
+               Q C lo
+               (map (lambda (k)
+                      (gpst-mat-block
+                        (list (list (gpst-mat-zero (gpst-chain-dim C k) (gpst-chain-dim B k))
+                                    (gpst-mat-identity (gpst-chain-dim C k))
+                                    (gpst-mat-zero (gpst-chain-dim C k) (gpst-chain-dim D (+ k 1)))))))
+                    degs))))
+    (cons pB pC)))
+
+;; Stable Derivator / Beck-Chevalley Bicartesian Check:
+;; Given span B <-f- A -g-> C, forms P = hocolim(B <- A -> C) and
+;; Q = holim(B -> P <- C), constructs the canonical comparison map eta: A -> Q,
+;; and certifies:
+;;   1. chi(P) = chi(B) + chi(C) - chi(A) (Mayer-Vietoris Euler exactness)
+;;   2. chi(Q) = chi(B) + chi(C) - chi(P) = chi(A)
+;;   3. eta: A -> Q is a valid chain map AND a quasi-isomorphism (Cone(eta) acyclic!)
+(define (gpst-derivator-bicartesian-check f g)
+  (let* ((A (gpst-chain-map-src f))
+         (B (gpst-chain-map-dst f))
+         (C (gpst-chain-map-dst g))
+         (P (gpst-derivator-hocolim f g))
+         (incls (gpst-derivator-hocolim-incls f g))
+         (iB (car incls))
+         (iC (cdr incls))
+         (Q (gpst-derivator-holim iB iC))
+         (lo (min (gpst-chain-min-deg A) (gpst-chain-min-deg Q)))
+         (hi (max (gpst-chain-max-deg A) (gpst-chain-max-deg Q)))
+         (degs (gpst-range-from lo (+ hi 1)))
+         ;; eta_k: A_k -> B_k (+) C_k (+) (A_k (+) B_{k+1} (+) C_{k+1})
+         (eta (gpst-make-chain-map
+                A Q lo
+                (map (lambda (k)
+                       (let ((da (gpst-chain-dim A k)))
+                         (gpst-mat-block
+                           (list (list (gpst-chain-map-at f k))
+                                 (list (gpst-chain-map-at g k))
+                                 (list (gpst-mat-identity da))
+                                 (list (gpst-mat-zero (gpst-chain-dim B (+ k 1)) da))
+                                 (list (gpst-mat-zero (gpst-chain-dim C (+ k 1)) da))))))
+                     degs)))
+         (mv-euler-ok (= (gpst-chain-euler P)
+                         (- (+ (gpst-chain-euler B) (gpst-chain-euler C))
+                            (gpst-chain-euler A))))
+         (holim-euler-ok (= (gpst-chain-euler Q) (gpst-chain-euler A)))
+         (eta-qiso (gpst-chain-quasi-iso? eta)))
+    (vector 'gpst-bicartesian-report
+            (and mv-euler-ok holim-euler-ok eta-qiso)
+            mv-euler-ok
+            holim-euler-ok
+            eta-qiso
+            (gpst-chain-homology P)
+            (gpst-chain-homology Q)
+            (gpst-chain-homology A))))
+
+;; Negative Control: Triangulated Category Cone Non-Uniqueness Witness
+;; Constructs A = Q[0], B = Q[1], u = 0: A -> B, Cone(u) = Q[1] (+) Q[1] (dim 2 in deg 1).
+;; For the identity square (id_A, id_B), constructs TWO distinct chain maps h0, h1: Cone(u) -> Cone(u):
+;;   h0 = [[1 0] [0 1]] (the canonical derivator cone map Cone(id_A, id_B))
+;;   h1 = [[1 0] [1 1]] (sheared non-canonical filler)
+;; Verifies:
+;;   1. Both h0 and h1 are valid chain maps
+;;   2. Both commute strictly with inclusion i: B -> Cone(u) and projection p: Cone(u) -> A[1]
+;;   3. h0 and h1 are NOT chain homotopic in K(Ch_Q) (proving non-uniqueness in triangulated categories!)
+;;   4. Derivator cone map Cone(id_A, id_B) strictly equals h0!
+(define (gpst-verify-triangulated-nonuniqueness)
+  (let* ((A (gpst-chain-concentrated 0 1))
+         (B (gpst-chain-concentrated 1 1))
+         (u (gpst-make-chain-map A B 0 (list (gpst-mat-zero 0 1) (gpst-mat-zero 1 0))))
+         (Cu (gpst-mapping-cone u))
+         (incl (gpst-mapping-cone-incl u))
+         (proj (gpst-mapping-cone-proj u))
+         (idA (gpst-chain-map-id A))
+         (idB (gpst-chain-map-id B))
+         (h0 (gpst-derivator-cone-map u u idA idB))
+         (shear-mat (gpst-mat-from-rows '((1 0) (1 1)) 2))
+         (h1 (gpst-make-chain-map Cu Cu 1 (list shear-mat)))
+         (both-valid (and (gpst-chain-map-valid? h0) (gpst-chain-map-valid? h1)))
+         (h0-commutes (and (gpst-chain-map-equal? (gpst-chain-map-compose h0 incl) incl)
+                           (gpst-chain-map-equal? (gpst-chain-map-compose proj h0) proj)))
+         (h1-commutes (and (gpst-chain-map-equal? (gpst-chain-map-compose h1 incl) incl)
+                           (gpst-chain-map-equal? (gpst-chain-map-compose proj h1) proj)))
+         (distinct (not (gpst-chain-map-equal? h0 h1)))
+         (not-homotopic (not (gpst-chain-homotopic? h0 h1))))
+    (vector 'gpst-triangulated-nonuniqueness-witness
+            (and both-valid h0-commutes h1-commutes distinct not-homotopic)
+            both-valid h0-commutes h1-commutes distinct not-homotopic
+            h0 h1)))

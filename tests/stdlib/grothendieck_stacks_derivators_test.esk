@@ -1,0 +1,340 @@
+;;; Grothendieck Era 3A Verification Suite:
+;;;   1. Pursuing Stacks: Simplicial Sets, Lurie Quasi-Categories, Kan Complexes
+;;;      (infinity-Groupoids), Homotopy Hypothesis & Non-Strict Weak infinity-Categories
+;;;   2. Grothendieck Test Categories: Delta^n Asphericity & Barycentric Subdivision
+;;;      vs Non-Aspheric S^1 / S^0 / S^2 Controls
+;;;   3. Higher Stacks & Cech Hypercover Descent: Principal G-Torsors (Z/nZ, non-abelian S_3),
+;;;      Violated Cocycle Obstruction & Separated Presheaf That Is NOT a Stack
+;;;   4. Les Derivateurs (1991): Rational Chain Complexes, Homotopy Pushout (hocolim),
+;;;      Homotopy Pullback (holim), Mayer-Vietoris / Beck-Chevalley Bicartesian Check,
+;;;      Functorial Mapping Cone vs Triangulated Cone Non-Uniqueness
+
+(require stdlib)
+(require core.grothendieck.stacks_derivators)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ===========================================================================
+;; 1. Pursuing Stacks: Lurie Hierarchy & Homotopy Hypothesis
+;; ===========================================================================
+
+;; 1A. Nerve of Groupoid B(Z/2Z): Kan Complex / infinity-Groupoid (all horns filled!)
+(define nz2 (gpst-nerve-groupoid-z2))
+(expect "nerve-z2-valid-sset" (gpst-sset-valid? nz2))
+(define r-z2 (gpst-check-horns nz2))
+(expect "nerve-z2-inner-filled=4" (= (gpst-horn-inner-filled r-z2) 4))
+(expect "nerve-z2-inner-missing=0" (= (gpst-horn-inner-missing r-z2) 0))
+(expect "nerve-z2-outer-filled=8" (= (gpst-horn-outer-filled r-z2) 8))
+(expect "nerve-z2-outer-missing=0" (= (gpst-horn-outer-missing r-z2) 0))
+(expect "nerve-z2-unique-inner" (gpst-horn-unique-inner? r-z2))
+(expect "nerve-z2-classified-kan-complex" (eq? (gpst-horn-classification r-z2) 'kan-complex))
+
+;; 1B. Nerve of Non-Abelian Groupoid B(S_3) & 2-Object Groupoid I: Kan Complexes!
+(define ns3 (gpst-nerve-groupoid-s3))
+(define r-s3 (gpst-check-horns ns3))
+(expect "nerve-s3-valid-sset" (gpst-sset-valid? ns3))
+(expect "nerve-s3-inner-filled=36" (= (gpst-horn-inner-filled r-s3) 36))
+(expect "nerve-s3-outer-filled=72" (= (gpst-horn-outer-filled r-s3) 72))
+(expect "nerve-s3-kan-complex" (eq? (gpst-horn-classification r-s3) 'kan-complex))
+
+(define ng2 (gpst-nerve-indiscrete-groupoid2))
+(define r-g2 (gpst-check-horns ng2))
+(expect "nerve-indiscrete-g2-kan-complex"
+        (and (eq? (gpst-horn-classification r-g2) 'kan-complex)
+             (= (gpst-horn-inner-missing r-g2) 0)
+             (= (gpst-horn-outer-missing r-g2) 0)))
+
+;; 1C. Nerve of Non-Groupoid Category N(Delta^1): Lurie Quasi-Category, NOT Kan!
+(define n-arr (gpst-nerve-arrow))
+(define r-arr (gpst-check-horns n-arr))
+(expect "nerve-arrow-valid-sset" (gpst-sset-valid? n-arr))
+(expect "nerve-arrow-inner-filled=4" (= (gpst-horn-inner-filled r-arr) 4))
+(expect "nerve-arrow-inner-missing=0" (= (gpst-horn-inner-missing r-arr) 0))
+(expect "nerve-arrow-unique-inner" (gpst-horn-unique-inner? r-arr))
+(expect "nerve-arrow-outer-missing=2" (= (gpst-horn-outer-missing r-arr) 2))
+(expect "nerve-arrow-classified-quasi-category-not-kan"
+        (eq? (gpst-horn-classification r-arr) 'quasi-category-not-kan))
+(expect "nerve-arrow-explicit-outer-witnesses"
+        (and (= (length (gpst-horn-missing-outer r-arr)) 2)
+             (equal? (car (gpst-horn-missing-outer r-arr)) '(lambda-2-0 id0 f01))
+             (equal? (cadr (gpst-horn-missing-outer r-arr)) '(lambda-2-2 f01 id1))))
+
+;; 1D. Nerve of Poset (0 -> 1 -> 2) = N(Delta^2): Quasi-Category, NOT Kan!
+(define n-p3 (gpst-nerve-poset3))
+(define r-p3 (gpst-check-horns n-p3))
+(expect "nerve-poset3-valid-sset" (gpst-sset-valid? n-p3))
+(expect "nerve-poset3-inner-filled=10" (= (gpst-horn-inner-filled r-p3) 10))
+(expect "nerve-poset3-inner-missing=0" (= (gpst-horn-inner-missing r-p3) 0))
+(expect "nerve-poset3-unique-inner" (gpst-horn-unique-inner? r-p3))
+(expect "nerve-poset3-outer-missing>0" (> (gpst-horn-outer-missing r-p3) 0))
+(expect "nerve-poset3-quasi-category-not-kan"
+        (eq? (gpst-horn-classification r-p3) 'quasi-category-not-kan))
+
+;; 1E. Negative Control: Bare Inner Horn Lambda^2_1 -> NOT a Quasi-Category!
+(define bare-h (gpst-sset-bare-inner-horn))
+(define r-bare (gpst-check-horns bare-h))
+(expect "bare-horn-valid-sset" (gpst-sset-valid? bare-h))
+(expect "bare-horn-inner-missing=1" (= (gpst-horn-inner-missing r-bare) 1))
+(expect "bare-horn-rejected-not-quasi-category"
+        (eq? (gpst-horn-classification r-bare) 'not-quasi-category))
+(expect "bare-horn-explicit-missing-inner-witness"
+        (equal? (gpst-horn-missing-inner r-bare) '((lambda-2-1 f12 f01))))
+
+;; 1F. Non-Strict Weak infinity-Groupoid & Weak Quasi-Category (Multiple Inner Fillers!)
+(define weak-kan (gpst-sset-weak-kan-z2))
+(define r-wkan (gpst-check-horns weak-kan))
+(expect "weak-kan-valid-sset" (gpst-sset-valid? weak-kan))
+(expect "weak-kan-inner-missing=0" (= (gpst-horn-inner-missing r-wkan) 0))
+(expect "weak-kan-outer-missing=0" (= (gpst-horn-outer-missing r-wkan) 0))
+(expect "weak-kan-not-unique-inner" (not (gpst-horn-unique-inner? r-wkan)))
+(expect "weak-kan-max-inner-fillers=2" (= (gpst-horn-max-inner-fillers r-wkan) 2))
+(expect "weak-kan-genuine-weak-infinity" (gpst-horn-weak-infinity? r-wkan))
+(expect "weak-kan-classified-kan" (eq? (gpst-horn-classification r-wkan) 'kan-complex))
+
+(define weak-qc (gpst-sset-weak-quasicat-arrow))
+(define r-wqc (gpst-check-horns weak-qc))
+(expect "weak-quasicat-inner-missing=0" (= (gpst-horn-inner-missing r-wqc) 0))
+(expect "weak-quasicat-outer-missing=2" (= (gpst-horn-outer-missing r-wqc) 2))
+(expect "weak-quasicat-not-unique-inner" (not (gpst-horn-unique-inner? r-wqc)))
+(expect "weak-quasicat-genuine-weak-infinity" (gpst-horn-weak-infinity? r-wqc))
+(expect "weak-quasicat-classified-quasicat-not-kan"
+        (eq? (gpst-horn-classification r-wqc) 'quasi-category-not-kan))
+
+;; 1G. Simplicial Identity Violation Negative Control
+(define bad-sset
+  (gpst-make-sset '(0 1)
+                  (list (list 'id0 0 0) (list 'id1 1 1) (list 'f01 0 1))
+                  (list (list 'bad-tri 'id0 'f01 'id1))))
+(expect "bad-sset-rejected-invalid" (not (gpst-sset-valid? bad-sset)))
+(expect "bad-sset-horn-check-fails-closed"
+        (eq? (gpst-horn-classification (gpst-check-horns bad-sset)) 'err-invalid-simplicial-set))
+
+;; ===========================================================================
+;; 2. Grothendieck Test Categories: Delta^n Asphericity & Barycentric Subdivision
+;; ===========================================================================
+
+(define d1 (gpst-standard-simplex-complex 1))
+(define d2 (gpst-standard-simplex-complex 2))
+(define d3 (gpst-standard-simplex-complex 3))
+(define sd-d1 (gpst-barycentric-subdivision d1))
+(define sd-d2 (gpst-barycentric-subdivision d2))
+
+(define asp-d1 (gpst-test-aspheric? d1))
+(define asp-d2 (gpst-test-aspheric? d2))
+(define asp-d3 (gpst-test-aspheric? d3))
+(define asp-sd-d1 (gpst-test-aspheric? sd-d1))
+(define asp-sd-d2 (gpst-test-aspheric? sd-d2))
+
+(expect "delta1-aspheric-chi1-pi01"
+        (and (eq? (vector-ref asp-d1 1) 'aspheric-contractible)
+             (= (vector-ref asp-d1 2) 1)
+             (= (vector-ref asp-d1 3) 1)
+             (equal? (vector-ref asp-d1 4) '(1 0))))
+(expect "delta2-aspheric-chi1-pi01"
+        (and (eq? (vector-ref asp-d2 1) 'aspheric-contractible)
+             (= (vector-ref asp-d2 2) 1)
+             (= (vector-ref asp-d2 3) 1)
+             (equal? (vector-ref asp-d2 4) '(1 0 0))))
+(expect "delta3-aspheric-chi1-pi01"
+        (and (eq? (vector-ref asp-d3 1) 'aspheric-contractible)
+             (= (vector-ref asp-d3 2) 1)
+             (= (vector-ref asp-d3 3) 1)
+             (equal? (vector-ref asp-d3 4) '(1 0 0 0))))
+(expect "sd-delta1-preserves-asphericity"
+        (and (eq? (vector-ref asp-sd-d1 1) 'aspheric-contractible)
+             (= (vector-ref asp-sd-d1 2) 1)
+             (= (vector-ref asp-sd-d1 3) 1)))
+(expect "sd-delta2-has-25-simplices-and-preserves-asphericity"
+        (and (= (length (gpst-complex-simplices sd-d2)) 25)  ;; 7 verts + 12 edges + 6 tris
+             (eq? (vector-ref asp-sd-d2 1) 'aspheric-contractible)
+             (= (vector-ref asp-sd-d2 2) 1)
+             (= (vector-ref asp-sd-d2 3) 1)
+             (equal? (vector-ref asp-sd-d2 4) '(1 0 0))))
+
+;; Non-Aspheric Negative Controls: S^1 = partial(Delta^2), Sd(S^1), S^0, S^2
+(define s1-bd (gpst-boundary-simplex-complex 2))
+(define sd-s1 (gpst-barycentric-subdivision s1-bd))
+(define s0-bd (gpst-boundary-simplex-complex 1))
+(define s2-bd (gpst-boundary-simplex-complex 3))
+
+(define asp-s1 (gpst-test-aspheric? s1-bd))
+(define asp-sd-s1 (gpst-test-aspheric? sd-s1))
+(define asp-s0 (gpst-test-aspheric? s0-bd))
+(define asp-s2 (gpst-test-aspheric? s2-bd))
+
+(expect "s1-boundary-non-aspheric-chi0-betti11"
+        (and (eq? (vector-ref asp-s1 1) 'non-aspheric)
+             (= (vector-ref asp-s1 2) 0)
+             (= (vector-ref asp-s1 3) 1)
+             (equal? (vector-ref asp-s1 4) '(1 1))))
+(expect "sd-s1-remains-non-aspheric-chi0-betti11"
+        (and (eq? (vector-ref asp-sd-s1 1) 'non-aspheric)
+             (= (vector-ref asp-sd-s1 2) 0)
+             (equal? (vector-ref asp-sd-s1 4) '(1 1))))
+(expect "s0-boundary-non-aspheric-pi02"
+        (and (eq? (vector-ref asp-s0 1) 'non-aspheric)
+             (= (vector-ref asp-s0 2) 2)
+             (= (vector-ref asp-s0 3) 2)))
+(expect "s2-boundary-non-aspheric-chi2-betti101"
+        (and (eq? (vector-ref asp-s2 1) 'non-aspheric)
+             (= (vector-ref asp-s2 2) 2)
+             (equal? (vector-ref asp-s2 4) '(1 0 1))))
+
+;; ===========================================================================
+;; 3. Higher Stacks & Cech Hypercover Descent (A la Poursuite des Champs)
+;; ===========================================================================
+
+(define G-s3 (gpst-group-s3))
+(define G-z3 (gpst-group-zn 3))
+(define s3-id '(0 1 2))
+(define s3-swap01 '(1 0 2))
+(define s3-swap12 '(0 2 1))
+(define s3-cyc '(1 2 0))
+(define s3-prod (gpst-group-mul G-s3 s3-swap01 s3-cyc))  ;; (1 0 2) o (1 2 0) = (0 2 1)
+(define s3-rev-prod (gpst-group-mul G-s3 s3-cyc s3-swap01)) ;; (1 2 0) o (1 0 2) = (2 1 0) != s3-prod
+
+;; 3A. Positive Control: Principal S_3-Torsors on S^1 (non-trivial 3-cycle & transposition classes)
+(define st-s1-cyc (gpst-stack-s1-torsor-instance G-s3 s3-swap01 (gpst-group-inv G-s3 s3-swap01) s3-cyc))
+(define res-s1-cyc (gpst-verify-stack-descent st-s1-cyc))
+(expect "stack-s1-s3-3cycle-effective-descent"
+        (eq? (vector-ref res-s1-cyc 0) 'stack-descent-effective))
+;; Centralizer of a 3-cycle in S_3 has order 3!
+(expect "stack-s1-s3-3cycle-aut-order=3"
+        (= (vector-ref res-s1-cyc 2) 3))
+
+(define st-s1-swap (gpst-stack-s1-torsor-instance G-s3 s3-id s3-id s3-swap12))
+(define res-s1-swap (gpst-verify-stack-descent st-s1-swap))
+(expect "stack-s1-s3-transposition-effective"
+        (and (eq? (vector-ref res-s1-swap 0) 'stack-descent-effective)
+             ;; Centralizer of a transposition in S_3 has order 2!
+             (= (vector-ref res-s1-swap 2) 2)))
+
+(define st-s1-z3 (gpst-stack-s1-torsor-instance G-z3 1 2 1))  ;; holonomy 1+2+1 = 1 mod 3
+(define res-s1-z3 (gpst-verify-stack-descent st-s1-z3))
+(expect "stack-s1-z3-effective-aut-order=3"
+        (and (eq? (vector-ref res-s1-z3 0) 'stack-descent-effective)
+             (equal? (vector-ref res-s1-z3 1) '(torsor-holonomy-class 1))
+             (= (vector-ref res-s1-z3 2) 3)))
+
+;; 3B. Positive Control on Non-Empty Triple Overlap U_012: exact non-abelian S_3 2-cocycle g01*g12 = g02
+(define st-tri-ok (gpst-stack-triple-overlap-instance G-s3 s3-swap01 s3-cyc s3-prod))
+(define res-tri-ok (gpst-verify-stack-descent st-tri-ok))
+(expect "stack-triple-overlap-s3-valid-cocycle-effective"
+        (and (eq? (vector-ref res-tri-ok 0) 'stack-descent-effective)
+             (= (vector-ref res-tri-ok 2) 6)))  ;; full S_3 stabilizer for trivializable disk torsor!
+
+;; 3C. Negative Control A: Violated Triple-Overlap Cocycle (reversed non-abelian order g12*g01 != g01*g12)
+(define st-tri-bad (gpst-stack-triple-overlap-instance G-s3 s3-swap01 s3-cyc s3-rev-prod))
+(define res-tri-bad (gpst-verify-stack-descent st-tri-bad))
+(expect "stack-triple-overlap-violated-cocycle-fails-closed"
+        (and (eq? (vector-ref res-tri-bad 0) 'err-cocycle-obstruction)
+             (> (length (vector-ref res-tri-bad 1)) 0)))
+
+;; 3D. Negative Control B: Separated Presheaf That Is NOT a Stack!
+;; Globally trivial S_3-bundle presheaf on S^1 given a valid non-trivial 3-cycle descent datum:
+(define ps-not-stack (gpst-stack-s1-trivial-presheaf-instance G-s3 s3-id s3-id s3-cyc))
+(define res-ps-bad (gpst-verify-stack-descent ps-not-stack))
+(expect "separated-presheaf-valid-cocycle-zero-violations"
+        (null? (gpst-stack-cocycle-violations ps-not-stack)))
+(expect "separated-presheaf-classified-presheaf-not-stack"
+        (eq? (vector-ref res-ps-bad 0) 'presheaf-not-stack))
+
+;; Sanity check: trivial descent datum DOES glue in the trivial-bundle presheaf!
+(define ps-triv-ok (gpst-stack-s1-trivial-presheaf-instance G-s3 s3-swap01 (gpst-group-inv G-s3 s3-swap01) s3-id))
+(define res-ps-ok (gpst-verify-stack-descent ps-triv-ok))
+(expect "separated-presheaf-trivial-holonomy-glues"
+        (eq? (vector-ref res-ps-ok 0) 'stack-descent-effective))
+
+;; ===========================================================================
+;; 4. Les Derivateurs (1991): hocolim, holim, Mayer-Vietoris, Beck-Chevalley,
+;;    Functorial Mapping Cone vs Triangulated Non-Uniqueness
+;; ===========================================================================
+
+;; 4A. Homotopy Pushout S^1 = hocolim(pt <- S^0 -> pt)
+(define pt-cx (gpst-chain-concentrated 0 1))
+(define s0-cx (gpst-chain-concentrated 0 2))
+(define aug-s0 (gpst-make-chain-map s0-cx pt-cx 0 (list (gpst-mat-from-rows '((1 1)) 2))))
+(expect "aug-s0-valid-chain-map" (gpst-chain-map-valid? aug-s0))
+
+(define hocolim-s1 (gpst-derivator-hocolim aug-s0 aug-s0))
+(expect "hocolim-s1-valid-chain-complex" (gpst-chain-valid? hocolim-s1))
+(expect "hocolim-s1-homology-is-circle"
+        (equal? (gpst-chain-homology hocolim-s1) '((0 . 1) (1 . 1))))
+(expect "hocolim-s1-euler=0" (= (gpst-chain-euler hocolim-s1) 0))
+
+;; Stable Derivator / Beck-Chevalley Bicartesian Check on S^1 pushout!
+(define bc-s1 (gpst-derivator-bicartesian-check aug-s0 aug-s0))
+(expect "bicartesian-s1-all-pass" (vector-ref bc-s1 1))
+(expect "bicartesian-s1-mayer-vietoris-euler" (vector-ref bc-s1 2))
+(expect "bicartesian-s1-holim-euler-matches-A" (vector-ref bc-s1 3))
+(expect "bicartesian-s1-eta-is-quasi-iso" (vector-ref bc-s1 4))
+
+;; 4B. Homotopy Pushout S^2 = hocolim(pt <- S^1 -> pt)
+(define s1-cx (gpst-make-chain-complex 0 '(1 1) (list (gpst-mat-zero 0 1) (gpst-mat-zero 1 1))))
+(define aug-s1 (gpst-make-chain-map s1-cx pt-cx 0 (list (gpst-mat-identity 1) (gpst-mat-zero 0 1))))
+(expect "aug-s1-valid-chain-map" (gpst-chain-map-valid? aug-s1))
+
+(define hocolim-s2 (gpst-derivator-hocolim aug-s1 aug-s1))
+(expect "hocolim-s2-valid-chain-complex" (gpst-chain-valid? hocolim-s2))
+(expect "hocolim-s2-homology-is-2sphere"
+        (equal? (gpst-chain-homology hocolim-s2) '((0 . 1) (1 . 0) (2 . 1))))
+(expect "hocolim-s2-euler=2" (= (gpst-chain-euler hocolim-s2) 2))
+
+(define bc-s2 (gpst-derivator-bicartesian-check aug-s1 aug-s1))
+(expect "bicartesian-s2-all-pass" (vector-ref bc-s2 1))
+(expect "bicartesian-s2-eta-is-quasi-iso" (vector-ref bc-s2 4))
+
+;; 4C. Homotopy Pullback Loop Space Omega(S^1) = holim(0 -> Q[1] <- 0) = Q[0]
+(define z-cx (gpst-chain-zero))
+(define q1-cx (gpst-chain-concentrated 1 1))
+(define z-to-q1 (gpst-make-chain-map z-cx q1-cx 0 (list (gpst-mat-zero 0 0) (gpst-mat-zero 1 0))))
+(define holim-loop (gpst-derivator-holim z-to-q1 z-to-q1))
+(expect "holim-loop-valid" (gpst-chain-valid? holim-loop))
+(expect "holim-loop-homology-concentrated-in-deg0"
+        (equal? (gpst-chain-homology holim-loop) '((0 . 1))))
+(expect "holim-loop-euler=1" (= (gpst-chain-euler holim-loop) 1))
+
+;; 4D. Positive Control: Functorial Mapping Cone in Derivator D(. -> .)
+;; Compose two morphisms of arrows: (u0: A0 -> B0) --(f1,g1)--> (u1: A1 -> B1) --(f2,g2)--> (u2: A2 -> B2)
+;; All complexes nontrivial in degrees 0 and 1!
+(define A0 (gpst-make-chain-complex 0 '(1 1) (list (gpst-mat-zero 0 1) (gpst-mat-from-rows '((2)) 1))))
+(define B0 (gpst-make-chain-complex 0 '(1 1) (list (gpst-mat-zero 0 1) (gpst-mat-from-rows '((2)) 1))))
+(define u0 (gpst-make-chain-map A0 B0 0 (list (gpst-mat-from-rows '((3)) 1) (gpst-mat-from-rows '((3)) 1))))
+(define f1 (gpst-make-chain-map A0 A0 0 (list (gpst-mat-from-rows '((5)) 1) (gpst-mat-from-rows '((5)) 1))))
+(define g1 (gpst-make-chain-map B0 B0 0 (list (gpst-mat-from-rows '((5)) 1) (gpst-mat-from-rows '((5)) 1))))
+(define f2 (gpst-make-chain-map A0 A0 0 (list (gpst-mat-from-rows '((7/2)) 1) (gpst-mat-from-rows '((7/2)) 1))))
+(define g2 (gpst-make-chain-map B0 B0 0 (list (gpst-mat-from-rows '((7/2)) 1) (gpst-mat-from-rows '((7/2)) 1))))
+
+(define cone-id (gpst-derivator-cone-map u0 u0 (gpst-chain-map-id A0) (gpst-chain-map-id B0)))
+(define cone-1 (gpst-derivator-cone-map u0 u0 f1 g1))
+(define cone-2 (gpst-derivator-cone-map u0 u0 f2 g2))
+(define cone-21 (gpst-derivator-cone-map u0 u0 (gpst-chain-map-compose f2 f1) (gpst-chain-map-compose g2 g1)))
+
+(expect "derivator-cone-id-is-identity"
+        (gpst-chain-map-equal? cone-id (gpst-chain-map-id (gpst-mapping-cone u0))))
+(expect "derivator-cone-1-valid" (gpst-chain-map-valid? cone-1))
+(expect "derivator-cone-2-valid" (gpst-chain-map-valid? cone-2))
+(expect "derivator-cone-strict-functoriality"
+        (gpst-chain-map-equal? cone-21 (gpst-chain-map-compose cone-2 cone-1)))
+
+;; Negative control for derivator cone: non-commuting square fails closed!
+(define bad-g (gpst-make-chain-map B0 B0 0 (list (gpst-mat-from-rows '((11)) 1) (gpst-mat-from-rows '((11)) 1))))
+(expect "derivator-cone-noncommuting-square-rejected"
+        (eq? (gpst-derivator-cone-map u0 u0 f1 bad-g) 'err-noncommuting-square))
+
+;; 4E. Negative Control: Why Triangulated Categories Fail (Non-Uniqueness of Cone Fillers in K(Ch_Q))
+(define tri-w (gpst-verify-triangulated-nonuniqueness))
+(expect "triangulated-nonuniqueness-all-verified" (vector-ref tri-w 1))
+(expect "triangulated-both-fillers-valid" (vector-ref tri-w 2))
+(expect "triangulated-h0-commutes-with-triangle" (vector-ref tri-w 3))
+(expect "triangulated-h1-commutes-with-triangle" (vector-ref tri-w 4))
+(expect "triangulated-h0-h1-distinct" (vector-ref tri-w 5))
+(expect "triangulated-h0-h1-not-chain-homotopic" (vector-ref tri-w 6))
+
+(display "PASS: grothendieck_stacks_derivators_test (") (display checks) (display " checks)") (newline)

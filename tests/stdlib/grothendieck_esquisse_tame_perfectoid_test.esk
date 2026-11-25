@@ -1,0 +1,330 @@
+;;; Executable verification suite for Grothendieck Era 3B:
+;;;   core.grothendieck.esquisse_tame_perfectoid
+;;; Covers:
+;;;   1. Symmetric group S_d, Dessins d'Enfants, Belyi polynomials & Gal(Q-bar/Q) orbits
+;;;   2. Anabelian geometry (chi = 2 - 2g - n) & Grothendieck-Teichmuller GT-hat axioms
+;;;   3. Tame topology (1D o-minimal CAD, additive Euler characteristic & wild rejectors)
+;;;   4. Scholze perfectoid rings (Frobenius surjectivity, tilting chains, sharp lift mod p^2,
+;;;      and non-perfectoid F_p[t]/(t^2) failure)
+
+(require stdlib)
+(require core.grothendieck.esquisse_tame_perfectoid)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ===========================================================================
+;; 1. Dessins d'Enfants, Belyi Maps & Gal(Q-bar/Q) Action
+;; ===========================================================================
+
+;; 1a. Symmetric group primitives over S_4
+(define p-cyc (vector 1 2 3 0))
+(define p-inv (gesq-perm-inv p-cyc))
+(expect "perm-valid-4-cycle" (gesq-perm-valid? p-cyc))
+(expect "perm-invalid-duplicate-rejected" (not (gesq-perm-valid? (vector 0 1 1 3))))
+(expect "perm-compose-with-inv-is-id"
+        (gesq-perm-equal? (gesq-perm-compose p-cyc p-inv) (gesq-perm-id 4)))
+(expect "perm-4-cycle-order" (= (gesq-perm-order p-cyc) 4))
+(expect "perm-cycle-type-disjoint-transpositions"
+        (equal? (gesq-perm-cycle-type (vector 1 0 3 2)) (list 2 2)))
+(expect "perm-subgroup-order-S3"
+        (= (gesq-perm-subgroup-order (list (vector 1 0 2) (vector 1 2 0)) 3) 6))
+(expect "perm-subgroup-order-A4"
+        (= (gesq-perm-subgroup-order (list (vector 1 2 0 3) (vector 0 2 3 1)) 4) 12))
+
+;; 1b. Dessin negative controls (mismatched product & disconnected)
+(define err-prod
+  (gesq-make-dessin (vector 1 2 0) (vector 1 2 0) (vector 0 1 2)))
+(expect "dessin-neg-product-mismatch"
+        (and (vector? err-prod) (eq? (vector-ref err-prod 0) 'err-dessin-product-mismatch)))
+
+(define err-disc
+  ;; (0 1)(2 3) * (0 1)(2 3) * id = id, but disconnected on {0,1} U {2,3}!
+  (gesq-make-dessin (vector 1 0 3 2) (vector 1 0 3 2) (vector 0 1 2 3)))
+(expect "dessin-neg-disconnected"
+        (and (vector? err-disc) (eq? (vector-ref err-disc 0) 'err-dessin-disconnected)))
+
+;; 1c. Canonical Genus-0 Shabat/Belyi Plane Trees & Belyi Polynomial Verification
+(define d-star (gesq-witness-star-d3))
+(define d-cheb (gesq-witness-chebyshev-d3))
+(define d-shab4 (gesq-witness-shabat-d4))
+
+(expect "star-d3-valid-genus-0-mon-3"
+        (and (gesq-dessin? d-star)
+             (= (gesq-dessin-degree d-star) 3)
+             (= (gesq-dessin-genus d-star) 0)
+             (= (gesq-dessin-monodromy-order d-star) 3)
+             (equal? (gesq-dessin-passport d-star)
+                     (list (list 3) (list 1 1 1) (list 3)))))
+
+(expect "chebyshev-d3-valid-genus-0-mon-6"
+        (and (gesq-dessin? d-cheb)
+             (= (gesq-dessin-degree d-cheb) 3)
+             (= (gesq-dessin-genus d-cheb) 0)
+             (= (gesq-dessin-monodromy-order d-cheb) 6)
+             (equal? (gesq-dessin-passport d-cheb)
+                     (list (list 2 1) (list 2 1) (list 3)))))
+
+(expect "shabat-d4-valid-genus-0-mon-8"
+        (and (gesq-dessin? d-shab4)
+             (= (gesq-dessin-degree d-shab4) 4)
+             (= (gesq-dessin-genus d-shab4) 0)
+             (= (gesq-dessin-monodromy-order d-shab4) 8)
+             (equal? (gesq-dessin-passport d-shab4)
+                     (list (list 2 2) (list 2 1 1) (list 4)))))
+
+;; Exact Belyi polynomial certification over Q[z]:
+;;   beta_star(z) = z^3                      [crit z=0 mult 2, val=0]
+;;   beta_cheb(z) = 3z^2 - 2z^3              [crit z=0 mult 1 val=0; z=1 mult 1 val=1]
+;;   beta_shab4(z) = 16z^2 - 32z^3 + 16z^4   [crit z=0 val=0; z=1 val=0; z=1/2 val=1]
+(define belyi-star-cert
+  (gesq-belyi-verify-poly (list 0 0 0 1) (list (cons 0 2))))
+(define belyi-cheb-cert
+  (gesq-belyi-verify-poly (list 0 0 3 -2) (list (cons 0 1) (cons 1 1))))
+(define belyi-shab4-cert
+  (gesq-belyi-verify-poly (list 0 0 16 -32 16)
+                          (list (cons 0 1) (cons 1/2 1) (cons 1 1))))
+;; Negative control: beta_bad(z) = 6z^2 - 4z^3 has critical value beta_bad(1) = 2 not in {0, 1}!
+(define belyi-bad-cert
+  (gesq-belyi-verify-poly (list 0 0 6 -4) (list (cons 0 1) (cons 1 1))))
+
+(expect "belyi-poly-star-d3-certified" (eq? (vector-ref belyi-star-cert 0) 'belyi-poly-certified))
+(expect "belyi-poly-chebyshev-d3-certified" (eq? (vector-ref belyi-cheb-cert 0) 'belyi-poly-certified))
+(expect "belyi-poly-shabat-d4-certified" (eq? (vector-ref belyi-shab4-cert 0) 'belyi-poly-certified))
+(expect "belyi-poly-neg-crit-val-outside-01"
+        (eq? (vector-ref belyi-bad-cert 0) 'err-belyi-critical-value-outside-01))
+
+;; 1d. Genus-1 Torus Dessin (d=3 Fermat cubic)
+(define d-torus (gesq-witness-torus-d3))
+(expect "torus-d3-genus-1-exact"
+        (and (gesq-dessin? d-torus)
+             (= (gesq-dessin-degree d-torus) 3)
+             (= (gesq-dessin-genus d-torus) 1)
+             (= (gesq-dessin-monodromy-order d-torus) 3)
+             (equal? (gesq-dessin-counts d-torus) (list 1 1 1))
+             (equal? (gesq-dessin-passport d-torus)
+                     (list (list 3) (list 3) (list 3)))))
+
+;; 1e. Galois Orbit & Passport Separation (Chiral Mirror + Monodromy Separation)
+;; (i) Degree-6 Chiral Plane Tree vs its complex-conjugate mirror:
+;;     Same degree, same genus=0, same passport, same monodromy order, yet NON-ISOMORPHIC!
+(define d-chiral (gesq-witness-chiral-tree-d6))
+(define d-chiral-mir (gesq-dessin-mirror d-chiral))
+(expect "chiral-tree-d6-valid-genus-0"
+        (and (gesq-dessin? d-chiral)
+             (gesq-dessin? d-chiral-mir)
+             (= (gesq-dessin-genus d-chiral) 0)
+             (= (gesq-dessin-genus d-chiral-mir) 0)))
+(expect "chiral-tree-d6-same-passport-and-monodromy"
+        (and (equal? (gesq-dessin-passport d-chiral) (gesq-dessin-passport d-chiral-mir))
+             (= (gesq-dessin-monodromy-order d-chiral)
+                (gesq-dessin-monodromy-order d-chiral-mir))))
+(expect "chiral-tree-d6-non-isomorphic-to-mirror"
+        (not (gesq-dessin-isomorphic? d-chiral d-chiral-mir)))
+(expect "chiral-tree-double-mirror-isomorphic"
+        (gesq-dessin-isomorphic? d-chiral (gesq-dessin-mirror d-chiral-mir)))
+(expect "star-d3-isomorphic-to-its-mirror"
+        (gesq-dessin-isomorphic? d-star (gesq-dessin-mirror d-star)))
+
+;; (ii) Same-passport ((3 3) (6) (6)) genus-2 dessins separated by monodromy group (Z/6Z vs S_5):
+(define d-z6 (gesq-witness-galois-orbit-sep-z6))
+(define d-s5 (gesq-witness-galois-orbit-sep-s5))
+(expect "galois-sep-same-degree-genus-passport"
+        (and (gesq-dessin? d-z6)
+             (gesq-dessin? d-s5)
+             (= (gesq-dessin-degree d-z6) 6)
+             (= (gesq-dessin-degree d-s5) 6)
+             (= (gesq-dessin-genus d-z6) 2)
+             (= (gesq-dessin-genus d-s5) 2)
+             (equal? (gesq-dessin-passport d-z6) (gesq-dessin-passport d-s5))
+             (equal? (gesq-dessin-passport d-z6)
+                     (list (list 3 3) (list 6) (list 6)))))
+(expect "galois-sep-monodromy-6-vs-120"
+        (and (= (gesq-dessin-monodromy-order d-z6) 6)
+             (= (gesq-dessin-monodromy-order d-s5) 120)
+             (not (gesq-dessin-isomorphic? d-z6 d-s5))))
+
+;; ===========================================================================
+;; 2. Anabelian Geometry & Grothendieck-Teichmuller Group GT-hat
+;; ===========================================================================
+
+;; 2a. Hyperbolic Anabelian Classifier (chi = 2 - 2g - n)
+(define c-p1-3   (gesq-anabelian-classify 0 3))  ;; P^1 \ {0,1,inf}: chi = -1
+(define c-g2     (gesq-anabelian-classify 2 0))  ;; genus-2 curve:   chi = -2
+(define c-e1     (gesq-anabelian-classify 1 1))  ;; punctured torus: chi = -1
+(define c-p1     (gesq-anabelian-classify 0 0))  ;; P^1:             chi = +2
+(define c-a1     (gesq-anabelian-classify 0 1))  ;; A^1:             chi = +1
+(define c-gm     (gesq-anabelian-classify 0 2))  ;; G_m:             chi =  0
+(define c-ell    (gesq-anabelian-classify 1 0))  ;; elliptic curve:  chi =  0
+
+(expect "anabelian-P1-minus-3pts-hyperbolic"
+        (and (= (vector-ref c-p1-3 3) -1)
+             (eq? (vector-ref c-p1-3 4) 'hyperbolic-anabelian)))
+(expect "anabelian-genus2-hyperbolic"
+        (and (= (vector-ref c-g2 3) -2)
+             (eq? (vector-ref c-g2 4) 'hyperbolic-anabelian)))
+(expect "anabelian-punctured-torus-hyperbolic"
+        (and (= (vector-ref c-e1 3) -1)
+             (eq? (vector-ref c-e1 4) 'hyperbolic-anabelian)))
+
+;; Negative controls: chi >= 0 MUST be 'non-anabelian!
+(expect "non-anabelian-P1"
+        (and (= (vector-ref c-p1 3) 2) (eq? (vector-ref c-p1 4) 'non-anabelian)))
+(expect "non-anabelian-A1"
+        (and (= (vector-ref c-a1 3) 1) (eq? (vector-ref c-a1 4) 'non-anabelian)))
+(expect "non-anabelian-Gm"
+        (and (= (vector-ref c-gm 3) 0) (eq? (vector-ref c-gm 4) 'non-anabelian)))
+(expect "non-anabelian-elliptic"
+        (and (= (vector-ref c-ell 3) 0) (eq? (vector-ref c-ell 4) 'non-anabelian)))
+
+;; 2b. Grothendieck-Teichmuller GT-hat Axiom Verification (2-cycle, 3-cycle, 5-cycle)
+;; Positive controls:
+;;   lambda = 5 => c2 = (25 - 1)/24 = 1, arbitrary c3 = 7/3, alpha4 = 0
+;;   lambda = 7 => c2 = (49 - 1)/24 = 2, arbitrary c3 = -5,  alpha4 = 0
+(define gt-valid-5 (gesq-gt-make-associator 5 1 7/3 7/3 0))
+(define gt-valid-7 (gesq-gt-make-associator 7 2 -5 -5 0))
+(define gt-res-5 (gesq-gt-verify-relations gt-valid-5))
+(define gt-res-7 (gesq-gt-verify-relations gt-valid-7))
+
+(expect "gt-valid-lambda5-all-3-axioms"
+        (eq? (vector-ref gt-res-5 0) 'gt-relations-verified))
+(expect "gt-valid-lambda7-all-3-axioms"
+        (eq? (vector-ref gt-res-7 0) 'gt-relations-verified))
+
+;; Negative controls for EACH of the 3 GT-hat axioms:
+;;   (i)  Asymmetric degree-3 (c31 != c32) violates 2-cycle inversion!
+;;   (ii) Wrong c2 != (lambda^2 - 1)/24 violates 3-cycle hexagon!
+;;   (iii) Nonzero H_4 obstruction (alpha4 = 1) passes inversion AND hexagon,
+;;         yet violates the 5-cycle pentagon in p_5!
+(define gt-bad-inv  (gesq-gt-make-associator 5 1 2 5 0))
+(define gt-bad-hex  (gesq-gt-make-associator 5 3 1 1 0))
+(define gt-bad-pent (gesq-gt-make-associator 5 1 1 1 1))
+
+(expect "gt-neg-inversion-violation"
+        (eq? (vector-ref (gesq-gt-verify-relations gt-bad-inv) 0) 'err-gt-inversion-violation))
+(expect "gt-neg-hexagon-violation"
+        (eq? (vector-ref (gesq-gt-verify-relations gt-bad-hex) 0) 'err-gt-hexagon-violation))
+(expect "gt-neg-pentagon-violation"
+        (eq? (vector-ref (gesq-gt-verify-relations gt-bad-pent) 0) 'err-gt-pentagon-violation))
+
+;; ===========================================================================
+;; 3. Tame Topology (Topologie Moderee -- 1D o-Minimal CAD & Wild Rejectors)
+;; ===========================================================================
+
+;; 3a. Exact 1D semialgebraic cell decomposition & additive Euler characteristic
+(define I-02 (gesq-cell-closed-interval 0 2))
+(define I-13 (gesq-cell-closed-interval 1 3))
+(define I-open-01 (list (gesq-cell-open 0 1)))
+(define I-half (list (gesq-cell-point 0) (gesq-cell-open 0 1)))
+(define R-line (list (gesq-cell-open 'neg-inf 'pos-inf)))
+
+(expect "tame-euler-point-is-1" (= (gesq-tame-euler (list (gesq-cell-point 5/2))) 1))
+(expect "tame-euler-open-interval-is-neg-1" (= (gesq-tame-euler I-open-01) -1))
+(expect "tame-euler-closed-interval-is-1" (= (gesq-tame-euler I-02) 1))
+(expect "tame-euler-half-open-is-0" (= (gesq-tame-euler I-half) 0))
+(expect "tame-euler-R-is-neg-1" (= (gesq-tame-euler R-line) -1))
+(expect "tame-euler-R-minus-0-is-neg-2"
+        (= (gesq-tame-euler (gesq-tame-diff R-line (list (gesq-cell-point 0)))) -2))
+(expect "tame-additivity-overlapping-closed"
+        (gesq-tame-verify-additivity I-02 I-13))
+(expect "tame-additivity-half-open-and-closed"
+        (gesq-tame-verify-additivity I-half I-13))
+(expect "tame-additivity-complement-pair"
+        (gesq-tame-verify-additivity I-02 (gesq-tame-complement I-02)))
+
+;; Cell complex Euler characteristics: S^1 -> 0, S^2 -> 2, T^2 -> 0
+(expect "tame-S1-euler-0"
+        (= (gesq-tame-cell-complex-euler (list (cons 0 1) (cons 1 1))) 0))
+(expect "tame-S2-euler-2"
+        (= (gesq-tame-cell-complex-euler (list (cons 0 1) (cons 2 1))) 2))
+(expect "tame-T2-euler-0"
+        (= (gesq-tame-cell-complex-euler (list (cons 0 1) (cons 1 2) (cons 2 1))) 0))
+
+;; 3b. Exact Cantor approximation C_3 has 2^3 = 8 closed intervals => chi(C_3) = 8
+(define cantor-c3 (gesq-wild-cantor-approx 3))
+(expect "cantor-C3-euler-8-components" (= (gesq-tame-euler cantor-c3) 8))
+
+;; 3c. Wild Point-Set Negative Controls (ALL THREE rejected as 'wild-non-o-minimal!)
+(define res-cantor (gesq-tame-check-ominimal (gesq-wild-cantor-family) 5))
+(define res-sine   (gesq-tame-check-ominimal (gesq-wild-topologist-sine-family) 5))
+(define res-peano  (gesq-tame-check-ominimal (gesq-wild-peano-curve) 5))
+
+;; Positive control: cubic polynomial set (at most 3 roots, 2 bounded components, dim 1 -> 1)
+(define tame-cubic-family
+  (vector 'set-family 'cubic-semialgebraic
+          (lambda (k) 2)
+          (lambda (k) 3)
+          1 1))
+(define res-cubic (gesq-tame-check-ominimal tame-cubic-family 5))
+
+(expect "wild-neg-cantor-rejected" (eq? (vector-ref res-cantor 0) 'wild-non-o-minimal))
+(expect "wild-neg-topologist-sine-rejected" (eq? (vector-ref res-sine 0) 'wild-non-o-minimal))
+(expect "wild-neg-peano-rejected" (eq? (vector-ref res-peano 0) 'wild-non-o-minimal))
+(expect "tame-pos-cubic-accepted" (eq? (vector-ref res-cubic 0) 'tame-o-minimal))
+
+;; ===========================================================================
+;; 4. Scholze Perfectoid Rings & Tilting Equivalence (K |-> K^flat)
+;; ===========================================================================
+
+;; 4a. Positive Control: Frobenius surjectivity on perfectoid direct limit F_p[t^{1/p^m}]/(t)
+(expect "perfectoid-frobenius-surjective-p2-m2"
+        (gesq-frobenius-surjective? 'perfectoid-limit 2 2))
+(expect "perfectoid-frobenius-surjective-p3-m1"
+        (gesq-frobenius-surjective? 'perfectoid-limit 3 1))
+(expect "perfectoid-frobenius-surjective-p3-m2"
+        (gesq-frobenius-surjective? 'perfectoid-limit 3 2))
+
+;; Explicit element-level p-th root verification in R_{3,1} -> R_{3,2}:
+;;   x = 2 + t^{1/3} + 2 t^{2/3} in F_3[t^{1/3}]/(t)
+(define R3-1 (gesq-perf-ring-make 3 3))
+(define R3-2 (gesq-perf-ring-make 3 9))
+(define x-perf (vector 2 1 2))
+(define y-root (gesq-perf-pth-root R3-1 R3-2 x-perf))
+(define x-emb  (gesq-perf-embed-next R3-1 R3-2 x-perf))
+(expect "perfectoid-explicit-cube-root-exact"
+        (gesq-perf-equal? R3-2 (gesq-perf-frobenius R3-2 y-root) x-emb))
+
+;; 4b. Tilting Inverse-Limit Chains & Exact Multiplicativity (x * y)^flat = x^flat * y^flat
+;; Work in R_{3,2} = F_3[t^{1/9}]/(t) with depth-2 compatible chains (x_0, x_1, x_2)
+(define x2 (vector 1 2 0 1 0 0 0 0 0))
+(define y2 (vector 2 1 1 0 0 0 0 0 0))
+(define chain-x (gesq-tilt-make-chain R3-2 x2 2))
+(define chain-y (gesq-tilt-make-chain R3-2 y2 2))
+(expect "tilt-chains-valid"
+        (and (gesq-tilt-valid-chain? R3-2 chain-x)
+             (gesq-tilt-valid-chain? R3-2 chain-y)))
+(expect "tilt-multiplicativity-exact"
+        (eq? (vector-ref (gesq-tilt-verify-multiplicative? R3-2 chain-x chain-y) 0)
+             'tilt-multiplicative-verified))
+
+;; Negative control: corrupted tilt chain rejected
+(define bad-chain (list (gesq-perf-generator R3-2 1) x2))
+(expect "tilt-neg-corrupted-chain-rejected"
+        (and (not (gesq-tilt-valid-chain? R3-2 bad-chain))
+             (eq? (vector-ref (gesq-tilt-verify-multiplicative? R3-2 bad-chain chain-y) 0)
+                  'err-tilt-chain-incompatible)))
+
+;; 4c. Mixed-Characteristic Sharp Map (# : O_K^flat -> O_K / p^2) lift-independence & multiplicativity
+(expect "tilt-sharp-mod-p2-p3" (gesq-tilt-verify-sharp-mod-p2? 3 2 5))
+(expect "tilt-sharp-mod-p2-p5" (gesq-tilt-verify-sharp-mod-p2? 5 3 7))
+
+;; 4d. Negative Control: Classical Non-Perfectoid F_p[t]/(t^2) fails Frobenius surjectivity!
+(expect "non-perfectoid-F2-t-mod-t2-fails"
+        (not (gesq-frobenius-surjective? 'finite-ring 2 2)))
+(expect "non-perfectoid-F3-t-mod-t2-fails"
+        (not (gesq-frobenius-surjective? 'finite-ring 3 2)))
+(expect "non-perfectoid-F5-t-mod-t2-fails"
+        (not (gesq-frobenius-surjective? 'finite-ring 5 2)))
+(expect "non-perfectoid-audit-tag-p3"
+        (eq? (vector-ref (gesq-non-perfectoid-fp-t-mod-t2-audit 3) 0)
+             'non-perfectoid-frobenius-fails))
+
+(display "PASS: grothendieck_esquisse_tame_perfectoid_test (")
+(display checks)
+(display " checks)")
+(newline)

@@ -1,0 +1,1323 @@
+;;; core.grothendieck.pillars_six_ops -- Grothendieck's Deep Foundational Pillars:
+;;;   1. Standard Conjectures on Algebraic Cycles (1968): Lefschetz B(X),
+;;;      Hodge Index I(X), Kunneth C(X), exact Sylvester signature & epistemic status.
+;;;   2. Crystalline Cohomology & Dieudonne Theory (characteristic p):
+;;;      Exact Divided Power (PD) algebra Gamma(x), exact 2x2 Dieudonne modules
+;;;      (M, F, V) with FV = VF = pI, Newton & Hodge polygons, and Mazur's inequality.
+;;;   3. Grothendieck Duality & The Six Operations (f*, f_*, f^!, f_!, tensor, Hom):
+;;;      Exact constructible-sheaf 6-functor calculus on open-closed stratification
+;;;      U --j--> X <--i-- Z, Projection Formula, Proper Base Change, Adjunctions,
+;;;      Excision Distinguished Triangle, and non-proper j_! != j_* separation.
+;;;   4. Yoga of Weights (Deligne Mixed Hodge / Frobenius Weights):
+;;;      Weight-graded cohomology profiles, purity vs. open/singular weight shifts,
+;;;      Kunneth tensor, Tate twist, and Grothendieck-ring weight additivity.
+;;;   5. Grothendieck Universes (U_0 in U_1 in U_2):
+;;;      Strict cumulative hierarchy, SGA 4 closure axioms, category smallness,
+;;;      and fail-closed Russell/Girard self-membership & cycle rejection.
+;;;
+;;; All internal and exported identifiers are prefixed with `gpil-`.
+
+(require stdlib)
+
+(provide
+  ;; Exact linear algebra & quadratic-form helpers
+  gpil-mat-zero
+  gpil-mat-id
+  gpil-mat-scale
+  gpil-mat-add
+  gpil-mat-sub
+  gpil-mat-mul
+  gpil-mat-equal?
+  gpil-mat-symmetric?
+  gpil-mat-rank
+  gpil-mat-nullspace
+  gpil-mat-kronecker
+  gpil-vec-dot
+  gpil-bilinear-form
+  gpil-quadratic-form
+  gpil-symmetric-signature
+  ;; Pillar 1: Standard Conjectures (1968)
+  gpil-p1xp1-intersection-form
+  gpil-p1xp1-hyperplane
+  gpil-p1xp1-primitive
+  gpil-blowup-p2-intersection-form
+  gpil-blowup-p2-hyperplane
+  gpil-blowup-p2-exceptional
+  gpil-hodge-index-valid?
+  gpil-hodge-index-surface-verify
+  gpil-p1xp1-lefschetz-triple
+  gpil-hard-lefschetz-sl2-valid?
+  gpil-kunneth-projectors-valid?
+  gpil-standard-conj-status
+  ;; Pillar 2: Crystalline Cohomology & Dieudonne Theory
+  gpil-factorial
+  gpil-binom
+  gpil-prime?
+  gpil-padic-val
+  gpil-pd-zero
+  gpil-pd-one
+  gpil-pd-term
+  gpil-pd-gen
+  gpil-pd-add
+  gpil-pd-scale
+  gpil-pd-mul
+  gpil-pd-pow
+  gpil-pd-equal?
+  gpil-pd-gamma-identity?
+  gpil-pd-char-p-divisible?
+  gpil-dieudonne-ordinary-elliptic
+  gpil-dieudonne-supersingular-elliptic
+  gpil-dieudonne-validate
+  gpil-make-dieudonne-module
+  gpil-dieudonne-newton-slopes
+  gpil-dieudonne-newton-polygon
+  gpil-hodge-polygon-elliptic
+  gpil-polygon-from-slopes
+  gpil-mazur-inequality-check
+  gpil-mazur-strictly-above?
+  ;; Pillar 3: Grothendieck Duality & The Six Operations
+  gpil-make-sheaf
+  gpil-sheaf-du
+  gpil-sheaf-dz
+  gpil-sheaf-rho
+  gpil-sheaf-constant
+  gpil-sheaf-equal?
+  gpil-sixops-j-pull
+  gpil-sixops-j-star
+  gpil-sixops-j-shriek
+  gpil-sixops-j-upper-shriek
+  gpil-sixops-i-pull
+  gpil-sixops-i-star
+  gpil-sixops-i-shriek
+  gpil-sixops-i-upper-shriek
+  gpil-sixops-tensor
+  gpil-sixops-hom-dim
+  gpil-sixops-internal-hom
+  gpil-sixops-projection-formula-j?
+  gpil-sixops-projection-formula-i?
+  gpil-sixops-proper-base-change-valid?
+  gpil-sixops-adjunctions-valid?
+  gpil-sixops-excision-triangle-verify
+  gpil-sixops-local-cohomology-exact?
+  gpil-sixops-open-immersion-separation
+  ;; Pillar 4: Yoga of Weights
+  gpil-weight-piece
+  gpil-make-weight-profile
+  gpil-weights-p2
+  gpil-weights-p1
+  gpil-weights-elliptic-curve
+  gpil-weights-gm
+  gpil-weights-nodal-cubic
+  gpil-weights-pure-for-degree?
+  gpil-weights-deligne-bounds-valid?
+  gpil-weights-smooth-open-bounds-valid?
+  gpil-weights-proper-singular-bounds-valid?
+  gpil-weights-tensor
+  gpil-weights-tate-twist
+  gpil-weight-euler-char
+  gpil-weight-graded-chi
+  gpil-weights-compact-gm
+  gpil-weights-compact-two-points
+  ;; Pillar 5: Grothendieck Universes
+  gpil-universe-member?
+  gpil-universe-check-membership
+  gpil-universe-closure-valid?
+  gpil-universe-graph-check
+  gpil-category-size-in-universe)
+
+;; ===========================================================================
+;; 0. Exact Rational Linear Algebra & Symmetric Congruence Primitives
+;; ===========================================================================
+
+(define (gpil-mat-rows m) (vector-length m))
+(define (gpil-mat-cols m) (vector-length (vector-ref m 0)))
+(define (gpil-mat-ref m i j) (vector-ref (vector-ref m i) j))
+(define (gpil-mat-set! m i j v) (vector-set! (vector-ref m i) j v))
+
+(define (gpil-mat-zero r c)
+  (let ((m (make-vector r #f)))
+    (let loop ((i 0))
+      (if (< i r)
+          (begin
+            (vector-set! m i (make-vector c 0))
+            (loop (+ i 1)))
+          m))))
+
+(define (gpil-mat-id n)
+  (let ((m (gpil-mat-zero n n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (gpil-mat-set! m i i 1)
+            (loop (+ i 1)))
+          m))))
+
+(define (gpil-mat-copy m)
+  (let* ((r (gpil-mat-rows m))
+         (c (gpil-mat-cols m))
+         (out (gpil-mat-zero r c)))
+    (let loop-i ((i 0))
+      (if (< i r)
+          (begin
+            (let loop-j ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpil-mat-set! out i j (gpil-mat-ref m i j))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))
+          out))))
+
+(define (gpil-mat-scale s m)
+  (let* ((r (gpil-mat-rows m))
+         (c (gpil-mat-cols m))
+         (out (gpil-mat-zero r c)))
+    (let loop-i ((i 0))
+      (if (< i r)
+          (begin
+            (let loop-j ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpil-mat-set! out i j (* s (gpil-mat-ref m i j)))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))
+          out))))
+
+(define (gpil-mat-add a b)
+  (let* ((r (gpil-mat-rows a))
+         (c (gpil-mat-cols a))
+         (out (gpil-mat-zero r c)))
+    (let loop-i ((i 0))
+      (if (< i r)
+          (begin
+            (let loop-j ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpil-mat-set! out i j (+ (gpil-mat-ref a i j) (gpil-mat-ref b i j)))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))
+          out))))
+
+(define (gpil-mat-sub a b)
+  (let* ((r (gpil-mat-rows a))
+         (c (gpil-mat-cols a))
+         (out (gpil-mat-zero r c)))
+    (let loop-i ((i 0))
+      (if (< i r)
+          (begin
+            (let loop-j ((j 0))
+              (if (< j c)
+                  (begin
+                    (gpil-mat-set! out i j (- (gpil-mat-ref a i j) (gpil-mat-ref b i j)))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))
+          out))))
+
+(define (gpil-mat-mul a b)
+  (let* ((ra (gpil-mat-rows a))
+         (ca (gpil-mat-cols a))
+         (cb (gpil-mat-cols b))
+         (out (gpil-mat-zero ra cb)))
+    (let loop-i ((i 0))
+      (if (< i ra)
+          (begin
+            (let loop-j ((j 0))
+              (if (< j cb)
+                  (begin
+                    (let loop-k ((k 0) (acc 0))
+                      (if (< k ca)
+                          (loop-k (+ k 1) (+ acc (* (gpil-mat-ref a i k) (gpil-mat-ref b k j))))
+                          (gpil-mat-set! out i j acc)))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))
+          out))))
+
+(define (gpil-mat-equal? a b)
+  (and (= (gpil-mat-rows a) (gpil-mat-rows b))
+       (= (gpil-mat-cols a) (gpil-mat-cols b))
+       (let ((r (gpil-mat-rows a)) (c (gpil-mat-cols a)))
+         (let loop-i ((i 0))
+           (if (>= i r)
+               #t
+               (let loop-j ((j 0))
+                 (cond ((>= j c) (loop-i (+ i 1)))
+                       ((= (gpil-mat-ref a i j) (gpil-mat-ref b i j)) (loop-j (+ j 1)))
+                       (else #f))))))))
+
+(define (gpil-mat-symmetric? m)
+  (and (= (gpil-mat-rows m) (gpil-mat-cols m))
+       (let ((n (gpil-mat-rows m)))
+         (let loop-i ((i 0))
+           (if (>= i n)
+               #t
+               (let loop-j ((j (+ i 1)))
+                 (cond ((>= j n) (loop-i (+ i 1)))
+                       ((= (gpil-mat-ref m i j) (gpil-mat-ref m j i)) (loop-j (+ j 1)))
+                       (else #f))))))))
+
+(define (gpil-mat-kronecker a b)
+  (let* ((ra (gpil-mat-rows a)) (ca (gpil-mat-cols a))
+         (rb (gpil-mat-rows b)) (cb (gpil-mat-cols b))
+         (out (gpil-mat-zero (* ra rb) (* ca cb))))
+    (let loop-ia ((ia 0))
+      (if (< ia ra)
+          (begin
+            (let loop-ja ((ja 0))
+              (if (< ja ca)
+                  (let ((aij (gpil-mat-ref a ia ja)))
+                    (let loop-ib ((ib 0))
+                      (if (< ib rb)
+                          (begin
+                            (let loop-jb ((jb 0))
+                              (if (< jb cb)
+                                  (begin
+                                    (gpil-mat-set! out
+                                                   (+ (* ia rb) ib)
+                                                   (+ (* ja cb) jb)
+                                                   (* aij (gpil-mat-ref b ib jb)))
+                                    (loop-jb (+ jb 1)))))
+                            (loop-ib (+ ib 1)))))
+                    (loop-ja (+ ja 1)))))
+            (loop-ia (+ ia 1)))
+          out))))
+
+;; Exact Reduced Row Echelon Form (RREF) over Q; returns (cons rref pivot-cols)
+(define (gpil-mat-rref m)
+  (let* ((r (gpil-mat-rows m))
+         (c (gpil-mat-cols m))
+         (w (gpil-mat-copy m)))
+    (let loop ((row 0) (col 0) (pivs '()))
+      (if (or (>= row r) (>= col c))
+          (cons w (reverse pivs))
+          (let find-piv ((i row))
+            (cond
+              ((>= i r) (loop row (+ col 1) pivs))
+              ((not (= (gpil-mat-ref w i col) 0))
+               ;; Swap row i into position row
+               (if (not (= i row))
+                   (let ((tmp (vector-ref w i)))
+                     (vector-set! w i (vector-ref w row))
+                     (vector-set! w row tmp)))
+               ;; Normalize pivot row
+               (let ((pv (gpil-mat-ref w row col)))
+                 (let scale-j ((j col))
+                   (if (< j c)
+                       (begin
+                         (gpil-mat-set! w row j (/ (gpil-mat-ref w row j) pv))
+                         (scale-j (+ j 1)))))
+                 ;; Eliminate all other rows
+                 (let elim-i ((k 0))
+                   (if (< k r)
+                       (begin
+                         (if (not (= k row))
+                             (let ((fac (gpil-mat-ref w k col)))
+                               (if (not (= fac 0))
+                                   (let elim-j ((j col))
+                                     (if (< j c)
+                                         (begin
+                                           (gpil-mat-set! w k j
+                                             (- (gpil-mat-ref w k j)
+                                                (* fac (gpil-mat-ref w row j))))
+                                           (elim-j (+ j 1))))))))
+                         (elim-i (+ k 1)))))
+                 (loop (+ row 1) (+ col 1) (cons col pivs))))
+              (else (find-piv (+ i 1)))))))))
+
+(define (gpil-mat-rank m)
+  (length (cdr (gpil-mat-rref m))))
+
+(define (gpil-memq-int x xs)
+  (cond ((null? xs) #f)
+        ((= x (car xs)) #t)
+        (else (gpil-memq-int x (cdr xs)))))
+
+(define (gpil-mat-nullspace m)
+  (let* ((res (gpil-mat-rref m))
+         (rref (car res))
+         (pivs (cdr res))
+         (c (gpil-mat-cols m)))
+    (let loop-col ((j 0) (basis '()))
+      (if (>= j c)
+          (reverse basis)
+          (if (gpil-memq-int j pivs)
+              (loop-col (+ j 1) basis)
+              (let ((v (make-vector c 0)))
+                (vector-set! v j 1)
+                (let loop-p ((ps pivs) (row-idx 0))
+                  (if (not (null? ps))
+                      (begin
+                        (vector-set! v (car ps) (- 0 (gpil-mat-ref rref row-idx j)))
+                        (loop-p (cdr ps) (+ row-idx 1)))))
+                (loop-col (+ j 1) (cons v basis))))))))
+
+(define (gpil-vec-dot u v)
+  (let ((n (vector-length u)))
+    (let loop ((i 0) (acc 0))
+      (if (< i n)
+          (loop (+ i 1) (+ acc (* (vector-ref u i) (vector-ref v i))))
+          acc))))
+
+(define (gpil-mat-vec-mul m v)
+  (let* ((r (gpil-mat-rows m))
+         (c (gpil-mat-cols m))
+         (out (make-vector r 0)))
+    (let loop-i ((i 0))
+      (if (< i r)
+          (begin
+            (let loop-j ((j 0) (acc 0))
+              (if (< j c)
+                  (loop-j (+ j 1) (+ acc (* (gpil-mat-ref m i j) (vector-ref v j))))
+                  (vector-set! out i acc)))
+            (loop-i (+ i 1)))
+          out))))
+
+(define (gpil-bilinear-form Q u v)
+  (gpil-vec-dot u (gpil-mat-vec-mul Q v)))
+
+(define (gpil-quadratic-form Q u)
+  (gpil-bilinear-form Q u u))
+
+;; Exact Sylvester signature (list pos neg zero) of a symmetric matrix over Q
+;; via exact rational congruence P^T Q P (handles both nonzero diagonal pivots
+;; and hyperbolic off-diagonal blocks without floating-point approximations).
+(define (gpil-sym-swap-rc! w n i k)
+  (if (not (= i k))
+      (begin
+        ;; Swap rows i and k
+        (let ((tmp (vector-ref w i)))
+          (vector-set! w i (vector-ref w k))
+          (vector-set! w k tmp))
+        ;; Swap columns i and k
+        (let loop ((r 0))
+          (if (< r n)
+              (let ((t (gpil-mat-ref w r i)))
+                (gpil-mat-set! w r i (gpil-mat-ref w r k))
+                (gpil-mat-set! w r k t)
+                (loop (+ r 1))))))))
+
+(define (gpil-sym-add-rc! w n target src)
+  ;; Congruence e_target <- e_target + e_src: add row src to target, then col src to target
+  (let loop-j ((j 0))
+    (if (< j n)
+        (begin
+          (gpil-mat-set! w target j (+ (gpil-mat-ref w target j) (gpil-mat-ref w src j)))
+          (loop-j (+ j 1)))))
+  (let loop-i ((i 0))
+    (if (< i n)
+        (begin
+          (gpil-mat-set! w i target (+ (gpil-mat-ref w i target) (gpil-mat-ref w i src)))
+          (loop-i (+ i 1))))))
+
+(define (gpil-symmetric-signature Q)
+  (if (not (gpil-mat-symmetric? Q))
+      'err-not-symmetric
+      (let* ((n (gpil-mat-rows Q))
+             (w (gpil-mat-copy Q)))
+        (let loop ((k 0) (pos 0) (neg 0) (z 0))
+          (if (>= k n)
+              (list pos neg z)
+              ;; 1. Search for nonzero diagonal entry at i >= k
+              (let find-diag ((i k))
+                (cond
+                  ((< i n)
+                   (if (not (= (gpil-mat-ref w i i) 0))
+                       (begin
+                         (gpil-sym-swap-rc! w n i k)
+                         (let ((pv (gpil-mat-ref w k k)))
+                           ;; Congruence Schur complement on submatrix (k+1..n-1)
+                           (let elim-r ((r (+ k 1)))
+                             (if (< r n)
+                                 (let ((ark (gpil-mat-ref w r k)))
+                                   (if (not (= ark 0))
+                                       (let elim-c ((c (+ k 1)))
+                                         (if (< c n)
+                                             (begin
+                                               (gpil-mat-set! w r c
+                                                 (- (gpil-mat-ref w r c)
+                                                    (/ (* ark (gpil-mat-ref w k c)) pv)))
+                                               (elim-c (+ c 1))))))
+                                   (gpil-mat-set! w r k 0)
+                                   (gpil-mat-set! w k r 0)
+                                   (elim-r (+ r 1)))))
+                           (if (> pv 0)
+                               (loop (+ k 1) (+ pos 1) neg z)
+                               (loop (+ k 1) pos (+ neg 1) z))))
+                       (find-diag (+ i 1))))
+                  ;; 2. All diagonal entries >= k are zero: search for nonzero off-diagonal
+                  (else
+                   (let find-off-i ((i k))
+                     (if (>= i n)
+                         ;; Remaining block is identically zero
+                         (list pos neg (+ z (- n k)))
+                         (let find-off-j ((j (+ i 1)))
+                           (cond
+                             ((>= j n) (find-off-i (+ i 1)))
+                             ((not (= (gpil-mat-ref w i j) 0))
+                              ;; Congruence creates nonzero diagonal 2*w_{ij} at (i,i)
+                              (gpil-sym-add-rc! w n i j)
+                              (loop k pos neg z))
+                             (else (find-off-j (+ j 1)))))))))))))))
+
+;; ===========================================================================
+;; 1. Standard Conjectures on Algebraic Cycles (1968: B(X), I(X), C(X))
+;; ===========================================================================
+
+;; P^1 x P^1 intersection form on H^{1,1}(P^1 x P^1, Q) = <e_1, e_2>:
+;;   e_1^2 = 0, e_2^2 = 0, e_1 . e_2 = 1.
+(define (gpil-p1xp1-intersection-form)
+  (vector (vector 0 1)
+          (vector 1 0)))
+
+;; Hyperplane class H = e_1 + e_2 (H^2 = 2 > 0)
+(define (gpil-p1xp1-hyperplane)
+  (vector 1 1))
+
+;; Primitive (1,1)-class P = e_1 - e_2 (H . P = 0, P^2 = -2 < 0)
+(define (gpil-p1xp1-primitive)
+  (vector 1 -1))
+
+;; Blowup of P^2 at a point: Bl_pt(P^2) with basis (H, E):
+;;   H^2 = 1, E^2 = -1, H . E = 0.
+(define (gpil-blowup-p2-intersection-form)
+  (vector (vector 1 0)
+          (vector 0 -1)))
+
+(define (gpil-blowup-p2-hyperplane)
+  (vector 1 0))
+
+(define (gpil-blowup-p2-exceptional)
+  (vector 0 1))
+
+;; Restrict symmetric form Q to subspace spanned by list of basis vectors `vecs`
+(define (gpil-restrict-form Q vecs)
+  (let* ((m (length vecs))
+         (vvec (list->vector vecs))
+         (out (gpil-mat-zero m m)))
+    (let loop-i ((i 0))
+      (if (< i m)
+          (begin
+            (let loop-j ((j 0))
+              (if (< j m)
+                  (begin
+                    (gpil-mat-set! out i j
+                      (gpil-bilinear-form Q (vector-ref vvec i) (vector-ref vvec j)))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))
+          out))))
+
+;; Hodge Index Theorem check on H^{1,1}(S, Q) of a smooth projective surface:
+;;   1. Q is symmetric
+;;   2. H^2 = Q(H, H) > 0
+;;   3. Exact Sylvester signature of Q is Lorentzian (1, n-1, 0)
+;;   4. Restriction of Q to primitive orthogonal complement H^perp is strictly negative definite (0, n-1, 0)
+(define (gpil-hodge-index-valid? Q H)
+  (if (not (gpil-mat-symmetric? Q))
+      #f
+      (let* ((n (gpil-mat-rows Q))
+             (h2 (gpil-quadratic-form Q H))
+             (sig (gpil-symmetric-signature Q)))
+        (if (not (and (> h2 0)
+                      (list? sig)
+                      (= (car sig) 1)
+                      (= (cadr sig) (- n 1))
+                      (= (caddr sig) 0)))
+            #f
+            (if (= n 1)
+                #t
+                ;; Compute exact orthogonal complement H^perp = ker(H^T Q)
+                (let* ((hq (gpil-mat-vec-mul Q H))
+                       (row-mat (vector hq))
+                       (prim-basis (gpil-mat-nullspace row-mat)))
+                  (if (not (= (length prim-basis) (- n 1)))
+                      #f
+                      (let* ((Q-prim (gpil-restrict-form Q prim-basis))
+                             (psig (gpil-symmetric-signature Q-prim)))
+                        (and (list? psig)
+                             (= (car psig) 0)
+                             (= (cadr psig) (- n 1))
+                             (= (caddr psig) 0))))))))))
+
+;; Full verification bundle for a surface intersection form, hyperplane H, and primitive class P
+(define (gpil-hodge-index-surface-verify Q H P)
+  (let* ((h2 (gpil-quadratic-form Q H))
+         (hp (gpil-bilinear-form Q H P))
+         (p2 (gpil-quadratic-form Q P))
+         (sig (gpil-symmetric-signature Q))
+         (valid (and (gpil-hodge-index-valid? Q H)
+                     (= hp 0)
+                     (< p2 0))))
+    (vector 'gpil-hodge-index-report valid h2 hp p2 sig)))
+
+;; Hard Lefschetz sl_2 triple (L, Lambda, H_deg) & Kunneth projectors on H^*(P^1 x P^1, Q)
+;; Basis: (1 in H^0, e_1 in H^2, e_2 in H^2, pt in H^4), dim X = n = 2.
+;;   L(1) = e_1 + e_2, L(e_1) = pt, L(e_2) = pt, L(pt) = 0
+;;   Lambda(1) = 0, Lambda(e_1) = 1, Lambda(e_2) = 1, Lambda(pt) = e_1 + e_2
+;;   H_deg = diag(-2, 0, 0, 2) = [L, Lambda]
+(define (gpil-p1xp1-lefschetz-triple)
+  (let ((L (vector (vector 0 0 0 0)
+                   (vector 1 0 0 0)
+                   (vector 1 0 0 0)
+                   (vector 0 1 1 0)))
+        (Lam (vector (vector 0 1 1 0)
+                     (vector 0 0 0 1)
+                     (vector 0 0 0 1)
+                     (vector 0 0 0 0)))
+        (Hdeg (vector (vector -2 0 0 0)
+                      (vector  0 0 0 0)
+                      (vector  0 0 0 0)
+                      (vector  0 0 0 2)))
+        (pi0 (vector (vector 1 0 0 0)
+                     (vector 0 0 0 0)
+                     (vector 0 0 0 0)
+                     (vector 0 0 0 0)))
+        (pi2 (vector (vector 0 0 0 0)
+                     (vector 0 1 0 0)
+                     (vector 0 0 1 0)
+                     (vector 0 0 0 0)))
+        (pi4 (vector (vector 0 0 0 0)
+                     (vector 0 0 0 0)
+                     (vector 0 0 0 0)
+                     (vector 0 0 0 1))))
+    (vector 'gpil-lefschetz-triple L Lam Hdeg (list pi0 pi2 pi4))))
+
+(define (gpil-mat-commutator a b)
+  (gpil-mat-sub (gpil-mat-mul a b) (gpil-mat-mul b a)))
+
+;; Verify [L, Lambda] = H_deg, [H_deg, L] = 2L, [H_deg, Lambda] = -2*Lambda
+(define (gpil-hard-lefschetz-sl2-valid? triple)
+  (let ((L (vector-ref triple 1))
+        (Lam (vector-ref triple 2))
+        (Hdeg (vector-ref triple 3)))
+    (and (gpil-mat-equal? (gpil-mat-commutator L Lam) Hdeg)
+         (gpil-mat-equal? (gpil-mat-commutator Hdeg L) (gpil-mat-scale 2 L))
+         (gpil-mat-equal? (gpil-mat-commutator Hdeg Lam) (gpil-mat-scale -2 Lam)))))
+
+;; Verify Kunneth projectors (Standard Conjecture C(X)):
+;;   pi_k^2 = pi_k, pi_i * pi_j = 0 (i != j), sum_k pi_k = I_n
+(define (gpil-kunneth-projectors-valid? projs)
+  (if (null? projs)
+      #f
+      (let* ((n (gpil-mat-rows (car projs)))
+             (idn (gpil-mat-id n))
+             (zmat (gpil-mat-zero n n))
+             (pvec (list->vector projs))
+             (k (vector-length pvec)))
+        (let loop-i ((i 0) (acc zmat))
+          (if (>= i k)
+              (gpil-mat-equal? acc idn)
+              (let ((pi (vector-ref pvec i)))
+                (if (not (gpil-mat-equal? (gpil-mat-mul pi pi) pi))
+                    #f
+                    (let loop-j ((j 0))
+                      (cond
+                        ((>= j k) (loop-i (+ i 1) (gpil-mat-add acc pi)))
+                        ((= i j) (loop-j (+ j 1)))
+                        ((gpil-mat-equal? (gpil-mat-mul pi (vector-ref pvec j)) zmat)
+                         (loop-j (+ j 1)))
+                        (else #f))))))))))
+
+;; Epistemic status classifier for Grothendieck's Standard Conjectures (1968):
+;;   - Curves (dim=1), surfaces (dim=2), abelian varieties: 'proven-case
+;;   - General smooth projective varieties of dim >= 3 (incl. dim >= 4):
+;;     strictly 'open-conjecture-unproven
+(define (gpil-standard-conj-status variety-kind dim)
+  (cond
+    ((or (not (integer? dim)) (< dim 0)) 'err-invalid-dimension)
+    ((eq? variety-kind 'abelian-variety)
+     (if (>= dim 1) 'proven-case 'err-invalid-dimension))
+    ((and (eq? variety-kind 'curve) (= dim 1)) 'proven-case)
+    ((and (eq? variety-kind 'surface) (= dim 2)) 'proven-case)
+    ((or (= dim 0) (= dim 1) (= dim 2))
+     (if (or (eq? variety-kind 'general-smooth-projective)
+             (eq? variety-kind 'curve)
+             (eq? variety-kind 'surface)
+             (eq? variety-kind 'point))
+         'proven-case
+         'open-conjecture-unproven))
+    ((>= dim 4) 'open-conjecture-unproven)
+    (else 'open-conjecture-unproven)))
+
+;; ===========================================================================
+;; 2. Crystalline Cohomology & Dieudonne Theory (Characteristic p)
+;; ===========================================================================
+
+(define (gpil-factorial n)
+  (let loop ((i 1) (acc 1))
+    (if (> i n) acc (loop (+ i 1) (* acc i)))))
+
+(define (gpil-binom n k)
+  (cond
+    ((or (< k 0) (> k n)) 0)
+    ((or (= k 0) (= k n)) 1)
+    (else
+     (let ((kk (if (< k (- n k)) k (- n k))))
+       (let loop ((i 1) (acc 1))
+         (if (> i kk)
+             acc
+             (loop (+ i 1) (/ (* acc (+ (- n kk) i)) i))))))))
+
+(define (gpil-prime? p)
+  (cond
+    ((or (not (integer? p)) (< p 2)) #f)
+    ((= p 2) #t)
+    ((= (remainder p 2) 0) #f)
+    (else
+     (let loop ((d 3))
+       (cond
+         ((> (* d d) p) #t)
+         ((= (remainder p d) 0) #f)
+         (else (loop (+ d 2))))))))
+
+(define (gpil-padic-val n p)
+  (if (= n 0)
+      'infinity
+      (let loop ((m (abs n)) (v 0))
+        (if (= (remainder m p) 0)
+            (loop (quotient m p) (+ v 1))
+            v))))
+
+;; Exact Divided Power (PD) Algebra Gamma(x) = span_Q{ x^{[n]} : n >= 0 }
+;; Canonical representation: sorted ascending alist of (deg . coeff) with coeff != 0.
+(define (gpil-pd-zero) '())
+(define (gpil-pd-one) (list (cons 0 1)))
+
+(define (gpil-pd-term coeff deg)
+  (if (= coeff 0) '() (list (cons deg coeff))))
+
+(define (gpil-pd-gen n)
+  (list (cons n 1)))
+
+(define (gpil-pd-add a b)
+  (cond
+    ((null? a) b)
+    ((null? b) a)
+    (else
+     (let ((da (car (car a))) (ca (cdr (car a)))
+           (db (car (car b))) (cb (cdr (car b))))
+       (cond
+         ((< da db) (cons (car a) (gpil-pd-add (cdr a) b)))
+         ((> da db) (cons (car b) (gpil-pd-add a (cdr b))))
+         (else
+          (let ((s (+ ca cb)))
+            (if (= s 0)
+                (gpil-pd-add (cdr a) (cdr b))
+                (cons (cons da s) (gpil-pd-add (cdr a) (cdr b)))))))))))
+
+(define (gpil-pd-scale s a)
+  (if (= s 0)
+      '()
+      (let loop ((xs a) (acc '()))
+        (if (null? xs)
+            (reverse acc)
+            (loop (cdr xs)
+                  (cons (cons (car (car xs)) (* s (cdr (car xs)))) acc))))))
+
+;; PD multiplication: (c1 x^{[m]}) * (c2 x^{[n]}) = c1*c2*binom(m+n, m) x^{[m+n]}
+(define (gpil-pd-mul a b)
+  (let loop-a ((xs a) (acc '()))
+    (if (null? xs)
+        acc
+        (let ((m (car (car xs))) (cm (cdr (car xs))))
+          (let loop-b ((ys b) (acc2 acc))
+            (if (null? ys)
+                (loop-a (cdr xs) acc2)
+                (let* ((n (car (car ys)))
+                       (cn (cdr (car ys)))
+                       (coeff (* cm cn (gpil-binom (+ m n) m))))
+                  (loop-b (cdr ys)
+                          (gpil-pd-add acc2 (gpil-pd-term coeff (+ m n)))))))))))
+
+(define (gpil-pd-pow a e)
+  (cond
+    ((= e 0) (gpil-pd-one))
+    ((= e 1) a)
+    (else
+     (let loop ((k e) (acc (gpil-pd-one)))
+       (if (= k 0) acc (loop (- k 1) (gpil-pd-mul acc a)))))))
+
+(define (gpil-pd-equal? a b)
+  (cond
+    ((and (null? a) (null? b)) #t)
+    ((or (null? a) (null? b)) #f)
+    ((and (= (car (car a)) (car (car b)))
+          (= (cdr (car a)) (cdr (car b))))
+     (gpil-pd-equal? (cdr a) (cdr b)))
+    (else #f)))
+
+;; Verify n! * x^{[n]} = (x^{[1]})^n in Gamma(x)
+(define (gpil-pd-gamma-identity? n)
+  (gpil-pd-equal?
+    (gpil-pd-scale (gpil-factorial n) (gpil-pd-gen n))
+    (gpil-pd-pow (gpil-pd-gen 1) n)))
+
+;; Verify characteristic-p divided power divisibility: p | binom(p, k) for all 0 < k < p
+(define (gpil-pd-char-p-divisible? p)
+  (if (not (gpil-prime? p))
+      #f
+      (let loop ((k 1))
+        (cond
+          ((>= k p) #t)
+          ((= (remainder (gpil-binom p k) p) 0) (loop (+ k 1)))
+          (else #f)))))
+
+;; Dieudonne Module (M, F, V) over Z (rank 2 model for elliptic curves)
+(define (gpil-dieudonne-ordinary-elliptic p)
+  (let ((F (vector (vector 1 0) (vector 0 p)))
+        (V (vector (vector p 0) (vector 0 1))))
+    (cons F V)))
+
+(define (gpil-dieudonne-supersingular-elliptic p)
+  (let ((F (vector (vector 0 (- 0 p)) (vector 1 0)))
+        (V (vector (vector 0 p) (vector -1 0))))
+    (cons F V)))
+
+;; Validate Dieudonne module relation F*V = V*F = p*I_2 (fail-closed)
+(define (gpil-dieudonne-validate p F V)
+  (cond
+    ((not (gpil-prime? p)) 'err-non-prime-characteristic)
+    ((not (and (= (gpil-mat-rows F) 2) (= (gpil-mat-cols F) 2)
+               (= (gpil-mat-rows V) 2) (= (gpil-mat-cols V) 2)))
+     'err-dieudonne-dimension-mismatch)
+    (else
+     (let ((pI (gpil-mat-scale p (gpil-mat-id 2))))
+       (if (and (gpil-mat-equal? (gpil-mat-mul F V) pI)
+                (gpil-mat-equal? (gpil-mat-mul V F) pI))
+           'ok
+           'err-dieudonne-fv-mismatch)))))
+
+;; Exact Newton slopes of a 2x2 Dieudonne module from char poly T^2 - tr(F)*T + det(F)
+(define (gpil-dieudonne-newton-slopes p F)
+  (let* ((tr (+ (gpil-mat-ref F 0 0) (gpil-mat-ref F 1 1)))
+         (det (- (* (gpil-mat-ref F 0 0) (gpil-mat-ref F 1 1))
+                 (* (gpil-mat-ref F 0 1) (gpil-mat-ref F 1 0))))
+         (a1 (gpil-padic-val tr p))
+         (a2 (gpil-padic-val det p)))
+    (cond
+      ((eq? a2 'infinity) 'err-degenerate-frobenius)
+      ((or (eq? a1 'infinity) (>= (* 2 a1) a2))
+       ;; Lower convex hull connects (0,0) directly to (2, a2): equal slopes a2/2
+       (let ((s (/ a2 2)))
+         (list s s)))
+      (else
+       ;; Break point at (1, a1): slopes a1 and (a2 - a1)
+       (list a1 (- a2 a1))))))
+
+;; Construct validated Dieudonne module; fails closed on FV != pI
+(define (gpil-make-dieudonne-module p F V)
+  (let ((st (gpil-dieudonne-validate p F V)))
+    (if (not (eq? st 'ok))
+        st
+        (let ((slopes (gpil-dieudonne-newton-slopes p F)))
+          (vector 'gpil-dieudonne-module p F V slopes)))))
+
+;; Build polygon y-values at integer abscissae 0..n from ascending slope list
+(define (gpil-polygon-from-slopes slopes)
+  (let loop ((xs slopes) (k 0) (y 0) (acc (list (cons 0 0))))
+    (if (null? xs)
+        (reverse acc)
+        (let ((ny (+ y (car xs))))
+          (loop (cdr xs) (+ k 1) ny (cons (cons (+ k 1) ny) acc))))))
+
+(define (gpil-dieudonne-newton-polygon dm)
+  (gpil-polygon-from-slopes (vector-ref dm 4)))
+
+;; Hodge polygon of an elliptic curve: slopes (0, 1) -> ((0 . 0) (1 . 0) (2 . 1))
+(define (gpil-hodge-polygon-elliptic)
+  (gpil-polygon-from-slopes (list 0 1)))
+
+;; Check that a polygon's slopes are non-decreasing (convexity)
+(define (gpil-polygon-convex? poly)
+  (if (or (null? poly) (null? (cdr poly)) (null? (cddr poly)))
+      #t
+      (let loop ((xs poly))
+        (if (null? (cddr xs))
+            #t
+            (let* ((y0 (cdr (car xs)))
+                   (y1 (cdr (cadr xs)))
+                   (y2 (cdr (caddr xs))))
+              (if (<= (- y1 y0) (- y2 y1))
+                  (loop (cdr xs))
+                  #f))))))
+
+;; Mazur's Theorem (Newton >= Hodge with identical endpoints):
+;;   Returns 'ok when Newton polygon lies on or above Hodge polygon with
+;;   matching start/end points and convex slopes; otherwise fails closed
+;;   with 'err-mazur-inequality-violation.
+(define (gpil-mazur-inequality-check newton-poly hodge-poly)
+  (cond
+    ((not (= (length newton-poly) (length hodge-poly)))
+     'err-mazur-inequality-violation)
+    ((null? newton-poly) 'err-mazur-inequality-violation)
+    ((not (gpil-polygon-convex? newton-poly))
+     'err-mazur-inequality-violation)
+    (else
+     (let ((first-ok (and (= (car (car newton-poly)) (car (car hodge-poly)))
+                          (= (cdr (car newton-poly)) (cdr (car hodge-poly))))))
+       (if (not first-ok)
+           'err-mazur-inequality-violation
+           (let loop ((ns newton-poly) (hs hodge-poly))
+             (cond
+               ((null? (cdr ns))
+                ;; Endpoints must match identically
+                (if (and (= (car (car ns)) (car (car hs)))
+                         (= (cdr (car ns)) (cdr (car hs))))
+                    'ok
+                    'err-mazur-inequality-violation))
+               ((and (= (car (car ns)) (car (car hs)))
+                     (>= (cdr (car ns)) (cdr (car hs))))
+                (loop (cdr ns) (cdr hs)))
+               (else 'err-mazur-inequality-violation))))))))
+
+(define (gpil-mazur-strictly-above? newton-poly hodge-poly)
+  (and (eq? (gpil-mazur-inequality-check newton-poly hodge-poly) 'ok)
+       (let loop ((ns newton-poly) (hs hodge-poly))
+         (cond
+           ((null? ns) #f)
+           ((> (cdr (car ns)) (cdr (car hs))) #t)
+           (else (loop (cdr ns) (cdr hs)))))))
+
+;; ===========================================================================
+;; 3. Grothendieck Duality & The Six Operations on U --j--> X <--i-- Z
+;;    Space X = {u, z} (Sierpinski space: open U = {u}, closed Z = {z}, u ~> z).
+;;    Constructible Q-sheaf F on X = (du, dz, rho: Q^{dz} -> Q^{du}).
+;;    Constructible Q-sheaf on point U or Z = integer dimension d >= 0.
+;; ===========================================================================
+
+(define (gpil-make-sheaf du dz rho)
+  (let ((r (if (and (> du 0) (> dz 0)) rho 'zero-map)))
+    (vector 'gpil-sheaf du dz r)))
+
+(define (gpil-sheaf-du F) (vector-ref F 1))
+(define (gpil-sheaf-dz F) (vector-ref F 2))
+(define (gpil-sheaf-rho F) (vector-ref F 3))
+
+(define (gpil-sheaf-constant d)
+  (gpil-make-sheaf d d (if (> d 0) (gpil-mat-id d) 'zero-map)))
+
+(define (gpil-sheaf-equal? F G)
+  (and (= (gpil-sheaf-du F) (gpil-sheaf-du G))
+       (= (gpil-sheaf-dz F) (gpil-sheaf-dz G))
+       (if (and (> (gpil-sheaf-du F) 0) (> (gpil-sheaf-dz F) 0))
+           (gpil-mat-equal? (gpil-sheaf-rho F) (gpil-sheaf-rho G))
+           #t)))
+
+;; Open immersion j : U -> X
+(define (gpil-sixops-j-pull F) (gpil-sheaf-du F))
+(define (gpil-sixops-j-upper-shriek F) (gpil-sheaf-du F)) ;; open immersion: j^! = j^*
+
+(define (gpil-sixops-j-star a)
+  (gpil-make-sheaf a a (if (> a 0) (gpil-mat-id a) 'zero-map)))
+
+(define (gpil-sixops-j-shriek a)
+  (gpil-make-sheaf a 0 'zero-map))
+
+;; Closed immersion i : Z -> X (proper: i_! = i_*)
+(define (gpil-sixops-i-pull F) (gpil-sheaf-dz F))
+
+(define (gpil-sixops-i-star b)
+  (gpil-make-sheaf 0 b 'zero-map))
+
+(define (gpil-sixops-i-shriek b)
+  (gpil-make-sheaf 0 b 'zero-map))
+
+;; Exceptional pullback i^!(F) = Gamma_Z(X, F) = ker(rho_F : F_z -> F_u)
+(define (gpil-sixops-i-upper-shriek F)
+  (let ((du (gpil-sheaf-du F))
+        (dz (gpil-sheaf-dz F)))
+    (cond
+      ((= dz 0) 0)
+      ((= du 0) dz)
+      (else (- dz (gpil-mat-rank (gpil-sheaf-rho F)))))))
+
+;; Tensor product F (x) G on Sh(X, Q)
+(define (gpil-sixops-tensor F G)
+  (let* ((du (gpil-sheaf-du F)) (dz (gpil-sheaf-dz F))
+         (eu (gpil-sheaf-du G)) (ez (gpil-sheaf-dz G))
+         (tu (* du eu))
+         (tz (* dz ez)))
+    (if (and (> tu 0) (> tz 0))
+        (gpil-make-sheaf tu tz (gpil-mat-kronecker (gpil-sheaf-rho F) (gpil-sheaf-rho G)))
+        (gpil-make-sheaf tu tz 'zero-map))))
+
+;; Exact linear system for Hom_{Sh(X)}(F, G):
+;;   unknowns: M_u (eu x du, indices 0 .. eu*du - 1) and M_z (ez x dz, indices eu*du .. N - 1)
+;;   equations: rho_G * M_z - M_u * rho_F = 0 (eu * dz equations)
+(define (gpil-sixops-hom-basis F G)
+  (let* ((du (gpil-sheaf-du F)) (dz (gpil-sheaf-dz F))
+         (eu (gpil-sheaf-du G)) (ez (gpil-sheaf-dz G))
+         (nu (* eu du))
+         (nz (* ez dz))
+         (N (+ nu nz))
+         (M (* eu dz)))
+    (cond
+      ((= N 0) '())
+      ((= M 0)
+       ;; Unconstrained: standard basis of Q^N
+       (let loop ((k 0) (acc '()))
+         (if (>= k N)
+             (reverse acc)
+             (let ((v (make-vector N 0)))
+               (vector-set! v k 1)
+               (loop (+ k 1) (cons v acc))))))
+      (else
+       (let ((sys (gpil-mat-zero M N))
+             (rhoF (gpil-sheaf-rho F))
+             (rhoG (gpil-sheaf-rho G)))
+         (let loop-r ((r 0))
+           (if (< r eu)
+               (begin
+                 (let loop-c ((c 0))
+                   (if (< c dz)
+                       (let ((eq-idx (+ (* r dz) c)))
+                         ;; + sum_k (rho_G)_{r,k} (M_z)_{k,c}
+                         (if (> ez 0)
+                             (let loop-k ((k 0))
+                               (if (< k ez)
+                                   (let ((col (+ nu (* k dz) c)))
+                                     (gpil-mat-set! sys eq-idx col
+                                       (+ (gpil-mat-ref sys eq-idx col)
+                                          (gpil-mat-ref rhoG r k)))
+                                     (loop-k (+ k 1))))))
+                         ;; - sum_l (M_u)_{r,l} (rho_F)_{l,c}
+                         (if (> du 0)
+                             (let loop-l ((l 0))
+                               (if (< l du)
+                                   (let ((col (+ (* r du) l)))
+                                     (gpil-mat-set! sys eq-idx col
+                                       (- (gpil-mat-ref sys eq-idx col)
+                                          (gpil-mat-ref rhoF l c)))
+                                     (loop-l (+ l 1))))))
+                         (loop-c (+ c 1)))))
+                 (loop-r (+ r 1)))))
+         (gpil-mat-nullspace sys))))))
+
+(define (gpil-sixops-hom-dim F G)
+  (length (gpil-sixops-hom-basis F G)))
+
+;; Internal Hom sheaf RHom^0 = Hom_{Sh(-)}(F|_, G|_) on X:
+;;   stalk at u: Hom_Q(F_u, G_u) (dim du * eu)
+;;   stalk at z: Hom_{Sh(X)}(F, G) (dim = length basis)
+;;   restriction rho: projects (M_u, M_z) |-> M_u
+(define (gpil-sixops-internal-hom F G)
+  (let* ((du (gpil-sheaf-du F))
+         (eu (gpil-sheaf-du G))
+         (hu (* du eu))
+         (basis (gpil-sixops-hom-basis F G))
+         (hz (length basis)))
+    (if (and (> hu 0) (> hz 0))
+        (let ((bvec (list->vector basis))
+              (rho (gpil-mat-zero hu hz)))
+          (let loop-j ((j 0))
+            (if (< j hz)
+                (let ((bj (vector-ref bvec j)))
+                  (let loop-r ((r 0))
+                    (if (< r hu)
+                        (begin
+                          (gpil-mat-set! rho r j (vector-ref bj r))
+                          (loop-r (+ r 1)))))
+                  (loop-j (+ j 1)))))
+          (gpil-make-sheaf hu hz rho))
+        (gpil-make-sheaf hu hz 'zero-map))))
+
+;; Projection Formula: f_!(A (x) f^* B) = f_!(A) (x) B
+(define (gpil-sixops-projection-formula-j? a B)
+  (gpil-sheaf-equal?
+    (gpil-sixops-j-shriek (* a (gpil-sixops-j-pull B)))
+    (gpil-sixops-tensor (gpil-sixops-j-shriek a) B)))
+
+(define (gpil-sixops-projection-formula-i? b B)
+  (gpil-sheaf-equal?
+    (gpil-sixops-i-shriek (* b (gpil-sixops-i-pull B)))
+    (gpil-sixops-tensor (gpil-sixops-i-shriek b) B)))
+
+;; Proper Base Change g^* f_! = f'_! g'^* across open-closed Cartesian squares,
+;; plus explicit contrast showing non-proper j_* violates base change on U cap Z = empty!
+(define (gpil-sixops-proper-base-change-valid? a b)
+  (and
+    ;; Square 1: U x_X Z = empty => i^* j_!(a) = 0 = j'_! i'^*(a)
+    (= (gpil-sixops-i-pull (gpil-sixops-j-shriek a)) 0)
+    ;; Square 2: Z x_X U = empty => j^* i_!(b) = 0 = i'_! j'^*(b)
+    (= (gpil-sixops-j-pull (gpil-sixops-i-shriek b)) 0)
+    ;; Square 3: U x_X U = U => j^* j_!(a) = a
+    (= (gpil-sixops-j-pull (gpil-sixops-j-shriek a)) a)
+    ;; Square 4: Z x_X Z = Z => i^* i_!(b) = b
+    (= (gpil-sixops-i-pull (gpil-sixops-i-shriek b)) b)
+    ;; Contrast (non-proper j_*): for a > 0, i^* j_*(a) = a != 0
+    (if (> a 0)
+        (not (= (gpil-sixops-i-pull (gpil-sixops-j-star a)) 0))
+        #t)))
+
+;; Verify ALL five fundamental Six-Operations adjunction dimension identities:
+;;   1. Hom_U(j^* B, a) = Hom_X(B, j_* a)
+;;   2. Hom_X(j_! a, B) = Hom_U(a, j^! B)
+;;   3. Hom_Z(i^* B, b) = Hom_X(B, i_* b)
+;;   4. Hom_X(i_! b, B) = Hom_Z(b, i^! B)
+;;   5. Hom_X(F (x) G, H) = Hom_X(F, Hom(G, H))
+(define (gpil-sixops-adjunctions-valid? a b F G H)
+  (and
+    (= (* (gpil-sixops-j-pull F) a) (gpil-sixops-hom-dim F (gpil-sixops-j-star a)))
+    (= (gpil-sixops-hom-dim (gpil-sixops-j-shriek a) F) (* a (gpil-sixops-j-upper-shriek F)))
+    (= (* (gpil-sixops-i-pull F) b) (gpil-sixops-hom-dim F (gpil-sixops-i-star b)))
+    (= (gpil-sixops-hom-dim (gpil-sixops-i-shriek b) F) (* b (gpil-sixops-i-upper-shriek F)))
+    (= (gpil-sixops-hom-dim (gpil-sixops-tensor F G) H)
+       (gpil-sixops-hom-dim F (gpil-sixops-internal-hom G H)))))
+
+;; Excision Distinguished Triangle: 0 -> j_! j^* F -> F -> i_* i^* F -> 0
+;; Verifies stalk exactness at u & z, plus Euler-characteristic additivity!
+(define (gpil-sheaf-chi F)
+  (+ (gpil-sheaf-du F) (gpil-sheaf-dz F)))
+
+(define (gpil-sixops-excision-triangle-verify F)
+  (let* ((left  (gpil-sixops-j-shriek (gpil-sixops-j-pull F)))
+         (right (gpil-sixops-i-star   (gpil-sixops-i-pull F)))
+         (u-exact (and (= (gpil-sheaf-du left) (gpil-sheaf-du F))
+                       (= (gpil-sheaf-du right) 0)))
+         (z-exact (and (= (gpil-sheaf-dz left) 0)
+                       (= (gpil-sheaf-dz right) (gpil-sheaf-dz F))))
+         (chi-F (gpil-sheaf-chi F))
+         (chi-L (gpil-sheaf-chi left))
+         (chi-R (gpil-sheaf-chi right))
+         (chi-ok (= chi-F (+ chi-L chi-R)))
+         (gamma-ok (= (gpil-sheaf-dz F) (+ (gpil-sheaf-dz left) (gpil-sheaf-dz right)))))
+    (vector 'gpil-excision-report (and u-exact z-exact chi-ok gamma-ok) chi-F chi-L chi-R)))
+
+;; Derived local cohomology excision exactness:
+;;   0 -> H^0_Z(X,F) -> H^0(X,F) --rho--> H^0(U,j^*F) -> H^1_Z(X,F) -> 0
+;;   Alternating sum dim(ker rho) - dz + du - dim(coker rho) = 0!
+(define (gpil-sixops-local-cohomology-exact? F)
+  (let* ((du (gpil-sheaf-du F))
+         (dz (gpil-sheaf-dz F))
+         (rk (if (and (> du 0) (> dz 0)) (gpil-mat-rank (gpil-sheaf-rho F)) 0))
+         (h0-Z (- dz rk))
+         (h1-Z (- du rk)))
+    (and (= h0-Z (gpil-sixops-i-upper-shriek F))
+         (= (+ (- h0-Z dz) (- du h1-Z)) 0))))
+
+;; Explicit negative-control witness for non-proper open immersion j : U -> X:
+;;   (j_! Q_U)_z = 0  vs  (j_* Q_U)_z = Q (dim 0 != dim 1)
+(define (gpil-sixops-open-immersion-separation)
+  (let* ((jsh (gpil-sixops-j-shriek 1))
+         (jst (gpil-sixops-j-star 1))
+         (dz-shriek (gpil-sheaf-dz jsh))
+         (dz-star   (gpil-sheaf-dz jst)))
+    (vector 'gpil-nonproper-separation
+            (not (= dz-shriek dz-star))
+            dz-shriek
+            dz-star
+            (not (gpil-sheaf-equal? jsh jst)))))
+
+;; ===========================================================================
+;; 4. The Yoga of Weights (Deligne Mixed Hodge / Frobenius Weights)
+;;    Weight profile = list of (degree weight dim) triples with dim > 0.
+;; ===========================================================================
+
+(define (gpil-weight-piece deg wt dim)
+  (list deg wt dim))
+
+(define (gpil-make-weight-profile triples)
+  (let loop ((xs triples) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (if (> (caddr (car xs)) 0)
+            (loop (cdr xs) (cons (car xs) acc))
+            (loop (cdr xs) acc)))))
+
+;; Smooth projective P^2: H^0 (wt 0, dim 1), H^2 (wt 2, dim 1), H^4 (wt 4, dim 1)
+(define (gpil-weights-p2)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 0 0 1)
+          (gpil-weight-piece 2 2 1)
+          (gpil-weight-piece 4 4 1))))
+
+;; Smooth projective P^1: H^0 (wt 0, dim 1), H^2 (wt 2, dim 1)
+(define (gpil-weights-p1)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 0 0 1)
+          (gpil-weight-piece 2 2 1))))
+
+;; Smooth projective elliptic curve E: H^0 (wt 0, dim 1), H^1 (wt 1, dim 2), H^2 (wt 2, dim 1)
+(define (gpil-weights-elliptic-curve)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 0 0 1)
+          (gpil-weight-piece 1 1 2)
+          (gpil-weight-piece 2 2 1))))
+
+;; Open torus G_m = A^1 \ {0}: H^0 (wt 0, dim 1), H^1 (wt 2, dim 1) — weight shift w=2 > k=1!
+(define (gpil-weights-gm)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 0 0 1)
+          (gpil-weight-piece 1 2 1))))
+
+;; Singular nodal cubic curve: H^0 (wt 0, dim 1), H^1 (wt 0, dim 1), H^2 (wt 2, dim 1) — weight drop w=0 < k=1!
+(define (gpil-weights-nodal-cubic)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 0 0 1)
+          (gpil-weight-piece 1 0 1)
+          (gpil-weight-piece 2 2 1))))
+
+;; Compactly-supported cohomology H^*_c(G_m) and H^*_c({0, inf}) for K_0(Var) additivity
+(define (gpil-weights-compact-gm)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 1 0 1)
+          (gpil-weight-piece 2 2 1))))
+
+(define (gpil-weights-compact-two-points)
+  (gpil-make-weight-profile
+    (list (gpil-weight-piece 0 0 2))))
+
+;; Purity predicate (smooth projective): every nonzero Gr^W_w H^k has w = k
+(define (gpil-weights-pure-for-degree? profile)
+  (let loop ((xs profile))
+    (cond
+      ((null? xs) #t)
+      ((= (car (car xs)) (cadr (car xs))) (loop (cdr xs)))
+      (else #f))))
+
+;; Deligne's general weight bounds for any complex algebraic variety: 0 <= w <= 2k
+(define (gpil-weights-deligne-bounds-valid? profile)
+  (let loop ((xs profile))
+    (if (null? xs)
+        #t
+        (let ((k (car (car xs)))
+              (w (cadr (car xs)))
+              (d (caddr (car xs))))
+          (if (and (>= k 0) (> d 0) (>= w 0) (<= w (* 2 k)))
+              (loop (cdr xs))
+              #f)))))
+
+;; Smooth (possibly non-proper) variety Deligne bound: k <= w <= 2k
+(define (gpil-weights-smooth-open-bounds-valid? profile)
+  (let loop ((xs profile))
+    (if (null? xs)
+        #t
+        (let ((k (car (car xs)))
+              (w (cadr (car xs))))
+          (if (and (>= w k) (<= w (* 2 k)))
+              (loop (cdr xs))
+              #f)))))
+
+;; Proper (possibly singular) variety Deligne bound: 0 <= w <= k
+(define (gpil-weights-proper-singular-bounds-valid? profile)
+  (let loop ((xs profile))
+    (if (null? xs)
+        #t
+        (let ((k (car (car xs)))
+              (w (cadr (car xs))))
+          (if (and (>= w 0) (<= w k))
+              (loop (cdr xs))
+              #f)))))
+
+(define (gpil-weight-insert piece profile)
+  (let ((k (car piece)) (w (cadr piece)) (d (caddr piece)))
+    (cond
+      ((null? profile) (list piece))
+      ((and (= (car (car profile)) k) (= (cadr (car profile)) w))
+       (cons (list k w (+ (caddr (car profile)) d)) (cdr profile)))
+      ((or (< k (car (car profile)))
+           (and (= k (car (car profile))) (< w (cadr (car profile)))))
+       (cons piece profile))
+      (else (cons (car profile) (gpil-weight-insert piece (cdr profile)))))))
+
+;; Kunneth tensor product of weight profiles
+(define (gpil-weights-tensor p1 p2)
+  (let loop1 ((xs p1) (acc '()))
+    (if (null? xs)
+        acc
+        (let ((k1 (car (car xs))) (w1 (cadr (car xs))) (d1 (caddr (car xs))))
+          (let loop2 ((ys p2) (acc2 acc))
+            (if (null? ys)
+                (loop1 (cdr xs) acc2)
+                (let ((k2 (car (car ys))) (w2 (cadr (car ys))) (d2 (caddr (car ys))))
+                  (loop2 (cdr ys)
+                         (gpil-weight-insert (list (+ k1 k2) (+ w1 w2) (* d1 d2)) acc2)))))))))
+
+;; Tate twist Q(m): shifts weight by -2m
+(define (gpil-weights-tate-twist profile m)
+  (let loop ((xs profile) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (let ((p (car xs)))
+          (loop (cdr xs)
+                (cons (list (car p) (- (cadr p) (* 2 m)) (caddr p)) acc))))))
+
+(define (gpil-weight-euler-char profile)
+  (let loop ((xs profile) (acc 0))
+    (if (null? xs)
+        acc
+        (let* ((k (car (car xs)))
+               (d (caddr (car xs)))
+               (sgn (if (= (remainder k 2) 0) 1 -1)))
+          (loop (cdr xs) (+ acc (* sgn d)))))))
+
+(define (gpil-alist-add-weight w delta alist)
+  (cond
+    ((null? alist) (if (= delta 0) '() (list (cons w delta))))
+    ((= (car (car alist)) w)
+     (let ((s (+ (cdr (car alist)) delta)))
+       (if (= s 0) (cdr alist) (cons (cons w s) (cdr alist)))))
+    ((< w (car (car alist))) (cons (cons w delta) alist))
+    (else (cons (car alist) (gpil-alist-add-weight w delta (cdr alist))))))
+
+;; Weight-graded Euler characteristic: sorted alist of (w . sum_{k} (-1)^k dim Gr^W_w H^k)
+(define (gpil-weight-graded-chi profile)
+  (let loop ((xs profile) (acc '()))
+    (if (null? xs)
+        acc
+        (let* ((k (car (car xs)))
+               (w (cadr (car xs)))
+               (d (caddr (car xs)))
+               (sgn (if (= (remainder k 2) 0) 1 -1)))
+          (loop (cdr xs) (gpil-alist-add-weight w (* sgn d) acc))))))
+
+;; ===========================================================================
+;; 5. Grothendieck Universes (SGA 4, Expose I: U_0 in U_1 in U_2 ...)
+;; ===========================================================================
+
+;; Strict cumulative membership U_i in U_j  <=>  0 <= i < j
+(define (gpil-universe-member? child-level parent-level)
+  (and (integer? child-level)
+       (integer? parent-level)
+       (>= child-level 0)
+       (< child-level parent-level)))
+
+;; Fail-closed membership validator rejecting Russell/Girard self-membership & downward cycles
+(define (gpil-universe-check-membership child-level parent-level)
+  (cond
+    ((or (not (integer? child-level)) (not (integer? parent-level))
+         (< child-level 0) (< parent-level 0))
+     'err-invalid-universe-level)
+    ((>= child-level parent-level)
+     'err-universe-cycle-paradox)
+    (else 'ok)))
+
+;; Check SGA 4 closure axioms (transitivity, pairing, power set, indexed union)
+;; inside universe U_{u-level} for a list of member element levels `elem-levels`
+;; and an index-set level `index-level`.
+(define (gpil-universe-closure-valid? u-level index-level elem-levels)
+  (cond
+    ((or (not (integer? u-level)) (<= u-level 0)) #f)
+    ((not (gpil-universe-member? index-level u-level)) #f)
+    (else
+     (let loop ((xs elem-levels))
+       (cond
+         ((null? xs) #t)
+         ((gpil-universe-member? (car xs) u-level) (loop (cdr xs)))
+         (else #f))))))
+
+;; Check an arbitrary claimed membership graph `((i . j) ...)` meaning U_i in U_j
+;; Fails closed with 'err-universe-cycle-paradox on ANY self-loop or downward edge.
+(define (gpil-universe-graph-check edges)
+  (let loop ((es edges))
+    (if (null? es)
+        'ok
+        (let ((st (gpil-universe-check-membership (car (car es)) (cdr (car es)))))
+          (if (eq? st 'ok)
+              (loop (cdr es))
+              st)))))
+
+;; Category size classification relative to universe U_{u-level}
+(define (gpil-category-size-in-universe ob-level hom-level u-level)
+  (cond
+    ((or (< ob-level 0) (< hom-level 0) (< u-level 0)) 'err-invalid-universe-level)
+    ((and (< ob-level u-level) (< hom-level u-level)) 'u-small)
+    ((and (= ob-level u-level) (< hom-level u-level)) 'locally-u-small)
+    (else 'large-requires-higher-universe)))

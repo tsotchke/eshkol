@@ -1,0 +1,71 @@
+;;; Unified All-Eras Grothendieck & Beyond-Grothendieck Cross-Module Gate
+;;; Requires ALL 6 new Grothendieck + Beyond-Grothendieck modules simultaneously
+;;; alongside existing core.hodge, core.alg_group, core.integrable, core.topology,
+;;; core.operator, and core.measure to verify zero cross-module symbol collisions
+;;; and end-to-end mathematical coherence across all three eras + modern frontiers.
+
+(require stdlib)
+(require core.topology)
+(require core.operator)
+(require core.measure)
+(require core.hodge)
+(require core.alg_group)
+(require core.integrable)
+(require core.grothendieck)
+
+(define u-checks 0)
+(define (u-expect name cond)
+  (set! u-checks (+ u-checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; 1. Era 1 (Functional Analysis): CHSH Bell-vs-Tsirelson & non-nuclearity of l^2
+(define chsh-pair (gfa-chsh-tsirelson-vectors))
+(define chsh-ratio (gfa-grothendieck-ratio (gfa-chsh-matrix) (car chsh-pair) (cdr chsh-pair)))
+(u-expect "era1-chsh-ratio-sqrt2" (< (abs (- chsh-ratio (sqrt 2.0))) 1e-12))
+(u-expect "era1-l2-non-nuclear-ratio-12" (= (vector-ref (gfa-identity-non-nuclearity-ratio 12) 4) 12))
+
+;; 2. Era 2 (SGA / Motives / GRR): HRR on P^2 + Serre duality + branched cover GRR
+(u-expect "era2-hrr-p2-O1-eq-3" (= (gsga-hrr-pn-line-bundle 2 1) 3))
+(u-expect "era2-hrr-p2-O-3-serre-eq-1" (= (gsga-hrr-pn-line-bundle 2 -3) 1))
+(u-expect "era2-grr-branched-cover-valid" (eq? (gsga-grr-branched-cover-verify 2 1 3 4) #t))
+
+;; 3. Missing Pillars (Weights + Universes + Standard Conjectures + Six Ops)
+(u-expect "pillars-universe-u0-in-u1" (gpil-universe-member? 0 1))
+(u-expect "pillars-universe-paradox-rejected"
+          (eq? (gpil-universe-check-membership 1 1) 'err-universe-cycle-paradox))
+(u-expect "pillars-p2-weights-pure"
+          (gpil-weights-pure-for-degree? '((0 0 1) (2 2 1) (4 4 1))))
+(u-expect "pillars-gm-weights-not-pure"
+          (not (gpil-weights-pure-for-degree? '((0 0 1) (1 2 1)))))
+
+;; 4. Era 3A (Pursuing Stacks + Les Derivateurs): triangulated non-uniqueness witness
+(define tri-witness (gpst-verify-triangulated-nonuniqueness))
+(u-expect "era3a-triangulated-nonuniqueness" (vector-ref tri-witness 1))
+(u-expect "era3a-triangulated-not-homotopic" (vector-ref tri-witness 6))
+
+;; 5. Era 3B (Esquisse + Tame + Perfectoid): perfectoid vs non-perfectoid Frobenius
+(u-expect "era3b-perfectoid-p3-surjective" (gesq-frobenius-surjective? 'perfectoid-limit 3 2))
+(u-expect "era3b-non-perfectoid-p3-fails" (not (gesq-frobenius-surjective? 'finite-ring 3 2)))
+
+;; 6. Beyond-Grothendieck Frontiers: Reyssat abc triple + honest IUT boundary + Bers T(1)
+(define abc-res (gbey-abc-triple-analyze 2 6436341 6436343))
+(u-expect "beyond-abc-reyssat-valid-tag" (eq? (vector-ref abc-res 0) 'gbey-abc-analysis))
+(u-expect "beyond-abc-reyssat-rad-15042" (= (vector-ref abc-res 4) 15042))
+(u-expect "beyond-abc-reyssat-iut-disputed" (eq? (vector-ref abc-res 6) 'disputed-open-unverified))
+(u-expect "beyond-abc-non-coprime-rejected"
+          (eq? (vector-ref (gbey-abc-triple-analyze 2 4 6) 0) 'err-not-coprime))
+(define bers-aff (gbey-bers-qs-ratio (lambda (x) (+ (* 3.0 x) 5.0)) 0.0 1.0))
+(u-expect "beyond-bers-affine-qs-eq-1" (< (abs (- bers-aff 1.0)) 1e-12))
+
+;; 7. Cross-check with existing M13 Weil 4-fold Hodge gap module loaded alongside
+(define wf-cross (make-weil-fourfold-hodge-benchmark))
+(define wf-cross-audit (weil-fourfold-verify-gap wf-cross))
+(u-expect "cross-m13-weil4-gap-still-exact" (= (vector-ref (vector-ref wf-cross-audit 4) 4) 2))
+
+(display "PASS: grothendieck_all_eras_unified_test (")
+(display u-checks)
+(display " checks)")
+(newline)

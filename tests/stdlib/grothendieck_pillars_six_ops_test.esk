@@ -1,0 +1,363 @@
+;;; tests/stdlib/grothendieck_pillars_six_ops_test.esk
+;;; Executable verification suite for core.grothendieck.pillars_six_ops:
+;;;   1. Standard Conjectures (1968: B(X), I(X), C(X)) & Hodge Index Theorem
+;;;   2. Crystalline Cohomology (PD Algebra Gamma(x)) & Dieudonne Theory / Mazur
+;;;   3. Grothendieck Duality & The Six Operations (f*, f_*, f^!, f_!, tensor, Hom)
+;;;   4. Yoga of Weights (Deligne Mixed Hodge / Frobenius Weights)
+;;;   5. Grothendieck Universes (SGA 4 cumulative hierarchy & paradox rejection)
+
+(require stdlib)
+(require core.grothendieck.pillars_six_ops)
+
+(define gpil-test-checks 0)
+(define (gpil-expect label cond)
+  (if (not cond)
+      (begin
+        (display "FAIL: ")
+        (display label)
+        (newline)
+        (exit 1))
+      (set! gpil-test-checks (+ gpil-test-checks 1))))
+
+;; ===========================================================================
+;; PART 1: Standard Conjectures on Algebraic Cycles (1968)
+;; ===========================================================================
+
+;; 1a. P^1 x P^1 intersection form: H = e1 + e2 (H^2 = 2), P = e1 - e2 (P^2 = -2)
+(define Q-p1xp1 (gpil-p1xp1-intersection-form))
+(define H-p1xp1 (gpil-p1xp1-hyperplane))
+(define P-p1xp1 (gpil-p1xp1-primitive))
+
+(gpil-expect "p1xp1-Q-symmetric" (gpil-mat-symmetric? Q-p1xp1))
+(gpil-expect "p1xp1-H-sq-eq-2" (= (gpil-quadratic-form Q-p1xp1 H-p1xp1) 2))
+(gpil-expect "p1xp1-H-dot-P-eq-0" (= (gpil-bilinear-form Q-p1xp1 H-p1xp1 P-p1xp1) 0))
+(gpil-expect "p1xp1-P-sq-eq-neg2" (= (gpil-quadratic-form Q-p1xp1 P-p1xp1) -2))
+(gpil-expect "p1xp1-signature-1-1-0" (equal? (gpil-symmetric-signature Q-p1xp1) (list 1 1 0)))
+(gpil-expect "p1xp1-hodge-index-valid" (gpil-hodge-index-valid? Q-p1xp1 H-p1xp1))
+
+(define rep-p1xp1 (gpil-hodge-index-surface-verify Q-p1xp1 H-p1xp1 P-p1xp1))
+(gpil-expect "p1xp1-surface-report-valid" (eq? (vector-ref rep-p1xp1 1) #t))
+(gpil-expect "p1xp1-surface-report-H2" (= (vector-ref rep-p1xp1 2) 2))
+(gpil-expect "p1xp1-surface-report-P2" (= (vector-ref rep-p1xp1 4) -2))
+
+;; 1b. Blowup Bl_pt(P^2): H^2 = 1, E^2 = -1, H . E = 0, signature (1, 1)
+(define Q-bl (gpil-blowup-p2-intersection-form))
+(define H-bl (gpil-blowup-p2-hyperplane))
+(define E-bl (gpil-blowup-p2-exceptional))
+
+(gpil-expect "blowup-p2-H-sq-eq-1" (= (gpil-quadratic-form Q-bl H-bl) 1))
+(gpil-expect "blowup-p2-E-sq-eq-neg1" (= (gpil-quadratic-form Q-bl E-bl) -1))
+(gpil-expect "blowup-p2-H-dot-E-eq-0" (= (gpil-bilinear-form Q-bl H-bl E-bl) 0))
+(gpil-expect "blowup-p2-signature-1-1-0" (equal? (gpil-symmetric-signature Q-bl) (list 1 1 0)))
+(gpil-expect "blowup-p2-hodge-index-valid" (gpil-hodge-index-valid? Q-bl H-bl))
+
+;; Two-point blowup Bl_{p1,p2}(P^2): diag(1, -1, -1), signature (1, 2, 0)
+(define Q-bl2 (vector (vector 1 0 0) (vector 0 -1 0) (vector 0 0 -1)))
+(define H-bl2 (vector 1 0 0))
+(gpil-expect "blowup-2pt-signature-1-2-0" (equal? (gpil-symmetric-signature Q-bl2) (list 1 2 0)))
+(gpil-expect "blowup-2pt-hodge-index-valid" (gpil-hodge-index-valid? Q-bl2 H-bl2))
+
+;; 1c. Hard Lefschetz sl_2 triple B(X) and Kunneth Projectors C(X) on P^1 x P^1
+(define triple-p1xp1 (gpil-p1xp1-lefschetz-triple))
+(gpil-expect "p1xp1-hard-lefschetz-sl2-valid" (gpil-hard-lefschetz-sl2-valid? triple-p1xp1))
+(gpil-expect "p1xp1-kunneth-projectors-valid"
+             (gpil-kunneth-projectors-valid? (vector-ref triple-p1xp1 4)))
+
+;; Verify L^2 : H^0 -> H^4 sends 1 |-> 2 * pt (isomorphism)
+(define L-p1xp1 (vector-ref triple-p1xp1 1))
+(define L2-p1xp1 (gpil-mat-mul L-p1xp1 L-p1xp1))
+(gpil-expect "p1xp1-L2-H0-to-H4-eq-2" (= (vector-ref (vector-ref L2-p1xp1 3) 0) 2))
+
+;; 1d. Epistemic Status Classifier (ZERO false claims!)
+(gpil-expect "std-conj-curve-proven"
+             (eq? (gpil-standard-conj-status 'curve 1) 'proven-case))
+(gpil-expect "std-conj-surface-proven"
+             (eq? (gpil-standard-conj-status 'surface 2) 'proven-case))
+(gpil-expect "std-conj-abelian-4fold-proven"
+             (eq? (gpil-standard-conj-status 'abelian-variety 4) 'proven-case))
+(gpil-expect "std-conj-general-dim4-open"
+             (eq? (gpil-standard-conj-status 'general-smooth-projective 4) 'open-conjecture-unproven))
+(gpil-expect "std-conj-general-dim6-open"
+             (eq? (gpil-standard-conj-status 'general-smooth-projective 6) 'open-conjecture-unproven))
+
+;; 1e. NEGATIVE CONTROL: Indefinite/positive-definite (+, +) form on H^{1,1} fails Hodge Index!
+(define Q-bad-pp (vector (vector 1 0) (vector 0 2)))
+(gpil-expect "neg-ctrl-signature-2-0-0" (equal? (gpil-symmetric-signature Q-bad-pp) (list 2 0 0)))
+(gpil-expect "neg-ctrl-pp-fails-hodge-index"
+             (not (gpil-hodge-index-valid? Q-bad-pp (vector 1 0))))
+
+;; Negative control: degenerate form (1, 0, 1) also rejected
+(define Q-bad-deg (vector (vector 1 0) (vector 0 0)))
+(gpil-expect "neg-ctrl-degenerate-fails-hodge-index"
+             (not (gpil-hodge-index-valid? Q-bad-deg (vector 1 0))))
+
+;; ===========================================================================
+;; PART 2: Crystalline Cohomology & Dieudonne Theory (Characteristic p)
+;; ===========================================================================
+
+;; 2a. Divided Power (PD) Algebra Gamma(x)
+(define x2 (gpil-pd-gen 2))
+(define x3 (gpil-pd-gen 3))
+(define x2-mul-x3 (gpil-pd-mul x2 x3))
+(gpil-expect "pd-x2-mul-x3-eq-10-x5"
+             (gpil-pd-equal? x2-mul-x3 (gpil-pd-term 10 5)))
+
+;; Verify n! * x^{[n]} = (x^{[1]})^n for n = 0..6
+(gpil-expect "pd-gamma-id-n0" (gpil-pd-gamma-identity? 0))
+(gpil-expect "pd-gamma-id-n1" (gpil-pd-gamma-identity? 1))
+(gpil-expect "pd-gamma-id-n2" (gpil-pd-gamma-identity? 2))
+(gpil-expect "pd-gamma-id-n3" (gpil-pd-gamma-identity? 3))
+(gpil-expect "pd-gamma-id-n4" (gpil-pd-gamma-identity? 4))
+(gpil-expect "pd-gamma-id-n5" (gpil-pd-gamma-identity? 5))
+(gpil-expect "pd-gamma-id-n6" (gpil-pd-gamma-identity? 6))
+
+;; Associativity (x^{[2]} * x^{[3]}) * x^{[4]} = x^{[2]} * (x^{[3]} * x^{[4]})
+(gpil-expect "pd-associative"
+             (gpil-pd-equal?
+               (gpil-pd-mul (gpil-pd-mul (gpil-pd-gen 2) (gpil-pd-gen 3)) (gpil-pd-gen 4))
+               (gpil-pd-mul (gpil-pd-gen 2) (gpil-pd-mul (gpil-pd-gen 3) (gpil-pd-gen 4)))))
+
+;; Characteristic-p binomial divisibility: p | binom(p, k) for 0 < k < p
+(gpil-expect "pd-char-p-div-2"  (gpil-pd-char-p-divisible? 2))
+(gpil-expect "pd-char-p-div-3"  (gpil-pd-char-p-divisible? 3))
+(gpil-expect "pd-char-p-div-5"  (gpil-pd-char-p-divisible? 5))
+(gpil-expect "pd-char-p-div-7"  (gpil-pd-char-p-divisible? 7))
+(gpil-expect "pd-char-p-div-11" (gpil-pd-char-p-divisible? 11))
+(gpil-expect "pd-char-composite-4-rejected" (not (gpil-pd-char-p-divisible? 4)))
+
+;; 2b. Ordinary Elliptic Curve Dieudonne Module at p = 5
+(define ord5-pair (gpil-dieudonne-ordinary-elliptic 5))
+(define dm-ord5 (gpil-make-dieudonne-module 5 (car ord5-pair) (cdr ord5-pair)))
+(gpil-expect "dieudonne-ord5-valid" (vector? dm-ord5))
+(gpil-expect "dieudonne-ord5-slopes-0-1" (equal? (vector-ref dm-ord5 4) (list 0 1)))
+
+(define np-ord5 (gpil-dieudonne-newton-polygon dm-ord5))
+(define hp-ell  (gpil-hodge-polygon-elliptic))
+(gpil-expect "dieudonne-ord5-newton-matches-hodge" (equal? np-ord5 hp-ell))
+(gpil-expect "dieudonne-ord5-mazur-ok"
+             (eq? (gpil-mazur-inequality-check np-ord5 hp-ell) 'ok))
+(gpil-expect "dieudonne-ord5-not-strictly-above"
+             (not (gpil-mazur-strictly-above? np-ord5 hp-ell)))
+
+;; 2c. Supersingular Elliptic Curve Dieudonne Module at p = 5 (and p = 7)
+(define ss5-pair (gpil-dieudonne-supersingular-elliptic 5))
+(define dm-ss5 (gpil-make-dieudonne-module 5 (car ss5-pair) (cdr ss5-pair)))
+(gpil-expect "dieudonne-ss5-valid" (vector? dm-ss5))
+(gpil-expect "dieudonne-ss5-F2-eq-neg-pI"
+             (gpil-mat-equal?
+               (gpil-mat-mul (car ss5-pair) (car ss5-pair))
+               (gpil-mat-scale -5 (gpil-mat-id 2))))
+(gpil-expect "dieudonne-ss5-slopes-half-half"
+             (equal? (vector-ref dm-ss5 4) (list (/ 1 2) (/ 1 2))))
+
+(define np-ss5 (gpil-dieudonne-newton-polygon dm-ss5))
+(gpil-expect "dieudonne-ss5-mazur-ok"
+             (eq? (gpil-mazur-inequality-check np-ss5 hp-ell) 'ok))
+(gpil-expect "dieudonne-ss5-strictly-above-hodge"
+             (gpil-mazur-strictly-above? np-ss5 hp-ell))
+
+;; Also verify supersingular at p = 7
+(define ss7-pair (gpil-dieudonne-supersingular-elliptic 7))
+(define dm-ss7 (gpil-make-dieudonne-module 7 (car ss7-pair) (cdr ss7-pair)))
+(gpil-expect "dieudonne-ss7-slopes-half-half"
+             (equal? (vector-ref dm-ss7 4) (list (/ 1 2) (/ 1 2))))
+
+;; 2d. NEGATIVE CONTROLS:
+;;   (a) Matrix pair with FV != p I_2 rejected fail-closed ('err-dieudonne-fv-mismatch)
+(define F-bad (vector (vector 1 1) (vector 0 5)))
+(define V-bad (vector (vector 5 0) (vector 0 1)))
+(gpil-expect "neg-ctrl-dieudonne-fv-mismatch-validate"
+             (eq? (gpil-dieudonne-validate 5 F-bad V-bad) 'err-dieudonne-fv-mismatch))
+(gpil-expect "neg-ctrl-dieudonne-fv-mismatch-ctor"
+             (eq? (gpil-make-dieudonne-module 5 F-bad V-bad) 'err-dieudonne-fv-mismatch))
+
+;;   (b) Fake Newton polygon dipping below Hodge polygon rejected ('err-mazur-inequality-violation)
+(define np-fake-dip (gpil-polygon-from-slopes (list (/ -1 2) (/ 3 2))))
+(gpil-expect "neg-ctrl-mazur-dip-below-rejected"
+             (eq? (gpil-mazur-inequality-check np-fake-dip hp-ell) 'err-mazur-inequality-violation))
+
+;;   (c) Fake Newton polygon with mismatched endpoint also rejected
+(define np-fake-end (gpil-polygon-from-slopes (list 0 2)))
+(gpil-expect "neg-ctrl-mazur-endpoint-mismatch-rejected"
+             (eq? (gpil-mazur-inequality-check np-fake-end hp-ell) 'err-mazur-inequality-violation))
+
+;; ===========================================================================
+;; PART 3: Grothendieck Duality & The Six Operations
+;; ===========================================================================
+
+;; Constructible sheaves on X = {u, z} (open U = {u}, closed Z = {z}, u ~> z):
+(define Q-X (gpil-sheaf-constant 1))
+(define F-mixed
+  ;; du = 2, dz = 3, rank(rho) = 1 => dim ker(rho) = dim i^!(F) = 2
+  (gpil-make-sheaf 2 3
+    (vector (vector 1 0 2)
+            (vector 2 0 4))))
+(define G-mixed
+  ;; du = 2, dz = 2, rank(rho) = 2 (invertible transition)
+  (gpil-make-sheaf 2 2
+    (vector (vector 1 1)
+            (vector 0 1))))
+(define H-mixed
+  ;; du = 1, dz = 2, rho = [[1 -1]]
+  (gpil-make-sheaf 1 2
+    (vector (vector 1 -1))))
+
+;; 3a. Exceptional pullback i^!(F) = ker(rho_F)
+(gpil-expect "sixops-i-upper-shriek-QX-is-0" (= (gpil-sixops-i-upper-shriek Q-X) 0))
+(gpil-expect "sixops-i-upper-shriek-i-star-is-b" (= (gpil-sixops-i-upper-shriek (gpil-sixops-i-star 3)) 3))
+(gpil-expect "sixops-i-upper-shriek-mixed-is-2" (= (gpil-sixops-i-upper-shriek F-mixed) 2))
+
+;; 3b. Projection Formula: f_!(A (x) f^* B) = f_!(A) (x) B
+(gpil-expect "sixops-proj-formula-j-QX" (gpil-sixops-projection-formula-j? 2 Q-X))
+(gpil-expect "sixops-proj-formula-j-mixed" (gpil-sixops-projection-formula-j? 3 F-mixed))
+(gpil-expect "sixops-proj-formula-i-QX" (gpil-sixops-projection-formula-i? 2 Q-X))
+(gpil-expect "sixops-proj-formula-i-mixed" (gpil-sixops-projection-formula-i? 3 F-mixed))
+
+;; 3c. Proper Base Change g^* f_! = f'_! g'^* (and non-proper j_* contrast)
+(gpil-expect "sixops-proper-base-change-1-1" (gpil-sixops-proper-base-change-valid? 1 1))
+(gpil-expect "sixops-proper-base-change-3-2" (gpil-sixops-proper-base-change-valid? 3 2))
+
+;; 3d. All 5 Adjunction Dimension Identities (via exact linear-system Hom computation!)
+(gpil-expect "sixops-adjunctions-QX"
+             (gpil-sixops-adjunctions-valid? 2 3 Q-X G-mixed H-mixed))
+(gpil-expect "sixops-adjunctions-mixed-triple"
+             (gpil-sixops-adjunctions-valid? 2 3 F-mixed G-mixed H-mixed))
+(gpil-expect "sixops-adjunctions-shriek-star"
+             (gpil-sixops-adjunctions-valid? 1 2 (gpil-sixops-j-shriek 2) Q-X F-mixed))
+
+;; Explicit Hom_X(j_! Q_U, Q_X) = 1 vs Hom_X(Q_X, j_! Q_U) = 0
+(gpil-expect "sixops-hom-jshriek-to-QX-eq-1"
+             (= (gpil-sixops-hom-dim (gpil-sixops-j-shriek 1) Q-X) 1))
+(gpil-expect "sixops-hom-QX-to-jshriek-eq-0"
+             (= (gpil-sixops-hom-dim Q-X (gpil-sixops-j-shriek 1)) 0))
+
+;; 3e. Excision Distinguished Triangle 0 -> j_! j^* F -> F -> i_* i^* F -> 0
+(define exc-QX (gpil-sixops-excision-triangle-verify Q-X))
+(gpil-expect "sixops-excision-QX-valid" (eq? (vector-ref exc-QX 1) #t))
+(gpil-expect "sixops-excision-QX-chi-2-eq-1+1"
+             (and (= (vector-ref exc-QX 2) 2)
+                  (= (vector-ref exc-QX 3) 1)
+                  (= (vector-ref exc-QX 4) 1)))
+
+(define exc-mixed (gpil-sixops-excision-triangle-verify F-mixed))
+(gpil-expect "sixops-excision-mixed-valid" (eq? (vector-ref exc-mixed 1) #t))
+(gpil-expect "sixops-excision-mixed-chi-5-eq-2+3"
+             (and (= (vector-ref exc-mixed 2) 5)
+                  (= (vector-ref exc-mixed 3) 2)
+                  (= (vector-ref exc-mixed 4) 3)))
+
+;; Derived local-cohomology excision sequence exactness
+(gpil-expect "sixops-local-cohomology-QX" (gpil-sixops-local-cohomology-exact? Q-X))
+(gpil-expect "sixops-local-cohomology-mixed" (gpil-sixops-local-cohomology-exact? F-mixed))
+
+;; 3f. NEGATIVE CONTROL: Non-Proper Open Immersion j_! != j_*
+;;     (j_! Q_U)_z = 0  while  (j_* Q_U)_z = Q (dim 0 != dim 1)
+(define sep-j (gpil-sixops-open-immersion-separation))
+(gpil-expect "neg-ctrl-j-shriek-ne-j-star-flag" (eq? (vector-ref sep-j 1) #t))
+(gpil-expect "neg-ctrl-j-shriek-stalk-z-eq-0" (= (vector-ref sep-j 2) 0))
+(gpil-expect "neg-ctrl-j-star-stalk-z-eq-1" (= (vector-ref sep-j 3) 1))
+(gpil-expect "neg-ctrl-j-shriek-sheaf-ne-j-star" (eq? (vector-ref sep-j 4) #t))
+
+;; ===========================================================================
+;; PART 4: The Yoga of Weights (Deligne Mixed Hodge / Frobenius Weights)
+;; ===========================================================================
+
+(define W-P2 (gpil-weights-p2))
+(define W-P1 (gpil-weights-p1))
+(define W-E  (gpil-weights-elliptic-curve))
+(define W-Gm (gpil-weights-gm))
+(define W-nodal (gpil-weights-nodal-cubic))
+
+;; 4a. Smooth projective varieties are pure of weight k in H^k
+(gpil-expect "weights-P2-pure" (gpil-weights-pure-for-degree? W-P2))
+(gpil-expect "weights-P1-pure" (gpil-weights-pure-for-degree? W-P1))
+(gpil-expect "weights-E-pure"  (gpil-weights-pure-for-degree? W-E))
+(gpil-expect "weights-P2-chi-eq-3" (= (gpil-weight-euler-char W-P2) 3))
+(gpil-expect "weights-E-chi-eq-0"  (= (gpil-weight-euler-char W-E) 0))
+
+;; 4b. Open G_m has H^1 of weight 2 (smooth non-proper bound k <= w <= 2k)
+(gpil-expect "weights-Gm-deligne-valid" (gpil-weights-deligne-bounds-valid? W-Gm))
+(gpil-expect "weights-Gm-smooth-open-valid" (gpil-weights-smooth-open-bounds-valid? W-Gm))
+(gpil-expect "weights-Gm-not-proper-singular-bound"
+             (not (gpil-weights-proper-singular-bounds-valid? W-Gm)))
+
+;; 4c. Singular nodal cubic has H^1 of weight 0 (proper singular bound 0 <= w <= k)
+(gpil-expect "weights-nodal-deligne-valid" (gpil-weights-deligne-bounds-valid? W-nodal))
+(gpil-expect "weights-nodal-proper-singular-valid"
+             (gpil-weights-proper-singular-bounds-valid? W-nodal))
+(gpil-expect "weights-nodal-not-smooth-open-bound"
+             (not (gpil-weights-smooth-open-bounds-valid? W-nodal)))
+
+;; 4d. Kunneth tensor & Tate twist & K_0(Var) weight-graded Euler additivity
+(define W-P1xP1 (gpil-weights-tensor W-P1 W-P1))
+(gpil-expect "weights-P1xP1-pure" (gpil-weights-pure-for-degree? W-P1xP1))
+(gpil-expect "weights-P1xP1-chi-eq-4" (= (gpil-weight-euler-char W-P1xP1) 4))
+
+(define W-Gm-twisted (gpil-weights-tate-twist (list (gpil-weight-piece 1 2 1)) 1))
+(gpil-expect "weights-tate-twist-shifts-wt-2-to-0"
+             (equal? W-Gm-twisted (list (list 1 0 1))))
+
+;; K_0(Var): chi_W(H^*_c(P^1)) = chi_W(H^*_c(G_m)) + chi_W(H^*_c({0, inf}))
+;;   P^1: ((0 . 1) (2 . 1)), G_m: ((0 . -1) (2 . 1)), {0, inf}: ((0 . 2))
+(gpil-expect "weights-P1-graded-chi"
+             (equal? (gpil-weight-graded-chi W-P1) (list (cons 0 1) (cons 2 1))))
+(gpil-expect "weights-compact-Gm-graded-chi"
+             (equal? (gpil-weight-graded-chi (gpil-weights-compact-gm))
+                     (list (cons 0 -1) (cons 2 1))))
+(gpil-expect "weights-compact-2pts-graded-chi"
+             (equal? (gpil-weight-graded-chi (gpil-weights-compact-two-points))
+                     (list (cons 0 2))))
+
+;; 4e. NEGATIVE CONTROLS: Open G_m and singular nodal cubic MUST fail purity!
+(gpil-expect "neg-ctrl-Gm-fails-pure" (not (gpil-weights-pure-for-degree? W-Gm)))
+(gpil-expect "neg-ctrl-nodal-cubic-fails-pure" (not (gpil-weights-pure-for-degree? W-nodal)))
+(gpil-expect "neg-ctrl-out-of-deligne-bounds"
+             (not (gpil-weights-deligne-bounds-valid? (list (gpil-weight-piece 1 3 1)))))
+
+;; ===========================================================================
+;; PART 5: Grothendieck Universes (U_0 in U_1 in U_2)
+;; ===========================================================================
+
+;; 5a. Strict cumulative hierarchy U_0 in U_1 in U_2
+(gpil-expect "univ-0-in-1-bool" (gpil-universe-member? 0 1))
+(gpil-expect "univ-1-in-2-bool" (gpil-universe-member? 1 2))
+(gpil-expect "univ-0-in-2-transitive" (gpil-universe-member? 0 2))
+(gpil-expect "univ-0-in-1-ok" (eq? (gpil-universe-check-membership 0 1) 'ok))
+(gpil-expect "univ-1-in-2-ok" (eq? (gpil-universe-check-membership 1 2) 'ok))
+
+;; 5b. SGA 4 Universe closure (pairs, power set, indexed union inside U_2)
+(gpil-expect "univ-closure-U2-valid"
+             (gpil-universe-closure-valid? 2 0 (list 0 1 1)))
+(gpil-expect "univ-closure-rejects-level-equal-to-U"
+             (not (gpil-universe-closure-valid? 2 0 (list 0 2))))
+(gpil-expect "univ-closure-rejects-index-outside-U"
+             (not (gpil-universe-closure-valid? 1 1 (list 0))))
+
+;; 5c. Category size classification (Set_{U_0} is locally U_0-small and U_1-small)
+(gpil-expect "univ-cat-Set-U0-locally-U0-small"
+             (eq? (gpil-category-size-in-universe 1 0 1) 'locally-u-small))
+(gpil-expect "univ-cat-Set-U0-is-U1-small"
+             (eq? (gpil-category-size-in-universe 1 0 2) 'u-small))
+(gpil-expect "univ-cat-large-needs-higher"
+             (eq? (gpil-category-size-in-universe 2 1 1) 'large-requires-higher-universe))
+
+;; 5d. Valid DAG hierarchy passes graph check
+(gpil-expect "univ-graph-valid-chain"
+             (eq? (gpil-universe-graph-check (list (cons 0 1) (cons 1 2) (cons 0 2))) 'ok))
+
+;; 5e. NEGATIVE CONTROLS (Russell / Girard Paradox):
+;;     Self-membership U_k in U_k and downward cycle U_2 in U_1 MUST fail closed!
+(gpil-expect "neg-ctrl-self-membership-U0-in-U0"
+             (eq? (gpil-universe-check-membership 0 0) 'err-universe-cycle-paradox))
+(gpil-expect "neg-ctrl-self-membership-U2-in-U2"
+             (eq? (gpil-universe-check-membership 2 2) 'err-universe-cycle-paradox))
+(gpil-expect "neg-ctrl-downward-cycle-U2-in-U1"
+             (eq? (gpil-universe-check-membership 2 1) 'err-universe-cycle-paradox))
+(gpil-expect "neg-ctrl-graph-cycle-rejected"
+             (eq? (gpil-universe-graph-check (list (cons 0 1) (cons 1 2) (cons 2 1)))
+                  'err-universe-cycle-paradox))
+
+(display "PASS: core.grothendieck.pillars_six_ops (")
+(display gpil-test-checks)
+(display " checks)")
+(newline)

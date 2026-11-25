@@ -1,0 +1,401 @@
+;;; Executable verification suite for core.grothendieck.beyond_frontiers
+;;; Covers:
+;;;   1. F_1 geometry (Deitmar pointed-monoid Spec, q -> 1 Tits specialization,
+;;;      Borger Lambda-ring Adams operations on Z[t], negative controls, and
+;;;      honest 'open-frontier-unproven Riemann Hypothesis boundary);
+;;;   2. Noncommutative algebraic geometry (Weyl algebra A_1 associativity,
+;;;      noncommutativity, Left Ore witness (x*d - 1)*x = x^2*d, free algebra
+;;;      Q<x,y> Left Ore failure negative control, and Omega*(A^2) DGA checks);
+;;;   3. Arakelov geometry at the infinite prime (exact rational product
+;;;      formula, Arakelov degree-zero conservation, finite-only negative
+;;;      control, Weil height, and exact Northcott enumeration on P^1(Q));
+;;;   4. Directed homotopy & (infinity, 2)-categories (Godement interchange
+;;;      law on D_3 functors/2-cells, invertible coercion success, and
+;;;      fail-closed rejection of irreversible 2-morphisms);
+;;;   5. Universal Teichmuller taxonomy (Bers T(1) quasisymmetric distortion
+;;;      on affine/shear vs non-quasisymmetric negative control, plus exact
+;;;      abc/Reyssat triple analysis and 'disputed-open-unverified IUT status).
+
+(require stdlib)
+(require core.grothendieck.beyond_frontiers)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ===========================================================================
+;; 1. Geometry Over F_1 & Borger Lambda-Rings
+;; ===========================================================================
+
+;; 1a. Deitmar Pointed-Monoid Spec
+;; Pointed idempotent monoid M_bool = {0, 1, e} with e*e = e, 0*x = 0, 1*x = x.
+;; Prime ideals: {0} and {0, e} => 2 points, Krull dimension 1!
+(define monoid-bool
+  (gbey-f1-make-monoid
+    (list 0 1 'e)
+    (lambda (a b)
+      (cond ((or (equal? a 0) (equal? b 0)) 0)
+            ((equal? a 1) b)
+            ((equal? b 1) a)
+            (else 'e)))
+    1
+    (list 0)))
+
+(define spec-bool (gbey-f1-spec-points monoid-bool))
+(expect "f1-spec-bool-has-2-prime-ideals" (= (length spec-bool) 2))
+(expect "f1-spec-bool-krull-dim-1" (= (gbey-f1-spec-krull-dim spec-bool) 1))
+
+;; Pointed nilpotent monoid F_1[t]/(t^3) = {0, 1, t, t2} with t^3 = 0.
+;; Only prime ideal is {0, t, t2} (since t^3 = 0 in p => t in p) => 1 point, Krull dim 0!
+(define monoid-nilp
+  (gbey-f1-make-monoid
+    (list 0 1 't 't2)
+    (lambda (a b)
+      (cond ((or (equal? a 0) (equal? b 0)) 0)
+            ((equal? a 1) b)
+            ((equal? b 1) a)
+            ((and (equal? a 't) (equal? b 't)) 't2)
+            (else 0)))
+    1
+    (list 0)))
+
+(define spec-nilp (gbey-f1-spec-points monoid-nilp))
+(expect "f1-spec-nilpotent-has-1-prime-ideal" (= (length spec-nilp) 1))
+(expect "f1-spec-nilpotent-krull-dim-0" (= (gbey-f1-spec-krull-dim spec-nilp) 0))
+
+;; 1b. Exact q -> 1 Tits specialization & F_q polynomial checks
+(expect "f1-P0-is-1" (= (gbey-f1-projective-points 0) 1))
+(expect "f1-P4-is-5" (= (gbey-f1-projective-points 4) 5))
+(expect "f2-P2-is-7" (= (gbey-poly-eval (gbey-q-int-poly 3) 2) 7))
+(expect "f1-Gr-2-4-is-6" (= (gbey-f1-grassmannian-points 2 4) 6))
+(expect "f1-Gr-2-5-is-10" (= (gbey-f1-grassmannian-points 2 5) 10))
+(expect "f2-Gr-2-4-is-35" (= (gbey-poly-eval (gbey-q-binomial-poly 4 2) 2) 35))
+(expect "f1-GL3-is-6" (= (gbey-f1-gln-order 3) 6))
+(expect "f1-GL4-is-24-Weyl-S4" (= (gbey-f1-gln-order 4) 24))
+(expect "f1-GL5-is-120-Weyl-S5" (= (gbey-f1-gln-order 5) 120))
+
+;; 1c. Borger Lambda-Ring Adams Operations on Z[t] for primes p, q in {2, 3, 5}
+(define poly-f (list 1 -2 3))       ;; 1 - 2t + 3t^2
+(define poly-g (list -1 4 0 2))     ;; -1 + 4t + 2t^3
+(define poly-h (list 2 1 -1 5))     ;; 2 + t - t^2 + 5t^3
+(define borger-primes (list 2 3 5))
+
+(define borger-ok
+  (gbey-borger-verify-adams gbey-poly-adams (list poly-f poly-g poly-h) borger-primes))
+(expect "borger-adams-passes-all-axioms-2-3-5"
+        (eq? (vector-ref borger-ok 0) 'ok-lambda-ring))
+
+;; Explicit witness check: psi^2(psi^3(f)) = psi^3(psi^2(f)) = psi^6(f)
+(expect "borger-adams-psi2-psi3-commute"
+        (gbey-poly-equal?
+          (gbey-poly-adams 2 (gbey-poly-adams 3 poly-f))
+          (gbey-poly-adams 3 (gbey-poly-adams 2 poly-f))))
+(expect "borger-adams-psi2-psi3-equals-psi6"
+        (gbey-poly-equal?
+          (gbey-poly-adams 2 (gbey-poly-adams 3 poly-f))
+          (gbey-poly-adams 6 poly-f)))
+
+;; Explicit Frobenius lift witness mod 5: psi^5(f) == f^5 (mod 5)
+(expect "borger-adams-frobenius-lift-mod-5"
+        (gbey-poly-equal?
+          (gbey-poly-mod (gbey-poly-adams 5 poly-f) 5)
+          (gbey-poly-mod (gbey-poly-pow poly-f 5) 5)))
+
+;; Negative Control 1: map failing Frobenius lift: phi^p(f(t)) = f(p*t)
+(define (bad-frob-psi n f)
+  (gbey-poly-compose f (list 0 n)))
+(define borger-bad-frob
+  (gbey-borger-verify-adams bad-frob-psi (list poly-f poly-g) borger-primes))
+(expect "borger-negative-control-frobenius-fails-closed"
+        (and (eq? (vector-ref borger-bad-frob 0) 'err-not-lambda-ring)
+             (eq? (vector-ref borger-bad-frob 1) 'frobenius-lift-fails)))
+
+;; Negative Control 2: Frobenius-lifting maps that FAIL commutativity!
+;; psi^n(f(t)) = f(t^n + n) satisfies (t^p + p) == t^p (mod p) so Frobenius lift
+;; holds mod every prime p, yet psi^2(psi^3(t)) = (t^2+2)^3 + 3 != (t^3+3)^2 + 2!
+(define (bad-comm-psi n f)
+  (gbey-poly-compose f (gbey-poly-add (gbey-poly-adams n (list 0 1)) (list n))))
+(define borger-bad-comm
+  (gbey-borger-verify-adams bad-comm-psi (list (list 0 1) poly-f) borger-primes))
+(expect "borger-negative-control-commutativity-fails-closed"
+        (and (eq? (vector-ref borger-bad-comm 0) 'err-not-lambda-ring)
+             (eq? (vector-ref borger-bad-comm 1) 'commutativity-fails)))
+
+;; Honest Frontier Tag: Riemann Hypothesis via Spec(Z)/Spec(F_1)
+(define rh-tag (gbey-f1-riemann-status))
+(expect "f1-riemann-honest-open-frontier-tag"
+        (eq? (vector-ref rh-tag 1) 'open-frontier-unproven))
+
+;; ===========================================================================
+;; 2. Noncommutative Algebraic Geometry: Weyl A_1, Ore Failure & DGA
+;; ===========================================================================
+
+(define wx (gbey-weyl-x))
+(define wd (gbey-weyl-d))
+(define w1 (gbey-weyl-one))
+
+;; Noncommutativity: [d, x] = d*x - x*d = 1 != 0
+(define comm-dx (gbey-weyl-commutator wd wx))
+(expect "weyl-commutator-d-x-equals-1" (gbey-weyl-equal? comm-dx w1))
+(expect "weyl-noncommutative-nonzero" (not (gbey-weyl-zero? comm-dx)))
+
+;; Associativity check on nontrivial multi-term Weyl elements
+(define wA (gbey-weyl-add (gbey-weyl-term 1 1 2) (gbey-weyl-term 0 2 -3)))
+(define wB (gbey-weyl-add (gbey-weyl-term 2 0 1) (gbey-weyl-term 0 1 5)))
+(define wC (gbey-weyl-add (gbey-weyl-term 1 2 -1) (gbey-weyl-term 2 1 4)))
+(expect "weyl-associativity-exact"
+        (gbey-weyl-equal?
+          (gbey-weyl-mul (gbey-weyl-mul wA wB) wC)
+          (gbey-weyl-mul wA (gbey-weyl-mul wB wC))))
+
+;; Left Ore Common Multiple Witness 1: (x*d - 1) * x = x^2 * d
+(define w-xd-minus-1 (gbey-weyl-sub (gbey-weyl-term 1 1 1) w1))
+(define w-x2 (gbey-weyl-term 2 0 1))
+(define ore-w1 (gbey-weyl-verify-left-ore wx wd w-xd-minus-1 w-x2))
+(expect "weyl-left-ore-witness-1-exact"
+        (and (eq? (vector-ref ore-w1 0) 'ok-left-ore-witness)
+             (gbey-weyl-equal? (vector-ref ore-w1 1) (gbey-weyl-term 2 1 1))))
+
+;; Left Ore Common Multiple Witness 2: (x*d - 2) * x^2 = x^3 * d
+(define w-xd-minus-2 (gbey-weyl-sub (gbey-weyl-term 1 1 1) (gbey-weyl-term 0 0 2)))
+(define w-x3 (gbey-weyl-term 3 0 1))
+(define ore-w2 (gbey-weyl-verify-left-ore w-x2 wd w-xd-minus-2 w-x3))
+(expect "weyl-left-ore-witness-2-exact"
+        (and (eq? (vector-ref ore-w2 0) 'ok-left-ore-witness)
+             (gbey-weyl-equal? (vector-ref ore-w2 1) (gbey-weyl-term 3 1 1))))
+
+;; Negative Control: invalid Weyl Ore candidate fails closed
+(define ore-bad (gbey-weyl-verify-left-ore wx wd (gbey-weyl-term 1 1 1) w-x2))
+(expect "weyl-invalid-ore-candidate-rejected"
+        (eq? (vector-ref ore-bad 0) 'err-invalid-ore-witness))
+
+;; Negative Control: Free Associative Algebra Q<x, y> FAILS Left Ore!
+(define free-x (gbey-free-term (list 'x) 1))
+(define free-y (gbey-free-term (list 'y) 1))
+(define free-ore-res (gbey-free-algebra-ore-check free-x free-y))
+(expect "free-algebra-Qxy-fails-left-ore"
+        (and (eq? (vector-ref free-ore-res 0) 'err-ore-condition-fails)
+             (eq? (vector-ref free-ore-res 1) 'disjoint-right-terminal-support)))
+
+;; Verify operational witness: noncommuting products in Q<x, y> have disjoint endings
+(define free-a (gbey-free-add (gbey-free-term (list 'x 'y) 2) (gbey-free-term (list 'y) -1)))
+(define free-b (gbey-free-add (gbey-free-term (list 'x 'x) 2) (gbey-free-term (list 'x) -1)))
+(expect "free-algebra-ax-neq-by"
+        (not (gbey-free-equal? (gbey-free-mul free-a free-x)
+                               (gbey-free-mul free-b free-y))))
+
+;; Exact DG-Algebra Omega*(A^2): d^2 = 0 and graded Leibniz rule
+;; alpha = (x*y) dx + (x^2) dy (degree 1), beta = (y) dx + (x - 2y) dy (degree 1)
+;; Also test degree-1 ^ degree-0 and degree-0 ^ degree-1!
+(define dga-f0 (gbey-dga-make-form 0 (list (gbey-weyl-add (gbey-weyl-term 2 1 1) (gbey-weyl-term 0 2 3)))))
+(define dga-w1 (gbey-dga-make-form 1 (list (gbey-weyl-term 1 1 1) (gbey-weyl-term 2 0 1))))
+(define dga-w2 (gbey-dga-make-form 1 (list (gbey-weyl-term 0 1 1)
+                                           (gbey-weyl-sub (gbey-weyl-term 1 0 1) (gbey-weyl-term 0 1 2)))))
+(expect "dga-axioms-deg1-deg0"
+        (eq? (vector-ref (gbey-dga-verify-axioms gbey-dga-diff dga-w1 dga-f0) 0) 'ok-dga-axioms))
+(expect "dga-axioms-deg0-deg1"
+        (eq? (vector-ref (gbey-dga-verify-axioms gbey-dga-diff dga-f0 dga-w2) 0) 'ok-dga-axioms))
+
+;; DGA Negative Control: sign-flipped (ungraded) differential violates d^2 = 0!
+(define (gbey-bad-diff a)
+  (let ((da (vector-ref a 1)) (ca (vector-ref a 2)))
+    (cond
+      ((= da 0) (gbey-dga-diff a))
+      ((= da 1)
+       ;; Wrong sign: dQ/dx + dP/dy instead of dQ/dx - dP/dy => d^2 != 0!
+       (gbey-dga-make-form 2 (list (gbey-weyl-add
+                                     (car (vector-ref (gbey-dga-diff (gbey-dga-make-form 1 (list '() (cadr ca)))) 2))
+                                     (car (vector-ref (gbey-dga-diff (gbey-dga-make-form 1 (list (gbey-weyl-scale -1 (car ca)) '()))) 2))))))
+      (else (gbey-dga-make-form (+ da 1) '())))))
+(expect "dga-negative-control-d2-nonzero-fails-closed"
+        (eq? (vector-ref (gbey-dga-verify-axioms gbey-bad-diff dga-f0 dga-w1) 0)
+             'err-dga-not-nilpotent))
+
+;; ===========================================================================
+;; 3. Arakelov Geometry at the Infinite Prime (infinity)
+;; ===========================================================================
+
+(define div-2-3 (gbey-arakelov-principal-divisor 2 3))
+(define div-35-12 (gbey-arakelov-principal-divisor 35 12))
+(define div-72-125 (gbey-arakelov-principal-divisor 72 125))
+(define div-neg-17-24 (gbey-arakelov-principal-divisor -17 24))
+
+(expect "arakelov-product-formula-2/3" (gbey-arakelov-product-formula? div-2-3))
+(expect "arakelov-product-formula-35/12" (gbey-arakelov-product-formula? div-35-12))
+(expect "arakelov-product-formula-72/125" (gbey-arakelov-product-formula? div-72-125))
+(expect "arakelov-product-formula-neg-17/24" (gbey-arakelov-product-formula? div-neg-17-24))
+
+(expect "arakelov-degree-zero-2/3" (< (abs (gbey-arakelov-degree div-2-3)) 1e-13))
+(expect "arakelov-degree-zero-35/12" (< (abs (gbey-arakelov-degree div-35-12)) 1e-13))
+(expect "arakelov-degree-zero-72/125" (< (abs (gbey-arakelov-degree div-72-125)) 1e-13))
+(expect "arakelov-degree-zero-neg-17/24" (< (abs (gbey-arakelov-degree div-neg-17-24)) 1e-13))
+
+;; Negative Control: omitting the infinite prime violates degree-zero conservation!
+(define fin-only-2-3 (gbey-arakelov-finite-only-degree-check div-2-3 1e-12))
+(expect "arakelov-negative-control-missing-infinite-prime"
+        (and (eq? (vector-ref fin-only-2-3 0) 'err-missing-archimedean-prime)
+             (< (abs (- (vector-ref fin-only-2-3 1) (- (log 2.0) (log 3.0)))) 1e-13)))
+
+;; Naive Weil / Arakelov height & exact Northcott finiteness on P^1(Q)
+(expect "weil-height-reduced-6/9-is-3" (= (gbey-weil-height 6 9) 3))
+(expect "weil-height-infinity-is-1" (= (gbey-weil-height 1 0) 1))
+(expect "weil-height-zero-is-1" (= (gbey-weil-height 0 1) 1))
+
+(define p1-h1 (gbey-northcott-p1-enumerate 1))
+(define p1-h2 (gbey-northcott-p1-enumerate 2))
+(define p1-h3 (gbey-northcott-p1-enumerate 3))
+(define p1-h4 (gbey-northcott-p1-enumerate 4))
+(expect "northcott-p1-height-1-count-4" (= (length p1-h1) 4))
+(expect "northcott-p1-height-2-count-8" (= (length p1-h2) 8))
+(expect "northcott-p1-height-3-count-16" (= (length p1-h3) 16))
+(expect "northcott-p1-height-4-count-24" (= (length p1-h4) 24))
+(expect "northcott-negative-bound-rejected"
+        (eq? (vector-ref (gbey-northcott-p1-enumerate 0) 0) 'err-invalid-height-bound))
+
+;; ===========================================================================
+;; 4. Directed Homotopy & (infinity, 2)-Categories
+;; ===========================================================================
+
+;; Functors on directed category D_3
+(define F-fun (gbey-make-functor 'F (vector 0 0 1) #t))
+(define G-fun (gbey-make-functor 'G (vector 0 1 1) #t))
+(define Gp-fun (gbey-make-functor 'Gp (vector 1 1 2) #t))
+
+(define H-fun (gbey-make-functor 'H (vector 0 0 1) #t))
+(define K-fun (gbey-make-functor 'K (vector 0 1 2) #t))
+(define Kp-fun (gbey-make-functor 'Kp (vector 1 2 2) #t))
+
+;; Irreversible directed 2-morphisms:
+;; alpha : F => G has component (0->1 'dir) at object 1
+(define alpha-2cell
+  (gbey-make-2cell 'alpha F-fun G-fun
+    (vector (vector 'gbey-d3-mor 0 0 -1)
+            (vector 'gbey-d3-mor 0 1 'dir)
+            (vector 'gbey-d3-mor 1 1 1))))
+(define alpha-p-2cell
+  (gbey-make-2cell 'alpha-prime G-fun Gp-fun
+    (vector (vector 'gbey-d3-mor 0 1 'dir)
+            (vector 'gbey-d3-mor 1 1 -1)
+            (vector 'gbey-d3-mor 1 2 'dir))))
+(define beta-2cell
+  (gbey-make-2cell 'beta H-fun K-fun
+    (vector (vector 'gbey-d3-mor 0 0 -1)
+            (vector 'gbey-d3-mor 0 1 'dir)
+            (vector 'gbey-d3-mor 1 2 'dir))))
+(define beta-p-2cell
+  (gbey-make-2cell 'beta-prime K-fun Kp-fun
+    (vector (vector 'gbey-d3-mor 0 1 'dir)
+            (vector 'gbey-d3-mor 1 2 'dir)
+            (vector 'gbey-d3-mor 2 2 -1))))
+
+(expect "2cell-alpha-is-irreversible-directed"
+        (eq? (vector-ref alpha-2cell 5) 'irreversible-directed))
+(expect "2cell-beta-is-irreversible-directed"
+        (eq? (vector-ref beta-2cell 5) 'irreversible-directed))
+
+;; Godement Interchange Law on irreversible directed 2-cells
+(define godement-dir
+  (gbey-verify-godement-interchange alpha-2cell alpha-p-2cell beta-2cell beta-p-2cell))
+(expect "godement-interchange-directed-exact"
+        (eq? (vector-ref godement-dir 0) 'ok-godement-interchange))
+
+;; Strictly invertible 2-morphisms on Id : D_3 -> D_3
+(define Id-fun (gbey-make-functor 'Id (vector 0 1 2) #t))
+(define gamma-inv
+  (gbey-make-2cell 'gamma-inv Id-fun Id-fun
+    (vector (vector 'gbey-d3-mor 0 0 -1)
+            (vector 'gbey-d3-mor 1 1 -1)
+            (vector 'gbey-d3-mor 2 2 1))))
+(define delta-inv
+  (gbey-make-2cell 'delta-inv Id-fun Id-fun
+    (vector (vector 'gbey-d3-mor 0 0 1)
+            (vector 'gbey-d3-mor 1 1 -1)
+            (vector 'gbey-d3-mor 2 2 -1))))
+
+(expect "2cell-gamma-is-invertible" (eq? (vector-ref gamma-inv 5) 'invertible))
+(expect "godement-interchange-invertible-exact"
+        (eq? (vector-ref (gbey-verify-godement-interchange gamma-inv delta-inv delta-inv gamma-inv) 0)
+             'ok-godement-interchange))
+
+;; Positive control: invertible 2-morphism coerces cleanly to (infinity, 1)-groupoid
+(define coerce-ok (gbey-coerce-infty1-groupoid gamma-inv))
+(expect "infty1-coercion-accepts-invertible-2cell"
+        (eq? (vector-ref coerce-ok 0) 'ok-infty1-groupoid-homotopy))
+
+;; Negative Control: irreversible 2-morphism MUST fail closed on (infinity, 1)-groupoid coercion!
+(define coerce-bad (gbey-coerce-infty1-groupoid alpha-2cell))
+(expect "infty1-coercion-rejects-irreversible-2cell"
+        (eq? (vector-ref coerce-bad 0) 'err-irreversible-directed-morphism))
+
+;; Negative Control: non-composable vertical 2-cells rejected
+(define vcomp-bad (gbey-2cell-vcomp alpha-2cell alpha-p-2cell))
+(expect "2cell-vcomp-mismatch-rejected"
+        (eq? (vector-ref vcomp-bad 0) 'err-2cell-domain-mismatch))
+
+;; ===========================================================================
+;; 5. Universal Teichmuller Taxonomy (Bers T(1) & Honest abc/IUT Boundary)
+;; ===========================================================================
+
+(define qs-xs (list -2.0 -0.5 0.0 0.25 1.0 3.0))
+(define qs-ts (list 0.001 0.01 0.1 0.5 1.0 5.0 50.0))
+
+;; Positive Control 1: Affine map h(x) = 3x + 5 has constant distortion rho = 1 (M = 1)
+(define (h-affine x) (+ (* 3.0 x) 5.0))
+(define bers-aff (gbey-bers-qs-check h-affine qs-xs qs-ts 1.0))
+(expect "bers-t1-affine-is-1-quasisymmetric"
+        (and (eq? (vector-ref bers-aff 0) 'bers-t1-admissible)
+             (< (abs (- (vector-ref bers-aff 1) 1.0)) 1e-12)))
+
+;; Positive Control 2: Piecewise-linear Beurling-Ahlfors shear h(x) = x (x<=0), 2x (x>0)
+;; Strictly 2-quasisymmetric (sup distortion = 2.0), strictly in Bers T(1)!
+(define (h-shear x) (if (<= x 0.0) x (* 2.0 x)))
+(define bers-shear (gbey-bers-qs-check h-shear qs-xs qs-ts 2.0))
+(expect "bers-t1-shear-is-2-quasisymmetric"
+        (and (eq? (vector-ref bers-shear 0) 'bers-t1-admissible)
+             (< (abs (- (vector-ref bers-shear 1) 2.0)) 1e-12)))
+
+;; Negative Control: Continuous increasing homeomorphism h(x) = x (x<=0), x^2 (x>0)
+;; At x = 0: rho(0, t) = t^2 / t = t -> unbounded as t -> 0 or t -> infinity!
+(define (h-non-qs x) (if (<= x 0.0) x (* x x)))
+(define bers-bad (gbey-bers-qs-check h-non-qs qs-xs qs-ts 10.0))
+(expect "bers-t1-negative-control-non-quasisymmetric-rejected"
+        (and (eq? (vector-ref bers-bad 0) 'err-not-quasisymmetric)
+             (> (vector-ref bers-bad 1) 500.0)))
+
+;; Honest abc / IUT Epistemic Boundary
+;; Reyssat triple: a = 2, b = 3^10 * 109 = 6436341, c = 23^5 = 6436343
+;; rad(abc) = 2 * 3 * 109 * 23 = 15042, quality q ~ 1.62991168 > 1.6
+(define abc-reyssat (gbey-abc-triple-analyze 2 6436341 6436343))
+(expect "abc-reyssat-valid-tag" (eq? (vector-ref abc-reyssat 0) 'gbey-abc-analysis))
+(expect "abc-reyssat-exact-radical-15042" (= (vector-ref abc-reyssat 4) 15042))
+(expect "abc-reyssat-quality-gt-1.629"
+        (and (> (vector-ref abc-reyssat 5) 1.6299)
+             (< (vector-ref abc-reyssat 5) 1.6300)))
+(expect "abc-reyssat-honest-iut-disputed-open-unverified"
+        (eq? (vector-ref abc-reyssat 6) 'disputed-open-unverified))
+
+;; Standard triple (1, 8, 9): rad = 6, q = log(9)/log(6) ~ 1.22629
+(define abc-1-8-9 (gbey-abc-triple-analyze 1 8 9))
+(expect "abc-1-8-9-radical-6" (= (vector-ref abc-1-8-9 4) 6))
+(expect "abc-1-8-9-quality-gt-1.22" (> (vector-ref abc-1-8-9 5) 1.22))
+(expect "abc-1-8-9-honest-iut-status"
+        (eq? (vector-ref abc-1-8-9 6) 'disputed-open-unverified))
+
+;; Negative Control 1: non-coprime triple (2, 4, 6) rejected with 'err-not-coprime
+(define abc-non-coprime (gbey-abc-triple-analyze 2 4 6))
+(expect "abc-negative-control-non-coprime-rejected"
+        (eq? (vector-ref abc-non-coprime 0) 'err-not-coprime))
+
+;; Negative Control 2: non-additive triple (2, 3, 7) rejected
+(define abc-non-add (gbey-abc-triple-analyze 2 3 7))
+(expect "abc-negative-control-non-additive-rejected"
+        (eq? (vector-ref abc-non-add 0) 'err-not-additive-triple))
+
+(display "PASS: grothendieck_beyond_frontiers_test (")
+(display checks)
+(display " checks)")
+(newline)

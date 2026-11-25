@@ -1,0 +1,788 @@
+;;; core.grothendieck.functional -- Grothendieck Era 1: Functional Analysis (1949-1955)
+;;;   Nuclear Spaces, Topological Tensor Products & Grothendieck's Inequality.
+;;;
+;;; Implements:
+;;;   1. Schwartz rapid-decay sequence space s(N) Frechet seminorm families,
+;;;      Grothendieck-Pietsch nuclearity ratio witnesses, and polynomial-decay
+;;;      divergence separation.
+;;;   2. Schatten p-norms (trace-class S_1, Hilbert-Schmidt S_2, operator S_inf)
+;;;      for exact diagonal operators and general real finite-rank matrices via
+;;;      symmetric Jacobi eigendecomposition of the exact Gram matrix.
+;;;   3. Projective vs injective topological tensor product norms (pi vs eps)
+;;;      on both (l_1, l_1) and (l_2, l_2), rank-1 cross-norm coincidence,
+;;;      Hadamard matrices, and Dvoretzky-Rogers / non-nuclearity of l^2 via
+;;;      linear divergence of ||I_n||_1 / ||I_n||_inf = n.
+;;;   4. Grothendieck's inequality (Resume, 1953/1956): exhaustive exact
+;;;      classical bilinear optimization over {-1, +1}^m x {-1, +1}^n,
+;;;      fail-closed Hilbert-space unit-vector Gram evaluator, Krivine's
+;;;      constant upper bound pi / (2 ln(1 + sqrt(2))), canonical Bell-CHSH
+;;;      Tsirelson witness (M_cl = 2, M_H = 2*sqrt(2), R = sqrt(2)), and
+;;;      3x3 / 4x4 Grothendieck separation witnesses.
+;;;
+;;; All internal and exported bindings use the `gfa-` prefix.
+;;; Exact vectors and matrices are constructed strictly with `vector` and
+;;; `make-vector` procedures (never numeric reader literals).
+
+(provide
+  ;; Mathematical constants & exact helpers
+  gfa-pi
+  gfa-basel-limit
+  gfa-krivine-bound
+  gfa-int-pow
+  gfa-factorial
+  ;; Nuclear spaces & Schwartz rapid-decay sequence space s(N)
+  gfa-schwartz-seminorm
+  gfa-schwartz-seminorm-profile
+  gfa-exp-decay-seq
+  gfa-factorial-decay-seq
+  gfa-poly-decay-seq
+  gfa-pietsch-ratio-sum
+  gfa-pietsch-nuclear-witness?
+  gfa-nuclear-decay-diag
+  ;; Exact vector, matrix & Schatten p-norm primitives
+  gfa-vec-dot
+  gfa-vec-norm-sq
+  gfa-vec-l1-norm
+  gfa-mat-rows
+  gfa-mat-cols
+  gfa-mat-ref
+  gfa-diagonal-matrix
+  gfa-identity-matrix
+  gfa-outer-product
+  gfa-hadamard-matrix
+  gfa-diag-trace-norm
+  gfa-diag-hs-norm-sq
+  gfa-diag-hs-norm
+  gfa-diag-op-norm
+  gfa-diag-schatten-chain-valid?
+  gfa-mat-gram
+  gfa-sym-eigenvalues
+  gfa-mat-singular-values
+  gfa-mat-hs-norm-sq
+  gfa-mat-hs-norm
+  gfa-mat-trace-norm
+  gfa-mat-op-norm
+  gfa-mat-schatten-norms
+  gfa-mat-schatten-chain-valid?
+  ;; Projective vs injective topological tensor norms & non-nuclearity of l^2
+  gfa-injective-norm-linf
+  gfa-projective-norm-l1
+  gfa-hilbert-injective-norm
+  gfa-hilbert-projective-norm
+  gfa-tensor-norm-report
+  gfa-identity-non-nuclearity-ratio
+  ;; Grothendieck's inequality & Bell-CHSH / 3x3 / 4x4 witnesses
+  gfa-grothendieck-classical-opt
+  gfa-grothendieck-classical-max
+  gfa-unit-vector?
+  gfa-grothendieck-hilbert-val
+  gfa-grothendieck-ratio
+  gfa-grothendieck-verify-bound
+  gfa-chsh-matrix
+  gfa-chsh-tsirelson-vectors
+  gfa-frustrated-c6-matrix
+  gfa-frustrated-c6-vectors
+  gfa-frustrated-c8-matrix
+  gfa-frustrated-c8-vectors
+  gfa-block-chsh4-matrix
+  gfa-block-chsh4-vectors)
+
+;; ===========================================================================
+;; 1. Constants & Exact Integer Arithmetic Helpers
+;; ===========================================================================
+
+(define gfa-pi 3.14159265358979323846)
+(define gfa-basel-limit (/ (* gfa-pi gfa-pi) 6.0))
+
+;; Krivine's upper bound on the real Grothendieck constant K_G^R:
+;;   K_G^R <= pi / (2 * ln(1 + sqrt(2))) ~= 1.7822139781913695
+(define (gfa-krivine-bound)
+  (/ gfa-pi (* 2.0 (log (+ 1.0 (sqrt 2.0))))))
+
+;; Exact integer exponentiation base^exp for integer exp >= 0.
+(define (gfa-int-pow base exp)
+  (let loop ((b base) (e exp) (acc 1))
+    (cond ((<= e 0) acc)
+          ((= (remainder e 2) 1)
+           (loop (* b b) (quotient e 2) (* acc b)))
+          (else
+           (loop (* b b) (quotient e 2) acc)))))
+
+;; Exact integer factorial n! for n >= 0.
+(define (gfa-factorial n)
+  (let loop ((i 2) (acc 1))
+    (if (> i n) acc (loop (+ i 1) (* acc i)))))
+
+;; ===========================================================================
+;; 2. Nuclear Spaces & Schwartz Rapid-Decay Sequence Space s(N)
+;; ===========================================================================
+
+;; Truncated Frechet seminorm on s(N):
+;;   ||a||_k = sum_{n=0}^{N-1} (n + 1)^k * |a_n|
+;; Preserves exact rational arithmetic whenever `seq` has exact entries.
+(define (gfa-schwartz-seminorm seq k)
+  (let ((n (vector-length seq)))
+    (let loop ((i 0) (acc 0))
+      (if (>= i n)
+          acc
+          (let* ((w (gfa-int-pow (+ i 1) k))
+                 (val (abs (vector-ref seq i))))
+            (loop (+ i 1) (+ acc (* w val))))))))
+
+;; Profile of Frechet seminorms (||a||_0, ||a||_1, ..., ||a||_{k-max}).
+(define (gfa-schwartz-seminorm-profile seq k-max)
+  (let ((res (make-vector (+ k-max 1) 0)))
+    (let loop ((k 0))
+      (if (> k k-max)
+          res
+          (begin
+            (vector-set! res k (gfa-schwartz-seminorm seq k))
+            (loop (+ k 1)))))))
+
+;; Exact rational exponential rapid-decay sequence: a_n = 1 / base^n.
+(define (gfa-exp-decay-seq n base)
+  (let ((v (make-vector n 0)))
+    (let loop ((i 0) (den 1))
+      (if (>= i n)
+          v
+          (begin
+            (vector-set! v i (/ 1 den))
+            (loop (+ i 1) (* den base)))))))
+
+;; Exact rational factorial rapid-decay sequence: a_n = 1 / (n + 1)!.
+(define (gfa-factorial-decay-seq n)
+  (let ((v (make-vector n 0)))
+    (let loop ((i 0) (fac 1))
+      (if (>= i n)
+          v
+          (let ((next-fac (* fac (+ i 1))))
+            (vector-set! v i (/ 1 next-fac))
+            (loop (+ i 1) next-fac))))))
+
+;; Exact rational polynomial-decay sequence: a_n = 1 / (n + 1)^p.
+(define (gfa-poly-decay-seq n p)
+  (let ((v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (>= i n)
+          v
+          (begin
+            (vector-set! v i (/ 1 (gfa-int-pow (+ i 1) p)))
+            (loop (+ i 1)))))))
+
+;; Grothendieck-Pietsch nuclearity ratio sum for Kothe weights a_{k,n} = (n+1)^k:
+;;   sum_{n=0}^{N-1} a_{k,n} / a_{m,n} = sum_{n=0}^{N-1} (n + 1)^{-(m - k)}
+;; Exact rational when m >= k.
+(define (gfa-pietsch-ratio-sum n k m)
+  (let ((d (- m k)))
+    (let loop ((i 0) (acc 0))
+      (if (>= i n)
+          acc
+          (let ((term (if (>= d 0)
+                          (/ 1 (gfa-int-pow (+ i 1) d))
+                          (gfa-int-pow (+ i 1) (- 0 d)))))
+            (loop (+ i 1) (+ acc term)))))))
+
+;; Verifies that m > k and the truncated Grothendieck-Pietsch weight ratio sum
+;; stays strictly below `upper-bound` (e.g. pi^2 / 6 for m = k + 2).
+(define (gfa-pietsch-nuclear-witness? n k m upper-bound)
+  (and (> m k)
+       (< (gfa-pietsch-ratio-sum n k m) upper-bound)))
+
+;; Diagonal operator D_r = diag((n + 1)^{-r})_{n=0}^{N-1} (nuclear for r >= 2).
+(define (gfa-nuclear-decay-diag n r)
+  (gfa-poly-decay-seq n r))
+
+;; ===========================================================================
+;; 3. Exact Vector, Matrix & Schatten p-Norm Primitives
+;; ===========================================================================
+
+(define (gfa-vec-dot u v)
+  (let ((n (vector-length u)))
+    (let loop ((i 0) (acc 0))
+      (if (>= i n)
+          acc
+          (loop (+ i 1) (+ acc (* (vector-ref u i) (vector-ref v i))))))))
+
+(define (gfa-vec-norm-sq u)
+  (gfa-vec-dot u u))
+
+(define (gfa-vec-l1-norm u)
+  (let ((n (vector-length u)))
+    (let loop ((i 0) (acc 0))
+      (if (>= i n)
+          acc
+          (loop (+ i 1) (+ acc (abs (vector-ref u i))))))))
+
+(define (gfa-mat-rows A) (vector-length A))
+(define (gfa-mat-cols A) (vector-length (vector-ref A 0)))
+(define (gfa-mat-ref A i j) (vector-ref (vector-ref A i) j))
+
+(define (gfa-make-zero-matrix rows cols init)
+  (let ((M (make-vector rows #f)))
+    (let loop ((i 0))
+      (if (>= i rows)
+          M
+          (begin
+            (vector-set! M i (make-vector cols init))
+            (loop (+ i 1)))))))
+
+;; Exact diagonal n x n matrix from diagonal vector d.
+(define (gfa-diagonal-matrix d)
+  (let* ((n (vector-length d))
+         (M (gfa-make-zero-matrix n n 0)))
+    (let loop ((i 0))
+      (if (>= i n)
+          M
+          (begin
+            (vector-set! (vector-ref M i) i (vector-ref d i))
+            (loop (+ i 1)))))))
+
+;; Exact n x n identity matrix I_n.
+(define (gfa-identity-matrix n)
+  (gfa-diagonal-matrix (make-vector n 1)))
+
+;; Exact rank-1 tensor product (u (x) v)_{i,j} = u_i * v_j.
+(define (gfa-outer-product u v)
+  (let* ((m (vector-length u))
+         (n (vector-length v))
+         (M (gfa-make-zero-matrix m n 0)))
+    (let li ((i 0))
+      (if (>= i m)
+          M
+          (let ((ui (vector-ref u i))
+                (row (vector-ref M i)))
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin
+                    (vector-set! row j (* ui (vector-ref v j)))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))))
+
+;; Exact Walsh-Hadamard matrix H_{order} for order = 2^k (1, 2, 4, 8, ...).
+(define (gfa-hadamard-matrix order)
+  (if (= order 1)
+      (vector (vector 1))
+      (let* ((half (quotient order 2))
+             (H (gfa-hadamard-matrix half))
+             (M (gfa-make-zero-matrix order order 0)))
+        (let li ((i 0))
+          (if (>= i half)
+              M
+              (let ((hrow (vector-ref H i))
+                    (top (vector-ref M i))
+                    (bot (vector-ref M (+ i half))))
+                (let lj ((j 0))
+                  (if (< j half)
+                      (let ((v (vector-ref hrow j)))
+                        (vector-set! top j v)
+                        (vector-set! top (+ j half) v)
+                        (vector-set! bot j v)
+                        (vector-set! bot (+ j half) (- 0 v))
+                        (lj (+ j 1)))))
+                (li (+ i 1))))))))
+
+;; Exact diagonal Schatten p-norms:
+;;   ||D||_1 = sum |d_i|,  ||D||_2^2 = sum d_i^2,  ||D||_inf = max |d_i|.
+(define (gfa-diag-trace-norm d)
+  (gfa-vec-l1-norm d))
+
+(define (gfa-diag-hs-norm-sq d)
+  (gfa-vec-norm-sq d))
+
+(define (gfa-diag-hs-norm d)
+  (sqrt (+ 0.0 (gfa-diag-hs-norm-sq d))))
+
+(define (gfa-diag-op-norm d)
+  (let ((n (vector-length d)))
+    (let loop ((i 0) (best 0))
+      (if (>= i n)
+          best
+          (let ((v (abs (vector-ref d i))))
+            (loop (+ i 1) (if (> v best) v best)))))))
+
+;; Exact squared Schatten chain check: ||D||_inf^2 <= ||D||_2^2 <= ||D||_1^2.
+(define (gfa-diag-schatten-chain-valid? d)
+  (let ((s-inf (gfa-diag-op-norm d))
+        (s-hs2 (gfa-diag-hs-norm-sq d))
+        (s-tr  (gfa-diag-trace-norm d)))
+    (and (<= (* s-inf s-inf) s-hs2)
+         (<= s-hs2 (* s-tr s-tr)))))
+
+;; Exact Gram matrix of A: A^T A if rows >= cols, else A A^T.
+(define (gfa-mat-gram A)
+  (let ((m (gfa-mat-rows A))
+        (n (gfa-mat-cols A)))
+    (if (>= m n)
+        (let ((G (gfa-make-zero-matrix n n 0)))
+          (let li ((i 0))
+            (if (>= i n)
+                G
+                (begin
+                  (let lj ((j i))
+                    (if (< j n)
+                        (let ((s (let lk ((k 0) (acc 0))
+                                   (if (>= k m)
+                                       acc
+                                       (lk (+ k 1)
+                                           (+ acc (* (gfa-mat-ref A k i)
+                                                     (gfa-mat-ref A k j))))))))
+                          (vector-set! (vector-ref G i) j s)
+                          (vector-set! (vector-ref G j) i s)
+                          (lj (+ j 1)))))
+                  (li (+ i 1))))))
+        (let ((G (gfa-make-zero-matrix m m 0)))
+          (let li ((i 0))
+            (if (>= i m)
+                G
+                (begin
+                  (let lj ((j i))
+                    (if (< j m)
+                        (let ((s (let lk ((k 0) (acc 0))
+                                   (if (>= k n)
+                                       acc
+                                       (lk (+ k 1)
+                                           (+ acc (* (gfa-mat-ref A i k)
+                                                     (gfa-mat-ref A j k))))))))
+                          (vector-set! (vector-ref G i) j s)
+                          (vector-set! (vector-ref G j) i s)
+                          (lj (+ j 1)))))
+                  (li (+ i 1)))))))))
+
+;; In-place descending insertion sort on a numeric vector.
+(define (gfa-sort-desc! v)
+  (let ((n (vector-length v)))
+    (let li ((i 1))
+      (if (>= i n)
+          v
+          (let ((key (vector-ref v i)))
+            (let lj ((j (- i 1)))
+              (if (and (>= j 0) (< (vector-ref v j) key))
+                  (begin
+                    (vector-set! v (+ j 1) (vector-ref v j))
+                    (lj (- j 1)))
+                  (vector-set! v (+ j 1) key)))
+            (li (+ i 1)))))))
+
+;; Symmetric Jacobi eigenvalue solver for a real k x k symmetric matrix S.
+;; Returns a vector of eigenvalues sorted in descending order.
+(define (gfa-sym-eigenvalues S max-iter tol)
+  (let* ((k (gfa-mat-rows S))
+         (M (gfa-make-zero-matrix k k 0.0)))
+    (let ci ((i 0))
+      (if (< i k)
+          (let ((row (vector-ref M i)))
+            (let cj ((j 0))
+              (if (< j k)
+                  (begin
+                    (vector-set! row j (+ 0.0 (gfa-mat-ref S i j)))
+                    (cj (+ j 1)))))
+            (ci (+ i 1)))))
+    (let iter ((step 0))
+      (if (< step max-iter)
+          (let ((p 0) (q 1) (max-off 0.0))
+            (let fi ((i 0))
+              (if (< i k)
+                  (begin
+                    (let fj ((j (+ i 1)))
+                      (if (< j k)
+                          (let ((v (abs (gfa-mat-ref M i j))))
+                            (if (> v max-off)
+                                (begin
+                                  (set! max-off v)
+                                  (set! p i)
+                                  (set! q j)))
+                            (fj (+ j 1)))))
+                    (fi (+ i 1)))))
+            (if (> max-off tol)
+                (let* ((app (gfa-mat-ref M p p))
+                       (aqq (gfa-mat-ref M q q))
+                       (apq (gfa-mat-ref M p q))
+                       (tau (/ (- aqq app) (* 2.0 apq)))
+                       (t (if (>= tau 0.0)
+                              (/ 1.0 (+ tau (sqrt (+ 1.0 (* tau tau)))))
+                              (/ -1.0 (+ (- 0.0 tau) (sqrt (+ 1.0 (* tau tau)))))))
+                       (c (/ 1.0 (sqrt (+ 1.0 (* t t)))))
+                       (s (* t c)))
+                  (vector-set! (vector-ref M p) p (- app (* t apq)))
+                  (vector-set! (vector-ref M q) q (+ aqq (* t apq)))
+                  (vector-set! (vector-ref M p) q 0.0)
+                  (vector-set! (vector-ref M q) p 0.0)
+                  (let lr ((r 0))
+                    (if (< r k)
+                        (begin
+                          (if (and (not (= r p)) (not (= r q)))
+                              (let* ((arp (gfa-mat-ref M r p))
+                                     (arq (gfa-mat-ref M r q))
+                                     (nrp (- (* c arp) (* s arq)))
+                                     (nrq (+ (* s arp) (* c arq))))
+                                (vector-set! (vector-ref M r) p nrp)
+                                (vector-set! (vector-ref M p) r nrp)
+                                (vector-set! (vector-ref M r) q nrq)
+                                (vector-set! (vector-ref M q) r nrq)))
+                          (lr (+ r 1)))))
+                  (iter (+ step 1)))))))
+    (let ((eigs (make-vector k 0.0)))
+      (let li ((i 0))
+        (if (< i k)
+            (begin
+              (vector-set! eigs i (gfa-mat-ref M i i))
+              (li (+ i 1)))))
+      (gfa-sort-desc! eigs))))
+
+;; Singular values of real m x n matrix A in descending order.
+;; Gram eigenvalues at or below relative machine-noise floor (1e-12 * max(1, lam_max))
+;; are treated as zero so rank-deficient singular values do not amplify via sqrt(eps).
+(define (gfa-mat-singular-values A)
+  (let* ((G (gfa-mat-gram A))
+         (eigs (gfa-sym-eigenvalues G 200 1e-14))
+         (k (vector-length eigs))
+         (lam-max (if (= k 0) 0.0 (vector-ref eigs 0)))
+         (zero-floor (* 1e-12 (if (> lam-max 1.0) lam-max 1.0)))
+         (sv (make-vector k 0.0)))
+    (let li ((i 0))
+      (if (>= i k)
+          sv
+          (let ((lam (vector-ref eigs i)))
+            (vector-set! sv i (if (<= lam zero-floor) 0.0 (sqrt lam)))
+            (li (+ i 1)))))))
+
+;; Exact Frobenius / Hilbert-Schmidt norm squared: sum_{i,j} A_{i,j}^2.
+(define (gfa-mat-hs-norm-sq A)
+  (let ((m (gfa-mat-rows A))
+        (n (gfa-mat-cols A)))
+    (let li ((i 0) (acc 0))
+      (if (>= i m)
+          acc
+          (let ((row (vector-ref A i)))
+            (li (+ i 1)
+                (let lj ((j 0) (racc acc))
+                  (if (>= j n)
+                      racc
+                      (let ((v (vector-ref row j)))
+                        (lj (+ j 1) (+ racc (* v v))))))))))))
+
+(define (gfa-mat-hs-norm A)
+  (sqrt (+ 0.0 (gfa-mat-hs-norm-sq A))))
+
+;; Nuclear / trace norm ||A||_1 = sum_k sigma_k(A).
+(define (gfa-mat-trace-norm A)
+  (let* ((sv (gfa-mat-singular-values A))
+         (k (vector-length sv)))
+    (let loop ((i 0) (acc 0.0))
+      (if (>= i k) acc (loop (+ i 1) (+ acc (vector-ref sv i)))))))
+
+;; Spectral / operator norm ||A||_inf = max_k sigma_k(A).
+(define (gfa-mat-op-norm A)
+  (let ((sv (gfa-mat-singular-values A)))
+    (if (= (vector-length sv) 0) 0.0 (vector-ref sv 0))))
+
+;; Full Schatten norm summary for A.
+(define (gfa-mat-schatten-norms A)
+  (let* ((sv (gfa-mat-singular-values A))
+         (k (vector-length sv))
+         (op (if (= k 0) 0.0 (vector-ref sv 0)))
+         (hs (gfa-mat-hs-norm A))
+         (tr (let loop ((i 0) (acc 0.0))
+               (if (>= i k) acc (loop (+ i 1) (+ acc (vector-ref sv i)))))))
+    (vector 'gfa-schatten op hs tr sv)))
+
+;; Verifies ||A||_inf <= ||A||_2 <= ||A||_1 within tolerance `tol`.
+(define (gfa-mat-schatten-chain-valid? A tol)
+  (let* ((s (gfa-mat-schatten-norms A))
+         (op (vector-ref s 1))
+         (hs (vector-ref s 2))
+         (tr (vector-ref s 3)))
+    (and (<= op (+ hs tol))
+         (<= hs (+ tr tol)))))
+
+;; ===========================================================================
+;; 4. Projective vs Injective Topological Tensor Norms & Non-Nuclearity of l^2
+;; ===========================================================================
+
+;; Materialize a length-k sign vector in {-1, +1}^k from integer bitmask.
+(define (gfa-sign-vec-from-mask k mask)
+  (let ((v (make-vector k 0)))
+    (let loop ((i 0) (m mask))
+      (if (>= i k)
+          v
+          (begin
+            (vector-set! v i (if (= (remainder m 2) 1) 1 -1))
+            (loop (+ i 1) (quotient m 2)))))))
+
+;; Exhaustive exact discrete bilinear optimization over ALL (x, y) in {-1,+1}^m x {-1,+1}^n:
+;;   M_cl(A) = max_{x in {-1,+1}^m, y in {-1,+1}^n} sum_{i,j} A_{i,j} x_i y_j
+;; Returns (vector 'gfa-classical-opt best-val best-x best-y total-configs).
+(define (gfa-grothendieck-classical-opt A)
+  (let* ((m (gfa-mat-rows A))
+         (n (gfa-mat-cols A))
+         (nx (gfa-int-pow 2 m))
+         (ny (gfa-int-pow 2 n))
+         (row-sum (make-vector n 0))
+         (best-val #f)
+         (best-mx 0)
+         (best-my 0)
+         (evals 0))
+    (let lx ((mx 0))
+      (if (< mx nx)
+          (begin
+            ;; Precompute row-sum[j] = sum_i x_i * A_{i,j} for current x mask.
+            (let lj ((j 0))
+              (if (< j n)
+                  (let ((s (let li ((i 0) (mm mx) (acc 0))
+                             (if (>= i m)
+                                 acc
+                                 (let ((xi (if (= (remainder mm 2) 1) 1 -1)))
+                                   (li (+ i 1) (quotient mm 2)
+                                       (+ acc (* xi (gfa-mat-ref A i j)))))))))
+                    (vector-set! row-sum j s)
+                    (lj (+ j 1)))))
+            ;; Evaluate all 2^n sign assignments for y.
+            (let ly ((my 0))
+              (if (< my ny)
+                  (let ((val (let lk ((j 0) (mm my) (acc 0))
+                               (if (>= j n)
+                                   acc
+                                   (let ((yj (if (= (remainder mm 2) 1) 1 -1)))
+                                     (lk (+ j 1) (quotient mm 2)
+                                         (+ acc (* yj (vector-ref row-sum j)))))))))
+                    (set! evals (+ evals 1))
+                    (if (or (not best-val) (> val best-val))
+                        (begin
+                          (set! best-val val)
+                          (set! best-mx mx)
+                          (set! best-my my)))
+                    (ly (+ my 1)))))
+            (lx (+ mx 1)))))
+    (vector 'gfa-classical-opt
+            best-val
+            (gfa-sign-vec-from-mask m best-mx)
+            (gfa-sign-vec-from-mask n best-my)
+            evals)))
+
+;; Exact classical Grothendieck / bilinear cut maximum M_cl(A).
+(define (gfa-grothendieck-classical-max A)
+  (vector-ref (gfa-grothendieck-classical-opt A) 1))
+
+;; Exact injective tensor norm ||A||_eps on l_1^m (x)_eps l_1^n
+;; (equivalently bilinear norm on l_inf^m x l_inf^n).
+;; Since negating y flips the sign of sum A_{i,j} x_i y_j, max |sum| = max sum.
+(define (gfa-injective-norm-linf A)
+  (gfa-grothendieck-classical-max A))
+
+;; Exact projective tensor norm ||A||_{pi(l_1)} = sum_{i,j} |A_{i,j}|
+;; on l_1^m (x)_pi l_1^n ~= l_1^{m*n}.
+(define (gfa-projective-norm-l1 A)
+  (let ((m (gfa-mat-rows A))
+        (n (gfa-mat-cols A)))
+    (let li ((i 0) (acc 0))
+      (if (>= i m)
+          acc
+          (let ((row (vector-ref A i)))
+            (li (+ i 1)
+                (let lj ((j 0) (racc acc))
+                  (if (>= j n)
+                      racc
+                      (lj (+ j 1) (+ racc (abs (vector-ref row j))))))))))))
+
+;; Hilbert-space injective tensor norm ||A||_{eps(l_2)} = ||A||_inf = sigma_1(A).
+(define (gfa-hilbert-injective-norm A)
+  (gfa-mat-op-norm A))
+
+;; Hilbert-space projective (nuclear) tensor norm ||A||_{pi(l_2)} = ||A||_1 = sum sigma_k(A).
+(define (gfa-hilbert-projective-norm A)
+  (gfa-mat-trace-norm A))
+
+;; Combined tensor norm report comparing injective & projective norms in both settings.
+(define (gfa-tensor-norm-report A)
+  (vector 'gfa-tensor-norms
+          (gfa-injective-norm-linf A)
+          (gfa-projective-norm-l1 A)
+          (gfa-hilbert-injective-norm A)
+          (gfa-hilbert-projective-norm A)))
+
+;; Dvoretzky-Rogers / non-nuclearity witness for l^2 on I_n:
+;;   ||I_n||_1 = n, ||I_n||_inf = 1, ratio = n (diverges linearly as n -> inf).
+(define (gfa-identity-non-nuclearity-ratio n)
+  (let* ((d (make-vector n 1))
+         (tr (gfa-diag-trace-norm d))
+         (op (gfa-diag-op-norm d)))
+    (vector 'gfa-non-nuclear-witness n tr op (/ tr op))))
+
+;; ===========================================================================
+;; 5. Grothendieck's Inequality & Quantum Nonlocality (Bell-CHSH & 3x3 / 4x4)
+;; ===========================================================================
+
+;; Unit-vector check: non-empty vector with | ||v||_2^2 - 1 | <= tol.
+(define (gfa-unit-vector? v tol)
+  (and (vector? v)
+       (> (vector-length v) 0)
+       (<= (abs (- (gfa-vec-norm-sq v) 1.0)) tol)))
+
+(define (gfa-all-unit-vectors? vecs dim tol)
+  (let ((k (vector-length vecs)))
+    (let loop ((i 0))
+      (if (>= i k)
+          #t
+          (let ((vi (vector-ref vecs i)))
+            (and (vector? vi)
+                 (= (vector-length vi) dim)
+                 (gfa-unit-vector? vi tol)
+                 (loop (+ i 1))))))))
+
+;; Fail-closed Hilbert-space bilinear evaluator:
+;;   M_H(A; u, v) = sum_{i,j} A_{i,j} <u_i, v_j>
+;; Strictly enforces ||u_i||_2 = ||v_j||_2 = 1 for all i, j; returns
+;; 'err-non-unit-vector on any unnormalized vector and 'err-dimension-mismatch
+;; on mismatched counts or ambient vector dimensions.
+(define (gfa-grothendieck-hilbert-val A u-vecs v-vecs)
+  (let ((m (gfa-mat-rows A))
+        (n (gfa-mat-cols A)))
+    (cond
+      ((or (not (vector? u-vecs)) (not (vector? v-vecs))
+           (not (= (vector-length u-vecs) m))
+           (not (= (vector-length v-vecs) n))
+           (= m 0) (= n 0)
+           (not (vector? (vector-ref u-vecs 0)))
+           (= (vector-length (vector-ref u-vecs 0)) 0))
+       'err-dimension-mismatch)
+      (else
+       (let ((dim (vector-length (vector-ref u-vecs 0)))
+             (tol 1e-9))
+         (cond
+           ((not (and (let cu ((i 0))
+                        (if (>= i m) #t
+                            (and (vector? (vector-ref u-vecs i))
+                                 (= (vector-length (vector-ref u-vecs i)) dim)
+                                 (cu (+ i 1)))))
+                      (let cv ((j 0))
+                        (if (>= j n) #t
+                            (and (vector? (vector-ref v-vecs j))
+                                 (= (vector-length (vector-ref v-vecs j)) dim)
+                                 (cv (+ j 1)))))))
+            'err-dimension-mismatch)
+           ((not (and (gfa-all-unit-vectors? u-vecs dim tol)
+                      (gfa-all-unit-vectors? v-vecs dim tol)))
+            'err-non-unit-vector)
+           (else
+            (let li ((i 0) (acc 0.0))
+              (if (>= i m)
+                  acc
+                  (let ((ui (vector-ref u-vecs i)))
+                    (li (+ i 1)
+                        (let lj ((j 0) (racc acc))
+                          (if (>= j n)
+                              racc
+                              (lj (+ j 1)
+                                  (+ racc (* (gfa-mat-ref A i j)
+                                             (gfa-vec-dot ui (vector-ref v-vecs j))))))))))))))))))
+
+;; Grothendieck ratio R(A; u, v) = |M_H(A; u, v)| / M_cl(A).
+;; Propagates fail-closed error symbols without coercion.
+(define (gfa-grothendieck-ratio A u-vecs v-vecs)
+  (let ((mh (gfa-grothendieck-hilbert-val A u-vecs v-vecs)))
+    (if (symbol? mh)
+        mh
+        (let ((mcl (gfa-grothendieck-classical-max A)))
+          (if (= mcl 0)
+              'err-zero-classical-max
+              (/ (abs mh) (+ 0.0 mcl)))))))
+
+;; Complete Grothendieck bound verification record:
+;;   (vector 'gfa-grothendieck-verdict mcl mh ratio krivine within-krivine? exceeds-classical?)
+(define (gfa-grothendieck-verify-bound A u-vecs v-vecs)
+  (let ((mh (gfa-grothendieck-hilbert-val A u-vecs v-vecs)))
+    (if (symbol? mh)
+        mh
+        (let ((mcl (gfa-grothendieck-classical-max A)))
+          (if (= mcl 0)
+              'err-zero-classical-max
+              (let* ((ratio (/ (abs mh) (+ 0.0 mcl)))
+                     (kr (gfa-krivine-bound)))
+                (vector 'gfa-grothendieck-verdict
+                        mcl
+                        mh
+                        ratio
+                        kr
+                        (<= ratio kr)
+                        (> ratio 1.0))))))))
+
+;; Canonical 2x2 Bell-CHSH matrix: [[1, 1], [1, -1]].
+;; Exact classical maximum M_cl = 2; Tsirelson Hilbert maximum M_H = 2*sqrt(2).
+(define (gfa-chsh-matrix)
+  (vector (vector 1 1)
+          (vector 1 -1)))
+
+;; Tsirelson optimal unit vectors in R^2 for CHSH:
+;;   u_0 = (1, 0), u_1 = (0, 1)
+;;   v_0 = (1/sqrt(2), 1/sqrt(2)), v_1 = (1/sqrt(2), -1/sqrt(2))
+(define (gfa-chsh-tsirelson-vectors)
+  (let* ((s (/ 1.0 (sqrt 2.0)))
+         (u (vector (vector 1.0 0.0)
+                    (vector 0.0 1.0)))
+         (v (vector (vector s s)
+                    (vector s (- 0.0 s)))))
+    (cons u v)))
+
+;; 3x3 frustrated 6-cycle Grothendieck witness B_3:
+;;   [[1, 1, 0], [1, 0, 1], [0, 1, -1]]
+;; Exact classical maximum M_cl = 4 (at least 1 of 6 cycle edges frustrated);
+;; Hilbert realization in R^2 achieves M_H = 3*sqrt(3) ~= 5.196152,
+;; ratio R = 3*sqrt(3)/4 ~= 1.299038 > 1 and < Krivine bound.
+(define (gfa-frustrated-c6-matrix)
+  (vector (vector 1 1 0)
+          (vector 1 0 1)
+          (vector 0 1 -1)))
+
+(define (gfa-frustrated-c6-vectors)
+  (let* ((h 0.5)
+         (r (/ (sqrt 3.0) 2.0))
+         (u (vector (vector 1.0 0.0)
+                    (vector h r)
+                    (vector h (- 0.0 r))))
+         (v (vector (vector r h)
+                    (vector r (- 0.0 h))
+                    (vector 0.0 1.0))))
+    (cons u v)))
+
+;; 4x4 frustrated 8-cycle Grothendieck witness B_4:
+;;   [[1, 1, 0, 0], [0, 1, 1, 0], [0, 0, 1, 1], [-1, 0, 0, 1]]
+;; Exact classical maximum M_cl = 6;
+;; Hilbert realization in R^2 (angles spaced by pi/8) achieves
+;; M_H = 8*cos(pi/8) ~= 7.391036, ratio R = (4/3)*cos(pi/8) ~= 1.231839.
+(define (gfa-frustrated-c8-matrix)
+  (vector (vector 1 1 0 0)
+          (vector 0 1 1 0)
+          (vector 0 0 1 1)
+          (vector -1 0 0 1)))
+
+(define (gfa-frustrated-c8-vectors)
+  (let* ((a (/ gfa-pi 8.0))
+         (u (vector (vector (cos (* 1.0 a)) (sin (* 1.0 a)))
+                    (vector (cos (* 3.0 a)) (sin (* 3.0 a)))
+                    (vector (cos (* 5.0 a)) (sin (* 5.0 a)))
+                    (vector (cos (* 7.0 a)) (sin (* 7.0 a)))))
+         (v (vector (vector (cos (* 0.0 a)) (sin (* 0.0 a)))
+                    (vector (cos (* 2.0 a)) (sin (* 2.0 a)))
+                    (vector (cos (* 4.0 a)) (sin (* 4.0 a)))
+                    (vector (cos (* 6.0 a)) (sin (* 6.0 a))))))
+    (cons u v)))
+
+;; 4x4 block-diagonal CHSH (+) CHSH witness:
+;; Exact classical maximum M_cl = 4; Hilbert M_H = 4*sqrt(2); ratio = sqrt(2).
+(define (gfa-block-chsh4-matrix)
+  (vector (vector 1  1 0  0)
+          (vector 1 -1 0  0)
+          (vector 0  0 1  1)
+          (vector 0  0 1 -1)))
+
+(define (gfa-block-chsh4-vectors)
+  (let* ((s (/ 1.0 (sqrt 2.0)))
+         (u (vector (vector 1.0 0.0)
+                    (vector 0.0 1.0)
+                    (vector 1.0 0.0)
+                    (vector 0.0 1.0)))
+         (v (vector (vector s s)
+                    (vector s (- 0.0 s))
+                    (vector s s)
+                    (vector s (- 0.0 s)))))
+    (cons u v)))
