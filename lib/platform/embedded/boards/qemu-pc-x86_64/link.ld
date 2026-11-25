@@ -43,5 +43,6 @@ SECTIONS {
     /DISCARD/ : {
         *(.comment)
         *(.eh_frame*)
+        *(.gcc_except_table*)
     }
 }

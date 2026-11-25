@@ -140,6 +140,9 @@ cmd_check() {
       { echo "$header" | grep Flags; fail "$target: e_flags are not $flags_hex"; }
     [ -z "$("$NM" -u "$elf")" ] || fail "$target: linked image has undefined symbols"
     "$NM" "$elf" | grep -q " T eshkol_main$" || fail "$target: eshkol_main is not a global text symbol"
+    if "$READELF" -S "$elf" | grep -Eq '\.(eh_frame|gcc_except_table)'; then
+      fail "$target: freestanding ELF leaked unwind/exception section (.eh_frame/.gcc_except_table)"
+    fi
     if [ -n "$attrs" ]; then
       # Flatten llvm-readelf's attribute records to "TagName: Description"
       # (or "TagName: Value" for string attributes) so needles are stable.
