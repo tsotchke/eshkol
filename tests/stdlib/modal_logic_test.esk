@@ -1,0 +1,270 @@
+;;; tests/stdlib/modal_logic_test.esk
+;;;
+;;; Acceptance suite for core.logic.modal:
+;;;   - Frame properties & Sahlqvist correspondence for K, D, T, K4, B, S4, S5, GL
+;;;   - Lob's axiom GL valid on finite strict partial orders and refuted with an
+;;;     explicit counterworld on reflexive and cyclic frames
+;;;   - Multi-agent S5_n epistemic logic & Muddy Children public-announcement step
+;;;   - Finite-trace Linear Temporal Logic (G, F, X, U, R)
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+(require core.logic.modal)
+
+(define passes 0)
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (set! passes (+ passes 1))
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+;; ============================================================================
+;; 1. Kripke frames, frame properties, and K / D / T / K4 / B / S4 / S5 axioms
+;; ============================================================================
+
+(define F-chain-irref
+  (make-kripke-frame '(w0 w1 w2) (list (cons 'w0 'w1) (cons 'w1 'w2))))
+
+(define F-refl-only
+  (make-kripke-frame '(w0 w1 w2)
+                     (list (cons 'w0 'w0) (cons 'w1 'w1) (cons 'w2 'w2)
+                           (cons 'w0 'w1) (cons 'w1 'w2))))
+
+(define F-B
+  (make-kripke-frame '(w0 w1 w2)
+                     (list (cons 'w0 'w0) (cons 'w1 'w1) (cons 'w2 'w2)
+                           (cons 'w0 'w1) (cons 'w1 'w0)
+                           (cons 'w1 'w2) (cons 'w2 'w1))))
+
+(define F-S4
+  (make-kripke-frame '(w0 w1 w2)
+                     (list (cons 'w0 'w0) (cons 'w1 'w1) (cons 'w2 'w2)
+                           (cons 'w0 'w1) (cons 'w1 'w2) (cons 'w0 'w2))))
+
+(define F-S5
+  (make-kripke-frame '(w0 w1 w2)
+                     (list (cons 'w0 'w0) (cons 'w1 'w1) (cons 'w2 'w2)
+                           (cons 'w0 'w1) (cons 'w1 'w0))))
+
+(define F-GL-chain
+  (make-kripke-frame '(w0 w1 w2)
+                     (list (cons 'w0 'w1) (cons 'w1 'w2) (cons 'w0 'w2))))
+
+(define F-GL-tree
+  (make-kripke-frame '(w0 w1 w2 w3)
+                     (list (cons 'w0 'w1) (cons 'w0 'w2)
+                           (cons 'w1 'w3) (cons 'w0 'w3))))
+
+(define F-cycle2
+  (make-kripke-frame '(w0 w1)
+                     (list (cons 'w0 'w1) (cons 'w1 'w0))))
+
+(define F-refl1
+  (make-kripke-frame '(w0) (list (cons 'w0 'w0))))
+
+(check "frame property predicates classify all benchmark frames accurately"
+       (and (not (reflexive? F-chain-irref))
+            (not (transitive? F-chain-irref))
+            (not (serial? F-chain-irref))
+            (irreflexive-converse-well-founded? F-chain-irref)
+            (reflexive? F-refl-only)
+            (serial? F-refl-only)
+            (not (transitive? F-refl-only))
+            (not (symmetric? F-refl-only))
+            (reflexive? F-B)
+            (symmetric? F-B)
+            (not (transitive? F-B))
+            (frame-preorder? F-S4)
+            (not (symmetric? F-S4))
+            (not (euclidean? F-S4))
+            (frame-equivalence? F-S5)
+            (euclidean? F-S5)
+            (frame-gl? F-GL-chain)
+            (frame-gl? F-GL-tree)
+            (serial? F-cycle2)
+            (symmetric? F-cycle2)
+            (not (converse-well-founded? F-cycle2))
+            (not (frame-gl? F-cycle2))))
+
+(check "axiom K is valid on every Kripke frame"
+       (and (frame-valid? F-chain-irref axiom-K)
+            (frame-valid? F-refl-only axiom-K)
+            (frame-valid? F-S4 axiom-K)
+            (frame-valid? F-S5 axiom-K)
+            (frame-valid? F-GL-chain axiom-K)
+            (frame-valid? F-cycle2 axiom-K)))
+
+(check "Sahlqvist correspondence: T <=> reflexive, 4 <=> transitive, B <=> symmetric, 5 <=> euclidean, D <=> serial"
+       (and (not (frame-valid? F-chain-irref axiom-T))
+            (not (frame-valid? F-chain-irref axiom-D))
+            (not (frame-valid? F-chain-irref axiom-4))
+            (frame-valid? F-cycle2 axiom-D)
+            (frame-valid? F-cycle2 axiom-B)
+            (not (frame-valid? F-cycle2 axiom-T))
+            (verify-modal-system F-refl-only 'T)
+            (not (frame-valid? F-refl-only axiom-4))
+            (verify-modal-system F-B 'B)
+            (not (frame-valid? F-B axiom-4))
+            (verify-modal-system F-S4 'S4)
+            (not (frame-valid? F-S4 axiom-5))
+            (not (frame-valid? F-S4 axiom-B))
+            (verify-modal-system F-S5 'S5)
+            (frame-valid? F-S5 axiom-B)))
+
+;; ============================================================================
+;; 2. Godel-Lob provability logic (GL) and explicit countermodels
+;; ============================================================================
+
+(check "Lob's axiom GL is valid on finite strict partial orders (chain and tree)"
+       (and (frame-valid? F-GL-chain axiom-GL)
+            (verify-modal-system F-GL-chain 'GL)
+            (frame-valid? F-GL-tree axiom-GL)
+            (verify-modal-system F-GL-tree 'GL)))
+
+(check "Lob's axiom GL is refuted on reflexive frame with an explicit verified counterworld"
+       (let ((cm (find-countermodel F-refl1 axiom-GL)))
+         (and (countermodel? cm)
+              (eq? (countermodel-world cm) 'w0)
+              (not (modal-eval (countermodel-model cm) (countermodel-world cm) axiom-GL))
+              (modal-eval (countermodel-model cm) 'w0 '(box (implies (box (atom p)) (atom p))))
+              (not (modal-eval (countermodel-model cm) 'w0 '(box (atom p)))))))
+
+(check "Lob's axiom GL is refuted on non-transitive acyclic frame and on cyclic frame with explicit countermodels"
+       (let ((cm-nontrans (find-countermodel F-chain-irref axiom-GL))
+             (cm-cycle (find-countermodel F-cycle2 axiom-GL))
+             (cm-s5 (find-countermodel F-S5 axiom-GL)))
+         (and (countermodel? cm-nontrans)
+              (not (modal-eval (countermodel-model cm-nontrans)
+                               (countermodel-world cm-nontrans) axiom-GL))
+              (countermodel? cm-cycle)
+              (not (modal-eval (countermodel-model cm-cycle)
+                               (countermodel-world cm-cycle) axiom-GL))
+              (countermodel? cm-s5)
+              (not (modal-eval (countermodel-model cm-s5)
+                               (countermodel-world cm-s5) axiom-GL)))))
+
+(check "explicit countermodels for axiom T, 4, and 5 actually falsify the formula at the reported world"
+       (let ((cm-T (find-countermodel F-chain-irref axiom-T))
+             (cm-4 (find-countermodel F-refl-only axiom-4))
+             (cm-5 (find-countermodel F-S4 axiom-5)))
+         (and (countermodel? cm-T)
+              (not (modal-eval (countermodel-model cm-T) (countermodel-world cm-T) axiom-T))
+              (countermodel? cm-4)
+              (not (modal-eval (countermodel-model cm-4) (countermodel-world cm-4) axiom-4))
+              (countermodel? cm-5)
+              (not (modal-eval (countermodel-model cm-5) (countermodel-world cm-5) axiom-5)))))
+
+;; ============================================================================
+;; 3. Multi-agent epistemic S5_n: 2-child Muddy Children puzzle
+;; ============================================================================
+
+(define mc-worlds '(cc cm mc mm))
+
+(define (equiv-edges partition)
+  (let loop ((blocks partition) (acc '()))
+    (if (null? blocks)
+        acc
+        (let ((blk (car blocks)))
+          (let outer ((xs blk) (acc acc))
+            (if (null? xs)
+                (loop (cdr blocks) acc)
+                (let inner ((ys blk) (acc acc))
+                  (if (null? ys)
+                      (outer (cdr xs) acc)
+                      (inner (cdr ys) (cons (cons (car xs) (car ys)) acc))))))))))
+
+(define mc-frame
+  (make-multi-agent-frame
+   mc-worlds
+   (list (cons 'a (equiv-edges (list '(cc mc) '(cm mm))))
+         (cons 'b (equiv-edges (list '(cc cm) '(mc mm)))))))
+
+(define mc-model
+  (make-kripke-model
+   mc-frame
+   (list (cons 'm1 '(mc mm))
+         (cons 'm2 '(cm mm)))))
+
+(define phi-at-least-one '(or (atom m1) (atom m2)))
+(define phi-a-knows '(or (box-agent a (atom m1)) (box-agent a (not (atom m1)))))
+(define phi-b-knows '(or (box-agent b (atom m2)) (box-agent b (not (atom m2)))))
+(define phi-neither-knows (list 'and (list 'not phi-a-knows) (list 'not phi-b-knows)))
+
+(check "Muddy Children frame is S5 for both agents a and b"
+       (and (frame-equivalence? mc-frame 'a)
+            (frame-equivalence? mc-frame 'b)))
+
+(check "Before announcements at actual world mm: neither child knows, both know at least one is muddy, yet NOT common knowledge"
+       (and (not (modal-eval mc-model 'mm phi-a-knows))
+            (not (modal-eval mc-model 'mm phi-b-knows))
+            (modal-eval mc-model 'mm (list 'everyone-knows '(a b) phi-at-least-one))
+            (not (modal-eval mc-model 'mm (list 'common-knowledge '(a b) phi-at-least-one)))))
+
+(define mc-step1 (public-announcement-restrict mc-model phi-at-least-one))
+
+(check "After announcement 1 (at least one muddy): common knowledge holds; at mm neither knows yet, while at mc child a knows"
+       (and (= (length (frame-worlds (model-frame mc-step1))) 3)
+            (modal-eval mc-step1 'mm (list 'common-knowledge '(a b) phi-at-least-one))
+            (not (modal-eval mc-step1 'mm phi-a-knows))
+            (not (modal-eval mc-step1 'mm phi-b-knows))
+            (modal-eval mc-step1 'mc '(box-agent a (atom m1)))
+            (modal-eval mc-step1 'cm '(box-agent b (atom m2)))))
+
+(define mc-step2 (public-announcement-restrict mc-step1 phi-neither-knows))
+
+(check "After announcement 2 (neither knows): only world mm survives and BOTH children know they are muddy"
+       (and (= (length (frame-worlds (model-frame mc-step2))) 1)
+            (modal-eval mc-step2 'mm '(box-agent a (atom m1)))
+            (modal-eval mc-step2 'mm '(box-agent b (atom m2)))
+            (modal-eval mc-step2 'mm '(common-knowledge (a b) (and (atom m1) (atom m2))))))
+
+(check "Nested PAL formula [!at-least-one][!neither-knows](K_a m1 & K_b m2) holds at mm in mc-model"
+       (modal-eval mc-model 'mm
+                   (list 'public-announce
+                         phi-at-least-one
+                         (list 'public-announce
+                               phi-neither-knows
+                               '(and (box-agent a (atom m1))
+                                     (box-agent b (atom m2)))))))
+
+;; ============================================================================
+;; 4. Finite-trace Linear Temporal Logic (LTL: G, F, X, U, R)
+;; ============================================================================
+
+(define trace1 '((req wait) (wait) (wait grant) (done grant)))
+
+(check "LTL next (X), weak-next, globally (G), finally (F) on finite trace"
+       (and (ltl-eval trace1 '(atom req))
+            (ltl-eval trace1 '(next (atom wait)))
+            (not (ltl-eval trace1 '(next (atom req))))
+            (ltl-eval trace1 '(finally (atom done)))
+            (not (ltl-eval trace1 '(globally (atom wait))))
+            (ltl-eval trace1 '(globally (or (atom wait) (atom done))))
+            (not (ltl-eval-at trace1 3 '(next top)))
+            (ltl-eval-at trace1 3 '(weak-next bot))))
+
+(check "LTL until (U) and release (R) semantics and duality"
+       (and (ltl-eval trace1 '(until (atom wait) (atom grant)))
+            (not (ltl-eval trace1 '(until (atom req) (atom grant))))
+            (ltl-eval trace1 '(until (atom wait) (atom done)))
+            (ltl-eval trace1 '(globally (implies (atom req) (finally (atom grant)))))
+            (not (ltl-eval trace1 '(globally (implies (atom grant) (next (atom done))))))
+            (ltl-eval trace1 '(globally (implies (atom grant) (weak-next (atom done)))))
+            (eq? (ltl-eval trace1 '(release (atom grant) (atom wait)))
+                 (ltl-eval trace1 '(not (until (not (atom grant)) (not (atom wait))))))
+            (eq? (ltl-eval trace1 '(release (atom req) (atom done)))
+                 (ltl-eval trace1 '(not (until (not (atom req)) (not (atom done))))))))
+
+(display "modal_logic_test: ")
+(display passes) (display " passed, ")
+(display failures) (display " failed") (newline)
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
