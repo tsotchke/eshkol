@@ -2706,6 +2706,9 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/staged_value_grad.cpp
   lib/core/dbsp_zset_kg.cpp
   lib/core/interval_taylor_enclosure.cpp
+  lib/core/cert_chain_v2.cpp
+  lib/core/recursive_ivm.cpp
+  lib/core/program_capsule.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4388,6 +4391,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce8_staged_dbsp_taylor_test PRIVATE eshkol-runtime)
     add_test(NAME ce8_staged_dbsp_taylor_test COMMAND ce8_staged_dbsp_taylor_test)
     set_tests_properties(ce8_staged_dbsp_taylor_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce9_pcc_ivm_capsule_test.cpp")
+    add_executable(ce9_pcc_ivm_capsule_test
+        tests/logic/ce9_pcc_ivm_capsule_test.cpp)
+    target_compile_features(ce9_pcc_ivm_capsule_test PRIVATE cxx_std_17)
+    target_include_directories(ce9_pcc_ivm_capsule_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce9_pcc_ivm_capsule_test PRIVATE eshkol-runtime)
+    add_test(NAME ce9_pcc_ivm_capsule_test COMMAND ce9_pcc_ivm_capsule_test)
+    set_tests_properties(ce9_pcc_ivm_capsule_test PROPERTIES TIMEOUT 120)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
