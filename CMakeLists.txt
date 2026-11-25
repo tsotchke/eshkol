@@ -10663,6 +10663,31 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/kernel/k1_boot_traps.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel/k1_boot_traps_test.cpp")
+        add_library(eshkol-kernel-k1 STATIC
+            lib/kernel/k1_boot_traps.c
+            lib/kernel/arch/k1_arch_x86_64.c
+            lib/kernel/arch/k1_arch_aarch64.c
+            lib/kernel/arch/k1_arch_riscv64.c
+            lib/kernel/arch/k1_arch_riscv32.c
+            lib/kernel/arch/k1_arch_cortex_m4.c
+        )
+        target_include_directories(eshkol-kernel-k1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-kernel-k1 PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-kernel-k1 PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(kernel_k1_boot_traps_test tests/kernel/k1_boot_traps_test.cpp)
+        target_compile_features(kernel_k1_boot_traps_test PRIVATE cxx_std_20)
+        target_link_libraries(kernel_k1_boot_traps_test PRIVATE eshkol-kernel-k1)
+        add_test(
+            NAME kernel_k1_boot_traps_test
+            COMMAND kernel_k1_boot_traps_test
+        )
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)
