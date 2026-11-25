@@ -2693,6 +2693,8 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/cdcl_sat.cpp
   lib/core/slg_table.cpp
   lib/core/nars_truth.cpp
+  lib/core/forney_fg.cpp
+  lib/core/soft_unify_semiring.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4315,6 +4317,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce1_logic_cdcl_slg_test PRIVATE eshkol-runtime)
     add_test(NAME ce1_logic_cdcl_slg_test COMMAND ce1_logic_cdcl_slg_test)
     set_tests_properties(ce1_logic_cdcl_slg_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce2_forney_fg_causal_test.cpp")
+    add_executable(ce2_forney_fg_causal_test
+        tests/logic/ce2_forney_fg_causal_test.cpp)
+    target_compile_features(ce2_forney_fg_causal_test PRIVATE cxx_std_17)
+    target_include_directories(ce2_forney_fg_causal_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce2_forney_fg_causal_test PRIVATE eshkol-runtime)
+    add_test(NAME ce2_forney_fg_causal_test COMMAND ce2_forney_fg_causal_test)
+    set_tests_properties(ce2_forney_fg_causal_test PROPERTIES TIMEOUT 60)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
