@@ -1,0 +1,471 @@
+;;; core.quant.sde -- Stochastic Differential Equations, Fokker-Planck & LQR
+;;;
+;;; Usage: (require core.quant.sde)
+;;;
+;;; Implements:
+;;;   - 100% deterministic seeded PRNG (L'Ecuyer combined multiplicative
+;;;     congruential generator over exact integers + Box-Muller normals)
+;;;   - Ito SDE solvers (Euler-Maruyama, Milstein with analytic or native-AD
+;;;     diffusion derivative) and Stratonovich solver (Heun)
+;;;   - Exact Ito <-> Stratonovich drift conversion
+;;;   - Analytical mean/variance oracles for GBM, Ornstein-Uhlenbeck (OU), and
+;;;     Cox-Ingersoll-Ross (CIR) processes + Feller condition predicate
+;;;   - 1D conservative finite-volume Fokker-Planck (Kolmogorov forward) solver
+;;;     with exact probability mass conservation and non-negativity checks
+;;;   - Discrete-time LQR / Algebraic Riccati Equation (DARE) solver and
+;;;     residual verifier
+
+(require stdlib)
+
+(provide make-rng rng? rng-uniform rng-normal rng-normal-vector
+         ito->stratonovich-drift stratonovich->ito-drift
+         sde-euler-maruyama sde-milstein sde-heun-stratonovich
+         sde-euler-maruyama-path sde-milstein-path sde-heun-path
+         sde-monte-carlo-stats
+         gbm-analytic-mean gbm-analytic-var
+         ou-analytic-mean ou-analytic-var
+         cir-analytic-mean cir-analytic-var cir-feller-satisfied?
+         fokker-planck-step fokker-planck-evolve
+         fokker-planck-total-mass fokker-planck-nonnegative?
+         lqr-mat-mul lqr-mat-transpose lqr-mat-add lqr-mat-sub lqr-mat-inv
+         lqr-mat-inf-norm lqr-riccati-step lqr-dare-residual lqr-solve-dare)
+
+;; ============================================================================
+;; Deterministic Seeded PRNG (L'Ecuyer Combined Generator, Exact Int64 Safe)
+;; ============================================================================
+;; Moduli m1 = 2147483563, a1 = 40014; m2 = 2147483399, a2 = 40692.
+;; Max product < 8.8e13 << 2^62, so every step stays exact int64 identically
+;; across JIT and AOT without overflow.
+;; State layout: (vector 'rng-v1 s1 s2 has-spare spare-z)
+
+(define sde-two-pi 6.283185307179586)
+
+(define (rng? r)
+  (and (vector? r) (= (vector-length r) 5) (eq? (vector-ref r 0) 'rng-v1)))
+
+(define (make-rng seed)
+  (let* ((s (abs (if (exact? seed) seed (inexact->exact (floor seed)))))
+         (s1 (+ 1 (modulo (+ s 1234567) 2147483562)))
+         (s2 (+ 1 (modulo (+ (* s 31337) 7654321) 2147483398))))
+    (vector 'rng-v1 s1 s2 #f 0.0)))
+
+;; Uniform variate strictly in (0, 1)
+(define (rng-uniform r)
+  (if (not (rng? r)) (error "rng-uniform: expected an rng state" r))
+  (let* ((s1 (modulo (* 40014 (vector-ref r 1)) 2147483563))
+         (s2 (modulo (* 40692 (vector-ref r 2)) 2147483399))
+         (z0 (- s1 s2))
+         (z (if (< z0 1) (+ z0 2147483562) z0)))
+    (vector-set! r 1 s1)
+    (vector-set! r 2 s2)
+    (/ (exact->inexact z) 2147483563.0)))
+
+;; Standard normal N(0, 1) via Box-Muller transform with spare caching
+(define (rng-normal r)
+  (if (not (rng? r)) (error "rng-normal: expected an rng state" r))
+  (if (vector-ref r 3)
+      (begin (vector-set! r 3 #f)
+             (vector-ref r 4))
+      (let* ((u1 (rng-uniform r))
+             (u2 (rng-uniform r))
+             (rad (sqrt (* -2.0 (log u1))))
+             (ang (* sde-two-pi u2))
+             (z0 (* rad (cos ang)))
+             (z1 (* rad (sin ang))))
+        (vector-set! r 3 #t)
+        (vector-set! r 4 z1)
+        z0)))
+
+(define (rng-normal-vector r n)
+  (let ((v (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! v i (rng-normal r))
+                 (loop (+ i 1)))
+          v))))
+
+;; ============================================================================
+;; Ito <-> Stratonovich Drift Conversion
+;; ============================================================================
+;; Given Ito SDE:        dX = mu_Ito(x,t) dt + sigma(x,t) dW
+;; Equivalent Strat SDE: dX = mu_Strat(x,t) dt + sigma(x,t) o dW
+;; where mu_Strat(x,t) = mu_Ito(x,t) - (1/2) sigma(x,t) d_x sigma(x,t).
+;; If sigma-prime is #f, computes d_x sigma via Eshkol's native `derivative`.
+
+(define (sde-sigma-deriv sigma sigma-prime x t)
+  (if sigma-prime
+      (sigma-prime x t)
+      (derivative (lambda (u) (sigma u t)) x)))
+
+(define (ito->stratonovich-drift mu sigma . opt-sigma-prime)
+  (let ((sp (if (null? opt-sigma-prime) #f (car opt-sigma-prime))))
+    (lambda (x t)
+      (- (mu x t) (* 0.5 (sigma x t) (sde-sigma-deriv sigma sp x t))))))
+
+(define (stratonovich->ito-drift mu-strat sigma . opt-sigma-prime)
+  (let ((sp (if (null? opt-sigma-prime) #f (car opt-sigma-prime))))
+    (lambda (x t)
+      (+ (mu-strat x t) (* 0.5 (sigma x t) (sde-sigma-deriv sigma sp x t))))))
+
+;; ============================================================================
+;; SDE Solvers (Pre-generated Gaussian Increments & Seeded RNG Drivers)
+;; ============================================================================
+
+;; Euler-Maruyama on an explicit vector `zs` of N standard normal increments
+(define (sde-euler-maruyama-path mu sigma x0 t0 T zs)
+  (let* ((n (vector-length zs))
+         (dt (/ (- T t0) (exact->inexact n)))
+         (sqdt (sqrt dt)))
+    (let loop ((k 0) (x (exact->inexact x0)) (t (exact->inexact t0)))
+      (if (>= k n)
+          x
+          (let* ((dw (* sqdt (vector-ref zs k)))
+                 (xn (+ x (* (mu x t) dt) (* (sigma x t) dw))))
+            (loop (+ k 1) xn (+ t dt)))))))
+
+(define (sde-euler-maruyama mu sigma x0 t0 T steps rng)
+  (sde-euler-maruyama-path mu sigma x0 t0 T (rng-normal-vector rng steps)))
+
+;; Milstein (strong order 1.0 Ito solver) on explicit normal vector `zs`.
+;; Optional `sigma-prime` may be provided or #f to use native `derivative`.
+(define (sde-milstein-path mu sigma x0 t0 T zs . opt-sigma-prime)
+  (let* ((sp (if (null? opt-sigma-prime) #f (car opt-sigma-prime)))
+         (n (vector-length zs))
+         (dt (/ (- T t0) (exact->inexact n)))
+         (sqdt (sqrt dt)))
+    (let loop ((k 0) (x (exact->inexact x0)) (t (exact->inexact t0)))
+      (if (>= k n)
+          x
+          (let* ((dw (* sqdt (vector-ref zs k)))
+                 (s (sigma x t))
+                 (ds (sde-sigma-deriv sigma sp x t))
+                 (xn (+ x
+                        (* (mu x t) dt)
+                        (* s dw)
+                        (* 0.5 s ds (- (* dw dw) dt)))))
+            (loop (+ k 1) xn (+ t dt)))))))
+
+(define (sde-milstein mu sigma x0 t0 T steps rng . opt-sigma-prime)
+  (let ((zs (rng-normal-vector rng steps)))
+    (if (null? opt-sigma-prime)
+        (sde-milstein-path mu sigma x0 t0 T zs)
+        (sde-milstein-path mu sigma x0 t0 T zs (car opt-sigma-prime)))))
+
+;; Stratonovich Heun predictor-corrector solver on explicit normal vector `zs`
+(define (sde-heun-path mu-strat sigma x0 t0 T zs)
+  (let* ((n (vector-length zs))
+         (dt (/ (- T t0) (exact->inexact n)))
+         (sqdt (sqrt dt)))
+    (let loop ((k 0) (x (exact->inexact x0)) (t (exact->inexact t0)))
+      (if (>= k n)
+          x
+          (let* ((dw (* sqdt (vector-ref zs k)))
+                 (m0 (mu-strat x t))
+                 (s0 (sigma x t))
+                 (x-pred (+ x (* m0 dt) (* s0 dw)))
+                 (t1 (+ t dt))
+                 (m1 (mu-strat x-pred t1))
+                 (s1 (sigma x-pred t1))
+                 (xn (+ x (* 0.5 (+ m0 m1) dt) (* 0.5 (+ s0 s1) dw))))
+            (loop (+ k 1) xn t1))))))
+
+(define (sde-heun-stratonovich mu-strat sigma x0 t0 T steps rng)
+  (sde-heun-path mu-strat sigma x0 t0 T (rng-normal-vector rng steps)))
+
+;; Monte Carlo ensemble mean & unbiased variance over M trajectories.
+;; `sim-fn` takes an rng and returns a terminal scalar sample.
+(define (sde-monte-carlo-stats sim-fn num-paths seed)
+  (let ((r (make-rng seed))
+        (samples (make-vector num-paths 0.0)))
+    (let loop ((i 0) (sum 0.0))
+      (if (< i num-paths)
+          (let ((val (sim-fn r)))
+            (vector-set! samples i val)
+            (loop (+ i 1) (+ sum val)))
+          (let* ((mean (/ sum (exact->inexact num-paths)))
+                 (ss (let vloop ((j 0) (acc 0.0))
+                       (if (< j num-paths)
+                           (let ((d (- (vector-ref samples j) mean)))
+                             (vloop (+ j 1) (+ acc (* d d))))
+                           acc)))
+                 (var (/ ss (exact->inexact (max 1 (- num-paths 1))))))
+            (cons mean var))))))
+
+;; ============================================================================
+;; Analytical Oracles: GBM, Ornstein-Uhlenbeck (OU), Cox-Ingersoll-Ross (CIR)
+;; ============================================================================
+
+;; GBM: dS = mu S dt + sigma S dW
+(define (gbm-analytic-mean s0 mu T)
+  (* s0 (exp (* mu T))))
+
+(define (gbm-analytic-var s0 mu sigma T)
+  (* s0 s0 (exp (* 2.0 mu T)) (- (exp (* sigma sigma T)) 1.0)))
+
+;; OU: dX = theta (mu - X) dt + sigma dW
+(define (ou-analytic-mean x0 theta mu T)
+  (let ((e (exp (- (* theta T)))))
+    (+ (* x0 e) (* mu (- 1.0 e)))))
+
+(define (ou-analytic-var theta sigma T)
+  (* (/ (* sigma sigma) (* 2.0 theta)) (- 1.0 (exp (* -2.0 theta T)))))
+
+;; CIR: dX = kappa (theta - X) dt + sigma sqrt(X) dW
+(define (cir-analytic-mean x0 kappa theta T)
+  (let ((e (exp (- (* kappa T)))))
+    (+ (* x0 e) (* theta (- 1.0 e)))))
+
+(define (cir-analytic-var x0 kappa theta sigma T)
+  (let* ((e (exp (- (* kappa T))))
+         (e2 (* e e))
+         (s2 (* sigma sigma)))
+    (+ (* x0 (/ s2 kappa) (- e e2))
+       (* theta (/ s2 (* 2.0 kappa)) (* (- 1.0 e) (- 1.0 e))))))
+
+(define (cir-feller-satisfied? kappa theta sigma)
+  (>= (* 2.0 kappa theta) (* sigma sigma)))
+
+;; ============================================================================
+;; 1D Conservative Finite-Volume Fokker-Planck (Kolmogorov Forward) Solver
+;; ============================================================================
+;; PDE: d_t p = -d_x(mu(x) p) + d_xx(D(x) p), where D(x) = 0.5 * sigma(x)^2.
+;; Cell centers x_i = x-min + (i + 0.5) * dx for i = 0 .. N-1.
+;; Zero-flux (reflecting) boundary conditions J_{-1/2} = J_{N-1/2} = 0.
+;; At interior interface i + 1/2:
+;;   advective upwind flux: mu^+ * p_i + mu^- * p_{i+1}
+;;   diffusive flux:        -(D_{i+1} p_{i+1} - D_i p_i) / dx
+;; Conservative update: p_i^{n+1} = p_i^n - (dt/dx) * (J_{i+1/2} - J_{i-1/2})
+;; Preserves sum_i p_i identically!
+
+(define (fokker-planck-step p x-min dx dt mu-fn sigma-fn)
+  (let* ((n (vector-length p))
+         (flux (make-vector (+ n 1) 0.0))
+         (out (make-vector n 0.0))
+         (inv-dx (/ 1.0 dx))
+         (ratio (/ dt dx)))
+    (let lf ((i 0))
+      (if (< i (- n 1))
+          (let* ((xi (+ x-min (* (+ i 0.5) dx)))
+                 (xi1 (+ x-min (* (+ i 1.5) dx)))
+                 (xhalf (+ x-min (* (+ i 1.0) dx)))
+                 (mu-h (mu-fn xhalf))
+                 (s0 (sigma-fn xi))
+                 (s1 (sigma-fn xi1))
+                 (d0 (* 0.5 s0 s0))
+                 (d1 (* 0.5 s1 s1))
+                 (pi (vector-ref p i))
+                 (pi1 (vector-ref p (+ i 1)))
+                 (adv (if (>= mu-h 0.0) (* mu-h pi) (* mu-h pi1)))
+                 (diff (- (* inv-dx (- (* d1 pi1) (* d0 pi))))))
+            (vector-set! flux (+ i 1) (+ adv diff))
+            (lf (+ i 1)))))
+    (let lu ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! out i
+              (- (vector-ref p i)
+                 (* ratio (- (vector-ref flux (+ i 1)) (vector-ref flux i)))))
+            (lu (+ i 1)))
+          out))))
+
+(define (fokker-planck-evolve p0 x-min dx dt steps mu-fn sigma-fn)
+  (let loop ((k 0) (p p0))
+    (if (>= k steps)
+        p
+        (loop (+ k 1) (fokker-planck-step p x-min dx dt mu-fn sigma-fn)))))
+
+(define (fokker-planck-total-mass p)
+  (let ((n (vector-length p)))
+    (let loop ((i 0) (acc 0.0))
+      (if (< i n)
+          (loop (+ i 1) (+ acc (vector-ref p i)))
+          acc))))
+
+(define (fokker-planck-nonnegative? p . opt-tol)
+  (let ((tol (if (null? opt-tol) -1e-15 (car opt-tol)))
+        (n (vector-length p)))
+    (let loop ((i 0))
+      (cond ((>= i n) #t)
+            ((>= (vector-ref p i) tol) (loop (+ i 1)))
+            (else #f)))))
+
+;; ============================================================================
+;; Discrete-Time LQR / Algebraic Riccati Equation (DARE) Solver
+;; ============================================================================
+;; Row-vector matrix representation: (vector row0 ... row(m-1))
+
+(define (lqr-mat-zeros r c)
+  (let ((m (make-vector r #f)))
+    (let loop ((i 0))
+      (if (< i r)
+          (begin (vector-set! m i (make-vector c 0.0))
+                 (loop (+ i 1)))
+          m))))
+
+(define (lqr-mat-transpose A)
+  (let* ((r (vector-length A))
+         (c (vector-length (vector-ref A 0)))
+         (out (lqr-mat-zeros c r)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (vector-set! (vector-ref out j) i (vector-ref (vector-ref A i) j))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (lqr-mat-mul A B)
+  (let* ((ra (vector-length A))
+         (ca (vector-length (vector-ref A 0)))
+         (cb (vector-length (vector-ref B 0)))
+         (out (lqr-mat-zeros ra cb)))
+    (let li ((i 0))
+      (if (< i ra)
+          (let ((ri (vector-ref A i))
+                (ro (vector-ref out i)))
+            (let lj ((j 0))
+              (if (< j cb)
+                  (begin
+                    (vector-set! ro j
+                      (let lk ((k 0) (s 0.0))
+                        (if (< k ca)
+                            (lk (+ k 1) (+ s (* (vector-ref ri k)
+                                                (vector-ref (vector-ref B k) j))))
+                            s)))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (lqr-mat-add A B)
+  (let* ((r (vector-length A))
+         (c (vector-length (vector-ref A 0)))
+         (out (lqr-mat-zeros r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (let ((ra (vector-ref A i)) (rb (vector-ref B i)) (ro (vector-ref out i)))
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (vector-set! ro j (+ (vector-ref ra j) (vector-ref rb j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (lqr-mat-sub A B)
+  (let* ((r (vector-length A))
+         (c (vector-length (vector-ref A 0)))
+         (out (lqr-mat-zeros r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (let ((ra (vector-ref A i)) (rb (vector-ref B i)) (ro (vector-ref out i)))
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (vector-set! ro j (- (vector-ref ra j) (vector-ref rb j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (lqr-mat-inf-norm A)
+  (let ((r (vector-length A))
+        (c (vector-length (vector-ref A 0))))
+    (let li ((i 0) (mx 0.0))
+      (if (< i r)
+          (let ((ri (vector-ref A i)))
+            (li (+ i 1)
+                (let lj ((j 0) (m mx))
+                  (if (< j c)
+                      (let ((v (abs (vector-ref ri j))))
+                        (lj (+ j 1) (if (> v m) v m)))
+                      m))))
+          mx))))
+
+;; Gauss-Jordan matrix inverse with partial pivoting (f64 row-vector matrix)
+(define (lqr-mat-inv A)
+  (let* ((n (vector-length A))
+         (w (lqr-mat-zeros n (* 2 n))))
+    (let li ((i 0))
+      (if (< i n)
+          (let ((ri (vector-ref A i)) (wi (vector-ref w i)))
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (vector-set! wi j (exact->inexact (vector-ref ri j)))
+                         (lj (+ j 1)))))
+            (vector-set! wi (+ n i) 1.0)
+            (li (+ i 1)))))
+    (let col-loop ((k 0))
+      (if (< k n)
+          (let* ((piv-row
+                   (let find-p ((i (+ k 1)) (best k) (bestv (abs (vector-ref (vector-ref w k) k))))
+                     (if (< i n)
+                         (let ((v (abs (vector-ref (vector-ref w i) k))))
+                           (if (> v bestv) (find-p (+ i 1) i v) (find-p (+ i 1) best bestv)))
+                         best))))
+            (if (< (abs (vector-ref (vector-ref w piv-row) k)) 1e-15)
+                (error "lqr-mat-inv: singular matrix"))
+            (if (not (= piv-row k))
+                (let ((tmp (vector-ref w k)))
+                  (vector-set! w k (vector-ref w piv-row))
+                  (vector-set! w piv-row tmp)))
+            (let* ((rk (vector-ref w k))
+                   (piv (vector-ref rk k)))
+              (let norm-j ((j 0))
+                (if (< j (* 2 n))
+                    (begin (vector-set! rk j (/ (vector-ref rk j) piv))
+                           (norm-j (+ j 1)))))
+              (let elim-i ((i 0))
+                (if (< i n)
+                    (begin
+                      (if (not (= i k))
+                          (let* ((ri (vector-ref w i))
+                                 (fac (vector-ref ri k)))
+                            (let elim-j ((j 0))
+                              (if (< j (* 2 n))
+                                  (begin (vector-set! ri j (- (vector-ref ri j) (* fac (vector-ref rk j))))
+                                         (elim-j (+ j 1)))))))
+                      (elim-i (+ i 1))))))
+            (col-loop (+ k 1)))))
+    (let ((inv (lqr-mat-zeros n n)))
+      (let li ((i 0))
+        (if (< i n)
+            (let ((wi (vector-ref w i)) (oi (vector-ref inv i)))
+              (let lj ((j 0))
+                (if (< j n)
+                    (begin (vector-set! oi j (vector-ref wi (+ n j)))
+                           (lj (+ j 1)))))
+              (li (+ i 1)))
+            inv)))))
+
+;; Single Riccati operator application:
+;;   T(P) = Q + A^T P A - A^T P B (R + B^T P B)^{-1} B^T P A
+(define (lqr-riccati-step A B Q R P)
+  (let* ((At (lqr-mat-transpose A))
+         (Bt (lqr-mat-transpose B))
+         (AtP (lqr-mat-mul At P))
+         (AtPA (lqr-mat-mul AtP A))
+         (AtPB (lqr-mat-mul AtP B))
+         (BtPA (lqr-mat-mul (lqr-mat-mul Bt P) A))
+         (S (lqr-mat-add R (lqr-mat-mul (lqr-mat-mul Bt P) B)))
+         (Sinv (lqr-mat-inv S))
+         (corr (lqr-mat-mul (lqr-mat-mul AtPB Sinv) BtPA)))
+    (lqr-mat-sub (lqr-mat-add Q AtPA) corr)))
+
+;; Exact DARE residual || P - T(P) ||_inf
+(define (lqr-dare-residual A B Q R P)
+  (lqr-mat-inf-norm (lqr-mat-sub P (lqr-riccati-step A B Q R P))))
+
+;; Solve Discrete-Time Algebraic Riccati Equation by value iteration.
+;; Returns (list P K iterations residual) where K = (R + B^T P B)^{-1} B^T P A.
+(define (lqr-solve-dare A B Q R . opts)
+  (let* ((max-iter (if (and (pair? opts) (number? (car opts))) (car opts) 500))
+         (tol (if (and (pair? opts) (pair? (cdr opts))) (cadr opts) 1e-11)))
+    (let loop ((k 0) (P Q))
+      (let* ((Pnext (lqr-riccati-step A B Q R P))
+             (diff (lqr-mat-inf-norm (lqr-mat-sub Pnext P))))
+        (if (or (< diff tol) (>= k max-iter))
+            (let* ((Bt (lqr-mat-transpose B))
+                   (S (lqr-mat-add R (lqr-mat-mul (lqr-mat-mul Bt Pnext) B)))
+                   (K (lqr-mat-mul (lqr-mat-inv S) (lqr-mat-mul (lqr-mat-mul Bt Pnext) A)))
+                   (res (lqr-dare-residual A B Q R Pnext)))
+              (list Pnext K (+ k 1) res))
+            (loop (+ k 1) Pnext))))))

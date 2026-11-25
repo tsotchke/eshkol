@@ -1,0 +1,488 @@
+;;; core.hep.lie -- Exact Simple Lie Algebras & Cartan-Killing Classification
+;;;
+;;; Usage: (require core.hep.lie)
+;;;
+;;; Implements exact rational/integer Cartan matrices for all simple Lie
+;;; algebras (A_n, B_n, C_n, D_n, G_2, F_4, E_6, E_7, E_8) in Bourbaki
+;;; convention A_{ij} = 2 (alpha_i, alpha_j) / (alpha_i, alpha_i), exact
+;;; determinants via core.exact_linalg, Cartan symmetrizers and bilinear forms,
+;;; Weyl reflections, exact positive and full root system generation, highest
+;;; root / marks / comarks, Coxeter and dual Coxeter numbers, Killing form on
+;;; the Cartan subalgebra, and a Cartan matrix validity predicate.
+
+(require stdlib)
+(require core.exact_linalg)
+
+(provide cartan-matrix cartan-det cartan-symmetrizer cartan-matrix-valid?
+         cartan-bilinear-matrix cartan-bilinear-form
+         weyl-reflect generate-positive-roots generate-roots
+         lie-root-height lie-highest-root lie-marks lie-comarks
+         lie-coxeter-number lie-dual-coxeter-number lie-dimension
+         lie-killing-form-matrix)
+
+;; ============================================================================
+;; Internal Matrix & Vector Helpers (exact integer / rational)
+;; ============================================================================
+
+(define (lie-zero-matrix n)
+  (let ((m (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! m i (make-vector n 0))
+                 (loop (+ i 1)))
+          m))))
+
+(define (lie-base-cartan n)
+  (let ((m (lie-zero-matrix n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! (vector-ref m i) i 2)
+                 (loop (+ i 1)))
+          m))))
+
+(define (lie-set! m i j v)
+  (vector-set! (vector-ref m i) j v))
+
+(define (lie-ref m i j)
+  (vector-ref (vector-ref m i) j))
+
+(define (lie-connect-single! m i j)
+  (lie-set! m i j -1)
+  (lie-set! m j i -1))
+
+(define (lie-connect-chain! m start end)
+  (let loop ((i start))
+    (if (< i end)
+        (begin (lie-connect-single! m i (+ i 1))
+               (loop (+ i 1)))
+        m)))
+
+;; ============================================================================
+;; Cartan Matrices for All Simple Lie Algebras (Bourbaki Convention)
+;; ============================================================================
+;; A_{ij} = 2 (alpha_i, alpha_j) / (alpha_i, alpha_i)
+
+(define (cartan-matrix type rank)
+  (cond
+    ((or (eq? type 'A) (eq? type 'a))
+     (if (< rank 1) (error "cartan-matrix A_n: requires rank >= 1" rank))
+     (let ((m (lie-base-cartan rank)))
+       (lie-connect-chain! m 0 (- rank 1))))
+    ((or (eq? type 'B) (eq? type 'b))
+     (if (< rank 2) (error "cartan-matrix B_n: requires rank >= 2" rank))
+     (let ((m (lie-base-cartan rank)))
+       (lie-connect-chain! m 0 (- rank 2))
+       ;; node (rank-2) is long, node (rank-1) is short
+       (lie-set! m (- rank 2) (- rank 1) -1)
+       (lie-set! m (- rank 1) (- rank 2) -2)
+       m))
+    ((or (eq? type 'C) (eq? type 'c))
+     (if (< rank 2) (error "cartan-matrix C_n: requires rank >= 2" rank))
+     (let ((m (lie-base-cartan rank)))
+       (lie-connect-chain! m 0 (- rank 2))
+       ;; node (rank-2) is short, node (rank-1) is long
+       (lie-set! m (- rank 2) (- rank 1) -2)
+       (lie-set! m (- rank 1) (- rank 2) -1)
+       m))
+    ((or (eq? type 'D) (eq? type 'd))
+     (if (< rank 3) (error "cartan-matrix D_n: requires rank >= 3" rank))
+     (let ((m (lie-base-cartan rank)))
+       (lie-connect-chain! m 0 (- rank 3))
+       (lie-connect-single! m (- rank 3) (- rank 2))
+       (lie-connect-single! m (- rank 3) (- rank 1))
+       m))
+    ((or (eq? type 'G) (eq? type 'G2) (eq? type 'g2))
+     (if (not (= rank 2)) (error "cartan-matrix G2: requires rank = 2" rank))
+     ;; node 0 short, node 1 long
+     (vector (vector 2 -3)
+             (vector -1 2)))
+    ((or (eq? type 'F) (eq? type 'F4) (eq? type 'f4))
+     (if (not (= rank 4)) (error "cartan-matrix F4: requires rank = 4" rank))
+     ;; 0 - 1 => 2 - 3  (nodes 0,1 long; nodes 2,3 short)
+     (let ((m (lie-base-cartan 4)))
+       (lie-connect-single! m 0 1)
+       (lie-set! m 1 2 -1)
+       (lie-set! m 2 1 -2)
+       (lie-connect-single! m 2 3)
+       m))
+    ((or (eq? type 'E) (eq? type 'E6) (eq? type 'E7) (eq? type 'E8)
+         (eq? type 'e6) (eq? type 'e7) (eq? type 'e8))
+     (if (not (or (= rank 6) (= rank 7) (= rank 8)))
+         (error "cartan-matrix E_n: requires rank 6, 7, or 8" rank))
+     ;; Chain 0 - 1 - 2 - ... - (rank-2) with branch node (rank-1) attached to node 2
+     (let ((m (lie-base-cartan rank)))
+       (lie-connect-chain! m 0 (- rank 2))
+       (lie-connect-single! m 2 (- rank 1))
+       m))
+    (else (error "cartan-matrix: unknown Lie type" type rank))))
+
+(define (cartan-det A)
+  (exact-det A))
+
+;; Minimal positive integer diagonal symmetrizer D = (d_0, ..., d_{r-1}) such
+;; that B_{ij} = d_i * A_{ij} is symmetric (d_i proportional to (alpha_i, alpha_i)).
+(define (cartan-symmetrizer A)
+  (let* ((r (vector-length A))
+         (d (make-vector r 0)))
+    (vector-set! d 0 1)
+    ;; Propagate exact rational ratios d_j = d_i * A_{ij} / A_{ji} across connected graph
+    (let outer ((pass 0))
+      (if (< pass r)
+          (begin
+            (let li ((i 0))
+              (if (< i r)
+                  (begin
+                    (if (not (zero? (vector-ref d i)))
+                        (let lj ((j 0))
+                          (if (< j r)
+                              (begin
+                                (if (and (zero? (vector-ref d j))
+                                         (not (zero? (lie-ref A i j)))
+                                         (not (zero? (lie-ref A j i))))
+                                    (vector-set! d j (* (vector-ref d i)
+                                                        (/ (lie-ref A i j) (lie-ref A j i)))))
+                                (lj (+ j 1))))))
+                    (li (+ i 1)))))
+            (outer (+ pass 1)))))
+    ;; Clear denominators via LCM so all d_i are minimal positive exact integers
+    (let ((den-lcm (let loop ((i 0) (l 1))
+                     (if (< i r)
+                         (loop (+ i 1) (lcm l (denominator (vector-ref d i))))
+                         l))))
+      (let loop ((i 0))
+        (if (< i r)
+            (begin (vector-set! d i (* (vector-ref d i) den-lcm))
+                   (loop (+ i 1)))))
+      ;; Reduce by GCD of all entries
+      (let ((g (let loop ((i 1) (acc (vector-ref d 0)))
+                 (if (< i r)
+                     (loop (+ i 1) (gcd acc (vector-ref d i)))
+                     acc))))
+        (if (> g 1)
+            (let loop ((i 0))
+              (if (< i r)
+                  (begin (vector-set! d i (quotient (vector-ref d i) g))
+                         (loop (+ i 1))))))
+        d))))
+
+;; Symmetric bilinear form matrix B_{ij} = d_i A_{ij} (where (alpha_i, alpha_i) = 2 d_i)
+(define (cartan-bilinear-matrix A)
+  (let* ((r (vector-length A))
+         (d (cartan-symmetrizer A))
+         (B (lie-zero-matrix r)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j r)
+                  (begin (lie-set! B i j (* (vector-ref d i) (lie-ref A i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          B))))
+
+;; Exact bilinear form (u, v) = u^T B v in simple-root coordinates
+(define (cartan-bilinear-form A u v)
+  (let* ((B (cartan-bilinear-matrix A))
+         (r (vector-length A)))
+    (let li ((i 0) (acc 0))
+      (if (< i r)
+          (let ((ui (vector-ref u i)))
+            (if (zero? ui)
+                (li (+ i 1) acc)
+                (li (+ i 1)
+                    (let lj ((j 0) (s acc))
+                      (if (< j r)
+                          (lj (+ j 1) (+ s (* ui (lie-ref B i j) (vector-ref v j))))
+                          s)))))
+          acc))))
+
+;; Leading k x k principal submatrix for Sylvester positive-definiteness check
+(define (lie-leading-minor M k)
+  (let ((sub (lie-zero-matrix k)))
+    (let li ((i 0))
+      (if (< i k)
+          (begin
+            (let lj ((j 0))
+              (if (< j k)
+                  (begin (lie-set! sub i j (lie-ref M i j))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          sub))))
+
+;; Validate a finite-type crystallographic Cartan matrix:
+;;   1. Square exact integer matrix with A_{ii} = 2
+;;   2. A_{ij} <= 0 for i != j, and A_{ij} = 0 <=> A_{ji} = 0
+;;   3. Symmetrizable: B = D A is symmetric
+;;   4. Positive definite: all leading principal minors of B are strictly > 0
+(define (cartan-matrix-valid? A)
+  (if (not (and (exact-matrix? A) (= (vector-length A) (vector-length (vector-ref A 0)))))
+      #f
+      (let ((r (vector-length A)))
+        (and
+          ;; Diagonal = 2, off-diagonal <= 0, symmetric zero pattern, integer entries
+          (let li ((i 0))
+            (if (>= i r)
+                #t
+                (if (let lj ((j 0))
+                      (if (>= j r)
+                          #t
+                          (let ((aij (lie-ref A i j))
+                                (aji (lie-ref A j i)))
+                            (cond ((not (integer? aij)) #f)
+                                  ((= i j) (if (= aij 2) (lj (+ j 1)) #f))
+                                  ((> aij 0) #f)
+                                  ((not (eq? (zero? aij) (zero? aji))) #f)
+                                  (else (lj (+ j 1)))))))
+                    (li (+ i 1))
+                    #f)))
+          ;; Symmetrizable with positive diagonal D and symmetric B = D A
+          (let* ((d (cartan-symmetrizer A))
+                 (d-pos (let loop ((i 0))
+                          (cond ((>= i r) #t)
+                                ((> (vector-ref d i) 0) (loop (+ i 1)))
+                                (else #f)))))
+            (if (not d-pos)
+                #f
+                (let* ((B (cartan-bilinear-matrix A))
+                       (sym (let li ((i 0))
+                              (if (>= i r)
+                                  #t
+                                  (if (let lj ((j (+ i 1)))
+                                        (cond ((>= j r) #t)
+                                              ((= (lie-ref B i j) (lie-ref B j i)) (lj (+ j 1)))
+                                              (else #f)))
+                                      (li (+ i 1))
+                                      #f)))))
+                  (and sym
+                       ;; Sylvester criterion: all leading principal minors > 0
+                       (let lk ((k 1))
+                         (cond ((> k r) #t)
+                               ((> (exact-det (lie-leading-minor B k)) 0) (lk (+ k 1)))
+                               (else #f)))))))))))
+
+;; ============================================================================
+;; Weyl Reflections & Exact Root System Generation
+;; ============================================================================
+
+;; Weyl reflection s_i(alpha) = alpha - (sum_k alpha_k A_{i, k}) alpha_i
+(define (weyl-reflect A i root)
+  (let* ((r (vector-length A))
+         (row (vector-ref A i))
+         (pairing (let loop ((k 0) (acc 0))
+                    (if (< k r)
+                        (loop (+ k 1) (+ acc (* (vector-ref root k) (vector-ref row k))))
+                        acc)))
+         (out (make-vector r 0)))
+    (let loop ((k 0))
+      (if (< k r)
+          (begin (vector-set! out k (if (= k i)
+                                        (- (vector-ref root k) pairing)
+                                        (vector-ref root k)))
+                 (loop (+ k 1)))
+          out))))
+
+(define (lie-vec-neg v)
+  (let* ((n (vector-length v))
+         (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (- (vector-ref v i)))
+                 (loop (+ i 1)))
+          out))))
+
+(define (lie-root-positive? v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0) (has-pos #f))
+      (if (< i n)
+          (let ((c (vector-ref v i)))
+            (cond ((< c 0) #f)
+                  ((> c 0) (loop (+ i 1) #t))
+                  (else (loop (+ i 1) has-pos))))
+          has-pos))))
+
+(define (lie-root-height v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0) (acc 0))
+      (if (< i n) (loop (+ i 1) (+ acc (vector-ref v i))) acc))))
+
+;; Exact integer-vector equality
+(define (lie-vec-equal? a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0))
+      (cond ((>= i n) #t)
+            ((= (vector-ref a i) (vector-ref b i)) (loop (+ i 1)))
+            (else #f)))))
+
+;; Polynomial rolling hash mod cap (stays exact int64)
+(define (lie-vec-hash v cap)
+  (let ((n (vector-length v)))
+    (let loop ((i 0) (h 0))
+      (if (< i n)
+          (loop (+ i 1) (modulo (+ (* h 37) (+ (vector-ref v i) 17)) cap))
+          h))))
+
+;; Open-addressing hash set (vector of slots + count) for O(1) tail-recursive
+;; root deduplication with zero recursion depth.
+(define (lie-hset-make cap) (vector (make-vector cap #f) 0))
+
+(define (lie-hset-contains? hs v)
+  (let* ((tbl (vector-ref hs 0))
+         (cap (vector-length tbl))
+         (start (lie-vec-hash v cap)))
+    (let loop ((idx start) (steps 0))
+      (if (>= steps cap)
+          #f
+          (let ((slot (vector-ref tbl idx)))
+            (cond ((not slot) #f)
+                  ((lie-vec-equal? slot v) #t)
+                  (else (loop (modulo (+ idx 1) cap) (+ steps 1)))))))))
+
+(define (lie-hset-insert-raw! tbl v)
+  (let* ((cap (vector-length tbl))
+         (start (lie-vec-hash v cap)))
+    (let loop ((idx start))
+      (let ((slot (vector-ref tbl idx)))
+        (cond ((not slot) (vector-set! tbl idx v) #t)
+              ((lie-vec-equal? slot v) #f)
+              (else (loop (modulo (+ idx 1) cap))))))))
+
+(define (lie-hset-grow! hs)
+  (let* ((old (vector-ref hs 0))
+         (old-cap (vector-length old))
+         (new-tbl (make-vector (* 2 old-cap) #f)))
+    (let loop ((i 0))
+      (if (< i old-cap)
+          (let ((slot (vector-ref old i)))
+            (if slot (lie-hset-insert-raw! new-tbl slot))
+            (loop (+ i 1)))))
+    (vector-set! hs 0 new-tbl)))
+
+(define (lie-hset-add! hs v)
+  (let* ((tbl (vector-ref hs 0))
+         (cnt (vector-ref hs 1)))
+    (if (> (* (+ cnt 1) 2) (vector-length tbl))
+        (lie-hset-grow! hs))
+    (if (lie-hset-insert-raw! (vector-ref hs 0) v)
+        (begin (vector-set! hs 1 (+ cnt 1)) #t)
+        #f)))
+
+(define (lie-unit-vec r i)
+  (let ((v (make-vector r 0)))
+    (vector-set! v i 1)
+    v))
+
+;; Generate all positive roots Phi^+ via iterative BFS under simple Weyl
+;; reflections (100% tail-recursive with open-addressing hash set).
+(define (generate-positive-roots A)
+  (let* ((r (vector-length A))
+         (hs (lie-hset-make 512))
+         (init-list
+           (let loop ((i 0) (acc '()))
+             (if (< i r)
+                 (let ((u (lie-unit-vec r i)))
+                   (lie-hset-add! hs u)
+                   (loop (+ i 1) (cons u acc)))
+                 (reverse acc)))))
+    (let bfs ((q init-list) (all (reverse init-list)))
+      (if (null? q)
+          (reverse all)
+          (let ((cur (car q)))
+            (let reflect-loop ((i 0) (q2 (cdr q)) (a2 all))
+              (if (>= i r)
+                  (bfs q2 a2)
+                  (let ((cand (weyl-reflect A i cur)))
+                    (if (and (lie-root-positive? cand)
+                             (not (lie-hset-contains? hs cand)))
+                        (begin (lie-hset-add! hs cand)
+                               (reflect-loop (+ i 1) (cons cand q2) (cons cand a2)))
+                        (reflect-loop (+ i 1) q2 a2))))))))))
+
+;; Full root system Phi = Phi^+ U (-Phi^+)
+(define (generate-roots A)
+  (let ((pos (generate-positive-roots A)))
+    (append pos (map lie-vec-neg pos))))
+
+;; ============================================================================
+;; Highest Root, Marks, Comarks, Coxeter / Dual Coxeter Numbers, Killing Form
+;; ============================================================================
+
+;; Unique highest root theta (maximal height in Phi^+ for irreducible simple g)
+(define (lie-highest-root A)
+  (let ((pos (generate-positive-roots A)))
+    (let loop ((rs (cdr pos)) (best (car pos)) (best-h (lie-root-height (car pos))))
+      (if (null? rs)
+          best
+          (let* ((cur (car rs))
+                 (h (lie-root-height cur)))
+            (if (> h best-h)
+                (loop (cdr rs) cur h)
+                (loop (cdr rs) best best-h)))))))
+
+;; Marks a_i: coefficients of the highest root theta = sum_i a_i alpha_i
+(define (lie-marks A)
+  (lie-highest-root A))
+
+;; Comarks (dual Kac labels) a_i^v = a_i * d_i / d_max
+(define (lie-comarks A)
+  (let* ((r (vector-length A))
+         (a (lie-marks A))
+         (d (cartan-symmetrizer A))
+         (dmax (let loop ((i 1) (m (vector-ref d 0)))
+                 (if (< i r)
+                     (let ((di (vector-ref d i)))
+                       (loop (+ i 1) (if (> di m) di m)))
+                     m)))
+         (out (make-vector r 0)))
+    (let loop ((i 0))
+      (if (< i r)
+          (begin (vector-set! out i (/ (* (vector-ref a i) (vector-ref d i)) dmax))
+                 (loop (+ i 1)))
+          out))))
+
+;; Coxeter number h = 1 + sum_i a_i
+(define (lie-coxeter-number A)
+  (+ 1 (lie-root-height (lie-marks A))))
+
+;; Dual Coxeter number h^v = 1 + sum_i a_i^v
+(define (lie-dual-coxeter-number A)
+  (+ 1 (lie-root-height (lie-comarks A))))
+
+;; Lie algebra dimension: dim(g) = rank + |Phi|
+(define (lie-dimension A)
+  (+ (vector-length A) (length (generate-roots A))))
+
+;; Exact Killing form matrix on the Cartan subalgebra in the Chevalley coroot
+;; basis {H_0, ..., H_{r-1}}:
+;;   alpha(H_i) = <alpha, alpha_i^v> = sum_k alpha_k A_{i, k}
+;;   K(H_i, H_j) = sum_{alpha in Phi} alpha(H_i) * alpha(H_j)
+;;               = 2 * sum_{alpha in Phi^+} alpha(H_i) * alpha(H_j)
+(define (lie-killing-form-matrix A)
+  (let* ((r (vector-length A))
+         (pos (generate-positive-roots A))
+         (K (lie-zero-matrix r))
+         (eval-coroot (lambda (alpha i)
+                        (let ((row (vector-ref A i)))
+                          (let loop ((k 0) (s 0))
+                            (if (< k r)
+                                (loop (+ k 1) (+ s (* (vector-ref alpha k) (vector-ref row k))))
+                                s))))))
+    (let loop-r ((rs pos))
+      (if (not (null? rs))
+          (let* ((alpha (car rs))
+                 (vals (make-vector r 0)))
+            (let lv ((i 0))
+              (if (< i r)
+                  (begin (vector-set! vals i (eval-coroot alpha i))
+                         (lv (+ i 1)))))
+            (let li ((i 0))
+              (if (< i r)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j r)
+                          (begin
+                            (lie-set! K i j (+ (lie-ref K i j)
+                                               (* 2 (vector-ref vals i) (vector-ref vals j))))
+                            (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (loop-r (cdr rs)))))
+    K))

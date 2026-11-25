@@ -1,0 +1,14 @@
+;;; core.quant -- Quantitative methods, stochastic calculus, Malliavin AD & control
+;;;
+;;; Usage: (require core.quant)
+;;;
+;;; Loads:
+;;;   core.quant.sde        Deterministic PRNG, Ito/Stratonovich SDE solvers,
+;;;                         drift conversion, GBM/OU/CIR analytical oracles,
+;;;                         1D Fokker-Planck conservative solver, discrete LQR
+;;;   core.quant.malliavin  Black-Scholes closed-form & native-AD Greeks,
+;;;                         pathwise tangent-AD & Malliavin likelihood-ratio
+;;;                         Monte Carlo sensitivity estimators
+
+(require core.quant.sde)
+(require core.quant.malliavin)
