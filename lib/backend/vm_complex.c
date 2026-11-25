@@ -36,9 +36,8 @@ static VmComplex* vm_complex_new(VmRegionStack* rs, double real, double imag) {
  * propagates it by its own rule: a holomorphic function f by f'(z) dz, and
  * conjugate, magnitude and angle by theirs. Where no derivative exists (the
  * origin for magnitude and angle, a branch point for sqrt and log) and a
- * tangent is present, the operation sets vm_complex_d_error and returns NULL;
+ * tangent is present, the operation sets rs->complex_error and returns NULL;
  * the native dispatcher raises it. A derivative is never answered as 0. */
-static const char* vm_complex_d_error = NULL;
 
 static int vm_complex_has_tangent(const VmComplex* z) {
     return z && (z->dreal != 0.0 || z->dimag != 0.0 ||
@@ -96,9 +95,8 @@ static VmDual* vm_cpx_dscale(VmRegionStack* rs, double scale, const VmDual* a) {
 
 static int vm_cpx_set_carriers(VmRegionStack* rs, VmComplex* z,
                                 VmDual* re, VmDual* im) {
-    (void)rs;
     if (!z || !re || !im) {
-        vm_complex_d_error = "complex derivative carrier allocation failed";
+        rs->complex_error = "complex derivative carrier allocation failed";
         return 0;
     }
     z->creal = re; z->cimag = im;
@@ -163,24 +161,24 @@ static double vm_complex_magnitude(const VmComplex* z) {
     }
 }
 
-/** Tangent of |z|: Re(conj(z) dz) / |z|. Sets vm_complex_d_error and returns
+/** Tangent of |z|: Re(conj(z) dz) / |z|. Sets rs->complex_error and returns
  *  0 when z is the origin and a tangent is present (no derivative there). */
-static double vm_complex_magnitude_tangent(const VmComplex* z) {
+static double vm_complex_magnitude_tangent(VmRegionStack* rs, const VmComplex* z) {
     if (!vm_complex_has_tangent(z)) return 0.0;
     double m = vm_complex_magnitude(z);
     if (m == 0.0) {
-        vm_complex_d_error = "magnitude: not differentiable at 0+0i (the magnitude of a complex number has no derivative at the origin)";
+        rs->complex_error = "magnitude: not differentiable at 0+0i (the magnitude of a complex number has no derivative at the origin)";
         return 0.0;
     }
     return (z->real * z->dreal + z->imag * z->dimag) / m;
 }
 
 /** Tangent of angle(z): Im(dz / z) = (re dim - im dre) / |z|^2. */
-static double vm_complex_angle_tangent(const VmComplex* z) {
+static double vm_complex_angle_tangent(VmRegionStack* rs, const VmComplex* z) {
     if (!vm_complex_has_tangent(z)) return 0.0;
     double m2 = z->real * z->real + z->imag * z->imag;
     if (m2 == 0.0) {
-        vm_complex_d_error = "angle: not differentiable at 0+0i (the angle of a complex number has no derivative at the origin)";
+        rs->complex_error = "angle: not differentiable at 0+0i (the angle of a complex number has no derivative at the origin)";
         return 0.0;
     }
     return (z->real * z->dimag - z->imag * z->dreal) / m2;
@@ -400,7 +398,7 @@ static VmComplex* vm_complex_sqrt(VmRegionStack* rs, const VmComplex* z) {
     eshkol_cpx v = eshkol_cpx_sqrt(zi);
     if (!vm_complex_has_tangent(z)) return vm_cpx_out(rs, v);
     if (v.re == 0.0 && v.im == 0.0) {
-        vm_complex_d_error = "sqrt: not differentiable at 0 (the square root has no derivative at the origin)";
+        rs->complex_error = "sqrt: not differentiable at 0 (the square root has no derivative at the origin)";
         return NULL;
     }
     return vm_cpx_out_holo(rs, v, eshkol_cpx_div(eshkol_cpx_make(1.0, 0.0), eshkol_cpx_scale(v, 2.0)), z, VM_CPX_SQRT);
@@ -420,7 +418,7 @@ static VmComplex* vm_complex_log(VmRegionStack* rs, const VmComplex* z) {
     eshkol_cpx v = eshkol_cpx_log(zi);
     if (!vm_complex_has_tangent(z)) return vm_cpx_out(rs, v);
     if (zi.re == 0.0 && zi.im == 0.0) {
-        vm_complex_d_error = "log: not differentiable at 0 (the logarithm has no derivative at the origin)";
+        rs->complex_error = "log: not differentiable at 0 (the logarithm has no derivative at the origin)";
         return NULL;
     }
     return vm_cpx_out_holo(rs, v, eshkol_cpx_div(eshkol_cpx_make(1.0, 0.0), zi), z, VM_CPX_LOG);
@@ -524,7 +522,7 @@ static VmComplex* vm_complex_expt(VmRegionStack* rs, const VmComplex* a, const V
             return acc;
         }
         if (av.re == 0.0 && av.im == 0.0) {
-            vm_complex_d_error = "expt: not differentiable at a zero base (a^b = exp(b log a) has no derivative there)";
+            rs->complex_error = "expt: not differentiable at a zero base (a^b = exp(b log a) has no derivative there)";
             return NULL;
         }
         VmComplex* la = vm_complex_log(rs, a);
@@ -532,7 +530,7 @@ static VmComplex* vm_complex_expt(VmRegionStack* rs, const VmComplex* a, const V
         return p ? vm_complex_exp(rs, p) : NULL;
     }
     if (av.re == 0.0 && av.im == 0.0) {
-        vm_complex_d_error = "expt: not differentiable at a zero base (a^b = exp(b log a) has no derivative there)";
+        rs->complex_error = "expt: not differentiable at a zero base (a^b = exp(b log a) has no derivative there)";
         return NULL;
     }
     /* d(a^b) = a^b (db log a + b da / a) */

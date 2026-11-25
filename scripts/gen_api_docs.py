@@ -56,7 +56,7 @@ DEFAULT_TRACE_DIR = REPO_ROOT / "scripts" / "icc_traces"
 TRACE_BASENAME = "api_docs_gate.jsonl"
 PROBE_ID = "api_docs_clean"
 PUBLIC_SURFACE_MANIFEST = REPO_ROOT / "docs" / "api" / "public_surface.tsv"
-EXPECTED_PUBLIC_SURFACE_COUNT = 132
+EXPECTED_PUBLIC_SURFACE_COUNT = 142
 
 
 def emit_trace(trace_dir: Path, status: str, snippet: str) -> Path:

@@ -229,3 +229,8 @@ suite uses independent dense projection/native matmul oracles with an explicit
 floating comparison tolerance after every update. Database delivery identity,
 changefeed cursors, atomic publication, durable checkpoints, named-axis
 contractions and native circuit ownership remain outside this bridge.
+
+`(tensor-reader shape ref)` supplies a pure flat-index read procedure to the
+existing `tensor-matmul-delta` kernel. Native operands remain accepted.
+`core.dbsp.tensor_snapshot` supplies this adapter for persistent block storage;
+no dense operand materialization is required. Reader results must be real.

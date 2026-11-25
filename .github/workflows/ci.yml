@@ -656,10 +656,12 @@ jobs:
           python3 scripts/ci_change_class.py --self-test
           python3 tests/toolchain/test_disclosure_base.py
           python3 tests/toolchain/test_cuda_runtime_contract_gate.py
+          python3 scripts/test_event_loop_gate.py
           python3 tests/toolchain/test_cublas_fake_windows_outputs.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 tests/toolchain/test_ci_reference_run.py
+          python3 tests/toolchain/test_ffi_harness.py
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
@@ -671,6 +673,9 @@ jobs:
           python3 scripts/check_doc_front_matter.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
+          python3 scripts/lib/ad_numerics_gate.py --self-test
+          python3 scripts/lib/ad_numerics_gate.py --profile p6 --self-test
+          python3 scripts/lib/ad_numerics_gate.py --profile nested --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/doc_audit/test_harness.py
           python3 scripts/doc_audit/check_doc_examples.py --self-test
@@ -1490,6 +1495,15 @@ jobs:
               vqe_ad_adversarial.esk)
                 grep -q 'vqe_ad_adversarial: PASS' <<<"$output"
                 ;;
+              zx_moonlab_crosscheck_test.esk)
+                grep -q 'zx_moonlab_crosscheck_test: PASS' <<<"$output"
+                ;;
+              circuit_export_test.esk)
+                grep -q 'circuit_export_test: 50 checks, 0 failed' <<<"$output"
+                ;;
+              qaoa_moonlab_crosscheck_test.esk)
+                grep -q 'qaoa_moonlab_crosscheck_test: PASS' <<<"$output"
+                ;;
               *)
                 echo "Unhandled quantum test: $test" >&2
                 exit 1
@@ -1954,8 +1968,8 @@ jobs:
             # Run 36664131758 reached numeric regressions before the
             # two-hour job limit cancelled the remaining full-suite checks.
             # Keep the complete suite and allow hosted Intel runner variance.
-            job_timeout_minutes: 240
-            test_timeout_minutes: 210
+            job_timeout_minutes: 330
+            test_timeout_minutes: 290
             upload_artifact: 'true'
             artifact_name: eshkol-macos-x64
           - name: macos-arm64-xla
@@ -2091,7 +2105,6 @@ jobs:
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
             libpcre2-dev libsqlite3-dev \
-            libpng-dev libjpeg-dev libwebp-dev \
             git python3 python3-clang-${LLVM_MAJOR}
           if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
             scripts/ci_retry.sh --attempts 3 --base-delay 15 -- \
@@ -2231,6 +2244,9 @@ jobs:
               "exact_affine_jit",
               "exact_affine_aot",
               "vm_prelude_cache_is_current",
+              # Fixture setup the exact_affine tests require; CTest selects
+              # it with them, so it is part of the exact inventory.
+              "exact_foundations_local_stdlib",
           }
           data = json.load(open(sys.argv[1], encoding="utf-8"))
           actual = {t["name"] for t in data["tests"]}
@@ -2272,6 +2288,9 @@ jobs:
               "qllm_bridge_producer_gradcheck", "riemannian_core_adversarial_regression",
               "frechet_mean_backward_gradcheck", "signed_curvature_jit",
               "signed_curvature_aot", "vm_prelude_cache_is_current",
+              # Fixture setup the signed_curvature tests require; CTest
+              # selects it with them.
+              "exact_foundations_local_stdlib",
           }
           actual = [t["name"] for t in json.load(open(sys.argv[1], encoding="utf-8"))["tests"]]
           if len(actual) != len(expected) or set(actual) != expected:
@@ -3287,7 +3306,7 @@ jobs:
             cmake ninja-build \
             llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev \
+            libpcre2-dev libsqlite3-dev \
             git python3
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
 
@@ -3301,6 +3320,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: WebGPU WASM fallback and refusal (no device required)
+        shell: bash
+        run: python3 scripts/run_webgpu_wasm_fallback_test.py
 
       - name: Configure (lite)
         shell: bash
@@ -3333,6 +3356,20 @@ jobs:
           emcc --version
           node --version
           ./scripts/run_wasm_differential.sh --quick
+
+      - name: Build and verify product WASM embedded modules
+        shell: bash
+        env:
+          BUILD_DIR: build
+          OUT: build/eshkol-vm-product.js
+          EMCC_CORES: "1"
+        run: |
+          set -euxo pipefail
+          scripts/build-wasm-repl.sh
+          python3 scripts/generate_wasm_embedded_modules.py \
+            --output build/generated/vm_embedded_modules.h --check
+          python3 tests/toolchain/test_wasm_embedded_module_generator.py
+          node tests/vm/product_wasm_embedded_modules_test.cjs build/eshkol-vm-product.js
 
       - name: Upload WASM diff trace
         if: always()

@@ -11,111 +11,72 @@
 #include "../../inc/eshkol/core/bignum.h"
 
 #include <cstring>
+#include <eshkol/core/table_hash.h>
+#include <eshkol/core/rational.h>
+#include <eshkol/core/i128.h>
 
 void eshkol_hash_table_lock(void);
 void eshkol_hash_table_unlock(void);
 
 extern "C" {
 
-// FNV-1a hash constants
-static const uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
-static const uint64_t FNV_PRIME = 1099511628211ULL;
-
-/**
- * @brief FNV-1a hash of a NUL-terminated C string.
- *
- * @param str String to hash; must be non-null.
- * @return    64-bit FNV-1a hash of the string's bytes.
- */
-static uint64_t fnv1a_hash_string(const char* str) {
-    uint64_t hash = FNV_OFFSET_BASIS;
-    while (*str) {
-        hash ^= (uint8_t)*str++;
-        hash *= FNV_PRIME;
-    }
-    return hash;
-}
-
-/**
- * @brief FNV-1a hash of a 64-bit value, hashed byte-by-byte (little-endian order).
- *
- * @param val Value to hash.
- * @return    64-bit FNV-1a hash of @p val's 8 bytes.
- */
-static uint64_t fnv1a_hash_u64(uint64_t val) {
-    uint64_t hash = FNV_OFFSET_BASIS;
-    for (int i = 0; i < 8; i++) {
-        hash ^= (val >> (i * 8)) & 0xFF;
-        hash *= FNV_PRIME;
-    }
-    return hash;
+static uint64_t hash_exact_integer(const eshkol_bignum_t* bn) {
+    int64_t small;
+    if (eshkol_bignum_fits_int64(bn, &small))
+        return eshkol_table_hash_pair(ESHKOL_VALUE_INT64, (uint64_t)small);
+    return eshkol_table_hash_pair(bn->sign, eshkol_table_hash(BIGNUM_LIMBS(bn),
+                                  (size_t)bn->num_limbs * sizeof(uint64_t)));
 }
 
 /**
  * @brief Compute the hash-table hash of a tagged Scheme value.
  *
- * Dispatches on the value's base type (masking off flag bits for types < 8):
- * ints/bools/chars and doubles hash their raw bits via FNV-1a; string and
- * symbol values hash the pointed-to bytes (symbols hash the interned pointer
- * itself); heap-pointer values further dispatch on the heap subtype so that
- * strings, bignums (sign + limbs), cons cells, and vectors are hashed
- * structurally (recursing into car/cdr or each element) rather than by
- * pointer identity, so that structurally-equal keys (e.g. equal lists used
- * as hash-table keys) hash equal. Any other heap subtype falls back to
- * hashing the raw pointer value.
+ * Every hash is SipHash-2-4 (eshkol_table_hash) under a key drawn from host
+ * entropy once per process, so bucket placement cannot be predicted from
+ * outside the process and differs between runs. The hash is a function of
+ * exactly what hash_keys_equal() compares: strings and symbols hash their
+ * characters; exact integers hash their value (a bignum that fits in int64
+ * hashes like the fixnum it equals); rationals hash the reduced numerator and
+ * denominator in their active representation; i128 values hash both halves;
+ * complex numbers hash both component bits; pairs and vectors hash their
+ * elements structurally. Any other heap object hashes its identity.
  *
  * @param value Tagged value to hash; NULL returns 0.
- * @return      64-bit hash suitable for indexing into the hash table's
- *              open-addressing slot array.
+ * @return      64-bit hash for indexing the table's slot array.
  */
 uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
     if (!value) return 0;
-
-    uint8_t full = value->type;
-    uint8_t type = (full >= 8) ? full : (full & 0x0F);
-    uint64_t hash = FNV_OFFSET_BASIS;
-
-    hash ^= type;
-    hash *= FNV_PRIME;
-
+    uint8_t type = value->type;
+    uint64_t hash = type;
     switch (type) {
-        case ESHKOL_VALUE_INT64:
-        case ESHKOL_VALUE_BOOL:
-        case ESHKOL_VALUE_CHAR:
-            hash ^= fnv1a_hash_u64(value->data.int_val);
+        case ESHKOL_VALUE_NULL:
+            return eshkol_table_hash_pair(type, 0);
+        case ESHKOL_VALUE_COMPLEX:
+            if (value->data.ptr_val)
+                return eshkol_table_hash((const void*)value->data.ptr_val,
+                                         sizeof(eshkol_complex_number_t));
             break;
-
-        case ESHKOL_VALUE_DOUBLE: {
-            uint64_t bits;
-            std::memcpy(&bits, &value->data.double_val, sizeof(double));
-            hash ^= fnv1a_hash_u64(bits);
-            break;
-        }
-
         case ESHKOL_VALUE_STRING_PTR:
             if (value->data.ptr_val) {
-                hash ^= fnv1a_hash_string((const char*)value->data.ptr_val);
+                const char* s = (const char*)value->data.ptr_val;
+                return eshkol_table_hash(s, std::strlen(s));
             }
             break;
-
-        case ESHKOL_VALUE_SYMBOL:
-            hash ^= fnv1a_hash_u64(value->data.ptr_val);
-            break;
-
         case ESHKOL_VALUE_HEAP_PTR:
             if (value->data.ptr_val) {
                 uint8_t subtype = ESHKOL_GET_SUBTYPE((void*)value->data.ptr_val);
-                if (subtype == HEAP_SUBTYPE_STRING) {
-                    hash ^= fnv1a_hash_string((const char*)value->data.ptr_val);
+                if (subtype == HEAP_SUBTYPE_STRING || subtype == HEAP_SUBTYPE_SYMBOL) {
+                    const char* s = (const char*)value->data.ptr_val;
+                    return eshkol_table_hash(s, std::strlen(s));
                 } else if (subtype == HEAP_SUBTYPE_BIGNUM) {
-                    eshkol_bignum_t* bn = (eshkol_bignum_t*)value->data.ptr_val;
-                    hash ^= (uint64_t)bn->sign;
-                    hash *= FNV_PRIME;
-                    uint64_t* limbs = BIGNUM_LIMBS(bn);
-                    for (uint32_t i = 0; i < bn->num_limbs; i++) {
-                        hash ^= fnv1a_hash_u64(limbs[i]);
-                        hash *= FNV_PRIME;
-                    }
+                    return hash_exact_integer((const eshkol_bignum_t*)value->data.ptr_val);
+                } else if (subtype == HEAP_SUBTYPE_RATIONAL) {
+                    const auto* r = (const eshkol_rational_t*)value->data.ptr_val;
+                    return r->is_big
+                        ? eshkol_table_hash_pair(hash_exact_integer(r->big_num), hash_exact_integer(r->big_den))
+                        : eshkol_table_hash_pair(r->numerator, r->denominator);
+                } else if (subtype == HEAP_SUBTYPE_I128) {
+                    return eshkol_table_hash((const void*)value->data.ptr_val, sizeof(eshkol_i128_abi));
                 } else if (subtype == HEAP_SUBTYPE_CONS) {
                     // Structural hash of a pair: combine hash(car) and hash(cdr)
                     // recursively, so equal lists/pairs hash equal (ESH-0064).
@@ -123,25 +84,23 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
                         (arena_tagged_cons_cell_t*)value->data.ptr_val;
                     eshkol_tagged_value_t car = arena_tagged_cons_get_tagged_value(cell, false);
                     eshkol_tagged_value_t cdr = arena_tagged_cons_get_tagged_value(cell, true);
-                    hash ^= hash_tagged_value(&car); hash *= FNV_PRIME;
-                    hash ^= hash_tagged_value(&cdr); hash *= FNV_PRIME;
+                    return eshkol_table_hash_pair(hash_tagged_value(&car), hash_tagged_value(&cdr));
                 } else if (subtype == HEAP_SUBTYPE_VECTOR) {
                     // Structural hash of a heterogeneous vector: [len:i64][elems...].
                     int64_t len = *(int64_t*)(uintptr_t)value->data.ptr_val;
                     eshkol_tagged_value_t* elems =
                         (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)value->data.ptr_val + 8);
                     for (int64_t i = 0; i < len; i++) {
-                        hash ^= hash_tagged_value(&elems[i]); hash *= FNV_PRIME;
+                        hash = eshkol_table_hash_pair(hash, hash_tagged_value(&elems[i]));
                     }
                 } else {
-                    hash ^= fnv1a_hash_u64(value->data.ptr_val);
+                    return eshkol_table_hash_pair(type, value->data.ptr_val);
                 }
             }
             break;
 
         default:
-            hash ^= fnv1a_hash_u64(value->data.raw_val);
-            break;
+            return eshkol_table_hash_pair(type, value->data.raw_val);
     }
 
     return hash;
@@ -150,18 +109,16 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
 /**
  * @brief Test two tagged Scheme values for hash-table key equality.
  *
- * Compares base types (masking flag bits for types < 8) first; mismatched
- * types are never equal. For matching types, ints/bools/chars compare by
- * value, doubles by IEEE equality, strings/symbols by pointer identity or
- * (for strings) byte content, and heap-pointer values dispatch on heap
- * subtype: strings compare by content, bignums via eshkol_bignum_compare,
- * cons cells recurse structurally through this same function on car/cdr so
- * hashing and equality stay consistent, and vectors compare length then each
- * element recursively. Any other heap subtype falls back to pointer equality.
+ * Values of different types are unequal, except that a fixnum equals a bignum
+ * holding the same integer. Doubles compare by bit pattern (consistent with
+ * their hash), complex numbers and i128 values by their components, rationals
+ * by value, strings and symbols by characters, and pairs and vectors
+ * structurally through this same function. Any other heap object compares by
+ * identity.
  *
  * @param a First value to compare (may be NULL).
  * @param b Second value to compare (may be NULL).
- * @return  true if the two values are equal keys for hash-table purposes.
+ * @return  true if the two values are equal keys.
  */
 bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b) {
     if (!a || !b) return a == b;
@@ -172,7 +129,12 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
     uint8_t type_a = get_base_type(a->type);
     uint8_t type_b = get_base_type(b->type);
 
-    if (type_a != type_b) return false;
+    if (type_a != type_b) {
+        const auto* integer = type_a == ESHKOL_VALUE_INT64 ? a : b;
+        const auto* boxed = integer == a ? b : a;
+        return integer->type == ESHKOL_VALUE_INT64 && eshkol_is_bignum_tagged(boxed) &&
+               eshkol_bignum_compare_int64((const eshkol_bignum_t*)boxed->data.ptr_val, integer->data.int_val) == 0;
+    }
 
     switch (type_a) {
         case ESHKOL_VALUE_INT64:
@@ -181,7 +143,13 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
             return a->data.int_val == b->data.int_val;
 
         case ESHKOL_VALUE_DOUBLE:
-            return a->data.double_val == b->data.double_val;
+            return a->data.raw_val == b->data.raw_val;
+
+        case ESHKOL_VALUE_COMPLEX:
+            return a->data.ptr_val == b->data.ptr_val ||
+                   (a->data.ptr_val && b->data.ptr_val &&
+                    std::memcmp((const void*)a->data.ptr_val, (const void*)b->data.ptr_val,
+                                sizeof(eshkol_complex_number_t)) == 0);
 
         case ESHKOL_VALUE_STRING_PTR:
             if (a->data.ptr_val == b->data.ptr_val) return true;
@@ -204,7 +172,12 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
 
             if (subtype_a != subtype_b) return false;
 
-            if (subtype_a == HEAP_SUBTYPE_STRING) {
+            if (subtype_a == HEAP_SUBTYPE_RATIONAL)
+                return eshkol_rational_equal((void*)a->data.ptr_val, (void*)b->data.ptr_val) != 0;
+            if (subtype_a == HEAP_SUBTYPE_I128)
+                return std::memcmp((const void*)a->data.ptr_val, (const void*)b->data.ptr_val,
+                                   sizeof(eshkol_i128_abi)) == 0;
+            if (subtype_a == HEAP_SUBTYPE_STRING || subtype_a == HEAP_SUBTYPE_SYMBOL) {
                 return std::strcmp((const char*)a->data.ptr_val,
                                    (const char*)b->data.ptr_val) == 0;
             }

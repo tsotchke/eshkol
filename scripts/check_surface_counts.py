@@ -253,6 +253,7 @@ def load_canonical_builtins_total() -> int:
     return value
 
 
+from release_target import project_identity
 from release_publication_contract import (ContractError, load_record, ctest_summary,
     parity_summary, metadata_facts)
 
@@ -1076,7 +1077,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SourceError('strict evidence requires --sha and forbids --sync after capture')
             try:
                 metadata_facts(RELEASE_RECORD_PATH, os.path.join(REPO_ROOT, 'RELEASE_NOTES.md'), args.publication_evidence,
-                               args.sha, load_record(RELEASE_RECORD_PATH)['tag'], args.role)
+                               args.sha, project_identity()[1], args.role)
             except ContractError as exc:
                 raise SourceError(str(exc)) from exc
         if args.sync:

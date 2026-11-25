@@ -98,6 +98,11 @@ extern "C" int eshkol_runtime_close_port(void* fp_void) {
     return result;
 }
 
+/** Dynamic-wind cleanup that closes a borrow scope's port on a non-local exit. */
+extern "C" void eshkol_runtime_close_port_cleanup(void* fp_void) {
+    (void)eshkol_runtime_close_port(fp_void);
+}
+
 /**
  * @brief Open a read-only string port over `str` (R7RS `open-input-string` support).
  *

@@ -1,0 +1,45 @@
+;;; Handler overhead against direct code (scripts/run_effects_gate.py does not
+;;; run this file; it is a measurement). Prints nanoseconds per operation.
+(require core.effects)
+
+(define (per-op label ops t0 t1)
+  (display label) (display ": ")
+  (display (/ (* 1000000.0 (- t1 t0)) ops)) (display " ns/op")
+  (newline))
+
+(define N 2000000)
+
+(define cell 0)
+(define t0 (current-time-ms))
+(let loop ((i 0)) (if (< i N) (begin (set! cell (+ cell 1)) (loop (+ i 1)))))
+(define t1 (current-time-ms))
+(per-op "direct set!/read" N t0 t1)
+
+(define t2 (current-time-ms))
+(with-store 0 (lambda () (let loop ((i 0)) (if (< i N) (begin (put (+ (get) 1)) (loop (+ i 1)))))))
+(define t3 (current-time-ms))
+(per-op "Store get+put (in place, 2 ops)" (* 2 N) t2 t3)
+
+(define M 100000)
+(define t4 (current-time-ms))
+(let loop ((i 0)) (if (< i M) (begin (with-reader i (lambda () (ask))) (loop (+ i 1)))))
+(define t5 (current-time-ms))
+(per-op "install light handler + 1 op" M t4 t5)
+
+(define A 20000)
+(define t6 (current-time-ms))
+(let loop ((i 0)) (if (< i A) (begin (catch-throw (lambda () (throw i)) (lambda (e) e)) (loop (+ i 1)))))
+(define t7 (current-time-ms))
+(per-op "install unwinding handler + abort" A t6 t7)
+
+(define G 20000)
+(define g (make-generator (lambda () (let loop ((i 0)) (if (< i G) (begin (yield i) (loop (+ i 1))))))))
+(define t8 (current-time-ms))
+(let loop ((i 0)) (if (< i G) (begin (g) (loop (+ i 1)))))
+(define t9 (current-time-ms))
+(per-op "pulling generator (2 captures per value)" G t8 t9)
+
+(define t10 (current-time-ms))
+(define sols (length (all-choices (lambda () (let* ((a (choose-range 1 12)) (b (choose-range 1 12))) (if (= (* a b) 24) (list a b) (fail)))))))
+(define t11 (current-time-ms))
+(display "multi-shot choice search, 12x12 space: ") (display (- t11 t10)) (display " ms, ") (display sols) (display " solutions") (newline)

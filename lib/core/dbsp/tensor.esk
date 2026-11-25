@@ -9,7 +9,23 @@
 (require core.dbsp)
 
 (provide tensor-delta tensor-delta? tensor-delta-shape tensor-delta-entries
-         tensor-apply-delta zset-project-tensor tensor-matmul-delta)
+         tensor-apply-delta zset-project-tensor tensor-matmul-delta tensor-reader)
+
+;; Read-only operand protocol, allowing persistent storage to participate in
+;; the same finite matrix kernel without materializing a dense native tensor.
+;; REF receives one flat row-major index and must be pure, returning a real.
+(define (tensor-reader shape ref)
+  (dbsp-td-check-shape shape)
+  (if (not (procedure? ref)) (error "Tensor reader requires a procedure"))
+  (vector 'dbsp-tensor-reader-v1 (map (lambda (n) n) shape) ref))
+(define (dbsp-td-reader? x)
+  (and (vector? x) (= (vector-length x) 3)
+       (eq? (vector-ref x 0) 'dbsp-tensor-reader-v1)))
+(define (dbsp-td-operand-shape x)
+  (if (dbsp-td-reader? x) (vector-ref x 1) (tensor-shape x)))
+(define (dbsp-td-operand-ref x i)
+  (let ((value (if (dbsp-td-reader? x) ((vector-ref x 2) i) (tensor-ref x i))))
+    (if (not (real? value)) (error "Tensor reader returned a nonreal value")) value))
 
 ;; Private representation: #(dbsp-tensor-delta-v1 shape ((flat-index amount) ...)).
 ;; Entries are sorted, consolidated, and nonzero. No dense delta is allocated.
@@ -136,7 +152,7 @@
 (define (tensor-matmul-delta a b da db)
   (dbsp-td-check da)
   (dbsp-td-check db)
-  (let ((sa (tensor-shape a)) (sb (tensor-shape b)))
+  (let ((sa (dbsp-td-operand-shape a)) (sb (dbsp-td-operand-shape b)))
     (if (not (and (= (length sa) 2) (= (length sb) 2)))
         (error "Tensor matmul delta requires rank-two operands" sa sb))
     (if (not (and (equal? sa (vector-ref da 1))
@@ -152,7 +168,7 @@
              (if (< j n)
                  (begin
                    (set! out (dbsp-td-product out (+ (* i n) j) (cadr entry)
-                                             (tensor-ref b (+ (* l n) j))))
+                                             (dbsp-td-operand-ref b (+ (* l n) j))))
                    (loop (+ j 1)))))))
        (vector-ref da 2))
       ;; A dB: each changed B[l,j] affects output column j.
@@ -163,7 +179,7 @@
              (if (< i m)
                  (begin
                    (set! out (dbsp-td-product out (+ (* i n) j)
-                                             (tensor-ref a (+ (* i k) l)) (cadr entry)))
+                                             (dbsp-td-operand-ref a (+ (* i k) l)) (cadr entry)))
                    (loop (+ i 1)))))))
        (vector-ref db 2))
       ;; dA dB, essential when both operands (or a shared operand) change.

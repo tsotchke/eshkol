@@ -16,6 +16,13 @@
  * link unit with its own main()) means the `weight_matrices` executable and its
  * 127-test suite build entirely unchanged.
  *
+ * Fine-tuning the constructed interpreter. sdnc_backward_smoothed() takes an
+ * explicit SdncBackwardSmoothing (gate and attention inverse temperatures) for
+ * the backward pass only; the forward pass is always exact. sdnc_backward() is
+ * its beta = 1 case and stays bit-identical to backward_through_weights. The
+ * tied-gate threshold optimizer that uses it lives in lib/core/sdnc_finetune.c
+ * (docs/design/adr/0032-exact-forward-control-fine-tuning.md).
+ *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
  */
@@ -26,6 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+
+/* The reverse-mode rule for the logistic gate and the attention softmax, with
+ * its backward inverse temperature (shared with lib/backend/qllm_backward.c). */
+#include <eshkol/core/saturating_vjp.h>
 
 /* ---- Model constants (mirror weight_matrices.c) ---- */
 #ifndef SDNC_D
@@ -87,15 +98,46 @@ typedef struct {
     float Q[D];
     float K[256][D];
     float Va[256][D];
-    float scores[256];
+    float scores_raw[256];          /* Layer-0 attention logits (pre-softmax) */
+    float scores[256];              /* Layer-0 attention weights (post-softmax) */
     float hout[D];
     int   np;
     float ff_h[N_LAYERS][FFN_DIM];
+    float ff_gate_pre[N_LAYERS][FFN_DIM]; /* gate pre-activation incl. bias */
     float ff_gate[N_LAYERS][FFN_DIM];
     float ff_up[N_LAYERS][FFN_DIM];
 } SdncFwdCache;
 
+/* Construction unit of the analytic interpreter weights: every gate and
+ * attention logit of lib/backend/weight_matrices.c is an integer multiple of
+ * this scale (its SCALE). A threshold move of one unit switches one
+ * construction gate. */
+#define SDNC_CONSTRUCTION_UNIT 300.0f
+
+/* Backward smoothing for the saturating nonlinearities.
+ *
+ * The forward pass is never changed. The backward pass takes the derivative of
+ * the logistic gate as the Jacobian of sigma(gate_beta * pre) and the
+ * derivative of the Layer-0 softmax as the Jacobian of softmax(attn_beta *
+ * logits) (inc/eshkol/core/saturating_vjp.h). Every other factor of the chain
+ * rule (gate values, attention weights, up projections) is the exact forward
+ * value. beta = 1 is the exact derivative; sdnc_backward() is defined as that
+ * case. For the constructed interpreter, whose saturated gates make the exact
+ * derivative of every control weight identically zero, a beta of a few
+ * construction units over SDNC_CONSTRUCTION_UNIT gives an informative
+ * derivative while the forward stays exact. */
+typedef struct {
+    float gate_beta;   /* > 0; 1 = exact */
+    float attn_beta;   /* > 0; 1 = exact */
+} SdncBackwardSmoothing;
+
+static inline SdncBackwardSmoothing sdnc_backward_smoothing_exact(void) {
+    SdncBackwardSmoothing s; s.gate_beta = 1.0f; s.attn_beta = 1.0f; return s;
+}
+
 /* ===================================================================== */
+
+ESHKOL_SATURATING_VJP_RULES(float, _sdnc)
 
 static inline float sdnc_sigmoidf(float x) {
     if (x > 20.0f) return 1.0f;
@@ -135,6 +177,55 @@ static inline void sdnc_apply_ffn_layer(const SdncWeights* w, int L, float x[D])
     for (int i = 0; i < D; i++) x[i] += fo[i];
 }
 
+/* Finish a forward pass from layer L0, given x after layer L0's attention
+ * residual (x_post_attn[L0]): FFN L0, then the attention-free residual and
+ * FFN of every later forward layer. Only Layer 0 attends, so this is the whole
+ * remaining computation, in the same operation order as sdnc_forward. When
+ * x_post_attn is non-NULL, row L receives x after layer L's residual for every
+ * L >= L0 (the input of FFN L), so a caller can later resume from any layer. */
+static inline void sdnc_forward_tail(const SdncWeights* w, int L0, float x[D],
+                                     float (*x_post_attn)[D]) {
+    for (int L = L0; L < N_LAYERS - 1; L++) {
+        if (L > L0) {
+            float ao[D]; memset(ao, 0, sizeof(ao));
+            for (int i = 0; i < D; i++) x[i] += ao[i];
+        }
+        if (x_post_attn) memcpy(x_post_attn[L], x, sizeof(float) * D);
+        sdnc_apply_ffn_layer(w, L, x);
+    }
+}
+
+/* Layer-0 attention and its residual: x += W_O softmax(QK^T/sqrt(HD)) V. */
+static inline void sdnc_layer0_attention_residual(const SdncWeights* w, float x[D],
+                                                  const float pe[][D], int np) {
+    float ao[D]; memset(ao, 0, sizeof(ao));
+    if (np > 0) {
+        const int L = 0;
+        float Q[D]; memset(Q, 0, sizeof(Q));
+        for (int i=0;i<D;i++) for(int j=0;j<D;j++) Q[i]+=w->wq[L][i*D+j]*x[j];
+        for (int i=0;i<D;i++) Q[i]+=w->bq[L][i];
+        float scores[256]; float mx=-1e30f;
+        float Va[256][D];
+        for (int p=0; p<np&&p<256; p++) {
+            float K[D]; memset(K,0,sizeof(K));
+            memset(Va[p],0,sizeof(Va[p]));
+            for(int i=0;i<D;i++) for(int j=0;j<D;j++) {
+                K[i]+=w->wk[L][i*D+j]*pe[p][j];
+                Va[p][i]+=w->wv[L][i*D+j]*pe[p][j];
+            }
+            scores[p]=(Q[0]*K[0]+Q[1]*K[1])/sqrtf((float)HD);
+            if(scores[p]>mx) mx=scores[p];
+        }
+        float sum=0;
+        for(int p=0;p<np;p++){scores[p]=expf(scores[p]-mx);sum+=scores[p];}
+        for(int p=0;p<np;p++) scores[p]/=sum;
+        float hout[D]; memset(hout,0,sizeof(hout));
+        for(int p=0;p<np;p++) for(int d=0;d<HD;d++) hout[d]+=scores[p]*Va[p][d];
+        for(int i=0;i<D;i++) for(int j=0;j<D;j++) ao[i]+=w->wo[L][i*D+j]*hout[j];
+    }
+    for(int i=0;i<D;i++) x[i]+=ao[i];
+}
+
 /* Forward pass through layers 0..N_LAYERS-2 (layer 5 is backward-only).
  * Mirrors forward_with_weights. */
 static inline void sdnc_forward(const SdncWeights* w,
@@ -142,34 +233,8 @@ static inline void sdnc_forward(const SdncWeights* w,
                                 const float pe[][D], int np,
                                 float next[D]) {
     float x[D]; memcpy(x, state, sizeof(float)*D);
-    for (int L = 0; L < N_LAYERS - 1; L++) {
-        float ao[D]; memset(ao, 0, sizeof(ao));
-        if (L == 0 && np > 0) {
-            float Q[D]; memset(Q, 0, sizeof(Q));
-            for (int i=0;i<D;i++) for(int j=0;j<D;j++) Q[i]+=w->wq[L][i*D+j]*x[j];
-            for (int i=0;i<D;i++) Q[i]+=w->bq[L][i];
-            float scores[256]; float mx=-1e30f;
-            float Va[256][D];
-            for (int p=0; p<np&&p<256; p++) {
-                float K[D]; memset(K,0,sizeof(K));
-                memset(Va[p],0,sizeof(Va[p]));
-                for(int i=0;i<D;i++) for(int j=0;j<D;j++) {
-                    K[i]+=w->wk[L][i*D+j]*pe[p][j];
-                    Va[p][i]+=w->wv[L][i*D+j]*pe[p][j];
-                }
-                scores[p]=(Q[0]*K[0]+Q[1]*K[1])/sqrtf((float)HD);
-                if(scores[p]>mx) mx=scores[p];
-            }
-            float sum=0;
-            for(int p=0;p<np;p++){scores[p]=expf(scores[p]-mx);sum+=scores[p];}
-            for(int p=0;p<np;p++) scores[p]/=sum;
-            float hout[D]; memset(hout,0,sizeof(hout));
-            for(int p=0;p<np;p++) for(int d=0;d<HD;d++) hout[d]+=scores[p]*Va[p][d];
-            for(int i=0;i<D;i++) for(int j=0;j<D;j++) ao[i]+=w->wo[L][i*D+j]*hout[j];
-        }
-        for(int i=0;i<D;i++) x[i]+=ao[i];
-        sdnc_apply_ffn_layer(w, L, x);
-    }
+    sdnc_layer0_attention_residual(w, x, pe, np);
+    sdnc_forward_tail(w, 0, x, NULL);
     memcpy(next, x, sizeof(float)*D);
 }
 
@@ -193,19 +258,15 @@ static inline void sdnc_matvec_backward(const float* x, const float* W,
     }
 }
 
-/* Re-run forward caching intermediates, then backprop. Accumulates into g and
- * writes grad w.r.t. input state to dL_dstate (may be NULL).
- * Mirrors backward_through_weights. */
-static inline void sdnc_backward(const SdncWeights* w,
-                                 const float state[D],
-                                 const float pe[][D], int np,
-                                 const float dL_dnext[D],
-                                 SdncGrads* g,
-                                 float dL_dstate[D],
-                                 SdncFwdCache* cache) {
-    SdncFwdCache* cp = cache;
-    memset(cp, 0, sizeof(*cp));
-    SdncFwdCache* c_ = cp;
+/* Forward pass that records every intermediate the backward pass needs.
+ * `next` receives the same output as sdnc_forward. */
+static inline void sdnc_forward_cached(const SdncWeights* w,
+                                       const float state[D],
+                                       const float pe[][D], int np,
+                                       float next[D],
+                                       SdncFwdCache* cache) {
+    SdncFwdCache* c_ = cache;
+    memset(c_, 0, sizeof(*c_));
 #define c (*c_)
     c.np = np;
 
@@ -229,6 +290,7 @@ static inline void sdnc_backward(const SdncWeights* w,
                 }
                 memcpy(c.K[p], K, sizeof(float)*D);
                 scores[p] = (Q[0]*K[0] + Q[1]*K[1]) / sqrtf((float)HD);
+                c.scores_raw[p] = scores[p];
                 if (scores[p] > mx) mx = scores[p];
             }
             float sum = 0;
@@ -255,7 +317,11 @@ static inline void sdnc_backward(const SdncWeights* w,
         } else if (w->ff_type[L] == 2) {
             float gate[FFN_DIM], up[FFN_DIM], h[FFN_DIM];
             sdnc_matvec_t(x, w->ff_gate[L], gate, D, FFN_DIM);
-            for (int i = 0; i < FFN_DIM; i++) gate[i] = sdnc_sigmoidf(gate[i] + w->ff_gate_b[L][i]);
+            for (int i = 0; i < FFN_DIM; i++) {
+                float pre = gate[i] + w->ff_gate_b[L][i];
+                c.ff_gate_pre[L][i] = pre;
+                gate[i] = sdnc_sigmoidf(pre);
+            }
             sdnc_matvec_t(x, w->ff_up[L], up, D, FFN_DIM);
             for (int i = 0; i < FFN_DIM; i++) up[i] += w->ff_up_b[L][i];
             for (int i = 0; i < FFN_DIM; i++) h[i] = gate[i]*up[i];
@@ -267,6 +333,25 @@ static inline void sdnc_backward(const SdncWeights* w,
             for (int i = 0; i < D; i++) x[i] += fo[i];
         }
     }
+    memcpy(next, x, sizeof(float) * D);
+#undef c
+}
+
+/* Re-run forward caching intermediates, then backprop with the given backward
+ * smoothing (see SdncBackwardSmoothing). Accumulates into g and writes the
+ * gradient w.r.t. the input state to dL_dstate (may be NULL). */
+static inline void sdnc_backward_smoothed(const SdncWeights* w,
+                                          const float state[D],
+                                          const float pe[][D], int np,
+                                          const float dL_dnext[D],
+                                          SdncBackwardSmoothing sm,
+                                          SdncGrads* g,
+                                          float dL_dstate[D],
+                                          SdncFwdCache* cache) {
+    float fwd_next[D];
+    sdnc_forward_cached(w, state, pe, np, fwd_next, cache);
+    const SdncFwdCache* c_ = cache;
+#define c (*c_)
 
     float dx[D]; memcpy(dx, dL_dnext, sizeof(float)*D);
     for (int L = N_LAYERS - 2; L >= 0; L--) {
@@ -294,7 +379,13 @@ static inline void sdnc_backward(const SdncWeights* w,
             float dxin[D]; memset(dxin, 0, sizeof(dxin));
             sdnc_matvec_backward(c.x_post_attn[L], w->ff_up[L], dup, g->dff_up[L], dxin, D, FFN_DIM);
             float dpre[FFN_DIM];
-            for (int i = 0; i < FFN_DIM; i++) { float gv = c.ff_gate[L][i]; dpre[i] = dgate[i]*gv*(1.0f-gv); }
+            const float gb = sm.gate_beta;
+            for (int i = 0; i < FFN_DIM; i++) {
+                /* Gate value at the backward temperature; at gb == 1 this
+                 * is exactly the cached forward gate. */
+                float s = sdnc_sigmoidf(gb * c.ff_gate_pre[L][i]);
+                dpre[i] = eshkol_logistic_vjp_sdnc(dgate[i], s, gb);
+            }
             for (int i = 0; i < FFN_DIM; i++) g->dff_gate_b[L][i] += dpre[i];
             sdnc_matvec_backward(c.x_post_attn[L], w->ff_gate[L], dpre, g->dff_gate[L], dxin, D, FFN_DIM);
             for (int i = 0; i < D; i++) dx[i] += dxin[i];
@@ -321,10 +412,16 @@ static inline void sdnc_backward(const SdncWeights* w,
                     for (int j = 0; j < D; j++) g->dwv[0][d*D+j] += pe[p][j]*dVad;
                 }
             }
-            float dot = 0.0f;
-            for (int p = 0; p < np_; p++) dot += c.scores[p]*ds[p];
+            /* Attention weights at the backward temperature; at attn_beta
+             * == 1 this recomputation is exactly the cached forward softmax. */
+            const float ab = sm.attn_beta;
+            float a[256]; float mx = -1e30f;
+            for (int p = 0; p < np_; p++) { a[p] = ab * c.scores_raw[p]; if (a[p] > mx) mx = a[p]; }
+            float sum = 0;
+            for (int p = 0; p < np_; p++) { a[p] = expf(a[p]-mx); sum += a[p]; }
+            for (int p = 0; p < np_; p++) a[p] /= sum;
             float dscore[256];
-            for (int p = 0; p < np_; p++) dscore[p] = c.scores[p]*(ds[p] - dot);
+            eshkol_softmax_vjp_sdnc(a, ds, np_, ab, dscore);
             float inv = 1.0f/sqrtf((float)HD);
             float dQ[D]; memset(dQ, 0, sizeof(dQ));
             for (int p = 0; p < np_; p++) {
@@ -353,6 +450,21 @@ static inline void sdnc_backward(const SdncWeights* w,
     }
     if (dL_dstate) memcpy(dL_dstate, dx, sizeof(float)*D);
 #undef c
+}
+
+/* Exact backward: re-run forward caching intermediates, then backprop.
+ * Accumulates into g and writes grad w.r.t. input state to dL_dstate (may be
+ * NULL). Mirrors backward_through_weights bit for bit; it is the beta = 1
+ * case of sdnc_backward_smoothed. */
+static inline void sdnc_backward(const SdncWeights* w,
+                                 const float state[D],
+                                 const float pe[][D], int np,
+                                 const float dL_dnext[D],
+                                 SdncGrads* g,
+                                 float dL_dstate[D],
+                                 SdncFwdCache* cache) {
+    sdnc_backward_smoothed(w, state, pe, np, dL_dnext,
+                           sdnc_backward_smoothing_exact(), g, dL_dstate, cache);
 }
 
 /* SGD step. Mirrors apply_weight_gradient_step. */

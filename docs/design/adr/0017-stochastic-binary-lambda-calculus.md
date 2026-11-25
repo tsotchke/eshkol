@@ -91,7 +91,7 @@ re-verification; no AIXI implementation in this milestone.
 **v1.4 exit:** given `(seed, L, S, examples)`, Eshkol emits a deterministic receipt with the
 complete bounded program set, exact per-program likelihood and posterior mass, exact output
 and timeout distributions, and the shortest and MDL witnesses; byte-identical on JIT and AOT.
-The VM reports `unsupported` rather than falling back until its PRNG parity gaps close.
+The native VM now supports isolated int64-seeded PRNGs with JIT/AOT/VM-source/ESKB sampled-trace parity; unsupported argument domains refuse. The RNG gate is separate from wider VM qualification.
 
 ### v1.5
 
@@ -99,10 +99,26 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
    direct and interpreted exact distributions and seeded traces must agree.
 2. **Resumable E6 search** — dovetailed residual distributions, content-hash checkpoints,
    mesh sharding with deterministic merge (`lib/core/sblc/search.esk`).
+   The in-memory first step is implemented by `sblc-search-start` /
+   `sblc-search-resume` in the existing `core.sblc` owner: fixed-context opaque
+   handles retain exact unfinished frontiers and completed outcomes, and project
+   through the existing conditioning receipt constructor. The separate
+   `scripts/run_sblc_resume_gate.sh` requires fresh/resumed receipt equality and
+   JIT/AOT parity. Versioned checkpoint data and expected-context restoration now
+   preserve exact residual partitions across process restart. The checkpoint gate
+   requires cold JIT/AOT transport and corruption/context refusal. SHA-256 binds
+   content, not authenticated execution history. Distributed shard composition
+   remains undelivered.
 3. **DBSP / N3 integration** — incremental example deltas and structured
    accepted / rejected / timeout / failure receipts.
+   The finite observation-update path now integrates signed `core.dbsp` Z-sets,
+   reuses matching independent trials, grows the catalogue, and publishes raw
+   accepted/rejected/timeout mass deltas to existing DBSP circuits. Invalid
+   updates raise without publishing a partial successor. Live N3/mesh dispatch
+   remains separate.
 4. **VM RNG parity** — close the four PRNG gaps (`make-prng`, `prng?`, `prng-random`,
-   `prng-random-integer`) and require JIT/AOT/VM trace equality.
+   `prng-random-integer`) and require JIT/AOT/VM trace equality. This native VM
+   binding/trace slice is implemented and gated by `scripts/run_sblc_rng_parity_gate.sh`.
 5. **Differentiable proposals** (experimental, `lib/core/sblc/relax.esk`) — exact finite-logit
    oracle on enumerated domains, REINFORCE with Rao–Blackwellized inner coins, Gumbel/Concrete
    grammar relaxation only under approximate receipts, every relaxed candidate projected to a
@@ -125,7 +141,11 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
   primary.
 - Semantics: lazy choice (`K I (Ω ⊕ M)`), exact half mass per branch, `M ⊕ M` merging to
   mass one, step-bound edges reconciling beta and coin counters, iteration-order invariance,
-  alpha-identical merging, impossible evidence returning `no-consistent-program`.
+  alpha-identical merging, zero evidence with a still-possible candidate returning
+  `unresolved`, and definitive rejection of every bounded candidate returning
+  `no-consistent-program`. Possibility requires positive likelihood plus timeout
+  mass on every independent example; a separate contradiction still rules out
+  that candidate.
 - Reproducibility: identical tuples reproduce identical receipts; v1.4 JIT/AOT, v1.5 JIT/AOT/VM.
 
 ## Consequences

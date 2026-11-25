@@ -336,7 +336,7 @@ def main():
              and e.get("category") in CATEGORIES
              and "vm" in (e.get("backends") or [])
              and (("native_llvm" in (e.get("backends") or []))
-                  or ("native" in (e.get("backends") or [])))]
+                  or ("native_llvm" in (e.get("backends") or [])))]
     cands.sort(key=lambda e: e["name"])
 
     if not args.full:

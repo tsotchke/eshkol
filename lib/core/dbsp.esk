@@ -62,7 +62,7 @@
 ;; utilities (fold-left, filter, assoc), so it depends on the standard library.
 (require stdlib)
 
-(provide zset-empty zset? zset-singleton zset-from-weighted zset-weight
+(provide zset-row-key zset-empty zset? zset-singleton zset-from-weighted zset-weight
          zset-add zset-negate zset-sub zset-scale zset-consolidate
          zset-empty? zset-positive? zset=? zset-entries zset-rows zset-size
          zset-map zset-filter zset-project zset-union zset-join
@@ -78,6 +78,9 @@
 ;; ============================================================================
 
 (define dbsp-zset-tag 'dbsp-zset-v1)
+
+;; Stable key encoding owned here, shared by persistent circuit arrangements.
+(define (zset-row-key row) (dbsp-canon row))
 
 ;; Canonical string rendering of a row: a deterministic, INJECTIVE encoding
 ;; used purely for ordering and grouping (observable equality remains

@@ -9,7 +9,7 @@ on:
       candidate_tag:
         description: Candidate tag label used only for dry-run asset names
         required: true
-        default: v1.3.6-evolve
+        default: v1.4.0-connection
         type: string
       strict_readiness:
         description: Fail the dry run unless ICC certifies this exact commit ready/100
@@ -42,7 +42,7 @@ env:
   # A manual dispatch is always non-publishing. Its explicit candidate label
   # lets the dry-run archives use the exact names the later tag run will use.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
-  RELEASE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
+  RELEASE_TARGET: v1.4-connection
   STRICT_READINESS: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_readiness || false }}
   MEMORY_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.memory_diagnostics || false }}
   MEASUREMENT_PREPARATION: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_preparation || false }}
@@ -124,10 +124,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
-            echo "Invalid release tag label: $RELEASE_TAG" >&2
-            exit 1
-          fi
+          python3 scripts/release_target.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
 
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
@@ -175,7 +172,6 @@ jobs:
             libreadline-dev pkg-config patchelf
             libssl-dev libncurses-dev
             libpcre2-dev libsqlite3-dev
-            libpng-dev libjpeg-dev libwebp-dev
             git python3
           )
           if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
@@ -217,7 +213,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+          brew install llvm@${LLVM_MAJOR} openssl@3 zstd cmake ninja readline pcre2 sqlite
 
       - name: Configure
         shell: bash
@@ -226,6 +222,7 @@ jobs:
           BUILD_DIR="${{ matrix.build_dir }}"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
+            OPENSSL_PREFIX="$(brew --prefix openssl@3)"
             export PATH="$LLVM_PREFIX/bin:$PATH"
             LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
           else
@@ -242,6 +239,8 @@ jobs:
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_IMAGE_IO=ON \
+            -DESHKOL_RELOCATABLE_MACOS_TLS="$([[ "$RUNNER_OS" == "macOS" ]] && echo ON || echo OFF)" \
+            -DOPENSSL_ROOT_DIR="${OPENSSL_PREFIX:-}" \
             -DCUDAToolkit_ROOT=/usr/local/cuda-12.4
 
       - name: Verify real CUDA build graph
@@ -343,6 +342,7 @@ jobs:
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/"
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/eshkol/"
           runtime_archive="${{ matrix.build_dir }}/libeshkol-runtime.a"
+          repl_lib_archive="${{ matrix.build_dir }}/libeshkol-repl-lib.a"
           agent_ffi_archive="${{ matrix.build_dir }}/libeshkol-agent-ffi.a"
           agent_pcre2_archive="${{ matrix.build_dir }}/eshkol-agent-pcre2.a"
           agent_sqlite_archive="${{ matrix.build_dir }}/eshkol-agent-sqlite3.a"
@@ -351,6 +351,7 @@ jobs:
           agent_tree_sitter_archive="${{ matrix.build_dir }}/eshkol-agent-tree-sitter.a"
           agent_yoga_archive="${{ matrix.build_dir }}/eshkol-agent-yoga.a"
           test -s "$runtime_archive"
+          test -s "$repl_lib_archive"
           test -s "$agent_ffi_archive"
           test -s "$agent_pcre2_archive"
           test -s "$agent_sqlite_archive"
@@ -360,6 +361,8 @@ jobs:
           test -s "$agent_yoga_archive"
           cp "$runtime_archive" "$pkg_dir/lib/"
           cp "$runtime_archive" "$pkg_dir/lib/eshkol/"
+          cp "$repl_lib_archive" "$pkg_dir/lib/"
+          cp "$repl_lib_archive" "$pkg_dir/lib/eshkol/"
           cp "$agent_ffi_archive" "$pkg_dir/lib/"
           cp "$agent_ffi_archive" "$pkg_dir/lib/eshkol/"
           cp "$agent_pcre2_archive" "$pkg_dir/lib/"
@@ -381,6 +384,7 @@ jobs:
             cp "$agent_curl_archive" "$pkg_dir/lib/eshkol/"
           fi
 
+          cp "${{ matrix.build_dir }}/release-tag" "$pkg_dir/share/eshkol/"
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
           if [[ -f "lib/math.esk" ]]; then
             cp "lib/math.esk" "$pkg_dir/share/eshkol/"
@@ -412,6 +416,21 @@ jobs:
             python3 scripts/stage_linux_runtime_dependencies.py \
               --build-dir "${{ matrix.build_dir }}" \
               --package-dir "$pkg_dir"
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            openssl_prefix="$(brew --prefix openssl@3)"
+            llvm_prefix="$(brew --prefix llvm@${LLVM_MAJOR})"
+            zstd_prefix="$(brew --prefix zstd)"
+            openssl_version="$("$openssl_prefix/bin/openssl" version | awk '{print $2}')"
+            llvm_version="$("$llvm_prefix/bin/llvm-config" --version)"
+            zstd_version="$("$zstd_prefix/bin/zstd" --version | sed -E 's/.* v([^, ]+).*/\1/')"
+            python3 scripts/stage_macos_openssl_runtime.py \
+              --openssl-prefix "$openssl_prefix" \
+              --llvm-prefix "$llvm_prefix" \
+              --zstd-prefix "$zstd_prefix" \
+              --package-dir "$pkg_dir" \
+              --openssl-version "$openssl_version" \
+              --llvm-version "$llvm_version" \
+              --zstd-version "$zstd_version"
           fi
 
           python3 scripts/stage_third_party_licenses.py \
@@ -432,11 +451,22 @@ jobs:
             --package-dir "$pkg_dir" \
             --platform "$release_platform"
 
-          python3 scripts/verify_release_package.py \
-            --package-dir "$pkg_dir" \
-            --smoke-source "tests/toolchain/windows-smoke.esk" \
-            --agent-smoke-source "tests/toolchain/release-agent-smoke.esk" \
+          verify_args=(
+            --package-dir "$pkg_dir"
+            --smoke-source "tests/toolchain/windows-smoke.esk"
+            --agent-smoke-source "tests/toolchain/release-agent-smoke.esk"
             --expected-version "$RELEASE_TAG"
+          )
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            verify_args+=(--tls-smoke-source "tests/network/tls_public_api.esk")
+          fi
+          python3 scripts/verify_release_package.py "${verify_args[@]}"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python3 scripts/run_tls_encrypted_key_public_test.py \
+              --runner "$pkg_dir/bin/eshkol-run" \
+              --source-root "$PWD" \
+              --lib-dir "$pkg_dir/lib"
+          fi
 
           tar -czf "$RUNNER_TEMP/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root"
 
@@ -565,9 +595,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RELEASE_TAG -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
-            throw "Invalid release tag label: $env:RELEASE_TAG"
-          }
+          python scripts/release_target.py --tag "$env:RELEASE_TAG" --target "$env:RELEASE_TARGET"
 
       - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
         if: matrix.gpu_enabled == 'ON'
@@ -826,7 +854,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-repl-lib', 'eshkol-runtime', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -933,6 +961,7 @@ jobs:
           $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
           $stdlibBitcode = Join-Path '${{ matrix.build_dir }}' 'stdlib.bc'
           $runtimeLibrary = Join-Path $binaryDir 'eshkol-runtime.lib'
+          $replLibrary = Join-Path $binaryDir 'eshkol-repl-lib.lib'
           $agentFfiLibrary = Join-Path $binaryDir 'eshkol-agent-ffi.lib'
           $agentPcre2Library = Join-Path $binaryDir 'eshkol-agent-pcre2.lib'
           $agentSqliteLibrary = Join-Path $binaryDir 'eshkol-agent-sqlite3.lib'
@@ -962,6 +991,14 @@ jobs:
               $runtimeLibrary = $runtimeLibraryCandidate
             } else {
               throw "eshkol-runtime.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
+          if (-not (Test-Path $replLibrary -PathType Leaf)) {
+            $replLibraryCandidate = Join-Path '${{ matrix.build_dir }}' 'eshkol-repl-lib.lib'
+            if (Test-Path $replLibraryCandidate -PathType Leaf) {
+              $replLibrary = $replLibraryCandidate
+            } else {
+              throw "eshkol-repl-lib.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
             }
           }
           if (-not (Test-Path $agentFfiLibrary -PathType Leaf)) {
@@ -1007,6 +1044,7 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
 
+          Copy-Item -LiteralPath (Join-Path '${{ matrix.build_dir }}' 'release-tag') -Destination $shareDir
           Copy-Item -LiteralPath (Join-Path $binaryDir 'eshkol-run.exe') -Destination $binDir
           Copy-Item -LiteralPath (Join-Path $binaryDir 'eshkol-repl.exe') -Destination $binDir
 
@@ -1020,6 +1058,8 @@ jobs:
           Copy-Item -LiteralPath $stdlibBitcode -Destination $libEshkolDir
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libDir
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libEshkolDir
+          Copy-Item -LiteralPath $replLibrary -Destination $libDir
+          Copy-Item -LiteralPath $replLibrary -Destination $libEshkolDir
           Copy-Item -LiteralPath $agentFfiLibrary -Destination $libDir
           Copy-Item -LiteralPath $agentFfiLibrary -Destination $libEshkolDir
           Copy-Item -LiteralPath $agentPcre2Library -Destination $libDir
@@ -1170,6 +1210,9 @@ jobs:
         with:
           # Release evidence includes the disclosure scan against origin/master.
           fetch-depth: 0
+
+      - name: Validate release identity
+        run: python3 scripts/release_target.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
 
       # Resolve ICC FIRST so a runner without it decides fast, before spending
       # ~20 min on a build it could never certify. On a real tag push, absence

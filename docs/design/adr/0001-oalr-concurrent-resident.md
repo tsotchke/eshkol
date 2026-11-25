@@ -52,7 +52,8 @@
   `BorrowChecker` into the production type-checker walk and add a
   Unix-runnable negative-test runner. Target: v1.4.0 (ADR-0000 Stage 3).
 - **Evacuation (ESH-0214d) — PARTIAL.** Native `evac_kind_for`
-  (`runtime_regions.cpp:1024`) deep-walks 15 subtypes but leaf-copies
+  (`lib/core/runtime_regions_evacuation.cpp:306`, moved out of `runtime_regions.cpp`)
+  deep-walks 15 subtypes but leaf-copies
   `AD_NODE` with a warning ("only the derivative is corrupted"). The VM
   evacuator (`lib/backend/vm_region_evac.c`, #461) is stronger: a per-tag
   table with compile-time and runtime totality asserts.
@@ -347,7 +348,7 @@ int eshkol_store_tagged_range(eshkol_place_t dst,
                               size_t count);
 ```
 
-Recording a typed place rather than only a raw slot matters for hash-table resize and other movable backing stores. At exit the layout descriptor re-resolves the place; an overwritten slot is skipped. Fixed cons/vector slots can use the stable fast path. This ABI replaces the current “return a possibly promoted temporary, then store it” barrier at [`lib/core/runtime_regions.cpp:1087`](../../../lib/core/runtime_regions.cpp#L1087), because that form cannot later repair the definitive slot.
+Recording a typed place rather than only a raw slot matters for hash-table resize and other movable backing stores. At exit the layout descriptor re-resolves the place; an overwritten slot is skipped. Fixed cons/vector slots can use the stable fast path. This ABI replaces the current “return a possibly promoted temporary, then store it” barrier at [`lib/core/runtime_regions_evacuation.cpp:1603`](../../../lib/core/runtime_regions_evacuation.cpp#L1603), because that form cannot later repair the definitive slot.
 
 A process global, channel, future, atomic cell, foreign buffer, or container with a foreign reader is **not** thread-confined. Such a destination never temporarily receives an inward raw pointer. The store must use one of three paths:
 

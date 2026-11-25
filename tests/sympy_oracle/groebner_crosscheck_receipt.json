@@ -1,0 +1,28 @@
+{
+ "cases": 180,
+ "corpus_sha256": "65105009f204c189fde34bbdaaf4f03b202930fe20b52d659b36c80a9f86cd9d",
+ "engines": {
+  "aot": {
+   "agreed": 180,
+   "differed": [],
+   "exit": 0,
+   "missing": [],
+   "seconds": 192.2
+  },
+  "jit": {
+   "agreed": 180,
+   "differed": [],
+   "exit": 0,
+   "missing": [],
+   "seconds": 77.5
+  }
+ },
+ "expected_sha256": "12f75e1e176a307b3bf388c84d3649d69a0d4191ea57b6d43cacc6fce801f82c",
+ "library_sha256": {
+  "lib/core/groebner.esk": "34a7fdfa7a598a48528946f160df4432eb2bda09e7fd6b6def2514b45c5895f1",
+  "lib/core/ring.esk": "d65c3cf2af3e7cd052328720ad3fa454e627a2aa4428d79eb93591493ef6f3ff"
+ },
+ "oracle": "SymPy 1.14.0 groebner (reduced, monic)",
+ "schema": "eshkol.groebner_crosscheck_receipt.v1",
+ "verdict": "PASS"
+}

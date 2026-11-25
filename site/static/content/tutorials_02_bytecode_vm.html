@@ -184,6 +184,11 @@ $ eshkol-run program.esk -o program -B program.eskb</code></pre>
 <h2 id="part-6-vm-vs-llvm-feature-parity">Part 6: VM vs LLVM Feature Parity</h2>
 <p>Most features work in both backends. Key differences:</p>
 <table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr>
 <th>Feature</th>
@@ -200,12 +205,12 @@ $ eshkol-run program.esk -o program -B program.eskb</code></pre>
 <tr>
 <td>Reverse-mode AD</td>
 <td>Yes</td>
-<td>No</td>
+<td>Bounded scalar Wengert-tape API (<code>reverse-gradient</code>)</td>
 </tr>
 <tr>
 <td>Gradient/Jacobian/Hessian</td>
 <td>Yes</td>
-<td>No (forward-mode only)</td>
+<td>Available: forward carrier passes for gradient/Jacobian; higher-order AD for Hessian</td>
 </tr>
 <tr>
 <td>Tensors</td>
@@ -249,5 +254,6 @@ $ eshkol-run program.esk -o program -B program.eskb</code></pre>
 </tr>
 </tbody>
 </table>
+<p>API availability and differentiation algorithm are separate questions. The VM’s gradient and Jacobian operators use forward carrier passes, while Hessians use higher-order seeded AD passes. The separate <code>reverse-gradient</code> operator records supported scalar arithmetic on a Wengert tape. These paths have their own operation and carrier limits; their presence does not establish general tensor reverse-mode parity or guarantee a diagnostic for every unsupported composition. The dispatch and implementations are in <code>lib/backend/vm_native.c</code>.</p>
 <hr />
 <p><em>Next: Tutorial 3 — The Weight Matrix Transformer</em></p>

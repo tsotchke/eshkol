@@ -19,16 +19,13 @@
 #     exist, this script RUNS that evidence today and reports the actual
 #     PASS/FAIL it produces (most of these were shipped ahead of the
 #     roadmap's checkboxes and were simply never wired into the ICC oracle —
-#     see the per-probe comments below for exactly what exists and where);
-#   * where the deliverable genuinely does not exist yet, this script emits
-#     an honest FAIL with a `not yet implemented` snippet pointing at the
-#     grep that proves the absence, so the criterion is real and gradeable
-#     the moment someone lands the feature (swap the stub body for a real
-#     probe; the .icc/completion-oracles.yaml criterion does not change);
-#   * where the evidence lives in scheduled CI (nightly TSan, self-hosted
-#     GPU) rather than something this fast local gate can reproduce, this
-#     script says so explicitly rather than faking a PASS or silently
-#     skipping the criterion.
+#     see the per-probe comments below for the executable evidence used);
+#   * where this gate has no runnable or source-bound evidence for a
+#     requirement, it emits an honest FAIL marked UNVERIFIED. Source presence
+#     alone never earns a PASS, and an unverified status makes no claim that
+#     the feature is absent;
+#   * where external CI evidence is needed, the event requests a
+#     source-bound CI receipt rather than inferring runner or hardware state.
 #
 # This script never fabricates a PASS. A criterion is PASS only when the
 # thing it claims was actually exercised, this run, and produced the
@@ -39,6 +36,7 @@
 #   TRACE_DIR   (env, default scripts/icc_traces)
 
 set -u
+set -o pipefail
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
@@ -48,6 +46,11 @@ case "$BUILD_DIR" in
     /*) BUILD_DIR_PATH="$BUILD_DIR" ;;
     *)  BUILD_DIR_PATH="$REPO_ROOT/$BUILD_DIR" ;;
 esac
+if [ ! -d "$BUILD_DIR_PATH" ]; then
+    echo "run_v14_connection_gate.sh: build directory not found: $BUILD_DIR_PATH" >&2
+    exit 2
+fi
+BUILD_DIR_PATH="$(cd "$BUILD_DIR_PATH" && pwd -P)" || exit 2
 ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
 VM_RUN="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
 
@@ -77,46 +80,368 @@ print(json.dumps({"kind": "v1_4_connection", "name": sys.argv[1], "value": sys.a
 ' "$1" "$2" "$3" >> "$TRACE_FILE"
 }
 
-# A probe that actually runs a command and grades PASS/FAIL on its exit code.
-probe_run() {
-    local probe_id="$1" label="$2" cmd="$3"
-    local out status snippet
+. "$REPO_ROOT/scripts/lib/connection_gate_probe.sh"
+
+# #145 carries a second, immutable ICC receipt.  The ordinary sweep event is
+# useful for the live counter, but cannot attest which source tree or runner
+# binary produced it.  ICC's test-execution receipt stamps exact-clean-current
+# source identity and hashes the declared executable as measurement input.
+probe_http_server_source_receipt() {
+    local icc_bin repo_name binding_output binding_status command_line jit_cache fingerprint_trace fingerprint_file out status snippet receipt_ok
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
-    out=$(eval "$cmd" 2>&1)
+    if [ -n "${ICC_BIN:-}" ]; then
+        icc_bin="$ICC_BIN"
+    elif [ -x "$HOME/Desktop/infinite_context_coder/bin/icc" ]; then
+        icc_bin="$HOME/Desktop/infinite_context_coder/bin/icc"
+    elif [ -x "$HOME/infinite_context_coder/bin/icc" ]; then
+        icc_bin="$HOME/infinite_context_coder/bin/icc"
+    else
+        icc_bin="$HOME/Desktop/infinite_context_coder/bin/icc"
+    fi
+    if [ ! -x "$icc_bin" ]; then
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
+        emit_event v14_http_server_roundtrip FAIL "ICC receipt producer unavailable: $icc_bin"
+        printf '  \xE2\x9C\x97 %-42s ICC receipt producer unavailable\n' v14_http_server_roundtrip
+        return
+    fi
+
+    repo_name="${ICC_REPO_NAME:-eshkol}"
+    binding_output=$(ICC_BIN="$icc_bin" ICC_REPO_NAME="$repo_name" \
+        bash "$REPO_ROOT/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
+        --verify-icc-checkout-only 2>&1)
+    binding_status=$?
+    if [ "$binding_status" -ne 0 ]; then
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
+        emit_event v14_http_server_roundtrip FAIL "$binding_output"
+        printf '  \xE2\x9C\x97 %-42s ICC repo checkout mismatch\n' v14_http_server_roundtrip
+        return
+    fi
+
+    jit_cache="$WORK/http-server-jit-cache"
+    # Keep the fingerprint receipt under the durable trace root; the rest of
+    # the temporary probe state is safely removed when the sweep exits.
+    fingerprint_trace="$TRACE_DIR/v14_http_server_build"
+    mkdir -p "$jit_cache" "$fingerprint_trace"
+    fingerprint_file="$fingerprint_trace/build_fingerprint.jsonl"
+    command_line="env BUILD_DIR='$BUILD_DIR_PATH' TRACE_DIR='$fingerprint_trace' ICC_BIN='$icc_bin' ICC_REPO_NAME='$repo_name' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
+    # The shell test invokes helper files transitively; ICC's command-seed
+    # closure does not enumerate every sourced shell dependency. Disable that
+    # relaxation so only an exact whole-tree source/index match is admissible;
+    # any later commit retires this receipt until the round trip is rerun.
+    out=$(ICC_RECEIPT_CLOSURE=0 "$icc_bin" test-execution-oracle \
+        --repo "$repo_name" \
+        --name v14_http_server_roundtrip \
+        --cwd "$REPO_ROOT" \
+        --declare-data "$ESHKOL_RUN" \
+        --declare-data "$BUILD_DIR_PATH/stdlib.o" \
+        --declare-data "$BUILD_DIR_PATH/stdlib.bc" \
+        --declare-data "$fingerprint_file" \
+        --declare-instrument scripts/run_v14_connection_gate.sh:http_server_smoke_test.sh \
+        --command "$command_line" --format json 2>&1)
     status=$?
+    receipt_ok=1
     if [ "$status" -eq 0 ]; then
-        emit_event "$probe_id" PASS "${label}: OK"
-        printf '  \xE2\x9C\x93 %-42s %s\n' "$probe_id" "$label"
+        printf '%s' "$out" | python3 -c '
+import json, re, sys
+try:
+    payload = json.load(sys.stdin)
+    record = payload.get("record", {})
+    value = record.get("value", {})
+    source = value.get("source", {})
+    data = (value.get("provenance", {}).get("data", {})
+            if isinstance(value.get("provenance"), dict) else {})
+    inputs = data.get("value") if isinstance(data, dict) else None
+    binary, stdlib_object, stdlib_bitcode, fingerprint_path = sys.argv[1:]
+    binary_rows = [row for row in inputs or []
+                   if isinstance(row, dict) and row.get("path") == binary]
+    required_paths = {stdlib_object, stdlib_bitcode, fingerprint_path}
+    declared_paths = {row.get("path") for row in inputs or [] if isinstance(row, dict)}
+    ok = (
+        payload.get("ok") is True
+        and record.get("schema") == "icc.test_execution.v1"
+        and record.get("kind") == "test_result"
+        and record.get("name") == "v14_http_server_roundtrip"
+        and record.get("status") == "PASS"
+        and source.get("dirty") is False
+        and source.get("icc_fresh") is True
+        and source.get("icc_source_fingerprint")
+            == source.get("icc_index_source_fingerprint")
+        and len(binary_rows) == 1
+        and re.fullmatch(r"[0-9a-f]{64}", str(binary_rows[0].get("sha256") or ""))
+        and required_paths.issubset(declared_paths)
+        and all(
+            re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256") or ""))
+            for row in inputs or []
+            if isinstance(row, dict) and row.get("path") in required_paths
+        )
+    )
+except Exception:
+    ok = False
+raise SystemExit(0 if ok else 1)
+' "$ESHKOL_RUN" "$BUILD_DIR_PATH/stdlib.o" "$BUILD_DIR_PATH/stdlib.bc" "$fingerprint_file" || receipt_ok=0
+    else
+        receipt_ok=0
+    fi
+    if [ "$receipt_ok" -eq 1 ]; then
+        emit_event v14_http_server_roundtrip PASS "ICC test-execution receipt recorded; binary=$ESHKOL_RUN"
+        printf '  \xE2\x9C\x93 %-42s source-bound ICC receipt\n' v14_http_server_roundtrip
     else
         PROBE_FAILURES=$((PROBE_FAILURES + 1))
         snippet=$(printf '%s' "$out" | tail -c 220)
-        emit_event "$probe_id" FAIL "$snippet"
-        printf '  \xE2\x9C\x97 %-42s %s (exit %d)\n' "$probe_id" "$label" "$status"
+        [ "$status" -eq 0 ] && snippet="ICC receipt did not bind a fresh source and runner SHA-256"
+        emit_event v14_http_server_roundtrip FAIL "$snippet"
+        printf '  \xE2\x9C\x97 %-42s ICC receipt failed (exit %d)\n' v14_http_server_roundtrip "$status"
     fi
 }
 
-# A deliverable that does not exist in the tree yet. Emits an honest FAIL
-# with the evidence that it is absent, so the criterion stays real (never
-# silently dropped) until someone lands the feature and swaps this stub for
-# a probe_run call.
-probe_not_yet_implemented() {
+# A requirement for which this gate has no current runnable or source-bound
+# evidence. Keep it failing until a real probe or receipt can establish it;
+# this status does not assert that the implementation is absent.
+probe_unverified() {
     local probe_id="$1" reason="$2"
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     PROBE_FAILURES=$((PROBE_FAILURES + 1))
-    emit_event "$probe_id" FAIL "NOT YET IMPLEMENTED: $reason"
-    printf '  \xE2\x9C\x97 %-42s NOT YET IMPLEMENTED: %s\n' "$probe_id" "$reason"
+    emit_event "$probe_id" FAIL "UNVERIFIED: $reason"
+    printf '  \xE2\x9C\x97 %-42s UNVERIFIED: %s\n' "$probe_id" "$reason"
 }
 
-# A deliverable whose evidence lives in scheduled/self-hosted CI (nightly
-# TSan, self-hosted GPU) that this fast local gate cannot reproduce without
-# a multi-hour toolchain rebuild or hardware this box does not have. Says so
-# rather than faking local evidence.
+# Requirements that need CI evidence stay failing until a source-bound receipt
+# for the named workflow is supplied. Do not infer CI or runner availability.
 probe_external_ci_evidence() {
     local probe_id="$1" workflow="$2" reason="$3"
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     PROBE_FAILURES=$((PROBE_FAILURES + 1))
-    emit_event "$probe_id" FAIL "EVIDENCE IS EXTERNAL CI, NOT LOCAL: $workflow — $reason"
-    printf '  \xE2\x9C\x97 %-42s EXTERNAL CI EVIDENCE (%s): %s\n' "$probe_id" "$workflow" "$reason"
+    emit_event "$probe_id" FAIL "UNVERIFIED: no source-bound CI receipt supplied for $workflow — $reason"
+    printf '  \xE2\x9C\x97 %-42s UNVERIFIED (CI receipt needed): %s — %s\n' "$probe_id" "$workflow" "$reason"
+}
+
+# A native TLS event is emitted only after the compiled capability and all
+# registered C/JIT/AOT/Python-peer tests are present and pass in this run.
+probe_tls_acceptance() {
+    local compile_flags test_list required
+    compile_flags="$BUILD_DIR_PATH/CMakeCache.txt"
+    if [ ! -f "$compile_flags" ] || ! grep -Fq 'ESHKOL_TLS_AVAILABLE:INTERNAL=1' "$compile_flags"; then
+        probe_unverified v14_tls_handshake_verified \
+            "native OpenSSL TLS is unavailable in this build; no handshake PASS is emitted"
+        return
+    fi
+
+    test_list="$(ctest --test-dir "$BUILD_DIR_PATH" -N -R '^tls_' 2>&1)" || {
+        probe_unverified v14_tls_handshake_verified "CTest could not enumerate TLS acceptance tests"
+        return
+    }
+    for required in tls_context_native tls_public_scheme_jit tls_public_scheme_aot \
+                    tls_public_python_jit tls_public_python_aot \
+                    tls_public_fatal_jit tls_public_fatal_aot \
+                    tls_test_pki tls_lease_test tls_net_core_jit tls_net_core_aot; do
+        if ! printf '%s\n' "$test_list" | grep -Fq "$required"; then
+            probe_unverified v14_tls_handshake_verified \
+                "required public TLS test is not registered: $required"
+            return
+        fi
+    done
+    probe_run v14_tls_handshake_verified \
+        'native TLS C/JIT/AOT, leased-stream and Python SSL peer acceptance suite' \
+        'ctest --test-dir "$BUILD_DIR_PATH" --output-on-failure -R "^tls_"' \
+        '100% tests passed'
+}
+
+# Stage a minimal, real package directory from THIS build (mirroring the
+# copy list in .github/workflows/release.yml's "Package Release Asset"
+# step, which is check_package_manifest.py's own ground truth) so A10's
+# producer can grade an actual staged install instead of only its synthetic
+# --self-test fixtures. Files the current build did not produce are simply
+# left unstaged — check_package_manifest.py then reports a real, honest
+# violation for them rather than this function fabricating a PASS.
+stage_v14_package_scratch() {
+    local pkg_dir="$1" f
+    mkdir -p "$pkg_dir/bin" "$pkg_dir/lib/eshkol" "$pkg_dir/share/eshkol/lib" "$pkg_dir/share/eshkol/cmake"
+
+    for f in eshkol-run eshkol-repl; do
+        [ -f "$BUILD_DIR_PATH/$f" ] && cp "$BUILD_DIR_PATH/$f" "$pkg_dir/bin/"
+    done
+    for f in stdlib.o stdlib.bc; do
+        if [ -f "$BUILD_DIR_PATH/$f" ]; then
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/"
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/eshkol/"
+        fi
+    done
+    for f in libeshkol-runtime.a libeshkol-agent-ffi.a eshkol-agent-pcre2.a eshkol-agent-sqlite3.a \
+             eshkol-agent-zlib.a eshkol-agent-tree-sitter-grammars.a eshkol-agent-tree-sitter.a \
+             eshkol-agent-yoga.a eshkol-agent-curl.a; do
+        if [ -f "$BUILD_DIR_PATH/$f" ]; then
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/"
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/eshkol/"
+        fi
+    done
+
+    [ -f "$REPO_ROOT/lib/stdlib.esk" ] && cp "$REPO_ROOT/lib/stdlib.esk" "$pkg_dir/share/eshkol/"
+    [ -f "$REPO_ROOT/lib/math.esk" ] && cp "$REPO_ROOT/lib/math.esk" "$pkg_dir/share/eshkol/"
+    [ -f "$REPO_ROOT/cmake/FindEshkol.cmake" ] && cp "$REPO_ROOT/cmake/FindEshkol.cmake" "$pkg_dir/share/eshkol/cmake/"
+    [ -f "$REPO_ROOT/cmake/EshkolCompile.cmake" ] && cp "$REPO_ROOT/cmake/EshkolCompile.cmake" "$pkg_dir/share/eshkol/cmake/"
+
+    while IFS= read -r -d '' source_file; do
+        local rel_path="${source_file#"$REPO_ROOT"/lib/}"
+        local dest_path="$pkg_dir/share/eshkol/lib/$rel_path"
+        mkdir -p "$(dirname "$dest_path")"
+        cp "$source_file" "$dest_path"
+    done < <(find "$REPO_ROOT/lib" -type f -name '*.esk' -print0)
+
+    for f in README.md LICENSE CHANGELOG.md RELEASE_NOTES.md; do
+        [ -f "$REPO_ROOT/$f" ] && cp "$REPO_ROOT/$f" "$pkg_dir/"
+    done
+
+    # macOS-only runtime_dependencies entries (OpenSSL/LLVM/zstd closure):
+    # staged for real via the same producer release.yml uses, on a best
+    # effort basis. If Homebrew or a formula is unavailable this leaves the
+    # category unstaged, and the manifest check below reports that honestly
+    # as a real violation rather than this function papering over it.
+    if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        local openssl_prefix llvm_prefix zstd_prefix openssl_version llvm_version zstd_version
+        openssl_prefix="$(brew --prefix openssl@3 2>/dev/null)" || true
+        llvm_prefix="$(brew --prefix "llvm@${LLVM_MAJOR:-21}" 2>/dev/null)" || true
+        zstd_prefix="$(brew --prefix zstd 2>/dev/null)" || true
+        if [ -n "$openssl_prefix" ] && [ -n "$llvm_prefix" ] && [ -n "$zstd_prefix" ]; then
+            openssl_version="$("$openssl_prefix/bin/openssl" version 2>/dev/null | awk '{print $2}')"
+            llvm_version="$("$llvm_prefix/bin/llvm-config" --version 2>/dev/null)"
+            zstd_version="$("$zstd_prefix/bin/zstd" --version 2>/dev/null | sed -E 's/.* v([^, ]+).*/\1/')"
+            python3 "$REPO_ROOT/scripts/stage_macos_openssl_runtime.py" \
+                --openssl-prefix "$openssl_prefix" --llvm-prefix "$llvm_prefix" --zstd-prefix "$zstd_prefix" \
+                --package-dir "$pkg_dir" \
+                --openssl-version "${openssl_version:-0}" --llvm-version "${llvm_version:-0}" \
+                --zstd-version "${zstd_version:-0}" >/dev/null 2>&1 || true
+        fi
+    fi
+    python3 "$REPO_ROOT/scripts/stage_third_party_licenses.py" \
+        --build-dir "$BUILD_DIR_PATH" --package-dir "$pkg_dir" >/dev/null 2>&1 || true
+}
+
+# A10 (ADR-0010 gap A10, "no packaging manifest"): run the real producer
+# (scripts/check_package_manifest.py) against an actual package directory
+# staged from THIS build, the same way release.yml's "Package Release
+# Asset" step does before archiving. The `toolchain_flag`/`type_diagnostic`
+# manifest categories ADR-0010 also names for A10 are a separate, larger
+# schema/checker extension with no existing producer to wire (see the ADR's
+# own "remain open" note) — out of scope for this gate-wiring pass; they
+# stay unverified rather than this probe claiming them covered.
+probe_package_manifest_complete() {
+    local pkg_dir="$WORK/v14-package-scratch"
+    rm -rf "$pkg_dir"
+    stage_v14_package_scratch "$pkg_dir"
+    probe_run v14_assurance_a10_packaging_manifest \
+        'A10 packaging manifest (ADR-0010): a package directory staged from this build is checked against .icc/package-manifest.yaml (binaries, stdlib artifacts/sources, static libraries, docs, CMake discovery modules)' \
+        "python3 \"$REPO_ROOT/scripts/check_package_manifest.py\" --package-dir \"$pkg_dir\"" \
+        '^package_manifest_complete: PASS'
+}
+
+# A11 (ADR-0010 gap A11, "no diagnostic golden corpus"): run the real
+# producer (scripts/check_diagnostic_corpus.py) against tests/diagnostics/,
+# the same invocation ci.yml uses post-build.
+probe_diagnostic_corpus_clean() {
+    probe_run v14_assurance_a11_diagnostic_corpus \
+        'A11 diagnostic corpus (ADR-0010): every tests/diagnostics/<case>/ fixture reproduces its expected.json diagnostic code, message, and file:line:col span' \
+        "python3 \"$REPO_ROOT/scripts/check_diagnostic_corpus.py\" --build-dir \"$BUILD_DIR_PATH\"" \
+        '^diagnostic_corpus_clean: PASS'
+}
+
+# Portable tail transfer (v1.4.1-STAGE, S4): run the real producer
+# (scripts/run_recursion_depth.sh) and grade this criterion on exactly the
+# cells it emits for the mutual_tail_{cond,forms,arity} kinds — spelling-
+# independence (cond/when/or/case) and arity-independence of the tail-
+# transfer dispatcher — across every lane that producer runs them in: JIT
+# (-r), AOT via LLVM `musttail`, and the portable non-AArch64 `aot-xfer`
+# lane (ESHKOL_TAIL_TRANSFER_ONLY=1), which is the dispatcher this criterion
+# is actually named for. The producer's trace path is its own (it does not
+# honor this gate's TRACE_DIR), so it is read at its documented location.
+#
+# $(...) only guarantees the PRODUCER's own process has exited — guarded_exec.pl
+# (scripts/lib/harness_outcome.sh's eshkol_outcome_guarded, which every cell in
+# the producer runs through) SIGKILLs any process the command left behind in
+# its group on normal exit too, but does not wait() for that kill to land
+# before returning; a descendant still dying at that instant can hold a stdio
+# pipe open a moment longer. That is a pipe-closing delay, not a file-content
+# hazard by itself (the producer's own process writes the trace file directly
+# and sequentially, with no child involved in those writes) — but this probe
+# does not assume that proof holds forever as the producer evolves. Instead
+# it waits for the producer's OWN explicit completion record
+# (kind=recursion_depth, name=recursion_depth_gate, emitted as literally the
+# last write before the producer exits) to appear in the file it just read,
+# re-reading up to ~10s if it is not there yet, and fails closed with a clear
+# message if it never appears. Only a read that already contains that
+# completion record is trusted for the mutual_tail_{cond,forms,arity} match.
+probe_portable_tail_transfer() {
+    PROBE_TOTAL=$((PROBE_TOTAL + 1))
+    local depth_script="$REPO_ROOT/scripts/run_recursion_depth.sh"
+    local depth_trace="$REPO_ROOT/scripts/icc_traces/recursion_depth.jsonl"
+    local depth_out depth_rc verdict
+    if [ ! -x "$depth_script" ]; then
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
+        emit_event v14_1_portable_tail_transfer FAIL "producer missing: $depth_script"
+        printf '  \xE2\x9C\x97 %-42s producer missing\n' v14_1_portable_tail_transfer
+        return
+    fi
+
+    depth_out=$(BUILD_DIR="$BUILD_DIR_PATH" "$depth_script" 2>&1)
+    depth_rc=$?
+
+    verdict=$(python3 -c '
+import json, re, sys, time
+path, rc = sys.argv[1], sys.argv[2]
+# Names are scripts/run_recursion_depth.sh'"'"'s own `${f%.esk}_${mode}`,
+# e.g. rec_mutual_tail_cond_d100000000_r / _aot / _aot-xfer.
+name_re = re.compile(r"^rec_mutual_tail_(cond|forms|arity)_d\d+_(r|aot|aot-xfer)$")
+deadline = time.time() + 10.0
+rows, saw_completion, last_err = [], False, None
+while True:
+    rows, saw_completion = [], False
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                rows.append(row)
+                if row.get("kind") == "recursion_depth" and row.get("name") == "recursion_depth_gate":
+                    saw_completion = True
+    except OSError as exc:
+        last_err = str(exc)
+    if saw_completion or time.time() >= deadline:
+        break
+    time.sleep(0.25)
+if not saw_completion:
+    detail = (": " + last_err) if last_err else ""
+    print("producer trace at %s never showed its recursion_depth_gate completion record after waiting (exit %s)%s" % (path, rc, detail))
+    raise SystemExit(0)
+matches = [r for r in rows if r.get("kind") == "recursion_depth"
+           and name_re.match(str(r.get("name", "")))]
+if not matches:
+    print("producer trace has no mutual_tail_{cond,forms,arity} cells despite a complete trace (exit %s)" % rc)
+    raise SystemExit(0)
+bad = [r for r in matches if r.get("value") != "PASS"]
+if bad:
+    names = ", ".join(sorted("%s=%s" % (r.get("name", "?"), r.get("value")) for r in bad))
+    print("FAIL:%d/%d cells not PASS: %s" % (len(bad), len(matches), names[:400]))
+else:
+    print("OK:%d cells (JIT -r, AOT musttail, AOT portable aot-xfer dispatcher) all PASS" % len(matches))
+' "$depth_trace" "$depth_rc")
+
+    case "$verdict" in
+        OK:*)
+            emit_event v14_1_portable_tail_transfer PASS \
+                "mutual_tail_{cond,forms,arity} depth cells, $verdict (scripts/run_recursion_depth.sh)"
+            printf '  \xE2\x9C\x93 %-42s %s\n' v14_1_portable_tail_transfer "$verdict"
+            ;;
+        *)
+            PROBE_FAILURES=$((PROBE_FAILURES + 1))
+            emit_event v14_1_portable_tail_transfer FAIL \
+                "$verdict -- producer tail: $(printf '%s' "$depth_out" | tail -c 220)"
+            printf '  \xE2\x9C\x97 %-42s %s\n' v14_1_portable_tail_transfer "$verdict"
+            ;;
+    esac
 }
 
 echo "Running v1.4-connection oracle probes -> $TRACE_FILE"
@@ -136,9 +461,7 @@ fi
 # http-server-create/-accept/-respond/-close, real bind/listen/accept/recv/
 # send) + a real fork+client+server round trip over loopback, already
 # CI-wired via the tests/v1_2_edge_cases/*.esk glob.
-probe_run v14_http_server_roundtrip \
-    'HTTP server (#145): real fork+client GET /health over loopback round-trips' \
-    'BUILD_DIR="$BUILD_DIR_PATH" ./tests/v1_2_edge_cases/http_server_smoke_test.sh'
+probe_http_server_source_receipt
 
 # #148 Prometheus metrics + /metrics endpoint: lib/core/metrics.esk
 # (make-counter/counter-inc!/metrics-render) is real and wired into
@@ -150,11 +473,8 @@ probe_run v14_metrics_http_roundtrip \
     'Prometheus /metrics (#148): real GET /metrics over loopback returns HELP/TYPE + counter value' \
     'BUILD_DIR="$BUILD_DIR_PATH" ./tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh'
 
-# Unix domain sockets: unix-socket-connect/socket-send/socket-recv/
-# socket-close are real VM builtins (tests/vm/unix_socket_surface_regression.esk)
-# but the real round-trip (T2-T5) is gated behind ESHKOL_VM_UNIX_SOCKET_TEST,
-# which no CI workflow ever sets — only the hermetic negative paths run by
-# default. This probe supplies the missing half: a real AF_UNIX listener.
+# Unix domain sockets: this probe runs the real round-trip (T1-T8) against a
+# local AF_UNIX listener, including the environment-gated path.
 run_unix_socket_roundtrip() {
     local sock="$WORK/v14_unix_socket_probe.sock"
     local module="$WORK/unix_socket_test.eskb"
@@ -202,35 +522,50 @@ if [ -x "$VM_RUN" ]; then
         printf '  \xE2\x9C\x97 %-42s FAILED\n' v14_unix_socket_roundtrip
     fi
 else
-    probe_not_yet_implemented v14_unix_socket_roundtrip "eshkol-vm-standalone-test not built"
+    probe_unverified v14_unix_socket_roundtrip "local VM runner is unavailable; a real AF_UNIX round-trip is required"
 fi
 
 # #150 Resource limits: real enforcement (lib/core/resource_limits.cpp,
 # ESHKOL_MAX_HEAP/ESHKOL_TIMEOUT_MS/etc.) with a real CTest gate
 # (tests/limits/resource_limits_enforcement_gate.sh) that CMake registers
-# but no CI workflow ever runs via ctest. Invoke it directly.
+# invoke the focused enforcement gate directly to record this run's result.
 if [ -x "$VM_RUN" ]; then
     probe_run v14_resource_limits_enforced \
         'Resource limits (#150): CPU/wall-time/memory/tensor/string/stack ceilings terminate with documented exit codes, and an unreached ceiling changes nothing' \
         '"$REPO_ROOT/tests/limits/resource_limits_enforcement_gate.sh" "$ESHKOL_RUN" "$VM_RUN" "$WORK/limits"'
 else
-    probe_not_yet_implemented v14_resource_limits_enforced "eshkol-vm-standalone-test not built"
+    probe_unverified v14_resource_limits_enforced "local VM runner is unavailable; resource-limit enforcement evidence is required"
 fi
 
-# TCP/UDP/TLS/WebSocket-server: confirmed absent by direct grep (tcp-connect,
-# tcp-listen, udp-socket, udp-bind, tls-connect, tls-context, make-tls: zero
-# hits anywhere in lib/, inc/, tests/). WebSocket: only a CLIENT exists
-# (lib/core/system_builtins.c websocket-connect/-send/-receive/-close,
-# performs the client-side opening handshake); there is no server-side
-# accept/upgrade path (no Sec-WebSocket-Accept computation, no listen loop).
-probe_not_yet_implemented v14_tcp_roundtrip \
-    'no tcp-connect/tcp-listen/tcp-accept primitive exists (grep lib/ inc/ tests/ for tcp-connect|tcp-listen: no hits)'
-probe_not_yet_implemented v14_udp_roundtrip \
-    'no udp-socket/udp-bind primitive exists (grep lib/ inc/ tests/ for udp-socket|udp-bind: no hits)'
-probe_not_yet_implemented v14_tls_handshake_verified \
-    'no TLS primitive exists (grep lib/ inc/ tests/ for tls-connect|tls-context|make-tls: no hits)'
-probe_not_yet_implemented v14_websocket_server_echo \
-    'only a WebSocket CLIENT exists (lib/core/system_builtins.c websocket-connect/-send/-receive/-close); no server-side upgrade/accept path'
+# Reader nesting: a datum nests as deeply as memory allows, a deeply nested
+# CODE form is answered rather than signalled, the input-size cap is the
+# documented one, and running out of address space while reading is a
+# diagnostic (tests/limits/reader_nesting_depth_gate.sh, CMake-registered;
+# invoked here so this run records its own result).
+probe_run v14_reader_nesting \
+    'Reader nesting is bounded by memory: 10^4/10^5/10^6-deep quoted data read, compare and print in full on JIT, AOT and VM; a nested code form is refused in words, never on a signal; the input cap is the documented one' \
+    '"$REPO_ROOT/tests/limits/reader_nesting_depth_gate.sh" "$ESHKOL_RUN" "${VM_RUN:-none}" "$WORK/reader-nesting"' \
+    '^PASS: nesting depth is bounded by memory$'
+
+# Numeric TCP/UDP use the public module with binary payloads, deadlines,
+# endpoints and stale-handle checks. Other protocols still require their own
+# implementation and verified runtime evidence.
+probe_run v14_tcp_roundtrip 'public core.net TCP loopback round trip' \
+    'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
+probe_run v14_udp_roundtrip 'public core.net UDP loopback round trip' \
+    'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
+probe_tls_acceptance
+if [ -f "$BUILD_DIR_PATH/libeshkol-agent-ffi.a" ] &&
+   [ -x "$ESHKOL_RUN" ] &&
+   [ -x "$BUILD_DIR_PATH/eshkol-agent-websocket-server-test" ]; then
+    probe_run v14_websocket_server_echo \
+        'public agent.http_server WebSocket upgrade and echo through JIT/AOT; native frame, control, refusal, and backpressure contracts' \
+        '"$BUILD_DIR_PATH/eshkol-agent-websocket-server-test" && python3 "$REPO_ROOT/scripts/test_websocket_server_public.py" --eshkol-run "$ESHKOL_RUN" --source "$REPO_ROOT" --build-dir "$BUILD_DIR_PATH"' \
+        '^PASS: public Eshkol AOT WebSocket round-trip$'
+else
+    probe_unverified v14_websocket_server_echo \
+        'optional agent FFI archive or public server test targets are unavailable in this build'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Concurrency (docs/COMPILER_ROADMAP.md #156-#160, M3)
@@ -244,7 +579,8 @@ probe_not_yet_implemented v14_websocket_server_echo \
 if [ -x "$ESHKOL_RUN" ]; then
     probe_run v14_async_io_event_loop \
         'Async I/O event loop (#158): kqueue/epoll/IOCP pipe round-trip via event-loop-poll, timeout, close-then-use fails closed, 1000 open/close cycles' \
-        '"$ESHKOL_RUN" -r tests/v1_3_edge_cases/event_loop_test.esk 2>&1 | grep -q "PASS: event_loop_test"'
+        '"$ESHKOL_RUN" -r tests/v1_3_edge_cases/event_loop_test.esk' \
+        '^PASS: event_loop_test$'
 fi
 
 # #156 threads + mutex + condvar: real pthread-backed core.threads.esk
@@ -255,13 +591,15 @@ fi
 # glob but never fed to the ICC oracle.
 probe_run v14_threads_mutex_condvar \
     'Threads + mutex + condvar (#156): 8 parallel-map workers x 1000 mutex-protected increments preserve the exact total' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/threads_mutex_concurrency_test.esk 2>&1 | grep -q "PASS: mutex-protected counter is consistent across threads"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/threads_mutex_concurrency_test.esk' \
+    'PASS: mutex-protected counter is consistent across threads'
 
 # #157 channels: real bounded-ring-buffer CSP channels (lib/core/channels.esk)
 # built on core.threads, with a real parallel-map producer/consumer test.
 probe_run v14_channels_csp \
     'Channels (#157): parallel-map producer/consumer traffic over a bounded CSP channel preserves the total and drains cleanly' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/channels_test.esk 2>&1 | grep -q "^Failed: 0$"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/channels_test.esk' \
+    '^Failed: 0$'
 
 # #160 promises/futures: future/force/force-future are real pthread-backed
 # VM builtins (lib/backend/vm_region_evac.c: "thunk/result Values, plus a
@@ -271,23 +609,82 @@ probe_run v14_channels_csp \
 # fell through to "return as-is").
 probe_run v14_promises_futures \
     'Promises/futures (#160): future/force run the thunk and multiple futures resolve independently (regression #222)' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/future_force_test.esk 2>&1 | grep -q "^Failed: 0$"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/future_force_test.esk' \
+    '^Failed: 0$'
 
-# Atomic ops (unlisted #-number, "Atomic ops (CAS, fetch-add)" in the
-# Concurrency table): real atomic-store!/-load/-exchange!/-compare-exchange!/
-# -fetch-add!/-fetch-sub!/-fetch-and!/-fetch-or!/-fetch-xor! with explicit
-# memory-order args. The only test today is SEQUENTIAL (API-shape) — no
-# cross-thread CAS-under-contention probe exists, so this criterion proves
-# the primitive surface only, not cross-thread atomicity; the label says so.
+# Run one core.threads behaviour test on both native routes: JIT (-r) and
+# AOT (compiled into $WORK, then executed).  Each route must exit 0 and
+# print the test's own PASS line.  The VM does not load core.threads (its
+# extern ABI admits only the agent.sqlite/agent.crypto signatures), so the
+# VM is not a route for these tests.
+run_threads_test_routes() {
+    local test_file="$1" marker="$2" name aot_bin rc
+    name="$(basename "$test_file" .esk)"
+    aot_bin="$WORK/${name}_aot"
+    echo "route jit: $test_file"
+    "$ESHKOL_RUN" -r "$test_file" >"$WORK/${name}_jit.out" 2>&1
+    rc=$?
+    cat "$WORK/${name}_jit.out"
+    [ "$rc" -eq 0 ] || return "$rc"
+    grep -Eq "$marker" "$WORK/${name}_jit.out" || return 1
+    echo "route aot: $test_file"
+    "$ESHKOL_RUN" "$test_file" -o "$aot_bin" >"$WORK/${name}_aot_compile.out" 2>&1 || {
+        cat "$WORK/${name}_aot_compile.out"
+        return 1
+    }
+    "$aot_bin" >"$WORK/${name}_aot.out" 2>&1
+    rc=$?
+    cat "$WORK/${name}_aot.out"
+    [ "$rc" -eq 0 ] || return "$rc"
+    grep -Eq "$marker" "$WORK/${name}_aot.out" || return 1
+    echo "routes passed: jit aot ($name)"
+}
+
+# Atomic ops ("Atomic ops (CAS, fetch-add)" in the Concurrency table):
+# atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-fetch-sub!/
+# -fetch-and!/-fetch-or!/-fetch-xor! with explicit memory-order args.  Two
+# producers: the sequential API-surface test, and the contention probe —
+# K pool workers lined up on a barrier each add N to one shared word with
+# atomic-fetch-add!, then with a load/CAS retry loop, then remove N with
+# atomic-fetch-sub!; every phase total must be exact (a lost update leaves
+# it short).  The contention probe runs on JIT and AOT.
+run_atomics_surface() {
+    "$ESHKOL_RUN" -r tests/ffi/low_level_memory_surface_test.esk >"$WORK/atomics_surface.out" 2>&1
+    local rc=$?
+    cat "$WORK/atomics_surface.out"
+    [ "$rc" -eq 0 ] || return "$rc"
+    grep -Eq 'Low-level FFI surface:.*0 failed' "$WORK/atomics_surface.out" || return 1
+    run_threads_test_routes tests/v1_2_edge_cases/atomics_contention_test.esk \
+        '^PASS: atomics_contention_test$'
+}
 probe_run v14_atomics_surface \
-    'Atomic ops: store/load/exchange/compare-exchange/fetch-add/sub/and/or/xor are correct SEQUENTIALLY (no cross-thread contention probe exists yet)' \
-    '"$ESHKOL_RUN" -r tests/ffi/low_level_memory_surface_test.esk 2>&1 | grep -q "Low-level FFI surface:.*0 failed"'
+    'Atomic ops: store/load/exchange/compare-exchange/fetch-add/sub/and/or/xor pass the sequential API-surface test, and fetch-add, a CAS retry loop and fetch-sub from K contending threads keep exact K*N totals on JIT and AOT' \
+    'run_atomics_surface' \
+    '^routes passed: jit aot \(atomics_contention_test\)$'
 
-# #159 fibers/coroutines, and semaphores/barriers: confirmed absent.
-probe_not_yet_implemented v14_fibers_coroutines \
-    'no make-fiber/fiber-*/coroutine primitive exists anywhere in lib/ or tests/'
-probe_not_yet_implemented v14_semaphores_barriers \
-    'no make-semaphore/make-barrier primitive exists; the only "barrier" hits in the tree are the GC region write-barrier (lib/core/runtime_regions.cpp), unrelated to concurrency'
+# #159 fibers/coroutines: stackful coroutines (inc/eshkol/core/coroutine.h)
+# and the core.fibers scheduler over the event loop. scripts/run_fibers_gate.py
+# runs the coroutine, scheduler and 10,000-fiber stress programs through JIT
+# and O1 AOT (ordering, round-robin fairness, cancellation with exactly-once
+# dynamic-wind after thunks, raises crossing fibers by identity, a fiber parked
+# on a pipe through the event loop, channel ping-pong, continuations inside
+# coroutines) and compares peak RSS of one and four stress waves.
+probe_run v14_fibers_coroutines \
+    'Fibers/coroutines (#159): JIT + AOT behaviour, pipe readiness via the event loop, 10000-fiber stress with flat memory' \
+    'python3 "$REPO_ROOT/scripts/run_fibers_gate.py" --runner "$ESHKOL_RUN"' \
+    '^PASS: fibers gate'
+
+# Semaphores and barriers: core.threads counting semaphores (acquire,
+# try-acquire, timed try-acquire, release) and reusable generation-counted
+# barriers, built on its mutex + condvar.  The test runs on pool workers:
+# a blocked acquire woken by another thread's release, K contenders never
+# exceeding P permits, N parties through R barrier phases with nobody
+# leaving a phase early and exactly one serial party per phase, and both
+# again while an extra worker injects spurious condvar wakeups.
+probe_run v14_semaphores_barriers \
+    'Semaphores/barriers: bounded permits under contention, cross-thread wakeup, timed acquire, and a reusable N-party phase barrier stay exact under injected spurious wakeups on JIT and AOT' \
+    'run_threads_test_routes tests/v1_2_edge_cases/threads_semaphore_barrier_test.esk "^PASS: threads_semaphore_barrier_test$"' \
+    '^routes passed: jit aot \(threads_semaphore_barrier_test\)$'
 
 # ─────────────────────────────────────────────────────────────────
 # Wire formats (docs/COMPILER_ROADMAP.md #162/#163/#175)
@@ -300,8 +697,8 @@ probe_not_yet_implemented v14_semaphores_barriers \
 # tests/v1_2_edge_cases/msgpack_test.esk round-trips every type against
 # exact wire bytes via core.testing's run-tests.
 probe_run v14_msgpack_roundtrip \
-    'MessagePack (#162): encode/decode round-trips nil/bool/int/string/bin/array/map against exact wire bytes (deterministic subset; no ext-types, no int64/float)' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/msgpack_test.esk 2>&1 | grep -q "RESULT: OK"'
+    'MessagePack (#162): exact wire bytes, UTF-8 scalar boundaries, embedded NUL, malformed-text refusal and raw binary preservation' \
+    'python3 scripts/run_msgpack_gate.py --runner "$ESHKOL_RUN" --vm-runner "$VM_RUN" --all-routes'
 
 # #175 CAS + Merkle trees: lib/core/merkle.esk (merkle-leaf/-inode/-tree/
 # -leaves/-proof/-verify plus make-cas/cas-put!/cas-get/cas-has?) backed by
@@ -310,15 +707,22 @@ probe_run v14_msgpack_roundtrip \
 # verify (valid/tampered/empty), and full CAS round-trip incl. dedup.
 probe_run v14_cas_merkle_roundtrip \
     'Content-addressable storage + Merkle trees (#175): tree build, inclusion-proof verify (valid/tampered/empty), CAS put/get/dedup round-trip' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/merkle_test.esk 2>&1 | grep -q "^Failed: 0$"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/merkle_test.esk' \
+    '^Failed: 0$'
 
-# #163 Protocol Buffers: confirmed absent. lib/core/onnx_export.c writes
-# protobuf wire bytes BY HAND for ONNX export (no .proto parser, no schema
-# compiler, no generated encoders/decoders) -- that is a one-off exporter,
-# not #163's "proto3 parser/compiler subset sufficient for generated
-# encoders/decoders".
-probe_not_yet_implemented v14_protobuf_roundtrip \
-    'no .proto parser/schema compiler exists; lib/core/onnx_export.c hand-writes protobuf wire bytes for ONE fixed ONNX schema, not a general proto3 subset'
+# #163 Protocol Buffers: lib/core/protobuf.esk parses the proto3 message
+# subset of .proto text into schema forms, compiles them, and returns
+# encoder/decoder closures per message type. tests/v1_2_edge_cases/
+# protobuf_test.esk checks hand-derived spec wire bytes for every scalar
+# type, packed/unpacked repeated, maps, oneof, presence, merging, unknown-
+# field preservation and malformed-input refusal; protobuf_proto_test.esk
+# parses .proto text and round-trips through the generated codecs. Both run
+# on JIT, O1 AOT, VM source and ESKB. protobuf_wire_test checks the native
+# wire primitives shared by the ONNX writer and the PJRT client against the
+# same vectors.
+probe_run v14_protobuf_roundtrip \
+    'Protocol Buffers (#163): proto3 .proto parser and generated codecs, exact spec wire bytes, unknown-field preservation and malformed-input refusal on four routes, plus the native wire primitives' \
+    'python3 scripts/run_wire_format_gate.py --suite protobuf --runner "$ESHKOL_RUN" --vm-runner "$VM_RUN" --native-test "$BUILD_DIR_PATH/protobuf_wire_test" --all-routes'
 
 # ─────────────────────────────────────────────────────────────────
 # Linear resource types + borrow pattern (docs/design/adr/0004-type-
@@ -335,28 +739,34 @@ probe_not_yet_implemented v14_protobuf_roundtrip \
 # why this probe passes --strict-types explicitly).
 probe_run v14_linear_consume_exactly_once_static \
     'Linear/affine kernel (ADR-0004): a program that uses a linear Qubit twice is REJECTED at compile time under --strict-types (no-cloning), proving the same mechanism v1.4 needs for Own/socket typestate' \
-    '"$ESHKOL_RUN" --strict-types tests/typesystem/qubit_no_cloning_test.esk -o "$WORK/qubit_bad" >/dev/null 2>&1; rc=$?; [ "$rc" -ne 0 ] && [ ! -e "$WORK/qubit_bad" ]'
+    'bash tests/typesystem/qubit_no_cloning_gate.sh "$ESHKOL_RUN" "$WORK"'
 
-# The v1.4 deliverable itself -- Own/socket typestate rejecting a leaked or
-# double-closed socket -- is NOT yet built: real OS resources (files,
-# sockets, event-loop handles in lib/core/system_builtins.c) are plain
-# runtime integers checked DYNAMICALLY ("use-after-close fails closed... a
-# catchable condition", system_builtins.c) -- there is no ESHKOL_VALUE_SOCKET
-# linear type, so nothing today makes a leaked socket a STATIC type error.
-probe_not_yet_implemented v14_socket_leak_rejected_statically \
-    'no ESHKOL_VALUE_SOCKET / linear socket type exists; sockets are plain runtime file descriptors with only DYNAMIC use-after-close guards (lib/core/system_builtins.c), not a static Own/Borrow typestate'
-probe_not_yet_implemented v14_double_close_rejected_statically \
-    'double-close on a real socket/file handle is a dynamic catchable error today, not a static type error -- same gap as v14_socket_leak_rejected_statically'
-
-# BorrowChecker (Owned/Moved/Dropped/BorrowedShared/BorrowedMut states,
-# move/drop/borrowShared/borrowMut) exists in lib/types/type_checker.cpp but
-# is almost entirely UNWIRED: only canBorrowMut/getState are called, at one
-# mutation-target check site. move()/drop()/borrowShared()/returnBorrow()
-# are exercised only by isolated gtest unit tests, never by real program
-# compilation -- so no .esk program can observe borrow-pattern enforcement
-# today.
-probe_not_yet_implemented v14_borrow_pattern_honored \
-    'BorrowChecker class exists (lib/types/type_checker.cpp) but only canBorrowMut/getState are wired into the real checking pass; move/drop/borrowShared/returnBorrow are unit-tested in isolation only, never reachable by compiling an actual .esk program'
+# The opt-in native checked fragment must accept real scoped owners and reject
+# the corresponding bad programs. Every static probe compiles a valid control
+# as well as the negative fixture; blanket refusal cannot earn a PASS.
+RESOURCE_COMPILED_TEST="$REPO_ROOT/tests/v1_4_resource_ownership/test_compiled.py"
+RESOURCE_RUNTIME_TEST="$REPO_ROOT/tests/v1_4_resource_ownership/test_runtime.py"
+if [ -f "$RESOURCE_COMPILED_TEST" ] && [ -f "$RESOURCE_RUNTIME_TEST" ]; then
+    probe_run v14_socket_leak_rejected_statically \
+        'native --strict-resources: real socket leak rejected, valid branch-close accepted' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-both-branches-close --case negative-leak --case negative-one-branch-leaks' \
+        '^PASS negative-leak: exit=1 resource_diagnostic=True artifact=False$'
+    probe_run v14_double_close_rejected_statically \
+        'native --strict-resources: duplicate close rejected, valid owner accepted' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-both-branches-close --case negative-double-close --case negative-use-after-close' \
+        '^PASS negative-double-close: exit=1 resource_diagnostic=True artifact=False$'
+    probe_run v14_borrow_pattern_honored \
+        'native --strict-resources: borrow compile controls and actual JIT/AOT port observations with one close' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-borrow-scope --case negative-consume-while-borrowed --case negative-loan-escape && python3 "$RESOURCE_RUNTIME_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case borrow' \
+        '^PASS borrow aot marker=RESULT: PASS$'
+else
+    probe_unverified v14_socket_leak_rejected_statically \
+        'requires source-bound valid and leaked socket compile controls under --strict-resources'
+    probe_unverified v14_double_close_rejected_statically \
+        'requires source-bound valid and duplicate close compile controls under --strict-resources'
+    probe_unverified v14_borrow_pattern_honored \
+        'requires compiled borrow falsifiers and actual JIT/AOT borrow-scope observations'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Stage 4 / v1.4.1 (docs/design/adr/0000-unified-trajectory.md Stage 4:
@@ -369,44 +779,42 @@ probe_not_yet_implemented v14_borrow_pattern_honored \
 # v1.4.1-stage so a v1.4.0 readiness reader does not mistake them for
 # blocking the v1.4.0 cut.
 # ─────────────────────────────────────────────────────────────────
-probe_not_yet_implemented v14_1_oalr_abi_v2_header \
-    'v1.4.1-STAGE (S4): the object header is still eshkol_object_header_t, statically asserted at 8 bytes (inc/eshkol/eshkol.h); zero hits anywhere for ESHKOL_MEMORY_ABI_V2, a 32-byte header, layout descriptors, escape ledgers, or transfer capsules -- design-only per ADR-0000/0004, nothing started'
-probe_not_yet_implemented v14_1_portable_tail_transfer \
-    'v1.4.1-STAGE (S4): musttail is emitted conditionally on the LLVM backend only for matching self/named-let tail calls; docs/reference/language/tail-calls.md documents mutual tail recursion as a KNOWN, UNFIXED limitation (SIGILL past ~500k depth); no VM-backend musttail equivalent, no heap-owned continuation chains, no general tail-transfer dispatcher exist'
+probe_unverified v14_1_oalr_abi_v2_header \
+    'v1.4.1-STAGE (S4): requires a source-bound ABI v2 layout and compatibility contract check'
+probe_portable_tail_transfer
 
 # ─────────────────────────────────────────────────────────────────
 # Assurance (docs/design/adr/0010-closed-loop-assurance.md A8, A10-A13)
 # ─────────────────────────────────────────────────────────────────
 probe_external_ci_evidence v14_assurance_a8_tsan_lane \
-    '.github/workflows/adversarial-nightly.yml (nightly cron, -DESHKOL_ENABLE_TSAN=ON, generated concurrency corpus under TSAN_OPTIONS=halt_on_error=1)' \
-    'a TSan-enabled LLVM build is multi-hour; this fast local gate does not rebuild the toolchain. The lane is real and runs nightly, but "required" (branch-protection-blocking, per ADR-0010 A8''s v1.4 target) is a policy step this gate cannot itself verify -- only a real nightly CI run can feed this event PASS.'
-probe_not_yet_implemented v14_assurance_a10_packaging_manifest \
-    'A10 is marked "Planned" in ADR-0010''s own gap table; no toolchain_flag/type_diagnostic/package_surface manifest categories exist in .icc/architecture-model.yaml or .icc/completion-oracles.yaml. Partial: adversarial-nightly.yml does install the homebrew formula, but that is not the manifest-driven packaging LANE A10 asks for'
-probe_not_yet_implemented v14_assurance_a11_diagnostic_corpus \
-    'no diagnostic golden-corpus (input -> expected diagnostic code + span) directory exists anywhere under tests/'
-probe_not_yet_implemented v14_assurance_a12_lsan_lane \
-    'ASan lanes explicitly set detect_leaks=0 (.github/workflows/ci.yml) -- leak detection is OFF, not gated with a suppression file; lib/backend/vm_core.c has zero ESHKOL_ARENA_POISON hits, so the region_evac POISON extension to the VM route A12 asks for has not landed either'
+    '.github/workflows/adversarial-nightly.yml' \
+    'requires the applicable A8 policy evidence and a source-bound TSan CI receipt'
+probe_package_manifest_complete
+probe_diagnostic_corpus_clean
+# A12's LeakSanitizer lane (ci.yml's ASan matrix, ASAN_OPTIONS=detect_leaks=1
+# with .icc/lsan-suppressions.txt naming every known-acceptable retention) and
+# VM region-evacuation poison path (lib/backend/vm_region_evac.c's
+# ESHKOL_ARENA_POISON delegation) are real and already running; this fast
+# local gate cannot rebuild an ASan-enabled toolchain to reproduce the lane
+# itself, so it requests a source-bound CI receipt rather than inferring the
+# lane's state, the same way A8's TSan lane is handled.
+probe_external_ci_evidence v14_assurance_a12_lsan_lane \
+    '.github/workflows/ci.yml' \
+    'requires a source-bound ASan/LSan-lane CI receipt for the LeakSanitizer and region-evacuation poison path'
 probe_external_ci_evidence v14_assurance_a13_hosted_gpu_lane \
-    '.github/workflows/gpu-execution-gate.yml (daily cron, runs-on: [self-hosted, gpu], emits a ::warning when no runner is registered)' \
-    'this box has no self-hosted GPU runner registered; the lane and its staleness-WARN rule are real and already match A13''s ask, but only a real scheduled run on the registered runner can feed this event PASS'
+    '.github/workflows/gpu-execution-gate.yml' \
+    'requires a source-bound A13 hosted-GPU CI receipt; runner availability is not inferred here'
 
 # ─────────────────────────────────────────────────────────────────
-# Distribution (W6, PENDING MAINTAINER RULING R7 -- see
-# ~/Desktop/Selene/ESHKOL-ROADMAP-v135-to-v20-DRAFT.md section 5). The
-# two-tier-vs-Tier-1-only scope decision has NOT been made; these three
-# criteria cover only the items explicitly staged for v1.4.0 in that draft
-# (PJRT client spike, XLA multi-device single-host, native collectives over
-# sockets) -- NOT the v1.5.0+ Tier-2 bit-identical-allreduce mesh gate,
-# which is out of v1.4 scope regardless of how R7 is ruled. This oracle
-# does not commit the project to either branch of R7; it only measures
-# whether the v1.4.0-staged spike work exists.
+# Distribution (W6, PENDING MAINTAINER RULING R7). These criteria need
+# source-bound evidence for the v1.4.0-staged distribution requirements.
 # ─────────────────────────────────────────────────────────────────
-probe_not_yet_implemented v14_distribution_pjrt_client_spike \
-    'PENDING R7: no "pjrt"/"PJRT" reference exists anywhere in the repo (code, headers, docs, build) -- confirmed by a whole-tree case-insensitive grep'
-probe_not_yet_implemented v14_distribution_xla_multi_device_single_host \
-    'PENDING R7: lib/backend/xla/ has zero hits for device_ordinal/num_replicas/num_partitions; docs/breakdown/GPU_ACCELERATION.md documents device-0-only enumeration and a single CUDA stream for all operations -- XLA execution is single-device only today'
-probe_not_yet_implemented v14_distribution_native_collectives_over_sockets \
-    'PENDING R7: zero hits for allreduce/all_reduce/sharding/GSPMD/replica in lib/backend/xla/ or lib/backend/gpu/; the only "distributed" module in the repo (docs/reference/stdlib/distributed.md) is pure-value Lamport/vector-clock/CRDT math, explicitly independent of sockets/async I/O'
+probe_unverified v14_distribution_pjrt_client_spike \
+    'PENDING R7: requires source-bound evidence for the PJRT client spike requirement'
+probe_unverified v14_distribution_xla_multi_device_single_host \
+    'PENDING R7: requires source-bound multi-device single-host XLA execution evidence'
+probe_unverified v14_distribution_native_collectives_over_sockets \
+    'PENDING R7: requires source-bound native collective-over-sockets execution evidence'
 
 echo
 echo "Passed: $((PROBE_TOTAL - PROBE_FAILURES))"

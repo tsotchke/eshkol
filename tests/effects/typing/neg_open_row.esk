@@ -1,0 +1,5 @@
+;;; Calling a procedure argument needs an open row.
+;; expect-error: 'twice' is declared Pure but its effects are not closed
+(declare-effects twice Pure)
+(define (twice f x) (f (f x)))
+(display (twice (lambda (x) x) 1))

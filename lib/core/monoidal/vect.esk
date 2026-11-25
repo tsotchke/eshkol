@@ -1,0 +1,126 @@
+;;; core.monoidal.vect -- FinVect over an exact carrier as a monoidal
+;;; category for core.monoidal.structure: the strict symmetric dagger compact
+;;; one (objects lists of dimensions, tensor append), the non-strict one on
+;;; bracketed objects (associator and unitors identity matrices between
+;;; different objects), the strict monoidal functor that forgets the
+;;; brackets, and base change of the carrier as a symmetric monoidal functor.
+;;;
+;;; Usage: (require core.monoidal.vect)   or   (require core.monoidal)
+;;;
+;;; FinVect is not finite, so its laws are checked over a chosen list of
+;;; objects and arrows (the `objects` and `arrows` arguments): exhaustively
+;;; over those, exactly.
+;;;
+;;; Bracketed objects: a positive integer d (the space of dimension d), ()
+;;; the unit, and #(x y) the tensor of x and y. An arrow is
+;;; #(bracketed-arrow source target map), map a core.monoidal.finvect linear
+;;; map between the flattened objects. (x (x) y) (x) z and x (x) (y (x) z)
+;;; are different objects joined by the associator, so this category is
+;;; monoidal and not strict; forgetting the brackets is a strong monoidal
+;;; equivalence onto the strict FinVect (Mac Lane's coherence theorem, CWM
+;;; VII.2 and XI.3).
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician" (1998),
+;;; VII.1-VII.2, XI.3; P. Selinger, "Dagger compact closed categories and
+;;; completely positive maps" (2007); nLab: "Vect", "strict monoidal
+;;; category", "coherence theorem for monoidal categories".
+
+(require stdlib)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.structure)
+
+(provide finvect-ops finvect-monoidal-category finvect-dagger finvect-cup finvect-cap
+         bracketed-object-flatten bracketed-tensor make-bracketed-arrow bracketed-arrow? bracketed-arrow-source
+         bracketed-arrow-target bracketed-arrow-map bracketed-finvect-ops bracketed-finvect-monoidal-category
+         bracketed-objects-of-size flatten-monoidal-functor base-change-monoidal-functor)
+
+(define (vt-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Strict FinVect
+;; ---------------------------------------------------------------------------
+(define (finvect-ops S objects arrows)
+  (make-category-ops objects arrows linear-map-domain linear-map-codomain
+                     (lambda (g f) (and (equal? (linear-map-codomain f) (linear-map-domain g)) (linear-map-compose g f)))
+                     (lambda (x) (linear-map-identity S x))
+                     (lambda (f g) (and (equal? (linear-map-domain f) (linear-map-domain g)) (equal? (linear-map-codomain f) (linear-map-codomain g))
+                                        (linear-map-equal? f g)))
+                     linear-map-inverse))
+;; the strict symmetric monoidal FinVect_S over the given objects and arrows
+(define (finvect-monoidal-category S objects arrows)
+  (make-monoidal-category (finvect-ops S objects arrows) append linear-map-tensor '()
+                          (lambda (x y z) (linear-map-identity S (append x y z)))
+                          (lambda (x) (linear-map-identity S x))
+                          (lambda (x) (linear-map-identity S x))
+                          (lambda (x y) (linear-map-swap S x y))
+                          'finvect))
+(define (finvect-dagger f) (linear-map-dagger f))
+(define (finvect-cup S) (lambda (x) (linear-map-cup S x)))
+(define (finvect-cap S) (lambda (x) (linear-map-cap S x)))
+
+;; ---------------------------------------------------------------------------
+;; Bracketed (non-strict) FinVect
+;; ---------------------------------------------------------------------------
+(define (bracketed-object-flatten x)
+  (cond ((null? x) '())
+        ((integer? x) (list x))
+        ((and (vector? x) (= 2 (vector-length x))) (append (bracketed-object-flatten (vector-ref x 0)) (bracketed-object-flatten (vector-ref x 1))))
+        (else (error "core.monoidal.vect: not a bracketed object" x))))
+(define (bracketed-tensor x y) (vector x y))
+(define (make-bracketed-arrow src tgt f)
+  (if (not (and (equal? (linear-map-domain f) (bracketed-object-flatten src)) (equal? (linear-map-codomain f) (bracketed-object-flatten tgt))))
+      (error "core.monoidal.vect: the map does not match the bracketed objects" src tgt))
+  (vector 'bracketed-arrow src tgt f))
+(define (bracketed-arrow? f) (and (vector? f) (= 4 (vector-length f)) (eq? (vector-ref f 0) 'bracketed-arrow)))
+(define (bracketed-arrow-source f) (vector-ref f 1))
+(define (bracketed-arrow-target f) (vector-ref f 2))
+(define (bracketed-arrow-map f) (vector-ref f 3))
+(define (bracketed-finvect-ops S objects arrows)
+  (make-category-ops objects arrows bracketed-arrow-source bracketed-arrow-target
+                     (lambda (g f) (and (equal? (bracketed-arrow-target f) (bracketed-arrow-source g))
+                                        (make-bracketed-arrow (bracketed-arrow-source f) (bracketed-arrow-target g)
+                                                              (linear-map-compose (bracketed-arrow-map g) (bracketed-arrow-map f)))))
+                     (lambda (x) (make-bracketed-arrow x x (linear-map-identity S (bracketed-object-flatten x))))
+                     (lambda (f g) (and (equal? (bracketed-arrow-source f) (bracketed-arrow-source g)) (equal? (bracketed-arrow-target f) (bracketed-arrow-target g))
+                                        (linear-map-equal? (bracketed-arrow-map f) (bracketed-arrow-map g))))
+                     (lambda (f) (let ((g (linear-map-inverse (bracketed-arrow-map f))))
+                                   (and g (make-bracketed-arrow (bracketed-arrow-target f) (bracketed-arrow-source f) g))))))
+(define (bracketed-finvect-monoidal-category S objects arrows)
+  (let ((iso (lambda (src tgt) (make-bracketed-arrow src tgt (linear-map-identity S (bracketed-object-flatten src))))))
+    (make-monoidal-category (bracketed-finvect-ops S objects arrows) bracketed-tensor
+                            (lambda (f g) (make-bracketed-arrow (bracketed-tensor (bracketed-arrow-source f) (bracketed-arrow-source g))
+                                                                (bracketed-tensor (bracketed-arrow-target f) (bracketed-arrow-target g))
+                                                                (linear-map-tensor (bracketed-arrow-map f) (bracketed-arrow-map g))))
+                            '()
+                            (lambda (x y z) (iso (bracketed-tensor (bracketed-tensor x y) z) (bracketed-tensor x (bracketed-tensor y z))))
+                            (lambda (x) (iso (bracketed-tensor '() x) x))
+                            (lambda (x) (iso (bracketed-tensor x '()) x))
+                            (lambda (x y) (make-bracketed-arrow (bracketed-tensor x y) (bracketed-tensor y x)
+                                                                (linear-map-swap S (bracketed-object-flatten x) (bracketed-object-flatten y))))
+                            'bracketed-finvect)))
+;; every bracketing of the given list of factors (an integer or ()), in
+;; order: the Catalan many binary trees
+(define (bracketed-objects-of-size factors)
+  (if (null? (cdr factors)) (list (car factors))
+      (apply append
+             (map (lambda (k)
+                    (let ((left (bracketed-objects-of-size (list-head-n factors k)))
+                          (right (bracketed-objects-of-size (list-tail factors k))))
+                      (apply append (map (lambda (l) (map (lambda (r) (bracketed-tensor l r)) right)) left))))
+                  (cdr (vt-range (length factors)))))))
+(define (list-head-n xs k) (if (= k 0) '() (cons (car xs) (list-head-n (cdr xs) (- k 1)))))
+
+;; forgetting the brackets: bracketed FinVect -> strict FinVect, strong
+;; monoidal with identity structure maps
+(define (flatten-monoidal-functor S B F)
+  (make-monoidal-functor B F bracketed-object-flatten bracketed-arrow-map
+                         (lambda (x y) (linear-map-identity S (bracketed-object-flatten (bracketed-tensor x y))))
+                         (linear-map-identity S '())))
+;; base change FinVect_S -> FinVect_T along a ring map phi : S -> T applied
+;; entrywise (for example Q into Q(zeta_n)); symmetric strong monoidal
+(define (base-change-monoidal-functor M N T phi)
+  (make-monoidal-functor M N (lambda (x) x)
+                         (lambda (f) (linear-map T (linear-map-domain f) (linear-map-codomain f) (lambda (r c) (phi (linear-map-entry f r c)))))
+                         (lambda (x y) (linear-map-identity T (append x y)))
+                         (linear-map-identity T '())))

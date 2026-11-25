@@ -1,0 +1,7 @@
+schema_version = 1
+license = "MIT"
+source_kind = "selected source donation"
+upstream_base = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+source_owners = ["observable-closure", "automata", "exact-rank-profile", "exact-linear-subquotient"]
+adaptation = "Query-generated invariant spaces and polynomial source replay over existing Eshkol symbolic and exact affine operations"
+scope = "Algebraic closure/minimality, parameter-family source binding and observation admission"

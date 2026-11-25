@@ -91,6 +91,11 @@ static sqlite3_stmt* get_stmt(int64_t h) {
     return g_stmt_handles[h];
 }
 
+/* Return a negative required-size sentinel without overflowing signed int. */
+static int sqlite_truncated_size(size_t length) {
+    return length >= (size_t)INT_MAX ? INT_MIN : -(int)(length + 1);
+}
+
 /*******************************************************************************
  * Database Operations
  ******************************************************************************/
@@ -376,7 +381,7 @@ int eshkol_sqlite_column_text(int64_t stmt_handle, int index,
      * shouldn't fire in normal use, but it's defensive against
      * callers that haven't migrated to the new sizing path. */
     if (copy < len) {
-        return -(int)(len + 1);
+        return sqlite_truncated_size(len);
     }
     return (int)copy;
 }
@@ -427,7 +432,8 @@ int eshkol_sqlite_column_count(int64_t stmt_handle) {
  * @param buf Output buffer receiving the NUL-terminated column name.
  * @param buf_size Size of @p buf in bytes.
  * @return Number of bytes copied (excluding the NUL), 0 if the name is
- *         unavailable, or -1 on invalid arguments.
+ *         unavailable, -(required-bytes+1) if the buffer is too small, or -1
+ *         on invalid arguments.
  */
 int eshkol_sqlite_column_name(int64_t stmt_handle, int index,
                                 char* buf, size_t buf_size) {
@@ -440,6 +446,7 @@ int eshkol_sqlite_column_name(int64_t stmt_handle, int index,
     size_t copy = len < buf_size - 1 ? len : buf_size - 1;
     memcpy(buf, name, copy);
     buf[copy] = '\0';
+    if (copy < len) return sqlite_truncated_size(len);
     return (int)copy;
 }
 
@@ -467,7 +474,8 @@ int eshkol_sqlite_column_type(int64_t stmt_handle, int index) {
  * @param db_handle Database handle from eshkol_sqlite_open().
  * @param buf Output buffer receiving the NUL-terminated error message.
  * @param buf_size Size of @p buf in bytes.
- * @return Number of bytes copied (excluding the NUL), or -1 on invalid arguments.
+ * @return Number of bytes copied (excluding the NUL), -(required-bytes+1) if
+ *         the buffer is too small, or -1 on invalid arguments.
  */
 int eshkol_sqlite_last_error(int64_t db_handle, char* buf, size_t buf_size) {
     sqlite3* db = get_db(db_handle);
@@ -478,6 +486,7 @@ int eshkol_sqlite_last_error(int64_t db_handle, char* buf, size_t buf_size) {
     size_t copy = len < buf_size - 1 ? len : buf_size - 1;
     memcpy(buf, msg, copy);
     buf[copy] = '\0';
+    if (copy < len) return sqlite_truncated_size(len);
     return (int)copy;
 }
 

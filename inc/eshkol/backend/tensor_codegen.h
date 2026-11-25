@@ -59,6 +59,13 @@ public:
     static constexpr uint64_t TENSOR_DTYPE_DUAL = 64;
 
     /**
+     * ADR-0058 exact-element dtype. Mirrors ESHKOL_TENSOR_DTYPE_EXACT in
+     * lib/core/arena_memory.h (asserted equal in llvm_codegen.cpp). A tensor
+     * with this dtype stores 16-byte tagged exact rationals in `elements`.
+     */
+    static constexpr uint64_t TENSOR_DTYPE_EXACT = 66;
+
+    /**
      * Destructor - defined in .cpp where XLACodegen is complete.
      */
     ~TensorCodegen();
@@ -430,6 +437,25 @@ public:
     /** LU decomposition: returns (L, U, P) as a list of tensors */
     llvm::Value* tensorLU(const eshkol_operations_t* op);
     /** Determinant via LU decomposition */
+    /**
+     * Exact dispatch for tensor-det / tensor-inverse / tensor-solve /
+     * linear-solve (ADR-0058). begin...() emits a runtime test: when an
+     * operand is an exact tensor, the call is answered by
+     * eshkol_exact_linalg_tagged (fraction-free elimination over the exact
+     * ring, or the f64 kernel on the projections when contagion makes the
+     * result inexact); otherwise control continues into the f64 kernel the
+     * caller emits next. finish...() joins the two results.
+     */
+    struct ExactLinalgDispatch {
+        llvm::BasicBlock* join = nullptr;
+        llvm::BasicBlock* exact_exit = nullptr;
+        llvm::Value* exact_value = nullptr;
+    };
+    ExactLinalgDispatch beginExactLinalgDispatch(int32_t kind, llvm::Value* a_tagged,
+                                                 llvm::Value* b_tagged, const char* op_name);
+    llvm::Value* finishExactLinalgDispatch(const ExactLinalgDispatch& dispatch,
+                                           llvm::Value* f64_result);
+
     llvm::Value* tensorDet(const eshkol_operations_t* op);
     /** Matrix inverse via LU decomposition */
     llvm::Value* tensorInverse(const eshkol_operations_t* op);
@@ -758,7 +784,11 @@ public:
     llvm::Value* makeTensor(const eshkol_operations_t* op);
 
     /** Implementation of make-tensor without dtype handling (idx 0-3 layout). */
-    llvm::Value* makeTensorImpl(const eshkol_operations_t* op);
+    /** @param evaluated_fill When non-null, receives the fill operand as
+     *  evaluated (so a caller can re-encode it without evaluating it twice);
+     *  null in element-literal mode. */
+    llvm::Value* makeTensorImpl(const eshkol_operations_t* op,
+                                llvm::Value** evaluated_fill = nullptr);
 
     /** Apply a dtype code to an already-built tensor value (in place). */
     llvm::Value* applyDtypeToTensor(llvm::Value* tensor_val, int64_t dtype_code);
@@ -1174,7 +1204,7 @@ public:
      * @param op The operation AST node containing:
      *   - lengths: Actual sequence lengths (batch,)
      *   - max_len: Maximum sequence length
-     * @return Mask tensor of shape (batch, max_len)
+     * @return Additive mask of shape (batch, 1, max_len), broadcast across queries
      */
     llvm::Value* paddingMask(const eshkol_operations_t* op);
 
@@ -1432,6 +1462,16 @@ private:
     llvm::Value* isDualTensor(llvm::Value* tensor_struct_ptr);
 
     /**
+     * True when the tensor is a numeric tensor with 16-byte tagged slots: a
+     * jet tensor (dtype DUAL) or an exact tensor (dtype EXACT, ADR-0058).
+     * These take the generic-scalar runtime kernels (elementwise arithmetic,
+     * matmul, sum, element access), which apply the language's own scalar
+     * operators slot by slot, so an exact tensor stays exact and a jet tensor
+     * keeps its derivative coefficients.
+     */
+    llvm::Value* isTaggedNumericTensor(llvm::Value* tensor_struct_ptr);
+
+    /**
      * Tensor arithmetic for TENSOR_PTR type.
      * Tensors use double elements in a contiguous array.
      * @param tensor1 First tensor (tagged)
@@ -1600,8 +1640,13 @@ public:
      */
     void emitSetErrorLocation();
 
+    llvm::Value* emitBinaryCrossEntropy(const eshkol_operations_t* op, const char* name);
+    llvm::Value* extractStructuralIntOrRaise(llvm::Value* value, const char* name, const char* expected);
+    llvm::Value* checkAttentionMask(llvm::Value* mask, llvm::Value* batch, llvm::Value* queries,
+                                    llvm::Value* keys, const char* operation);
+
     /**
-     * Validate a reduction axis against the operand's rank, at runtime.
+     * Validate the selected index and require a positive reduction extent before either lowering.
      *
      * Emits a call to `eshkol_tensor_axis_checked`, which requires
      * `0 <= axis < rank` and otherwise raises a catchable error. Without it an
@@ -1619,11 +1664,14 @@ public:
      *
      * @param axis     Normalized (non-negative) axis as an i64.
      * @param rank     The operand's `num_dimensions` as an i64.
+     * @param dims     Array of integer dimension lengths.
      * @param op_name  User-facing op name, used only for the error message.
      * @return The validated axis (i64), usable directly.
      */
-    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank, llvm::Value* dims,
                                  const char* op_name);
+    /** Validate an axis index when only its rank is available. */
+    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank, const char* op_name);
 
     /**
      * Emit a catchable Eshkol error at the current insert point and terminate

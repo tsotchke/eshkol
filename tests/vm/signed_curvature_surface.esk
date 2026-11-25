@@ -30,7 +30,7 @@
 (define m (make-hyperbolic-manifold-handle 3 -1.0))
 
 ;; The public module's records and the VM's lower-level handles share the
-;; curvature accessor. Returning NIL for a record breaks gyro transport.
+;; curvature accessor; gyro transport reads the curvature of a record.
 (require core.manifold)
 (report (and (number? (manifold-curvature (make-euclidean-manifold 3)))
              (= (manifold-curvature (make-euclidean-manifold 3)) 0.0)) "module Euclidean curvature")

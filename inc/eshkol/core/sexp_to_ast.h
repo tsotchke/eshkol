@@ -28,13 +28,11 @@ extern "C" {
 /**
  * @brief Convert a runtime S-expression to an AST node.
  *
- * Performs direct, single-pass conversion from cons-cell representation
- * to AST structure. Recognizes all standard Scheme special forms:
- *   - lambda, define, if, cond, case, match
- *   - let, let*, letrec, letrec*
- *   - and, or, when, unless
- *   - begin, quote, quasiquote
- *   - set!, define-syntax
+ * The datum is spelled as reader tokens and parsed by the one parser, so it
+ * means exactly what the same datum written as text means. Nesting depth has
+ * no limit; the datum is weighed against the one input-size cap
+ * (ESHKOL_MAX_SOURCE_BYTES). Hosted eval, eval-with-environment and compile
+ * use the same conversion with their evaluation context's macro keywords.
  *
  * The returned AST is heap-allocated and must be freed by the caller
  * when no longer needed (unless passed to the JIT which takes ownership).

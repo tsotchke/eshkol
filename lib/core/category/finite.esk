@@ -1,0 +1,212 @@
+;;; core.category.finite -- constructions of finite categories on the
+;;; representation of core.sheaf.site: standard shapes, presentations,
+;;; one-object categories of monoids and groups, products and coproducts,
+;;; full subcategories, and the nerve with its integral cohomology.
+;;;
+;;; Usage: (require core.category.finite)   or   (require core.category)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), I.2-I.5 (categories, opposite, product, free categories on a
+;;; graph, II.7 presentations), II.3 (products of categories); E. Riehl,
+;;; "Category Theory in Context" (2016), 1.1-1.2; D. Quillen, "Higher
+;;; algebraic K-theory I" (1973), section 1 (the nerve of a category);
+;;; nLab: "category", "free category", "product category", "full
+;;; subcategory", "nerve".
+;;;
+;;; Representation: every category here is the core.sheaf.site value
+;;; #(finite-category nobj arrows compose ids labels) (ADR-0033). Nothing in
+;;; this module defines a second category type; the constructors below only
+;;; choose arrows, a composition procedure and labels.
+;;;
+;;;   product C x D     object (x, y) is x * |ob D| + y, labelled (x y);
+;;;                     arrow (f, g) is f * |ar D| + g, named (f g).
+;;;   coproduct C + D   objects of C first, then those of D (offset |ob C|);
+;;;                     arrows likewise; labels and names are (0 l) and (1 l).
+;;;   full subcategory  objects renumbered in the order given, arrows keep
+;;;                     their names; the inclusion functor is returned too.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.integer_linalg)
+
+(provide discrete-category terminal-category free-category walking-arrow-category
+         parallel-pair-category span-category cospan-category commutative-square-category
+         monoid-category cyclic-group-category
+         category-product category-product-object category-product-arrow
+         category-coproduct category-full-subcategory category-full-subcategory-inclusion
+         category-arrow-list category-object-list category-identity? category-isomorphism?
+         category-inverse category-groupoid? category-initial-objects category-terminal-objects category-components
+         category-nerve category-nerve-coboundary category-nerve-cohomology)
+
+(define (cc-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (cc-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (cc-all? pred (cdr xs))) (else #f)))
+(define (cc-position item items)
+  (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+(define (category-object-list C) (cc-range (category-object-count C)))
+(define (category-arrow-list C) (cc-range (category-arrow-count C)))
+
+;; ---------------------------------------------------------------------------
+;; Standard shapes
+;; ---------------------------------------------------------------------------
+;; n objects, identities only
+(define (discrete-category n . labels)
+  (apply make-finite-category n (map (lambda (x) (vector x x (list))) (cc-range n))
+         (lambda (g f) f) (cc-range n) labels))
+(define (terminal-category) (discrete-category 1))
+;; the free category on a finite acyclic graph (gens: (src tgt name) ...);
+;; max-len bounds the length of the paths enumerated
+(define (free-category n gens max-len) (make-category-from-presentation n gens (lambda (w) w) max-len))
+(define (walking-arrow-category) (free-category 2 (list (list 0 1 'f)) 1))
+(define (parallel-pair-category) (free-category 2 (list (list 0 1 'f) (list 0 1 'g)) 1))
+;; span 1 <- 0 -> 2 and cospan 1 -> 0 <- 2
+(define (span-category) (free-category 3 (list (list 0 1 'l) (list 0 2 'r)) 1))
+(define (cospan-category) (free-category 3 (list (list 1 0 'l) (list 2 0 'r)) 1))
+;; the commutative square: a: 0 -> 1, b: 0 -> 2, c: 1 -> 3, d: 2 -> 3, c a = d b
+(define (commutative-square-category)
+  (make-category-from-presentation 4 (list (list 0 1 'a) (list 0 2 'b) (list 1 3 'c) (list 2 3 'd))
+                                   (lambda (w) (if (equal? w (list 3 1)) (list 2 0) w)) 2))
+
+;; The one-object category of a finite monoid on 0..n-1 with unit e and
+;; multiplication mul: arrow i is the element i, composition g o f = mul(g, f).
+(define (monoid-category n mul e . names)
+  (make-finite-category 1 (map (lambda (i) (vector 0 0 (if (null? names) i (list-ref (car names) i)))) (cc-range n))
+                        (lambda (g f) (mul g f)) (list e)))
+;; B(Z/n): arrows 0..n-1, composition by addition mod n
+(define (cyclic-group-category n) (monoid-category n (lambda (g f) (modulo (+ g f) n)) 0))
+
+;; ---------------------------------------------------------------------------
+;; Products, coproducts, full subcategories
+;; ---------------------------------------------------------------------------
+(define (category-product-object C D x y) (+ (* x (category-object-count D)) y))
+(define (category-product-arrow C D f g) (+ (* f (category-arrow-count D)) g))
+(define (category-product C D)
+  (let* ((nD (category-object-count D)) (mD (category-arrow-count D))
+         (n (* (category-object-count C) nD)) (m (* (category-arrow-count C) mD))
+         (arrows (map (lambda (k) (let ((f (quotient k mD)) (g (remainder k mD)))
+                                    (vector (+ (* (arrow-source C f) nD) (arrow-source D g))
+                                            (+ (* (arrow-target C f) nD) (arrow-target D g))
+                                            (list f g))))
+                      (cc-range m))))
+    (make-finite-category n arrows
+                          (lambda (k2 k1)
+                            (let ((f (category-compose C (quotient k2 mD) (quotient k1 mD)))
+                                  (g (category-compose D (remainder k2 mD) (remainder k1 mD))))
+                              (if (and f g) (+ (* f mD) g) #f)))
+                          (map (lambda (o) (+ (* (category-identity C (quotient o nD)) mD)
+                                              (category-identity D (remainder o nD))))
+                               (cc-range n))
+                          (map (lambda (o) (list (quotient o nD) (remainder o nD))) (cc-range n)))))
+(define (category-coproduct C D)
+  (let* ((nC (category-object-count C)) (mC (category-arrow-count C))
+         (arrows (append (map (lambda (a) (vector (arrow-source C a) (arrow-target C a) (list 0 (arrow-name C a))))
+                              (category-arrow-list C))
+                         (map (lambda (a) (vector (+ nC (arrow-source D a)) (+ nC (arrow-target D a)) (list 1 (arrow-name D a))))
+                              (category-arrow-list D)))))
+    (make-finite-category (+ nC (category-object-count D)) arrows
+                          (lambda (g f)
+                            (cond ((and (< g mC) (< f mC)) (category-compose C g f))
+                                  ((and (>= g mC) (>= f mC))
+                                   (let ((h (category-compose D (- g mC) (- f mC)))) (if h (+ h mC) #f)))
+                                  (else #f)))
+                          (append (map (lambda (x) (category-identity C x)) (category-object-list C))
+                                  (map (lambda (y) (+ mC (category-identity D y))) (category-object-list D)))
+                          (append (map (lambda (x) (list 0 (category-object-label C x))) (category-object-list C))
+                                  (map (lambda (y) (list 1 (category-object-label D y))) (category-object-list D))))))
+;; the full subcategory on the listed objects (renumbered in that order)
+(define (category-full-subcategory C objs)
+  (let* ((arrs (filter (lambda (a) (and (memv (arrow-source C a) objs) (memv (arrow-target C a) objs))) (category-arrow-list C)))
+         (av (list->vector arrs)) (m (vector-length av))
+         (back (make-vector (category-arrow-count C) #f)))
+    (let loop ((i 0)) (if (< i m) (begin (vector-set! back (vector-ref av i) i) (loop (+ i 1)))))
+    (make-finite-category (length objs)
+                          (map (lambda (a) (vector (cc-position (arrow-source C a) objs) (cc-position (arrow-target C a) objs) (arrow-name C a))) arrs)
+                          (lambda (g f) (let ((h (category-compose C (vector-ref av g) (vector-ref av f)))) (if h (vector-ref back h) #f)))
+                          (map (lambda (x) (vector-ref back (category-identity C x))) objs)
+                          (map (lambda (x) (category-object-label C x)) objs))))
+;; the inclusion as an (objects . arrows) pair of vectors; core.category.functor
+;; wraps it as a functor value
+(define (category-full-subcategory-inclusion C objs)
+  (cons (list->vector objs)
+        (list->vector (filter (lambda (a) (and (memv (arrow-source C a) objs) (memv (arrow-target C a) objs))) (category-arrow-list C)))))
+
+;; ---------------------------------------------------------------------------
+;; Isomorphisms, groupoids, initial and terminal objects
+;; ---------------------------------------------------------------------------
+(define (category-identity? C a) (= a (category-identity C (arrow-source C a))))
+(define (category-inverse C a)
+  (let loop ((bs (category-hom C (arrow-target C a) (arrow-source C a))))
+    (cond ((null? bs) #f)
+          ((and (category-identity? C (category-compose C (car bs) a)) (category-identity? C (category-compose C a (car bs)))) (car bs))
+          (else (loop (cdr bs))))))
+(define (category-isomorphism? C a) (if (category-inverse C a) #t #f))
+(define (category-groupoid? C) (cc-all? (lambda (a) (category-isomorphism? C a)) (category-arrow-list C)))
+;; objects with exactly one arrow to (from) every object
+(define (category-terminal-objects C)
+  (filter (lambda (t) (cc-all? (lambda (x) (= 1 (length (category-hom C x t)))) (category-object-list C))) (category-object-list C)))
+(define (category-initial-objects C)
+  (filter (lambda (i) (cc-all? (lambda (x) (= 1 (length (category-hom C i x)))) (category-object-list C))) (category-object-list C)))
+
+;; pi_0: the number of connected components (objects joined by a zigzag of
+;; arrows), by union-find over the arrows
+(define (category-components C)
+  (let* ((n (category-object-count C)) (parent (list->vector (cc-range n)))
+         (root (lambda (x) (let loop ((x x)) (if (= x (vector-ref parent x)) x (loop (vector-ref parent x)))))))
+    (for-each (lambda (a) (let ((p (root (arrow-source C a))) (q (root (arrow-target C a)))) (if (not (= p q)) (vector-set! parent p q))))
+              (category-arrow-list C))
+    (length (filter (lambda (x) (= x (root x))) (cc-range n)))))
+
+;; ---------------------------------------------------------------------------
+;; The nerve
+;; ---------------------------------------------------------------------------
+;; Nondegenerate k-simplices of the nerve: k = 0 gives the objects as
+;; one-element lists (x); k >= 1 gives lists (a1 ... ak) of composable
+;; non-identity arrows, a1 first (tgt a_i = src a_{i+1}).
+(define (category-nerve C k)
+  (let ((nonid (filter (lambda (a) (not (category-identity? C a))) (category-arrow-list C))))
+    (if (= k 0) (map list (category-object-list C))
+        (let loop ((j 1) (acc (map list nonid)))
+          (if (= j k) (map reverse acc)
+              (loop (+ j 1)
+                    (let ext ((ss acc) (out '()))
+                      (if (null? ss) (reverse out)
+                          (ext (cdr ss)
+                               (append (reverse (map (lambda (b) (cons b (car ss)))
+                                                     (filter (lambda (b) (= (arrow-source C b) (arrow-target C (car (car ss))))) nonid)))
+                                       out))))))))))
+;; faces of a k-simplex (k >= 1) with their index i: d_0 drops the first
+;; arrow, d_k the last, d_i composes a_{i+1} o a_i. A face containing an
+;; identity is degenerate and contributes nothing to the normalized complex.
+(define (cc-faces C s k)
+  (if (= k 1)
+      (list (cons 0 (list (arrow-target C (car s)))) (cons 1 (list (arrow-source C (car s)))))
+      (let loop ((i 0) (acc '()))
+        (if (> i k) (reverse acc)
+            (loop (+ i 1)
+                  (cons (cons i (cond ((= i 0) (cdr s))
+                                      ((= i k) (reverse (cdr (reverse s))))
+                                      (else (let walk ((l s) (j 1) (out '()))
+                                              (if (= j i) (append (reverse out) (cons (category-compose C (cadr l) (car l)) (cddr l)))
+                                                  (walk (cdr l) (+ j 1) (cons (car l) out)))))))
+                        acc))))))
+;; delta^k : C^k -> C^{k+1} on Z-valued cochains of the normalized nerve,
+;; (delta phi)(s) = sum_i (-1)^i phi(d_i s); rows are (k+1)-simplices
+(define (category-nerve-coboundary C k)
+  (let* ((src (category-nerve C k)) (tgt (category-nerve C (+ k 1)))
+         (index (let ((t (make-hash-table))) (let loop ((l src) (i 0)) (if (null? l) t (begin (hash-table-set! t (car l) i) (loop (cdr l) (+ i 1))))))))
+    (list->vector
+     (map (lambda (s)
+            (let ((row (make-vector (length src) 0)))
+              (for-each (lambda (face)
+                          (let ((j (if (and (> k 0) (not (cc-all? (lambda (a) (not (category-identity? C a))) (cdr face))))
+                                       #f
+                                       (hash-table-ref/default index (cdr face) #f))))
+                            (if j (vector-set! row j (+ (vector-ref row j) (if (even? (car face)) 1 -1))))))
+                        (cc-faces C s (+ k 1)))
+              row))
+          tgt))))
+;; ((k betti torsion) ...) for k = 0..kmax: the integral cohomology of the
+;; nerve (Quillen's classifying space BC) with constant coefficients
+(define (category-nerve-cohomology C kmax)
+  (cochain-cohomology (map (lambda (k) (length (category-nerve C k))) (cc-range (+ kmax 1)))
+                      (map (lambda (k) (category-nerve-coboundary C k)) (cc-range (+ kmax 1)))))

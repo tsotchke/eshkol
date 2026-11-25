@@ -1,0 +1,17 @@
+;;; Network capability: `(http-server-create port)` opens a listening socket.
+;;; Port 0 asks the host for an ephemeral port, so the probe needs no fixed
+;;; port and reaches no remote host.
+(require stdlib)
+(require core.capabilities)
+
+(define mode (getenv "ESHKOL_CAP_MODE"))
+(if (string=? mode "deny") (capability-install-policy! (list 'file-read)) #t)
+(if (string=? mode "grant") (capability-install-policy! (list 'file-read 'network)) #t)
+
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((server (http-server-create 0)))
+      (if server
+          (begin (http-server-close server) "ran:listening")
+          "ran:unavailable"))))
+(newline)

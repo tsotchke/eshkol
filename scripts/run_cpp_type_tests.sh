@@ -44,7 +44,7 @@ TYPE_CHECKER_TEST="$PROJECT_DIR/tests/types/type_checker_test.cpp"
 TYPE_RELATION_TEST="$PROJECT_DIR/tests/types/type_relation_test.cpp"
 
 # Source files needed
-SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_relation.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp $PROJECT_DIR/lib/core/ast.cpp"
+SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_relation.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp $PROJECT_DIR/lib/types/quantum_types.cpp $PROJECT_DIR/lib/types/quantum_index.cpp $PROJECT_DIR/lib/core/ast.cpp"
 
 # Honour the aggregate harness/CI build selection instead of silently linking
 # against a different checkout's default `build/` archive.  Accept either a
@@ -83,11 +83,12 @@ compile_and_run_test() {
                          "-framework" "Foundation"
                          "-framework" "Security"
                          "-framework" "CoreFoundation"
+                         "-framework" "CoreGraphics"
                          "-lobjc" "-lncurses" "-lpcre2-8" "-lsqlite3") ;;
     esac
 
     if g++ -std=c++20 \
-        -I"$PROJECT_DIR/inc" \
+        -I"$PROJECT_DIR/inc" -I"$BUILD_DIR/generated" \
         ${LLVM_CXXFLAGS[@]+"${LLVM_CXXFLAGS[@]}"} \
         $SOURCES \
         "$test_file" \

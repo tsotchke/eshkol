@@ -1,13 +1,17 @@
 ;;; core.exact_linalg — exact linear algebra over the scalar exact tower
 ;;;
-;;; Matrices here are vectors of row-vectors (never tensors): an n x m
-;;; matrix is `(vector row0 row1 ... row(n-1))` where each `rowI` is a
-;;; length-m vector. Vectors, not tensors, so entries stay on the scalar
-;;; exact tower (int64 / bignum / rational) with no f64-backed storage
-;;; anywhere in the representation. See docs/breakdown/EXACT_ARITHMETIC.md
-;;; for the tower and its contagion rules, and lib/math.esk
-;;; (`det`/`inv`/`solve`) for the pre-existing *inexact*, tensor-backed
-;;; counterparts this module deliberately does not touch or replace.
+;;; Matrices here are vectors of row-vectors: an n x m matrix is
+;;; `(vector row0 row1 ... row(n-1))` where each `rowI` is a length-m
+;;; vector, so entries stay on the scalar exact tower (int64 / bignum /
+;;; rational). Every public function also accepts a rank-2 TENSOR (and a
+;;; rank-1 tensor for a right-hand side): an exact tensor, built with
+;;; `(tensor-cast X 'exact)` (ADR-0058), is read entry by entry and stays
+;;; exact; a tensor operand gets a tensor answer, exact when every entry of
+;;; the answer is exact. See docs/breakdown/EXACT_ARITHMETIC.md for the tower
+;;; and its contagion rules, docs/reference/stdlib/exact_linalg.md for the
+;;; native exact tensor kernels (`tensor-det`, `tensor-inverse`,
+;;; `tensor-solve`) this module cross-checks, and lib/math.esk
+;;; (`det`/`inv`/`solve`) for the Gaussian-elimination counterparts.
 ;;;
 ;;; PITFALL: build matrices/vectors with the `vector` PROCEDURE, never with
 ;;; a `#(...)` LITERAL. The reader auto-promotes a numeric `#(...)` vector
@@ -44,7 +48,8 @@
 ;;; exactness guarantee this module can offer.
 
 (provide exact-matrix? exact-matrix-ref exact-matrix-mul exact-matrix-transpose
-         exact-det exact-solve exact-affine-solve exact-inverse exact-rank exact-nullspace
+         exact-det exact-plu exact-solve exact-affine-solve exact-inverse exact-rank
+         exact-pivot-columns exact-nullspace
          torus-average torus-average-2d)
 
 ;; ============================================================
@@ -54,7 +59,8 @@
 (define (el-rows m) (vector-length m))
 (define (el-cols m) (vector-length (vector-ref m 0)))
 
-(define (exact-matrix-ref m i j) (vector-ref (vector-ref m i) j))
+(define (exact-matrix-ref m i j)
+  (if (tensor? m) (tensor-ref m i j) (vector-ref (vector-ref m i) j)))
 
 ;; Generic "every entry of this row satisfies pred" — used by both the
 ;; exactness predicate and the (looser) well-formedness check below.
@@ -67,12 +73,9 @@
 
 (define (el-exact-num? x) (and (number? x) (exact? x)))
 
-;; (exact-matrix? m) — #t iff m is a non-empty vector of equal-length
-;; vectors whose every entry is an exact number. Purely a query predicate:
-;; the other functions below do NOT require this to be #t on their input
-;; (they accept any well-formed numeric matrix and let R7RS contagion
-;; demote inexact results).
-(define (exact-matrix? m)
+;; The rows form of exact-matrix?: a non-empty vector of equal-length
+;; vectors whose every entry is an exact number.
+(define (el-rows-exact-matrix? m)
   (and (vector? m)
        (> (vector-length m) 0)
        (vector? (vector-ref m 0))
@@ -102,6 +105,68 @@
                       (= (vector-length row) cols)
                       (el-row-all? row number?)
                       (loop (+ i 1)))))))))
+
+;; (exact-matrix? m) — #t iff m is a non-empty vector of equal-length
+;; vectors whose every entry is an exact number, or a rank-2 exact tensor.
+;; Purely a query predicate: the other functions below do NOT require this
+;; to be #t on their input (they accept any well-formed numeric matrix and
+;; let R7RS contagion decide the exactness of the result). Every helper is
+;; defined before its first use, as the bytecode VM's module loader requires.
+(define (exact-matrix? m)
+  (if (tensor? m)
+      (and (eq? (tensor-dtype m) 'exact) (= (length (tensor-shape m)) 2))
+      (el-rows-exact-matrix? m)))
+
+;; ---- tensor operands (ADR-0058) --------------------------------------
+;; A rank-2 tensor is read into the rows representation entry by entry with
+;; tensor-ref, so an exact tensor's entries stay exact and an f64 tensor's
+;; are the doubles it holds (contagion then makes the answer inexact).
+
+(define (el-tensor->rows t)
+  (let ((shape (tensor-shape t)))
+    (if (not (= (length shape) 2))
+        (error "core.exact_linalg: expected a rank-2 tensor" shape)
+        (let* ((r (car shape)) (c (cadr shape)) (m (make-vector r #f)))
+          (let loop ((i 0))
+            (if (< i r)
+                (let ((row (make-vector c 0)))
+                  (let fill ((j 0))
+                    (if (< j c)
+                        (begin (vector-set! row j (tensor-ref t i j)) (fill (+ j 1)))
+                        #t))
+                  (vector-set! m i row)
+                  (loop (+ i 1)))
+                m))))))
+
+(define (el-tensor->vector t)
+  (let ((shape (tensor-shape t)))
+    (if (not (= (length shape) 1))
+        (error "core.exact_linalg: expected a rank-1 tensor" shape)
+        (let* ((n (car shape)) (v (make-vector n 0)))
+          (let loop ((i 0))
+            (if (< i n) (begin (vector-set! v i (tensor-ref t i)) (loop (+ i 1))) v))))))
+
+(define (el-as-rows m) (if (tensor? m) (el-tensor->rows m) m))
+(define (el-as-vector b) (if (tensor? b) (el-tensor->vector b) b))
+
+(define (el-vector-exact? v)
+  (let loop ((i 0))
+    (cond ((>= i (vector-length v)) #t)
+          ((el-exact-num? (vector-ref v i)) (loop (+ i 1)))
+          (else #f))))
+
+;; A matrix answer for a tensor operand is a tensor: an exact tensor when
+;; every entry is exact (contagion kept it on the exact tower), an f64
+;; tensor otherwise. A rows operand keeps the rows answer.
+(define (el-matrix-answer tensor-operand? rows)
+  (cond ((not tensor-operand?) rows)
+        ((and (> (vector-length rows) 0) (exact-matrix? rows)) (tensor-cast rows 'exact))
+        (else (tensor rows))))
+
+(define (el-vector-answer tensor-operand? v)
+  (cond ((not tensor-operand?) v)
+        ((el-vector-exact? v) (tensor-cast v 'exact))
+        (else (tensor v))))
 
 (define (el-copy-row row)
   (let* ((n (vector-length row)) (c (make-vector n 0)))
@@ -143,7 +208,7 @@
 
 ;; (exact-matrix-mul a b) — matrix product of an (ra x ca) and a (cb x cb2)
 ;; matrix (ca must equal the row count of b); contagion-exact.
-(define (exact-matrix-mul a b)
+(define (el-matrix-mul a b)
   (if (not (and (el-well-formed? a) (el-well-formed? b)))
       (error "exact-matrix-mul: not a well-formed matrix" a b)
       (let* ((ra (el-rows a)) (ca (el-cols a))
@@ -156,13 +221,17 @@
                     (begin (vector-set! result i (el-mul-row a b i ca cb)) (loop (+ i 1)))
                     result)))))))
 
+(define (exact-matrix-mul a0 b0)
+  (el-matrix-answer (or (tensor? a0) (tensor? b0))
+                    (el-matrix-mul (el-as-rows a0) (el-as-rows b0))))
+
 (define (el-transpose-col m j r)
   (let ((col (make-vector r 0)))
     (let loop ((i 0))
       (if (< i r) (begin (vector-set! col i (exact-matrix-ref m i j)) (loop (+ i 1))) col))))
 
 ;; (exact-matrix-transpose m) — the r x c transpose of a c x r matrix.
-(define (exact-matrix-transpose m)
+(define (el-matrix-transpose m)
   (if (not (el-well-formed? m))
       (error "exact-matrix-transpose: not a well-formed matrix" m)
       (let* ((r (el-rows m)) (c (el-cols m)) (result (make-vector c #f)))
@@ -170,6 +239,9 @@
           (if (< j c)
               (begin (vector-set! result j (el-transpose-col m j r)) (loop (+ j 1)))
               result)))))
+
+(define (exact-matrix-transpose m0)
+  (el-matrix-answer (tensor? m0) (el-matrix-transpose (el-as-rows m0))))
 
 ;; ---- exact-det: Bareiss fraction-free elimination ----------------------
 
@@ -211,13 +283,65 @@
 ;; running matrix never holds a non-integral intermediate value for
 ;; integer inputs; on rational inputs the same recurrence is simply exact
 ;; field division throughout, still contagion-exact.
-(define (exact-det m)
+(define (el-det m)
   (if (not (el-well-formed? m))
       (error "exact-det: not a well-formed matrix" m)
       (let ((n (el-rows m)))
         (if (not (= n (el-cols m)))
             (error "exact-det: matrix must be square" m)
             (el-bareiss (el-copy-matrix m) n)))))
+
+;; (exact-plu m) — an exact factorization P m = L U of a square matrix:
+;; returns (list perm L U sign) where row i of P m is row (list-ref perm i)
+;; of m, L is unit lower triangular, U is upper triangular and sign is the
+;; sign of the permutation, so (exact-det m) = sign * (product of U's
+;; diagonal). Pivots are the first nonzero entry at or below the diagonal;
+;; a column with no such entry is left as is (U then has a zero diagonal
+;; entry and m is singular). The input is never mutated. This is the
+;; witness core.certificate records for a determinant (ADR-0047): a
+;; checker confirms it by one matrix product, without elimination.
+(define (exact-plu m)
+  (if (not (el-well-formed? m))
+      (error "exact-plu: not a well-formed matrix" m))
+  (let ((n (el-rows m)))
+    (if (not (= n (el-cols m)))
+        (error "exact-plu: matrix must be square" m))
+    (let ((w (el-copy-matrix m)) (l (el-identity n)) (perm (make-vector n 0)))
+      (let fill ((i 0)) (if (< i n) (begin (vector-set! perm i i) (fill (+ i 1)))))
+      (let loop ((k 0) (sign 1))
+        (if (>= k n)
+            (list (vector->list perm) l w sign)
+            (let ((r (el-find-pivot w n k k)))
+              (if (< r 0)
+                  (loop (+ k 1) sign)
+                  (begin
+                    (if (not (= r k))
+                        (begin
+                          (el-swap-rows! w k r)
+                          (let ((t (vector-ref perm k)))
+                            (vector-set! perm k (vector-ref perm r)) (vector-set! perm r t))
+                          (let swap-l ((j 0))
+                            (if (< j k)
+                                (let ((t (exact-matrix-ref l k j)))
+                                  (vector-set! (vector-ref l k) j (exact-matrix-ref l r j))
+                                  (vector-set! (vector-ref l r) j t)
+                                  (swap-l (+ j 1)))))))
+                    (let ((pivot (exact-matrix-ref w k k)))
+                      (let rows ((i (+ k 1)))
+                        (if (< i n)
+                            (let ((f (/ (exact-matrix-ref w i k) pivot)))
+                              (vector-set! (vector-ref l i) k f)
+                              (if (not (zero? f))
+                                  (let cols ((j k))
+                                    (if (< j n)
+                                        (begin
+                                          (vector-set! (vector-ref w i) j
+                                            (- (exact-matrix-ref w i j) (* f (exact-matrix-ref w k j))))
+                                          (cols (+ j 1))))))
+                              (rows (+ i 1))))))
+                    (loop (+ k 1) (if (= r k) sign (- sign)))))))))))
+(define (exact-det m0)
+  (el-det (el-as-rows m0)))
 
 ;; ---- el-rref: the shared row-reduction workhorse --------------------
 
@@ -265,7 +389,13 @@
                       (loop (+ col 1) (+ prow 1) (cons col pivots))))))))))
 
 ;; (exact-rank m) — rank via row reduction (works on rectangular matrices).
-(define (exact-rank m) (length (cdr (el-rref m))))
+(define (exact-rank m) (length (cdr (el-rref (el-as-rows m)))))
+
+;; (exact-pivot-columns m) — the ascending pivot column indices of the
+;; reduced row echelon form of m; their number is (exact-rank m). Applied
+;; to the transpose it lists a maximal set of independent rows, so the
+;; rows and columns together name a nonsingular rank x rank minor.
+(define (exact-pivot-columns m) (cdr (el-rref m)))
 
 ;; ---- exact-nullspace -----------------------------------------------------
 
@@ -293,9 +423,13 @@
 ;; (exact-nullspace m) — a list of exact basis vectors spanning ker(m),
 ;; one per free (non-pivot) column of the RREF of m; '() when m has full
 ;; column rank (trivial nullspace).
-(define (exact-nullspace m)
-  (let* ((res (el-rref m)) (w (car res)) (pivots (cdr res)) (cols (el-cols m)))
-    (el-nullspace-basis w pivots cols)))
+(define (exact-nullspace m0)
+  (let* ((m (el-as-rows m0))
+         (res (el-rref m)) (w (car res)) (pivots (cdr res)) (cols (el-cols m)))
+    (let loop ((basis (el-nullspace-basis w pivots cols)) (acc '()))
+      (if (null? basis)
+          (reverse acc)
+          (loop (cdr basis) (cons (el-vector-answer (tensor? m0) (car basis)) acc))))))
 
 ;; ---- exact-solve / exact-inverse ----------------------------------------
 
@@ -322,7 +456,7 @@
 ;; full-rank a. Raises on a singular coefficient matrix (via (error ...),
 ;; catchable with `guard` like the rest of the stdlib) rather than
 ;; returning a fabricated value.
-(define (exact-solve a b)
+(define (el-solve a b)
   (if (not (el-well-formed? a))
       (error "exact-solve: not a well-formed matrix" a)
       (let ((n (el-rows a)))
@@ -333,6 +467,10 @@
                 (if (< (exact-rank a) n)
                     (error "exact-solve: singular matrix" a)
                     (el-extract-solution (car (el-rref (el-augment-column a b))) n)))))))
+
+(define (exact-solve a0 b0)
+  (el-vector-answer (or (tensor? a0) (tensor? b0))
+                    (el-solve (el-as-rows a0) (el-as-vector b0))))
 
 (define (el-identity-row n i)
   (let ((row (make-vector n 0))) (vector-set! row i 1) row))
@@ -371,7 +509,7 @@
 
 ;; (exact-inverse a) — the exact inverse of a square, full-rank matrix, via
 ;; Gauss-Jordan elimination on [a | I]. Raises on a singular a.
-(define (exact-inverse a)
+(define (el-inverse a)
   (if (not (el-well-formed? a))
       (error "exact-inverse: not a well-formed matrix" a)
       (let ((n (el-rows a)))
@@ -380,6 +518,9 @@
             (if (< (exact-rank a) n)
                 (error "exact-inverse: singular matrix" a)
                 (el-extract-right-half (car (el-rref (el-augment-identity a n))) n))))))
+
+(define (exact-inverse a0)
+  (el-matrix-answer (tensor? a0) (el-inverse (el-as-rows a0))))
 
 ;; ---- torus-average / torus-average-2d -----------------------------------
 

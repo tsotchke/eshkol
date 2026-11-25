@@ -1,0 +1,5 @@
+;; The cond closes the port on one branch only.
+(define in (open-input-file "strict-branch-open.txt"))
+(cond
+  ((eof-object? (peek-char in)) (close-port in))
+  (else (display (read-line in))))

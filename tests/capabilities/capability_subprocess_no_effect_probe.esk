@@ -1,0 +1,15 @@
+;;; A refused subprocess does not run: the child that would have written the
+;;; marker never starts.
+(require stdlib)
+(require core.capabilities)
+
+(define marker (getenv "ESHKOL_CAP_SUBPROC_MARKER"))
+
+(capability-install-policy! (list 'file-read))
+
+(display "spawn:")
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((pid (process-spawn (string-append "printf reached > '" marker "'") "")))
+      (if (and (number? pid) (> pid 0)) (begin (process-wait pid) "ran") "ran-failed"))))
+(newline)

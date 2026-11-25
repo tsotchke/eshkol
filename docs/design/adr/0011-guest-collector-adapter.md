@@ -58,15 +58,15 @@ are already shipped and load-bearing. Every citation below is against
 |---|---|---|
 | An arena with a bulk, O(1) teardown | `arena_create` / `arena_destroy`, block-chain free with optional poison | [`lib/core/runtime_arena_core.cpp:112`](../../../lib/core/runtime_arena_core.cpp#L112), [`:191`](../../../lib/core/runtime_arena_core.cpp#L191) |
 | A hard byte ceiling that fails deterministically instead of growing | `arena_create_bounded` — single fixed block, `arena_allocate*` returns NULL on exhaustion | [`lib/core/runtime_arena_core.cpp:147`](../../../lib/core/runtime_arena_core.cpp#L147) |
-| One allocation seam a guest must respect | `eshkol_current_arena()` — the thread-local allocation accessor all generated code routes through | [`lib/core/runtime_regions.cpp:176`](../../../lib/core/runtime_regions.cpp#L176), [`lib/core/arena_memory.h:361`](../../../lib/core/arena_memory.h#L361) |
+| One allocation seam a guest must respect | `eshkol_current_arena()` — the thread-local allocation accessor all generated code routes through | [`lib/core/runtime_regions.cpp:196`](../../../lib/core/runtime_regions.cpp#L196), [`lib/core/arena_memory.h:361`](../../../lib/core/arena_memory.h#L361) |
 | A **generation-counter handle protocol** with defined stale-token behavior | `region-open` / `region-close` / `region-open?`: "a slot index plus a GENERATION counter, not a pointer; closing a handle bumps its slot's generation, so every stale token ... fails validation and raises a clean catchable error instead of touching freed memory" | [`lib/core/arena_memory.h:520-545`](../../../lib/core/arena_memory.h#L520), [`:572`](../../../lib/core/arena_memory.h#L572), [`:577`](../../../lib/core/arena_memory.h#L577) |
-| **One** teardown path shared by lexical exit, explicit close, `raise`, and `call/cc` escape | `eshkol_region_unwind_to()` — "the ONLY code that" tears a region down, reached from `with-region`, `region-close`, `eshkol_exception_handler_t::region_mark`, and `eshkol_continuation_state_t::region_mark` | [`lib/core/runtime_regions.cpp:1863`](../../../lib/core/runtime_regions.cpp#L1863), [`:1971`](../../../lib/core/runtime_regions.cpp#L1971), [`inc/eshkol/eshkol.h:1351`](../../../inc/eshkol/eshkol.h#L1351), [`:1498`](../../../inc/eshkol/eshkol.h#L1498) |
-| A copying collector, already, over a restricted graph | "The evacuator is a Cheney-style copying collector restricted to the escaping subgraph" | [`lib/core/runtime_regions.cpp:868`](../../../lib/core/runtime_regions.cpp#L868) |
+| **One** teardown path shared by lexical exit, explicit close, `raise`, and `call/cc` escape | `eshkol_region_unwind_to()` — "the ONLY code that" tears a region down, reached from `with-region`, `region-close`, `eshkol_exception_handler_t::region_mark`, and `eshkol_continuation_state_t::region_mark` | [`lib/core/runtime_regions_handles.cpp:53`](../../../lib/core/runtime_regions_handles.cpp#L53), [`lib/core/runtime_regions_handles.cpp:161`](../../../lib/core/runtime_regions_handles.cpp#L161), [`inc/eshkol/eshkol.h:1351`](../../../inc/eshkol/eshkol.h#L1351), [`:1498`](../../../inc/eshkol/eshkol.h#L1498) |
+| A copying collector, already, over a restricted graph | "The evacuator is a Cheney-style copying collector restricted to the escaping subgraph" | [`lib/core/runtime_regions_evacuation.cpp:169`](../../../lib/core/runtime_regions_evacuation.cpp#L169) |
 
 That last row is the architectural point in one line. Eshkol already runs a
 Cheney copy — bounded, root-directed, forwarding-mapped, cycle-terminating —
 whenever a value escapes a region
-([`lib/core/runtime_regions.cpp:859-881`](../../../lib/core/runtime_regions.cpp#L859)).
+([`lib/core/runtime_regions_evacuation.cpp:160-180`](../../../lib/core/runtime_regions_evacuation.cpp#L160)).
 The difference between that and a guest collector is **scope and trigger**, not
 algorithm: Eshkol's copy is driven by the escape boundary and runs at region
 exit; a guest's copy is driven by its own root set and runs when the guest
@@ -75,7 +75,7 @@ are already the same shape.
 
 The fifth requirement — a per-region finalizer — is the one thing absent.
 `region_destroy` frees the arena wholesale with zero callbacks
-([`lib/core/runtime_regions.cpp:436`](../../../lib/core/runtime_regions.cpp#L436)).
+([`lib/core/runtime_regions.cpp:458`](../../../lib/core/runtime_regions.cpp#L458)).
 The only per-object destructor in the tree is refcount-driven and orthogonal to
 regions (`eshkol_shared_header_t::destructor`,
 [`lib/core/arena_memory.h:704`](../../../lib/core/arena_memory.h#L704),
@@ -214,7 +214,7 @@ size_t eshkol_guest_collect(eshkol_guest_heap_t *h);
 from the heap's own bounded arena, captured at attach. This is deliberate and it
 is the difference between an adapter and a leak: `eshkol_current_arena()` follows
 the *Eshkol* program's region nesting
-([`lib/core/runtime_regions.cpp:176`](../../../lib/core/runtime_regions.cpp#L176)),
+([`lib/core/runtime_regions.cpp:196`](../../../lib/core/runtime_regions.cpp#L196)),
 and during a parallel scope it is pinned to the shared process arena. A guest
 whose allocation followed that would scatter its heap across arenas with
 unrelated lifetimes, and its collector would have no slab to sweep. The guest
@@ -230,9 +230,9 @@ guest in Section 8 is viable precisely because it already has an allocator seam
 
 Eshkol's structural write barrier promotes a value's in-region subgraph when it
 is stored into a destination that outlives it
-([`lib/core/runtime_regions.cpp:1671`](../../../lib/core/runtime_regions.cpp#L1671)).
+([`lib/core/runtime_regions_evacuation.cpp:1542`](../../../lib/core/runtime_regions_evacuation.cpp#L1542)).
 Its fast path is a single thread-local load and branch
-([`:1681`](../../../lib/core/runtime_regions.cpp#L1681)), then a
+([`:1545`](../../../lib/core/runtime_regions_evacuation.cpp#L1545)), then a
 `region_index_owning` comparison of value against destination.
 
 The interaction with a guest's own barriers is **none, by construction**, and
@@ -256,7 +256,7 @@ There is, however, a real hazard in the existing barrier that the ABI must dodge
 The closure evacuation path carries a conservative heuristic: an `INT64` capture
 whose value reinterpreted as a pointer lands inside a dying region is treated as
 a 16-byte mutable cell and copied
-([`lib/core/runtime_regions.cpp:1379`](../../../lib/core/runtime_regions.cpp#L1379)).
+([`lib/core/runtime_regions_evacuation.cpp:964`](../../../lib/core/runtime_regions_evacuation.cpp#L964)).
 The in-source justification is that "the other producers of INT64-packed
 pointers in capture slots are `GlobalVariable` addresses and JIT/AOT code
 addresses, neither of which is ever inside a region arena." A guest handle stored
@@ -290,7 +290,7 @@ allocated through `arena_allocate_with_header`
 `ESHKOL_OBJ_FLAG_EXTERNAL | ESHKOL_OBJ_FLAG_PINNED`
 ([`inc/eshkol/eshkol.h:482-483`](../../../inc/eshkol/eshkol.h#L482)), and
 classified by a new explicit arm in `evac_kind_for`
-([`lib/core/runtime_regions.cpp:1024`](../../../lib/core/runtime_regions.cpp#L1024)):
+([`lib/core/runtime_regions_evacuation.cpp:306`](../../../lib/core/runtime_regions_evacuation.cpp#L306)):
 
 ```c
 case HEAP_SUBTYPE_GUEST_HANDLE: return EVAC_GUEST_HANDLE;
@@ -299,13 +299,15 @@ case HEAP_SUBTYPE_GUEST_HANDLE: return EVAC_GUEST_HANDLE;
 `EVAC_GUEST_HANDLE` copies the two-word payload verbatim and walks nothing. It is
 behaviorally identical to the treatment ports already receive — "wraps an OS
 fd/FILE\*; handle intentionally shared, not copied"
-([`lib/core/runtime_regions.cpp:1026-1028`](../../../lib/core/runtime_regions.cpp#L1026)) —
+([`lib/core/runtime_regions_evacuation.cpp:440`](../../../lib/core/runtime_regions_evacuation.cpp#L440)) —
 which is the right precedent, because a guest handle is exactly that: a name for
 a resource whose identity must survive copying and whose storage must not be
 duplicated.
 
-It is deliberately **not** left to fall through the `default: return EVAC_LEAF`
-arm ([`:1115`](../../../lib/core/runtime_regions.cpp#L1115)). That arm would do
+It is deliberately **not** left to an implicit leaf classification: the
+`evac_kind_for` switch has no `default:` arm and is compiled with
+`-Werror=switch-enum`, so a new subtype must be placed explicitly
+([`:416`](../../../lib/core/runtime_regions_evacuation.cpp#L416)). A leaf arm would do
 the right thing today by accident, and ADR-0001 invariant 6 forbids exactly that:
 *"Every pointer-carrying allocation has a header and an exact layout descriptor.
 'Unknown means leaf' is forbidden."* The existing debug watchdog that fires when
@@ -323,7 +325,7 @@ increasing order of how expensive they are to discover the hard way:
 2. **Root discovery.** Eshkol has no shadow stack, no root set, and no
    conservative stack scanner. Ownership is probed by address-range scanning of
    the thread's region stack
-   ([`lib/core/runtime_regions.cpp:897`](../../../lib/core/runtime_regions.cpp#L897)),
+   ([`lib/core/runtime_regions_evacuation.cpp:199`](../../../lib/core/runtime_regions_evacuation.cpp#L199)),
    which answers "which region owns this address," not "who is pointing at it."
    A guest collector needs the second question answered, and nothing in the tree
    can answer it. The handle table answers it by construction: it *is* the
@@ -333,11 +335,11 @@ increasing order of how expensive they are to discover the hard way:
    is worth spelling out because it is silent rather than loud. The guest heap's
    slabs are allocated from the anchor region's arena, so
    `region_index_owning` classifies a guest object as *owned by that region*
-   ([`lib/core/runtime_regions.cpp:897`](../../../lib/core/runtime_regions.cpp#L897)).
+   ([`lib/core/runtime_regions_evacuation.cpp:199`](../../../lib/core/runtime_regions_evacuation.cpp#L199)).
    If a raw guest pointer were stored in a tagged heap value and then escaped,
    `evac_value` would find it inner to the boundary
-   ([`:1203`](../../../lib/core/runtime_regions.cpp#L1203)) and hand it to
-   `evac_object` ([`:1137`](../../../lib/core/runtime_regions.cpp#L1137)), which
+   ([`:625`](../../../lib/core/runtime_regions_evacuation.cpp#L625)) and hand it to
+   `evac_object` ([`:502`](../../../lib/core/runtime_regions_evacuation.cpp#L502)), which
    reads an `eshkol_object_header_t` from the eight bytes *before* the pointer —
    guest payload, not a header. Three outcomes follow, all bad and none of them a
    clean crash: `h->size == 0` leaves the pointer in place and it goes stale at
@@ -374,7 +376,7 @@ move," it is "do not die":
 If it holds, the referent's arena outlives the guest heap by construction, and no
 promotion can ever invalidate a guest-held pointer, because promotion targets are
 selected by `region_escape_target` walking outward from `escape_base`
-([`lib/core/runtime_regions.cpp:748`](../../../lib/core/runtime_regions.cpp#L748))
+([`lib/core/runtime_regions_evacuation.cpp:49`](../../../lib/core/runtime_regions_evacuation.cpp#L49))
 and a value already outside the anchor is never a promotion source.
 
 Enforcement is two-layer. `eshkol_guest_publish` checks
@@ -422,7 +424,7 @@ Standard, and independent of Eshkol. A tracing collector with a forwarding
 pointer or a mark bit visits each object once; cycles terminate because a
 revisited object answers with its forwarding pointer. This is the same argument
 Eshkol's own evacuator relies on
-([`lib/core/runtime_regions.cpp:868-872`](../../../lib/core/runtime_regions.cpp#L868)).
+([`lib/core/runtime_regions_evacuation.cpp:169-172`](../../../lib/core/runtime_regions_evacuation.cpp#L169)).
 
 **Step 2 — the guest's root set is complete.** The guest's roots are its own
 stack and statics, plus the adapter's handle table. Completeness of the second
@@ -436,13 +438,13 @@ is not a property anyone could establish.
 
 **Step 3 — Eshkol's evacuator never enters the guest graph.** `evac_kind_for`
 returns `EVAC_GUEST_HANDLE` for the handle subtype, which walks nothing, so the
-worklist in `region_evacuate_value`
-([`lib/core/runtime_regions.cpp:1236`](../../../lib/core/runtime_regions.cpp#L1236))
+worklist in `region_evacuate_values`
+([`lib/core/runtime_regions_evacuation.cpp:783`](../../../lib/core/runtime_regions_evacuation.cpp#L783))
 never receives a guest object. No other path can introduce one, because
 `evac_value` only ever follows pointers it extracts from tagged values
-([`:1203`](../../../lib/core/runtime_regions.cpp#L1203)) and raw pointer fields
+([`:625`](../../../lib/core/runtime_regions_evacuation.cpp#L625)) and raw pointer fields
 of *known* layouts (`evac_object_ptr`,
-[`:1224`](../../../lib/core/runtime_regions.cpp#L1224)) — and no known layout has
+[`:674`](../../../lib/core/runtime_regions_evacuation.cpp#L674)) — and no known layout has
 a guest field.
 
 **Step 4 — the guest's collection cannot invalidate an Eshkol value.** Guest
@@ -462,16 +464,16 @@ The argument above is sound against the shipped evacuator, but it is not free.
 Six changes are required, and none of them is speculative:
 
 1. **`evac_kind_for` gains an `EVAC_GUEST_HANDLE` arm**
-   ([`lib/core/runtime_regions.cpp:1024`](../../../lib/core/runtime_regions.cpp#L1024)).
+   ([`lib/core/runtime_regions_evacuation.cpp:306`](../../../lib/core/runtime_regions_evacuation.cpp#L306)).
    Explicit, not by fallthrough, per ADR-0001 invariant 6.
 2. **`region_destroy` gains a teardown sweep**
-   ([`lib/core/runtime_regions.cpp:436`](../../../lib/core/runtime_regions.cpp#L436)),
+   ([`lib/core/runtime_regions.cpp:458`](../../../lib/core/runtime_regions.cpp#L458)),
    reached through `eshkol_region_unwind_to`
-   ([`:1971`](../../../lib/core/runtime_regions.cpp#L1971)) so that a `raise` or
+   ([`lib/core/runtime_regions_handles.cpp:161`](../../../lib/core/runtime_regions_handles.cpp#L161)) so that a `raise` or
    `call/cc` escape out of a guest's region tears the guest down exactly once, on
    the same path everything else uses.
 3. **The write barrier gains a `GUEST_HANDLE` case**
-   ([`lib/core/runtime_regions.cpp:1671`](../../../lib/core/runtime_regions.cpp#L1671))
+   ([`lib/core/runtime_regions_evacuation.cpp:1542`](../../../lib/core/runtime_regions_evacuation.cpp#L1542))
    implementing the anchor rule of Section 6.2. Without it, a handle stored
    outward is copied as a leaf into the outer arena and its table dies underneath
    it — the escape bug in its purest form. **This is required, not optional.**
@@ -480,11 +482,11 @@ Six changes are required, and none of them is speculative:
    today they are declared and inspected nowhere.
 5. **Guest handles must not be bare `INT64`**, to keep the closure-capture
    heuristic's stated assumption true
-   ([`lib/core/runtime_regions.cpp:1379`](../../../lib/core/runtime_regions.cpp#L1379)).
+   ([`lib/core/runtime_regions_evacuation.cpp:964`](../../../lib/core/runtime_regions_evacuation.cpp#L964)).
    Section 4.1 already takes this route; it is recorded here because it is a
    constraint discovered from the implementation, not a preference.
 6. **`region_index_owning` becomes a hot path**
-   ([`lib/core/runtime_regions.cpp:897`](../../../lib/core/runtime_regions.cpp#L897)).
+   ([`lib/core/runtime_regions_evacuation.cpp:199`](../../../lib/core/runtime_regions_evacuation.cpp#L199)).
    It is a linear scan of the region stack, and each entry walks a block chain.
    A guest that publishes many values pays for it in `eshkol_guest_publish`. This
    is a **cost**, not a correctness issue, and ADR-0001's residence tagging in
@@ -514,7 +516,7 @@ had processed 600,000 objects: **8.8 microseconds** (Section 9, E1).
 
 The hook is installed on the region and reached through
 `eshkol_region_unwind_to`, described in-tree as the one teardown path
-([`lib/core/runtime_regions.cpp:1863`](../../../lib/core/runtime_regions.cpp#L1863)),
+([`lib/core/runtime_regions_handles.cpp:53`](../../../lib/core/runtime_regions_handles.cpp#L53)),
 which is what makes the guarantee hold for all four ways a region can close:
 lexical `with-region` exit, explicit `region-close`, a `raise` crossing the
 region ([`inc/eshkol/eshkol.h:1351`](../../../inc/eshkol/eshkol.h#L1351)), and a
@@ -549,8 +551,8 @@ re-anchors the **whole heap** to the escape target: the adapter allocates fresh
 slabs from the target arena, calls `vt->relocate`, which performs a collection
 whose to-space is the new slabs and which rewrites the handle table, and updates
 the anchor. Cost is O(live), which is exactly the cost model
-`region_evacuate_value` already imposes on an escaping Eshkol subgraph
-([`lib/core/runtime_regions.cpp:1236`](../../../lib/core/runtime_regions.cpp#L1236)) —
+`region_evacuate_values` already imposes on an escaping Eshkol subgraph
+([`lib/core/runtime_regions_evacuation.cpp:783`](../../../lib/core/runtime_regions_evacuation.cpp#L783)) —
 so promotion is not a new cost class, it is the existing one applied to a bigger
 unit.
 

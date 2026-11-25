@@ -387,6 +387,12 @@
 <strong>Complexity</strong>: O(n²) gradient computations<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenHessian()</code></a></p>
 <hr />
+<h4 id="stop-gradient"><code>stop-gradient</code></h4>
+<p><strong>Syntax:</strong> <code>(stop-gradient x)</code> → the value of <code>x</code></p>
+<p>Returns <code>x</code> with every derivative carrier removed, so every enclosing <code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, <code>gradient</code> or <code>jacobian</code> pass treats the result as a constant. A non-carrier is returned unchanged; an exact primal stays exact. The straight-through identity <code>(+ s (stop-gradient (- h s)))</code> has the value <code>h</code> and the derivative of <code>s</code>.</p>
+<pre class="scheme"><code>(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; =&gt; 3
+(derivative (lambda (x) (* x (stop-gradient x))) 1/3)   ; =&gt; 1/3</code></pre>
+<p><strong>Implementation:</strong> <code>eshkol_stop_gradient_tagged</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_taylor.c" target="_blank" rel="noopener noreferrer">lib/core/runtime_taylor.c</a>; VM native id 2252. Design: <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0049-neuro-symbolic-bridge.md" target="_blank" rel="noopener noreferrer">ADR-0049</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <h4 id="divergence"><code>divergence</code></h4>
 <p><strong>Syntax</strong>: <code>(divergence f point)</code></p>
@@ -703,8 +709,8 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (tensor-det #(#(1.0 0.0) #(0.0 1.0)))   ; =&gt; 1.0 (identity)</code></pre>
 <h4 id="tensor-inverse"><code>tensor-inverse</code></h4>
 <p><strong>Syntax:</strong> <code>(tensor-inverse A)</code> → Tensor</p>
-<p>Matrix inverse A⁻¹ via LU decomposition with forward and back substitution.</p>
-<p><strong>Complexity:</strong> O(n³). Raises an error for singular matrices (det ≈ 0).</p>
+<p>Computes the inverse of a non-empty rank-2 square numeric tensor with partial-pivoting Gauss-Jordan elimination. Native code and the VM use the same checked kernel.</p>
+<p><strong>Complexity:</strong> O(n³). Raises a catchable error for nonsquare or non-rank-2 inputs, exactly singular matrices (zero pivot), non-finite inputs/results, or allocation failure. Pivot selection has no absolute epsilon cutoff, so scaling a finite invertible matrix does not by itself make it singular. The operation does not certify an error bound for ill-conditioned matrices.</p>
 <p><strong>Implementation:</strong> <code>tensorInverse</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define Ainv (tensor-inverse A))

@@ -155,6 +155,37 @@ static inline size_t eshkol_syntax_fresh_prefix_length(const char* name) {
     return *p == ESHKOL_SYNTAX_FRESH_SEPARATOR ? (size_t)(p + 1 - name) : 0;
 }
 
+#define ESHKOL_SYNTAX_MACRO_ALIAS_PREFIX "__eshkol_macro_binding_"
+
+/**
+ * The prefix of every temporary the parser binds when it lowers a form
+ * (`parameterize`, `case-lambda`, keyword parameters, `define-values`). No
+ * source identifier and no runtime datum given to eval can be spelled with
+ * it, so a lowering never sees a program's binding and a program never sees
+ * a lowering's.
+ */
+#define ESHKOL_SYNTAX_DESUGAR_PREFIX "__eshkol_desugar_"
+
+/**
+ * Source identifiers and compiler-owned names occupy disjoint namespaces.
+ * Reserved: any name carrying the color mark, any name beginning with a
+ * fresh binder prefix `_v<n>.`, `__eshkol_macro_binding_<n>`, and any name
+ * beginning with ESHKOL_SYNTAX_DESUGAR_PREFIX.
+ */
+static inline int eshkol_syntax_source_name_reserved(const char* name, size_t size) {
+    if (memchr(name, ESHKOL_SYNTAX_COLOR_MARK, size) ||
+        eshkol_syntax_fresh_prefix_length(name)) return 1;
+    const size_t desugar = sizeof(ESHKOL_SYNTAX_DESUGAR_PREFIX) - 1;
+    if (size >= desugar && memcmp(name, ESHKOL_SYNTAX_DESUGAR_PREFIX, desugar) == 0)
+        return 1;
+    const size_t prefix = sizeof(ESHKOL_SYNTAX_MACRO_ALIAS_PREFIX) - 1;
+    if (size <= prefix || memcmp(name, ESHKOL_SYNTAX_MACRO_ALIAS_PREFIX, prefix)) return 0;
+    const char* suffix = name + prefix;
+    const size_t digits = strspn(suffix, "0123456789");
+    // Resolution keys use the NUL-terminated spelling of the decoded name.
+    return digits != 0 && suffix[digits] == '\0';
+}
+
 /**
  * @brief The spelling the user wrote for @p name: every fresh-binder prefix
  *        removed, then every color.

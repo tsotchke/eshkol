@@ -1,0 +1,78 @@
+(define checks 0)
+(define (check name ok)
+  (if ok
+      (set! checks (+ checks 1))
+      (error name)))
+
+;; The VM wrappers compose the existing binary predicates, preserving their
+;; binary comparison results; _chain2 supplies the public two-or-more
+;; argument and first-class procedure behavior.
+(check "char<= before" (char<=? #\a #\b))
+(check "char<= equal" (char<=? #\a #\a))
+(check "char<= after" (not (char<=? #\b #\a)))
+(check "char>= after" (char>=? #\b #\a))
+(check "char>= equal" (char>=? #\a #\a))
+(check "char>= before" (not (char>=? #\a #\b)))
+
+(check "char<= chain true" (char<=? #\a #\b #\c))
+(check "char<= chain false" (not (char<=? #\a #\c #\b)))
+(check "char>= chain true" (char>=? #\c #\b #\a))
+(check "char>= chain false" (not (char>=? #\c #\a #\b)))
+(check "char=? chain true" (char=? #\a #\a #\a))
+(check "char=? chain false" (not (char=? #\a #\a #\b)))
+
+;; Native lowering must evaluate every operand exactly once, from left to
+;; right, before combining adjacent comparisons.
+(define char-compare-trace "")
+(define char-compare-count 0)
+(define (char-compare-operand marker ch)
+  (set! char-compare-count (+ char-compare-count 1))
+  (set! char-compare-trace (string-append char-compare-trace marker))
+  ch)
+(set! char-compare-trace "")
+(set! char-compare-count 0)
+(check "char<= chain side effect result"
+       (char<=? (char-compare-operand "a" #\a)
+                (char-compare-operand "b" #\b)
+                (char-compare-operand "c" #\c)))
+(check "char<= chain evaluates each operand once"
+       (= char-compare-count 3))
+(check "char<= chain evaluates left to right"
+       (string=? char-compare-trace "abc"))
+
+(define ge-first-class char>=?)
+(define le-first-class char<=?)
+(check "char>= first-class call" (ge-first-class #\z #\y))
+(check "char<= first-class call" (le-first-class #\x #\y))
+(check "char>= apply" (apply ge-first-class (list #\z #\z)))
+(check "char<= apply" (apply le-first-class (list #\x #\x)))
+
+;; Character ordering follows Unicode codepoint ordering for non-ASCII input.
+(define greek-lambda (string-ref "λ" 0))
+(define greek-mu (string-ref "μ" 0))
+(check "unicode char<= before" (char<=? greek-lambda greek-mu))
+(check "unicode char<= equal" (char<=? greek-lambda greek-lambda))
+(check "unicode char<= after" (not (char<=? greek-mu greek-lambda)))
+(check "unicode char>= after" (char>=? greek-mu greek-lambda))
+(check "unicode char>= equal" (char>=? greek-lambda greek-lambda))
+(check "unicode char>= before" (not (char>=? greek-lambda greek-mu)))
+
+;; These APIs are expected in the cached stdlib bootstrap itself. There are no
+;; require forms here: a prefix-only cache must fail this behavior probe.
+(check "cached base64 encode" (string=? (base64-encode-string "Ma") "TWE="))
+(check "cached base64 decode" (string=? (base64-decode-string "TWE=") "Ma"))
+(check "cached dataframe parser present" (procedure? csv-parse-typed))
+(define cached-csv-fields (csv-parse-line "x,\"a,b\""))
+(check "cached CSV field count" (= (length cached-csv-fields) 2))
+(check "cached CSV quoted field" (string=? (cadr cached-csv-fields) "a,b"))
+(define cached-json (json-try-parse "{\"ok\":true}"))
+(check "cached JSON result" (and (json-parse-result? cached-json) (json-result-ok? cached-json)))
+(check "cached JSON field" (eq? (hash-ref (json-result-value cached-json) "ok" #f) #t))
+(define cached-interval (interval-div (interval-of 1.0 1.0) (interval-of 2.0 2.0)))
+(check "cached interval result" (interval? cached-interval))
+(check "cached interval division" (interval-contains? cached-interval 0.5))
+
+(display "Checks: ")
+(display checks)
+(newline)
+(display "RESULT: PASS\n")

@@ -1,0 +1,13 @@
+;; Type System Test: a register computed and dropped in a sequence is a discard
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: a linear value of type qreg<1> is computed and discarded
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (drops)
+  (qh (qalloc qr 1) 0)
+  7)
+
+(display (drops))

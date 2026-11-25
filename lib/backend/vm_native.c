@@ -1,14 +1,20 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include "../../inc/eshkol/core/http_syntax.h"
+#include "../../inc/eshkol/core/websocket_handshake.h"
+#include <eshkol/core/linear_solve_portable.h>
+#include <eshkol/core/tensor_inverse_checked.h>
+#include <math.h>
+#include <limits.h>
+#include <stdint.h>
+#include "eshkol/core/gensym_sequence.h"
+#include "eshkol/core/prng_state.h"
+#include "eshkol/core/seed_entropy.h"
+#include "eshkol/core/table_hash.h"
+#include <stdlib.h>
+#include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
-#include "../core/value_type_names.h"
-
-/* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
- * f64 buffers, returns 0 on success or a nonzero catchable status code. */
-extern int64_t eshkol_linear_solve(
-    int64_t a_ndim, const int64_t* a_dims,
-    int64_t b_ndim, const int64_t* b_dims,
-    const double* A, const double* b, double* x);
+#include "../core/ascription_tags.h"
 
 /* Seeded pseudorandom numbers use the hosted runtime's one canonical
  * drand48-compatible state on the native VM. The WASM VM has no hosted
@@ -19,13 +25,18 @@ extern void eshkol_srand48(int64_t seed);
 static double vm_prng_next(void) { return eshkol_drand48(); }
 static void vm_prng_seed(int64_t seed) { eshkol_srand48(seed); }
 #else
-static uint64_t vm_prng_state = 0x1234ABCD330EULL;
+static uint64_t vm_prng_state;
+static int vm_prng_initialized;
 static void vm_prng_seed(int64_t seed) {
-    vm_prng_state = ((uint64_t)seed << 16 | 0x330EULL) & ((1ULL << 48) - 1);
+    vm_prng_state = eshkol_prng_state_seed(seed);
+    vm_prng_initialized = 1;
 }
 static double vm_prng_next(void) {
-    vm_prng_state = (vm_prng_state * 0x5DEECE66DULL + 0xBULL) & ((1ULL << 48) - 1);
-    return (double)vm_prng_state / (double)(1ULL << 48);
+    if (!vm_prng_initialized) {
+        eshkol_seed_entropy(&vm_prng_state, sizeof(vm_prng_state));
+        vm_prng_initialized = 1;
+    }
+    return eshkol_prng_state_random(&vm_prng_state);
 }
 #endif
 
@@ -45,6 +56,8 @@ static double vm_prng_next(void) {
 /* Shared capability guard (inc/eshkol/runtime_exports.h), declared here so
  * this C TU stays free of the C++ export header. */
 extern int eshkol_capability_require(const char* capability);
+extern int eshkol_capability_runtime_clear(void);
+extern int eshkol_capability_runtime_install(const char* names);
 /* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
@@ -1260,27 +1273,20 @@ static Value vm_base64_decode_value(VM* vm, Value input) {
     return result;
 }
 
-/** @brief Fill `out` with `len` random bytes, preferring /dev/urandom on POSIX
- *         and falling back to a seeded rand() stream (not cryptographically
- *         strong) if the device is unavailable or on other platforms. */
+/** @brief Fill `out` with `len` bytes from the operating system's
+ *         cryptographic source, the one source the VM draws unguessable
+ *         values from. Returns 0 when that source cannot be read, which is a
+ *         refusal rather than a weaker stream: the seeded generator behind
+ *         `(random)` is for reproducible simulation and has no part here. */
 static int vm_random_bytes(unsigned char* out, size_t len) {
-    if (!out) return 0;
-#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        size_t pos = 0;
-        while (pos < len) {
-            ssize_t n = read(fd, out + pos, len - pos);
-            if (n <= 0) break;
-            pos += (size_t)n;
-        }
-        close(fd);
-        if (pos == len) return 1;
-    }
+    if (!out || len == 0) return 0;
+#if defined(__EMSCRIPTEN__)
+    /* A WASM host without the native core CSPRNG refuses rather than
+     * substituting a stream a clock could have produced. */
+    return 0;
+#else
+    return eshkol_random_bytes((char*)out, len) == 0;
 #endif
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
-    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
-    return 1;
 }
 
 /** @brief Generate a random RFC 4122 version-4 UUID string, using
@@ -3058,26 +3064,63 @@ static int vm_ws_send_all(int fd, const void* data, size_t len) {
 /** @brief Encode and send one RFC 6455 WebSocket frame (FIN bit set, given
  *         opcode, RFC-mandated masked payload length encoding with a
  *         zero mask key) followed by the payload. */
+static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len);
+
+/**
+ * @brief Fails a WebSocket connection: reports the close code, then closes.
+ *
+ * The twin of sys_ws_fail_connection(). RFC 6455 section 7.1.7 fails a
+ * connection by sending a Close frame and closing the socket; returning with
+ * the stream mid-frame would put the next frame header under the peer's
+ * control. Any gathered fragment is released with the connection.
+ */
+static void vm_ws_fail_connection(VM* vm, int handle, int close_code) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (close_code > 0) {
+        unsigned char body[2];
+        body[0] = (unsigned char)((close_code >> 8) & 0xff);
+        body[1] = (unsigned char)(close_code & 0xff);
+        (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8,
+                               (const char*)body, 2);
+    }
+    if (vm->websocket_clients[handle].fragment_data) {
+        free(vm->websocket_clients[handle].fragment_data);
+        vm->websocket_clients[handle].fragment_data = NULL;
+    }
+    vm->websocket_clients[handle].fragment_length = 0;
+    vm->websocket_clients[handle].fragment_opcode = 0;
+    close(vm->websocket_clients[handle].fd);
+    vm->websocket_clients[handle].closed = 1;
+#else
+    (void)vm; (void)handle; (void)close_code;
+#endif
+}
+
 static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
-    int hlen = 0;
-    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
-    if (len < 126) {
-        header[hlen++] = (unsigned char)(0x80 | len);
-    } else if (len <= 65535) {
-        header[hlen++] = 0x80 | 126;
-        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
-        header[hlen++] = (unsigned char)(len & 0xff);
-    } else {
-        header[hlen++] = 0x80 | 127;
-        for (int i = 7; i >= 0; i--)
-            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
+    int hlen;
+    /* RFC 6455 section 5.3: a fresh masking key per frame from the operating
+     * system's cryptographic source, and the payload masked with it. When the
+     * source cannot be read the frame is not sent. */
+    unsigned char mask[4];
+    if (!eshkol_ws_generate_mask(mask)) return 0;
+    hlen = eshkol_ws_write_frame_header(header, opcode, len, mask);
+    if (!vm_ws_send_all(fd, header, (size_t)hlen)) return 0;
+    if (len == 0) return 1;
+    const unsigned char* payload = (const unsigned char*)data;
+    unsigned char chunk[4096];
+    size_t offset = 0;
+    while (offset < len) {
+        size_t span = len - offset;
+        if (span > sizeof(chunk)) span = sizeof(chunk);
+        memcpy(chunk, payload + offset, span);
+        /* The key index follows the payload offset, not the chunk's, so a
+         * payload larger than one chunk is masked correctly. */
+        eshkol_ws_mask_payload(chunk, span, offset, mask);
+        if (!vm_ws_send_all(fd, chunk, span)) return 0;
+        offset += span;
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
-    memcpy(header + hlen, mask, sizeof(mask));
-    hlen += 4;
-    return vm_ws_send_all(fd, header, (size_t)hlen) &&
-           (len == 0 || vm_ws_send_all(fd, data, len));
+    return 1;
 }
 
 typedef int32_t (*VmTsAvailableFn)(void);
@@ -5287,6 +5330,39 @@ static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
 
 static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
 
+/* Shared implementation for direct and first-class string->list calls. */
+static void vm_exec_string_to_list(VM* vm) {
+    Value value = vm_pop(vm);
+    if (!is_heap_type(vm, value, HEAP_STRING)) {
+        vm_raise_error_msg(vm, "string->list: expected string");
+        return;
+    }
+    VmString* string = (VmString*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+    if (!string) {
+        vm_raise_error_msg(vm, "string->list: expected string");
+        return;
+    }
+
+    Value result = NIL_VAL;
+    int32_t tail = -1;
+    int pos = 0;
+    while (pos < string->byte_len) {
+        int codepoint = vm_utf8_decode(string->data, string->byte_len, &pos);
+        int32_t cell = heap_alloc(&vm->heap);
+        if (cell < 0) {
+            vm_raise_error_msg(vm, "string->list: allocation failed");
+            return;
+        }
+        vm->heap.objects[cell]->type = HEAP_CONS;
+        vm->heap.objects[cell]->cons.car = (Value){.type = VAL_CHAR, .as.i = codepoint};
+        vm->heap.objects[cell]->cons.cdr = NIL_VAL;
+        if (tail < 0) result = PAIR_VAL(cell);
+        else vm->heap.objects[tail]->cons.cdr = PAIR_VAL(cell);
+        tail = cell;
+    }
+    vm_push(vm, result);
+}
+
 /**
  * @brief Coerce @p v to a tensor operand for @p op_name, or RAISE.
  *
@@ -5303,6 +5379,35 @@ static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
  * WITHOUT pushing: the raise restored the handler's stack pointer and a
  * fabricated push would corrupt it.
  */
+/* The word a type error uses for an operand's type: the vocabulary of the
+ * native runtime's eshkol_format_value_type_tag, so a refusal reads the same on
+ * every engine. */
+static const char* vm_error_operand_type_word(Value v) {
+    switch ((int)v.type) {
+        case VAL_NIL:        return "null";
+        case VAL_VOID:       return "unspecified";
+        case VAL_INT:        return "integer";
+        case VAL_FLOAT:      return "double";
+        case VAL_BOOL:       return "boolean";
+        case VAL_CHAR:       return "character";
+        case VAL_SYMBOL:     return "symbol";
+        case VAL_COMPLEX:    return "complex";
+        case VAL_BIGNUM:     return "bignum";
+        case VAL_RATIONAL:   return "rational";
+        case VAL_I128:       return "i128";
+        case VAL_PAIR:       return "pair";
+        case VAL_STRING:     return "string";
+        case VAL_VECTOR:     return "vector";
+        case VAL_TENSOR:     return "tensor";
+        case VAL_BYTEVECTOR: return "bytevector";
+        case VAL_HASH:       return "hash-table";
+        case VAL_PORT:       return "port";
+        case VAL_CLOSURE:    return "procedure";
+        case VAL_CONTINUATION: return "continuation";
+        default:             return "heap-object";
+    }
+}
+
 static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
@@ -5914,6 +6019,18 @@ static Value vm_ad_call_closure(VM* vm, Value closure, Value* args, int argc) {
     return result;
 }
 
+static Value vm_ad_call_closure_traced(VM* vm, Value closure, Value* args,
+                                       int argc, int* result_ad_node) {
+    if (!vm) { if (result_ad_node) *result_ad_node = -1; return NIL_VAL; }
+    vm->ad_primal_calls++;
+    int live = vm->ad_live_passes;
+    vm->ad_live_passes = live + 1;
+    Value result = vm_call_closure_from_native_traced(
+        vm, closure, args, argc, result_ad_node);
+    vm->ad_live_passes = live;
+    return result;
+}
+
 /** @brief Recover a closure's declared fixed-argument arity via the VM's
  *         func_pc -> arity map (built from the compiled chunk / ESKB module
  *         function table).  Returns -1 when the callable is not a closure or
@@ -6188,6 +6305,60 @@ static int64_t vm_ad_point_arity(VM* vm, Value x_val, int* is_collection) {
     return 1;
 }
 
+/* `reverse-gradient` accepts real scalar points only. as_number_vm() is a
+ * conversion helper, not a validator: carriers and unknown heap tags can
+ * otherwise become a plausible 0.0 point and produce a fabricated gradient. */
+static int vm_ad_real_scalar_value(VM* vm, Value value) {
+    switch (value.type) {
+    case VAL_INT: case VAL_FLOAT: return 1;
+    case VAL_RATIONAL: return is_valid_heap_ptr(vm, value.as.ptr) && is_heap_type(vm, value, HEAP_RATIONAL);
+    case VAL_BIGNUM: return is_valid_heap_ptr(vm, value.as.ptr) && is_heap_type(vm, value, HEAP_BIGNUM);
+    default: return 0;
+    }
+}
+
+static void vm_ad_record_unary_result(VM* vm, int source_node, Value source,
+        int destination, int (*record)(AdTape*, int)) {
+    if (!vm || destination < 0 || destination >= STACK_SIZE) return;
+    if (!vm->active_tape) { vm->ad_node_map[destination] = -1; return; }
+    vm->ad_node_map[destination] = -1;
+    if (source_node == -1) return;
+    AdTape* tape = (AdTape*)vm->active_tape;
+    if (!vm_ad_real_scalar_value(vm, source) || source_node < 0 || source_node >= tape->len) {
+        vm_raise_error_msg(vm, "reverse-gradient: invalid unary operand tape metadata");
+        return;
+    }
+    int result = record(tape, source_node);
+    if (result < 0) { vm_raise_error_msg(vm, "reverse-gradient: tape allocation failed"); return; }
+    vm->ad_node_map[destination] = result;
+}
+
+static int vm_ad_real_point_value(VM* vm, Value point) {
+    if (point.type == VAL_PAIR) {
+        Value cur = point;
+        while (cur.type == VAL_PAIR) {
+            if (!is_valid_heap_ptr(vm, cur.as.ptr) || !is_heap_type(vm, cur, HEAP_CONS) ||
+                !vm_ad_real_scalar_value(vm, vm->heap.objects[cur.as.ptr]->cons.car)) return 0;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        return cur.type == VAL_NIL;
+    }
+    if (point.type == VAL_VECTOR) {
+        if (!is_valid_heap_ptr(vm, point.as.ptr)) return 0;
+        VmVector* vector = (VmVector*)vm->heap.objects[point.as.ptr]->opaque.ptr;
+        if (!vector) return 0;
+        for (int i = 0; i < vector->len; ++i)
+            if (!vm_ad_real_scalar_value(vm, vector->items[i])) return 0;
+        return 1;
+    }
+    if (point.type == VAL_TENSOR) {
+        if (!is_valid_heap_ptr(vm, point.as.ptr)) return 0;
+        VmTensor* tensor = (VmTensor*)vm->heap.objects[point.as.ptr]->opaque.ptr;
+        return tensor && tensor->data && !tensor->dual_data && tensor->total >= 0;
+    }
+    return vm_ad_real_scalar_value(vm, point);
+}
+
 /** @brief Flatten an AD point (list | vector | tensor of any rank | scalar)
  *         into arena-backed storage sized by the point itself.
  *
@@ -6373,7 +6544,7 @@ static Value vm_ad_coeff_value(VM* vm, VmDual* c) {
 /** @brief Section 4 on one real component: coefficient k (or k! times it) of
  *         @p part in @p epoch, or, when the part does not depend on this
  *         level, the part itself at order 0 and a zero otherwise. */
-static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
+static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint64_t epoch, uint32_t k,
                                int derivative, int point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
     if (epoch == 0 && part->kind == VM_DUAL_KIND_SCALAR && k <= 1) {
@@ -6396,7 +6567,7 @@ static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
  *         dual pass): coefficient @p k, or k! times it when @p derivative.
  *         A vector or list result is read element by element, a complex
  *         result part by part. */
-static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
+static Value vm_ad_level_read(VM* vm, Value result, uint64_t epoch, uint32_t k,
                               int derivative, int point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
     if (result.type == VAL_VECTOR && result.as.ptr >= 0 &&
@@ -6448,9 +6619,9 @@ static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
  *         point is exact. A complex point perturbs its real coordinate (the
  *         holomorphic dz = 1); the imaginary part is constant in this pass. */
 static Value vm_ad_seed_and_call(VM* vm, Value f, Value point, uint32_t order,
-                                 uint32_t* epoch_out, int* point_exact) {
+                                 uint64_t* epoch_out, int* point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
-    uint32_t epoch = vm_dual_next_taylor_epoch();
+    uint64_t epoch = vm_dual_next_taylor_epoch();
     int level = vm_ad_runs_as_level(vm, point);
     *epoch_out = epoch;
     *point_exact = 0;
@@ -6489,7 +6660,7 @@ static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
         Value evaluated = vm_ad_call_closure(vm, f, &point, 1);
         return want_list ? vm_cons_value(vm, evaluated, NIL_VAL) : evaluated;
     }
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     int point_exact = 0;
     Value result = vm_ad_seed_and_call(vm, f, point, order, &epoch, &point_exact);
     if (vm->error) return NIL_VAL;
@@ -6503,7 +6674,7 @@ static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
 
 /** @brief A first-order `derivative` that runs as an order-1 level. */
 static Value vm_derivative_level(VM* vm, Value f, Value x) {
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     int point_exact = 0;
     Value result = vm_ad_seed_and_call(vm, f, x, 1, &epoch, &point_exact);
     if (vm->error) return NIL_VAL;
@@ -6540,9 +6711,9 @@ static Value vm_ad_call_components(VM* vm, Value f, Value* args, int n, int arit
  *         when @p dir is NULL. Returns f(x); @p epoch_out names the level. */
 static Value vm_ad_level_pass(VM* vm, Value f, const Value* comps, int n, int arity,
                               int i, const Value* dir, uint32_t order,
-                              uint32_t* epoch_out) {
+                              uint64_t* epoch_out) {
     VmRegionStack* rs = &vm->heap.regions;
-    uint32_t epoch = vm_dual_next_taylor_epoch();
+    uint64_t epoch = vm_dual_next_taylor_epoch();
     *epoch_out = epoch;
     Value* args = vm_ad_arg_slots(vm, n);
     if (!args) return NIL_VAL;
@@ -6633,7 +6804,7 @@ static Value vm_ad_level_jacobian(VM* vm, Value f, const Value* comps, int n, in
     if (!cols) return NIL_VAL;
     int m = -1;
     for (int i = 0; i < n; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         if (r.type != VAL_VECTOR && r.type != VAL_PAIR) {
@@ -6661,7 +6832,7 @@ static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int
     if (!e || !args) return NIL_VAL;
     for (int i = 0; i < n; i++) {
         for (int j = i; j < n; j++) {
-            uint32_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
+            uint64_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
             for (int k = 0; k < n; k++) {
                 VmDual* x = vm_ad_point_carrier(vm, comps[k]);
                 if (x && k == i) x = vm_dual_level_seed(rs, x, 1, e1);
@@ -6684,7 +6855,7 @@ static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int
 static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, int arity) {
     Value acc = INT_VAL(0);
     for (int i = 0; i < n && !vm->error; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         acc = vm_ad_value_axpy(vm, acc, vm_ad_field_part(vm, vm_ad_level_read(vm, r, epoch, 1, 1, 0), i), 1);
@@ -6696,7 +6867,7 @@ static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, 
 static Value vm_ad_level_laplacian(VM* vm, Value f, const Value* comps, int n, int arity) {
     Value acc = INT_VAL(0);
     for (int i = 0; i < n && !vm->error; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 2, &epoch);
         if (vm->error) return NIL_VAL;
         acc = vm_ad_value_axpy(vm, acc, vm_ad_level_read(vm, r, epoch, 2, 1, 0), 1);
@@ -6710,7 +6881,7 @@ static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int ar
     int nc = n < 3 ? n : 3;
     Value col[3] = { INT_VAL(0), INT_VAL(0), INT_VAL(0) };
     for (int j = 0; j < nc; j++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, nc, arity, j, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         col[j] = vm_ad_level_read(vm, r, epoch, 1, 1, 0);
@@ -6728,7 +6899,7 @@ static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int ar
 /** @brief D_v f = d/dt f(x + v t) at t = 0, one level. */
 static Value vm_ad_level_directional(VM* vm, Value f, const Value* comps,
                                      const Value* dir, int n, int arity) {
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     Value r = vm_ad_level_pass(vm, f, comps, n, arity, -1, dir, 1, &epoch);
     if (vm->error) return NIL_VAL;
     return vm_ad_level_read(vm, r, epoch, 1, 1, 0);
@@ -6824,7 +6995,7 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         Value* args = vm_ad_arg_slots(vm, n);
         if (!args) return FLOAT_VAL(0);
         for (int i = 0; i < n && !vm->error; i++) {
-            uint32_t epoch = vm_dual_next_taylor_epoch();
+            uint64_t epoch = vm_dual_next_taylor_epoch();
             VmDual* p = vm_ad_point_carrier(vm, comps[i]);
             Value seed = vm_make_taylor_val(vm, vm_dual_level_seed(&vm->heap.regions, p, 1, epoch));
             for (int j = 0; j < n; j++) args[j] = j == i ? seed : comps[j];
@@ -7129,6 +7300,9 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
         case VAL_RATIONAL:
         case VAL_BIGNUM:
             return vm_bignum_compare_vals(vm, a, b) == 0;
+        case VAL_I128:
+            return memcmp(vm->heap.objects[a.as.ptr]->opaque.ptr,
+                          vm->heap.objects[b.as.ptr]->opaque.ptr, sizeof(eshkol_i128_abi)) == 0;
         case VAL_COMPLEX: {
             VmComplex* az = (VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
             VmComplex* bz = (VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
@@ -7147,7 +7321,66 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
  *        implementation compared pairs and vectors by heap identity, so
  *        freshly-built equal structures reported `#f`.
  */
-static int vm_deep_equal(VM* vm, Value a, Value b) {
+/* ───────────────────────────────────────────────────────────────────────────
+ * equal? carries its own stack
+ *
+ * A pair's spine was already iterated here; a datum nests in the CAR, and a
+ * datum nests as deeply as the reader could read it, so the car descent and
+ * the vector-element descent are carried on an explicit pending set too.  A
+ * million-level quoted datum therefore compares on a constant number of
+ * native frames.  The set starts inline and grows on the heap; if it cannot
+ * grow, the comparison says so rather than answering from a partial walk.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef struct { Value a; Value b; } VmEqualPair;
+
+typedef struct {
+    VmEqualPair  inline_slots[32];
+    VmEqualPair* slots;
+    size_t       n;
+    size_t       cap;
+    int          heap;
+    int          failed;
+} VmEqualWork;
+
+static void vm_equal_work_init(VmEqualWork* w) {
+    w->slots = w->inline_slots;
+    w->n = 0;
+    w->cap = sizeof(w->inline_slots) / sizeof(w->inline_slots[0]);
+    w->heap = 0;
+    w->failed = 0;
+}
+
+static void vm_equal_work_free(VmEqualWork* w) {
+    if (w->heap) free(w->slots);
+    w->slots = w->inline_slots;
+    w->heap = 0;
+}
+
+static int vm_equal_work_push(VmEqualWork* w, Value a, Value b) {
+    if (w->n == w->cap) {
+        const size_t next = w->cap * 2;
+        VmEqualPair* grown;
+        if (w->heap) {
+            grown = (VmEqualPair*)realloc(w->slots, next * sizeof(VmEqualPair));
+        } else {
+            grown = (VmEqualPair*)malloc(next * sizeof(VmEqualPair));
+            if (grown) memcpy(grown, w->slots, w->n * sizeof(VmEqualPair));
+        }
+        if (!grown) { w->failed = 1; return 0; }
+        w->slots = grown;
+        w->cap = next;
+        w->heap = 1;
+    }
+    w->slots[w->n].a = a;
+    w->slots[w->n].b = b;
+    w->n++;
+    return 1;
+}
+
+/* One step: answers for this pair outright, or queues the sub-pairs that
+ * decide it.  A 0 return always means "not equal?". */
+static int vm_deep_equal_step(VM* vm, Value a, Value b, VmEqualWork* work) {
     if (a.type != b.type) {
         /* Native #(...) literals use the tensor representation while
          * (vector ...) uses tagged vector slots. Preserve R7RS equal?
@@ -7199,11 +7432,12 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
                 HeapObject* ao = vm->heap.objects[a.as.ptr];
                 HeapObject* bo = vm->heap.objects[b.as.ptr];
                 if (!ao || !bo) return 0;
-                if (!vm_deep_equal(vm, ao->cons.car, bo->cons.car)) return 0;
+                if (!vm_equal_work_push(work, ao->cons.car, bo->cons.car)) return 0;
                 a = ao->cons.cdr;
                 b = bo->cons.cdr;
             }
-            return vm_deep_equal(vm, a, b); /* compare tails (incl. proper-list NIL) */
+            /* The tails (a proper list's NIL included) decide it too. */
+            return vm_equal_work_push(work, a, b);
         }
         case VAL_VECTOR: {
             HeapObject* ao = vm->heap.objects[a.as.ptr];
@@ -7212,8 +7446,30 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
             VmVector* bv = (bo && bo->opaque.ptr) ? (VmVector*)bo->opaque.ptr : NULL;
             if (!av || !bv) return av == bv;
             if (av->len != bv->len) return 0;
+            int a_tensor_literal = ao->opaque.subtype == VM_SUBTYPE_TENSOR_LITERAL;
+            int b_tensor_literal = bo->opaque.subtype == VM_SUBTYPE_TENSOR_LITERAL;
+            if (a_tensor_literal || b_tensor_literal) {
+                for (int i = 0; i < av->len; i++) {
+                    Value ai = av->items[i], bi = bv->items[i];
+                    double an, bn;
+                    int a_numeric = ai.type == VAL_INT || ai.type == VAL_FLOAT;
+                    int b_numeric = bi.type == VAL_INT || bi.type == VAL_FLOAT;
+                    if (a_numeric && b_numeric) {
+                        an = ai.type == VAL_INT ? (double)ai.as.i : ai.as.f;
+                        bn = bi.type == VAL_INT ? (double)bi.as.i : bi.as.f;
+                        if (an != bn) return 0; /* +/-0 equal; NaN unequal */
+                    } else if (a_tensor_literal != b_tensor_literal) {
+                        /* The native tensor/ordinary-vector bridge is 1-D
+                         * and numeric; only two marked tensors descend. */
+                        return 0;
+                    } else if (!vm_equal_work_push(work, ai, bi)) {
+                        return 0;
+                    }
+                }
+                return 1;
+            }
             for (int i = 0; i < av->len; i++)
-                if (!vm_deep_equal(vm, av->items[i], bv->items[i])) return 0;
+                if (!vm_equal_work_push(work, av->items[i], bv->items[i])) return 0;
             return 1;
         }
         case VAL_BIGNUM: {
@@ -7228,7 +7484,7 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
             HeapObject* bo = vm->heap.objects[b.as.ptr];
             VmRational* ar = (ao && ao->opaque.ptr) ? (VmRational*)ao->opaque.ptr : NULL;
             VmRational* br = (bo && bo->opaque.ptr) ? (VmRational*)bo->opaque.ptr : NULL;
-            return ar && br && ar->num == br->num && ar->denom == br->denom;
+            return ar && br && vm_rational_equal_exact(ar, br);
         }
         case VAL_I128: {
             eshkol_i128_abi* ap = (eshkol_i128_abi*)vm->heap.objects[a.as.ptr]->opaque.ptr;
@@ -7259,6 +7515,30 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
     }
 }
 
+/**
+ * @brief Structural equality (R7RS equal?) on two VM values.
+ *
+ * Native stack use is constant in how deeply the values nest.  When the
+ * pending set cannot grow, the VM reports it rather than answering from an
+ * incomplete walk.
+ */
+static int vm_deep_equal(VM* vm, Value a, Value b) {
+    VmEqualWork work;
+    vm_equal_work_init(&work);
+    int answer = vm_deep_equal_step(vm, a, b, &work);
+    while (answer && work.n > 0) {
+        const VmEqualPair pair = work.slots[--work.n];
+        answer = vm_deep_equal_step(vm, pair.a, pair.b, &work);
+    }
+    if (work.failed) {
+        fprintf(stderr, "ERROR: out of memory comparing two values structurally\n");
+        vm->error = 1;
+        answer = 0;
+    }
+    vm_equal_work_free(&work);
+    return answer;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * Scheme hash-table keys: hashed and compared by `equal?`
  *
@@ -7266,72 +7546,97 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
  * with vm_hash_key_hash / vm_hash_key_equal (native 660). The hash is a
  * function of exactly what vm_deep_equal compares, so keys that are equal?
  * always hash alike: a string key is found by its characters, not by the
- * heap slot that holds it. Compound and exact-number keys hash by a coarse
- * class (length for sequences) and are told apart by vm_deep_equal.
+ * heap slot that holds it. Boxed numbers hash the components used in equality.
  * ═══════════════════════════════════════════════════════════════════════════ */
-static uint64_t vm_hash_mix(uint64_t h, uint64_t v) {
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-    return h;
+static uint64_t vm_hash_bignum(const VmBignum* b) {
+    if (bignum_is_zero(b)) return eshkol_table_hash_pair(0, 0);
+    return eshkol_table_hash_pair((uint64_t)b->sign,
+        eshkol_table_hash(b->limbs, (size_t)b->n_limbs * sizeof(*b->limbs)));
 }
 
-static uint64_t vm_equal_hash(VM* vm, Value v, int depth) {
-    uint64_t h = vm_hash_mix(1469598103934665603ULL, (uint64_t)v.type);
+static uint64_t vm_equal_hash(VM* vm, Value v, int depth, unsigned* remaining) {
+    uint64_t h = (uint64_t)v.type;
     switch ((int)v.type) {
-        case VAL_NIL:  return h;
-        case VAL_BOOL: return vm_hash_mix(h, (uint64_t)(v.as.b != 0));
+        case VAL_NIL:  return eshkol_table_hash_pair(h, 0);
+        case VAL_BOOL: return eshkol_table_hash_pair(h, (uint64_t)(v.as.b != 0));
         case VAL_INT:
-        case VAL_CHAR: return vm_hash_mix(h, (uint64_t)v.as.i);
+        case VAL_CHAR: return eshkol_table_hash_pair(h, (uint64_t)v.as.i);
         case VAL_FLOAT: {
-            double f = v.as.f == 0.0 ? 0.0 : v.as.f;   /* -0.0 == 0.0 */
+            double f = v.as.f;
             uint64_t bits;
             memcpy(&bits, &f, sizeof(bits));
-            return vm_hash_mix(h, bits);
+            return eshkol_table_hash_pair(h, bits);
         }
         case VAL_STRING:
         case VAL_SYMBOL: {
             VmString* str = vm_value_as_string(vm, v);
             if (!str) return h;
-            for (int64_t i = 0; i < str->byte_len; i++)
-                h = (h ^ (uint8_t)str->data[i]) * 1099511628211ULL;
-            return h;
+            return eshkol_table_hash_pair(h, eshkol_table_hash(str->data, (size_t)str->byte_len));
         }
         case VAL_PAIR: {
-            /* The first few elements of the spine, recursively to a small
-             * depth: a pure function of the content vm_deep_equal walks. */
-            int n = 0;
-            while (v.type == VAL_PAIR && n < 8 && depth < 4) {
+            /* Bound traversal of cyclic or shared structures. */
+            while (v.type == VAL_PAIR && depth < 32 && *remaining) {
+                --*remaining;
                 HeapObject* o = vm->heap.objects[v.as.ptr];
                 if (!o || o->type != HEAP_CONS) break;
-                h = vm_hash_mix(h, vm_equal_hash(vm, o->cons.car, depth + 1));
+                h = eshkol_table_hash_pair(h, vm_equal_hash(vm, o->cons.car, depth + 1, remaining));
                 v = o->cons.cdr;
-                n++;
+                if (v.type != VAL_PAIR)
+                    return eshkol_table_hash_pair(h, vm_equal_hash(vm, v, depth + 1, remaining));
             }
-            return vm_hash_mix(h, (uint64_t)n);
+            return eshkol_table_hash_pair(h, VAL_PAIR);
         }
         case VAL_VECTOR:
         case VAL_TENSOR: {
-            /* equal? also relates a vector to a 1-D tensor, so both hash in
-             * one class, by element count. */
+            // Numeric vector and tensor elements share the equality domain of doubles.
             HeapObject* o = vm->heap.objects[v.as.ptr];
-            int64_t len = -1;
-            if (o && o->opaque.ptr) {
-                if (v.type == VAL_VECTOR) len = ((VmVector*)o->opaque.ptr)->len;
-                else len = ((VmTensor*)o->opaque.ptr)->total;
+            if (!o || !o->opaque.ptr) return eshkol_table_hash_pair(0x5e9, 0);
+            VmVector* vec = v.type == VAL_VECTOR ? (VmVector*)o->opaque.ptr : NULL;
+            VmTensor* tensor = vec ? NULL : (VmTensor*)o->opaque.ptr;
+            int64_t length = vec ? vec->len : tensor->total;
+            h = eshkol_table_hash_pair(0x5e9, (uint64_t)length);
+            if (depth >= 32 || (tensor && !tensor->data)) return h;
+            for (int64_t i = 0; i < length && *remaining; ++i) {
+                --*remaining;
+                double number;
+                if (tensor) number = tensor->data[i];
+                else {
+                    Value item = vec->items[i];
+                    if (item.type == VAL_FLOAT) number = item.as.f;
+                    else if (item.type == VAL_INT) number = (double)item.as.i;
+                    else {
+                        h = eshkol_table_hash_pair(h, vm_equal_hash(vm, item, depth + 1, remaining));
+                        continue;
+                    }
+                }
+                if (number == 0.0) number = 0.0;
+                h = eshkol_table_hash_pair(h, eshkol_table_hash(&number, sizeof(number)));
             }
-            return vm_hash_mix(vm_hash_mix(1469598103934665603ULL, 0x5e9ULL), (uint64_t)len);
+            return h;
         }
         case VAL_BIGNUM:
-        case VAL_RATIONAL:
+            return vm_hash_bignum((VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr);
+        case VAL_RATIONAL: {
+            VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            return r->is_big
+                ? eshkol_table_hash_pair(vm_hash_bignum(r->big_num), vm_hash_bignum(r->big_den))
+                : eshkol_table_hash_pair((uint64_t)r->num, (uint64_t)r->denom);
+        }
         case VAL_I128:
-        case VAL_COMPLEX:
-            return h;
+            return eshkol_table_hash(vm->heap.objects[v.as.ptr]->opaque.ptr, sizeof(eshkol_i128_abi));
+        case VAL_COMPLEX: {
+            VmComplex* z = (VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            const double components[] = {z->real, z->imag};
+            return eshkol_table_hash(components, sizeof(components));
+        }
         default:
-            return vm_hash_mix(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
+            return eshkol_table_hash_pair(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
     }
 }
 
 static uint64_t vm_hash_key_hash(void* ctx, const void* key) {
-    return vm_equal_hash((VM*)ctx, *(const Value*)key, 0);
+    unsigned remaining = 4096;
+    return vm_equal_hash((VM*)ctx, *(const Value*)key, 0, &remaining);
 }
 
 static int vm_hash_key_equal(void* ctx, const void* a, const void* b) {
@@ -7685,17 +7990,20 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
     VmBignum* ab = vm_coerce_bignum(vm, a);
     VmBignum* bb = vm_coerce_bignum(vm, b);
     if (!ab || !bb) { vm->error = 1; return; }
+    if ((op == '/' || op == 'q' || op == 'r' || op == 'm') && bignum_is_zero(bb)) {
+        vm_raise_error_msg(vm, op == 'q' ? VM_QUOTIENT_DIV_ZERO
+                             : op == 'r' ? VM_REMAINDER_DIV_ZERO
+                             : op == 'm' ? VM_MODULO_DIV_ZERO
+                             : VM_EXACT_DIV_ZERO);
+        return;
+    }
     VmBignum* r = NULL;
     switch (op) {
     case '+': r = bignum_add(rs, ab, bb); break;
     case '-': r = bignum_sub(rs, ab, bb); break;
     case '*': r = bignum_mul(rs, ab, bb); break;
-    case 'q': if (bignum_is_zero(bb)) {
-                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
-              r = bignum_div(rs, ab, bb); break;
-    case 'r': if (bignum_is_zero(bb)) {
-                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
-              r = bignum_mod(rs, ab, bb); break;
+    case 'q': r = bignum_div(rs, ab, bb); break;
+    case 'r': r = bignum_mod(rs, ab, bb); break;
     case '/': {
         /* Exact bignum `/`.  A zero divisor is a fatal exact division by zero
          * (native raises "bignum division by zero").  An even division yields
@@ -7709,8 +8017,6 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
          * operation on exact operands to stay exact, and the rational
          * substrate is bignum-capable now, so the exact result is built
          * instead of rounded. */
-        if (bignum_is_zero(bb)) {
-            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
         VmBignum* rem = bignum_mod(rs, ab, bb);
         if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
         vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, ab, bb));
@@ -7720,8 +8026,6 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
         /* R7RS modulo: result carries the sign of the divisor. bignum_mod
          * returns the truncated remainder (sign of the dividend), so adjust
          * by adding the divisor when the signs disagree. */
-        if (bignum_is_zero(bb)) {
-            fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; return; }
         r = bignum_mod(rs, ab, bb);
         if (r && !bignum_is_zero(r) && bignum_sign(r) != bignum_sign(bb))
             r = bignum_add(rs, r, bb);
@@ -7815,8 +8119,76 @@ void vm_push_i128(VM* vm, __int128 value) {
  * R7RS external-representation syntax.  Keeping this port-aware serializer
  * beside native dispatch lets `(write value port)` work for file and string
  * ports instead of silently falling back to stdout. */
-static void vm_write_value_port(VM* vm, Value value, VmPort* port,
-                                int write_syntax) {
+/* ───────────────────────────────────────────────────────────────────────────
+ * Writing to a port carries its own stack
+ *
+ * Same shape as the console printer in vm_core.c: a list's spine was already
+ * walked iteratively, and the CAR descent and the vector-element descent are
+ * carried on an explicit work stack, so a datum nested as deeply as the
+ * reader could read it is written in full on a constant number of native
+ * frames.  A list or vector body carries its cursor rather than being
+ * expanded up front, so a long sequence costs one item, not one per element.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum { VW_VALUE, VW_LIST_REST, VW_VECTOR_REST, VW_TEXT } VmWriteWorkKind;
+
+typedef struct {
+    VmWriteWorkKind kind;
+    Value           value;
+    int             index;
+    const char*     text;
+} VmWriteWork;
+
+typedef struct {
+    VmWriteWork  inline_slots[64];
+    VmWriteWork* slots;
+    size_t       n;
+    size_t       cap;
+    int          heap;
+    int          failed;
+} VmWriteStack;
+
+static void vw_init(VmWriteStack* st) {
+    st->slots = st->inline_slots;
+    st->n = 0;
+    st->cap = sizeof(st->inline_slots) / sizeof(st->inline_slots[0]);
+    st->heap = 0;
+    st->failed = 0;
+}
+
+static void vw_free(VmWriteStack* st) {
+    if (st->heap) free(st->slots);
+    st->slots = st->inline_slots;
+    st->heap = 0;
+}
+
+static void vw_push(VmWriteStack* st, VmWriteWorkKind kind, Value v,
+                    int index, const char* text) {
+    if (st->failed) return;
+    if (st->n == st->cap) {
+        const size_t next = st->cap * 2;
+        VmWriteWork* grown;
+        if (st->heap) {
+            grown = (VmWriteWork*)realloc(st->slots, next * sizeof(VmWriteWork));
+        } else {
+            grown = (VmWriteWork*)malloc(next * sizeof(VmWriteWork));
+            if (grown) memcpy(grown, st->slots, st->n * sizeof(VmWriteWork));
+        }
+        if (!grown) { st->failed = 1; return; }
+        st->slots = grown;
+        st->cap = next;
+        st->heap = 1;
+    }
+    st->slots[st->n].kind = kind;
+    st->slots[st->n].value = v;
+    st->slots[st->n].index = index;
+    st->slots[st->n].text = text;
+    st->n++;
+}
+
+/* Emits one value, queueing the parts of it that are themselves values. */
+static void vm_write_value_step(VM* vm, Value value, VmPort* port,
+                                int write_syntax, VmWriteStack* st) {
     char number[160];
     if (!vm || !port) return;
     switch ((int)value.type) {
@@ -7885,31 +8257,12 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
     }
     case VAL_PAIR: {
         vm_port_write_cstr(port, "(");
-        Value cursor = value;
-        int first = 1;
-        while (cursor.type == VAL_PAIR) {
-            if (!first) vm_port_write_cstr(port, " ");
-            first = 0;
-            HeapObject* cell = vm->heap.objects[cursor.as.ptr];
-            vm_write_value_port(vm, cell->cons.car, port, write_syntax);
-            cursor = cell->cons.cdr;
-        }
-        if (cursor.type != VAL_NIL) {
-            vm_port_write_cstr(port, " . ");
-            vm_write_value_port(vm, cursor, port, write_syntax);
-        }
-        vm_port_write_cstr(port, ")");
+        vw_push(st, VW_LIST_REST, value, 0 /* this is the first element */, NULL);
         break;
     }
     case VAL_VECTOR: {
         vm_port_write_cstr(port, "#(");
-        HeapObject* object = vm->heap.objects[value.as.ptr];
-        VmVector* vector = object ? (VmVector*)object->opaque.ptr : NULL;
-        for (int i = 0; vector && i < vector->len; ++i) {
-            if (i) vm_port_write_cstr(port, " ");
-            vm_write_value_port(vm, vector->items[i], port, write_syntax);
-        }
-        vm_port_write_cstr(port, ")");
+        vw_push(st, VW_VECTOR_REST, value, 0, NULL);
         break;
     }
     case VAL_COMPLEX: {
@@ -7971,6 +8324,62 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
         vm_port_write_cstr(port, number);
         break;
     }
+}
+
+/**
+ * @brief Writes a value to @p port, in display form or R7RS write form.
+ *
+ * Native stack use is constant in how deeply the value nests.  When the work
+ * stack cannot grow, the remaining structure is elided rather than the
+ * process ending, and the elision is visible in what was written.
+ */
+static void vm_write_value_port(VM* vm, Value value, VmPort* port,
+                                int write_syntax) {
+    if (!vm || !port) return;
+    VmWriteStack st;
+    vw_init(&st);
+    vm_write_value_step(vm, value, port, write_syntax, &st);
+    while (st.n > 0 && !st.failed) {
+        const VmWriteWork w = st.slots[--st.n];
+        switch (w.kind) {
+        case VW_VALUE:
+            vm_write_value_step(vm, w.value, port, write_syntax, &st);
+            break;
+        case VW_TEXT:
+            vm_port_write_cstr(port, w.text);
+            break;
+        case VW_LIST_REST: {
+            Value cursor = w.value;
+            if (cursor.type == VAL_PAIR) {
+                if (w.index) vm_port_write_cstr(port, " ");
+                HeapObject* cell = vm->heap.objects[cursor.as.ptr];
+                vw_push(&st, VW_LIST_REST, cell->cons.cdr, 1, NULL);
+                vw_push(&st, VW_VALUE, cell->cons.car, 0, NULL);
+            } else if (cursor.type != VAL_NIL) {
+                vm_port_write_cstr(port, " . ");
+                vw_push(&st, VW_TEXT, cursor, 0, ")");
+                vw_push(&st, VW_VALUE, cursor, 0, NULL);
+            } else {
+                vm_port_write_cstr(port, ")");
+            }
+            break;
+        }
+        case VW_VECTOR_REST: {
+            HeapObject* object = vm->heap.objects[w.value.as.ptr];
+            VmVector* vector = object ? (VmVector*)object->opaque.ptr : NULL;
+            if (vector && w.index < vector->len) {
+                if (w.index) vm_port_write_cstr(port, " ");
+                vw_push(&st, VW_VECTOR_REST, w.value, w.index + 1, NULL);
+                vw_push(&st, VW_VALUE, vector->items[w.index], 0, NULL);
+            } else {
+                vm_port_write_cstr(port, ")");
+            }
+            break;
+        }
+        }
+    }
+    if (st.failed) vm_port_write_cstr(port, " ...");
+    vw_free(&st);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -8892,6 +9301,169 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
+static void vm_push_matmul(VM* vm, VmTensor* a, VmTensor* b) {
+    const int mm_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
+    /* Try GPU first, fall through to CPU */
+    VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
+    if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
+    if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); return; }
+    out->dtype = vm_tensor_promote_dtype(a, b);
+    if (mm_tangent) {
+        /* d(AB) = dA B + A dB */
+        VmRegionStack* rs = &vm->heap.regions;
+        VmTensor* ta = vm_tensor_tangent_of(vm, a, "matmul");
+        VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "matmul") : NULL;
+        if (!ta || !tb) return;
+        VmTensor* l = vm_tensor_matmul(rs, ta, b);
+        VmTensor* r = vm_tensor_matmul(rs, a, tb);
+        VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+        if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+            vm_raise_error_msg(vm, "matmul: could not propagate the derivative");
+            return;
+        }
+    }
+    VM_PUSH_TENSOR(vm, out);
+}
+
+/** @brief The capability gate at a VM sink.
+ *
+ * Consults the one process-wide capability policy (lib/core/capability_policy.cpp,
+ * the same store the native runtime reads) and, when the policy does not grant
+ * @p capability, raises a catchable VM error naming the capability and the
+ * operation. Returns 1 when the caller must not proceed, 0 when it may.
+ *
+ * With no policy installed this is a single allow query that always permits,
+ * so a program that installs no policy reaches the sink exactly as before.
+ *
+ * @param capability Capability the sink requires, e.g. "subprocess".
+ * @param operation  Operation named in the error, e.g. "process-spawn".
+ * @return 1 if the operation was refused (an error has been raised); else 0.
+ */
+static int vm_capability_denied(VM* vm, const char* capability, const char* operation) {
+    if (eshkol_capability_require(capability)) return 0;
+    char message[192];
+    snprintf(message, sizeof(message), "capability denied: %s (%s)",
+             capability, operation ? operation : "");
+    vm_raise_error_msg(vm, message);
+    return 1;
+}
+typedef int64_t (*VmSqliteOpenFn)(const char*);
+typedef void (*VmSqliteCloseFn)(int64_t);
+typedef int64_t (*VmSqlitePrepareFn)(int64_t, const char*);
+typedef int (*VmSqliteHandleFn)(int64_t);
+typedef void (*VmSqliteVoidHandleFn)(int64_t);
+typedef int (*VmSqliteBindTextFn)(int64_t, int, const char*);
+typedef int (*VmSqliteBindIntFn)(int64_t, int, int64_t);
+typedef int (*VmSqliteBindDoubleFn)(int64_t, int, double);
+typedef int (*VmSqliteBindNullFn)(int64_t, int);
+typedef int (*VmSqliteCopyColumnFn)(int64_t, int, char*, size_t);
+typedef int64_t (*VmSqliteColumnI64Fn)(int64_t, int);
+typedef int (*VmSqliteColumnIntFn)(int64_t, int);
+typedef double (*VmSqliteColumnDoubleFn)(int64_t, int);
+typedef int (*VmSqliteCopyErrorFn)(int64_t, char*, size_t);
+
+static int vm_sqlite_pop_i64(VM* vm, const char* who, int64_t* result) {
+    Value value = vm_pop(vm);
+    if (value.type == VAL_INT) { *result = value.as.i; return 1; }
+    if (value.type == VAL_BIGNUM && is_valid_heap_ptr(vm, value.as.ptr)) {
+        VmBignum* b = (VmBignum*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        int overflow = 0;
+        int64_t integer = b ? bignum_to_int64(b, &overflow) : 0;
+        if (b && !overflow) { *result = integer; return 1; }
+    }
+    char msg[160]; snprintf(msg, sizeof(msg), "%s: expected exact signed 64-bit integer", who);
+    vm_raise_error_msg(vm, msg); return 0;
+}
+
+static int vm_sqlite_pop_i32(VM* vm, const char* who, int* result) {
+    int64_t value;
+    if (!vm_sqlite_pop_i64(vm, who, &value)) return 0;
+    if (value < INT32_MIN || value > INT32_MAX) {
+        char msg[160]; snprintf(msg, sizeof(msg), "%s: integer outside signed 32-bit range", who);
+        vm_raise_error_msg(vm, msg); return 0;
+    }
+    *result = (int)value; return 1;
+}
+
+static int vm_sqlite_pop_string(VM* vm, const char* who, VmString** result) {
+    Value value = vm_pop(vm);
+    VmString* string = vm_value_as_string(vm, value);
+    if (!string || !string->data) {
+        char msg[160]; snprintf(msg, sizeof(msg), "%s: expected a string", who);
+        vm_raise_error_msg(vm, msg); return 0;
+    }
+    *result = string; return 1;
+}
+
+/* agent.sqlite's established C ABI obtains text byte length from an Eshkol
+ * object header immediately before the char pointer. Native tagged strings
+ * have that header; VM VmString::data is a plain arena buffer. Copy only for
+ * this synchronous SQLITE_TRANSIENT bind and synthesize the same header so
+ * embedded NULs and multibyte UTF-8 retain their exact byte length without
+ * changing the shared 21-function C ABI. */
+typedef struct {
+    uint8_t subtype;
+    uint8_t flags;
+    uint16_t ref_count;
+    uint32_t size;
+} VmSqliteStringHeader;
+_Static_assert(sizeof(VmSqliteStringHeader) == 8, "native Eshkol string header ABI changed");
+
+static char* vm_sqlite_header_string_copy(const VmString* string) {
+    if (!string || !string->data || string->byte_len < 0 ||
+        (uint64_t)string->byte_len >= UINT32_MAX ||
+        (uint64_t)string->byte_len > SIZE_MAX - sizeof(VmSqliteStringHeader) - 1)
+        return NULL;
+    const size_t byte_len = (size_t)string->byte_len;
+    VmSqliteStringHeader* header = (VmSqliteStringHeader*)malloc(
+        sizeof(*header) + byte_len + 1);
+    if (!header) return NULL;
+    header->subtype = 1; /* HEAP_SUBTYPE_STRING in inc/eshkol/eshkol.h */
+    header->flags = 0;
+    header->ref_count = 0;
+    header->size = (uint32_t)(byte_len + 1);
+    char* data = (char*)(header + 1);
+    if (byte_len) memcpy(data, string->data, byte_len);
+    data[byte_len] = '\0';
+    return data;
+}
+
+static int vm_sqlite_pop_double(VM* vm, const char* who, double* result) {
+    Value value = vm_pop(vm);
+    if (value.type != VAL_INT && value.type != VAL_FLOAT && value.type != VAL_RATIONAL &&
+        value.type != VAL_BIGNUM) {
+        char msg[160]; snprintf(msg, sizeof(msg), "%s: expected a real number", who);
+        vm_raise_error_msg(vm, msg); return 0;
+    }
+    *result = as_number_vm(vm, value); return 1;
+}
+
+static int vm_sqlite_store_buffer(VM* vm, Value target, const char* bytes, size_t length) {
+    if (!vm_value_as_string(vm, target) || !is_valid_heap_ptr(vm, target.as.ptr)) return 0;
+    /* SQLite writes into a temporary `make-string` buffer. Replace its
+     * backing value with a fresh UTF-8-aware VmString after the C call, so
+     * byte counts from SQLite never leave stale codepoint metadata behind. */
+    VmString* updated = vm_string_new(&vm->heap.regions, bytes, (int64_t)length);
+    if (!updated) return 0;
+    vm->heap.objects[target.as.ptr]->opaque.ptr = updated;
+    return 1;
+}
+
+static const char* vm_sqlite_extern_symbol(int fid) {
+    static const char* const symbols[] = {
+        "eshkol_sqlite_open", "eshkol_sqlite_close", "eshkol_sqlite_exec",
+        "eshkol_sqlite_prepare", "eshkol_sqlite_step", "eshkol_sqlite_reset",
+        "eshkol_sqlite_finalize", "eshkol_sqlite_bind_text", "eshkol_sqlite_bind_int",
+        "eshkol_sqlite_bind_double", "eshkol_sqlite_bind_null", "eshkol_sqlite_column_text",
+        "eshkol_sqlite_column_bytes", "eshkol_sqlite_column_int", "eshkol_sqlite_column_double",
+        "eshkol_sqlite_column_count", "eshkol_sqlite_column_name", "eshkol_sqlite_column_type",
+        "eshkol_sqlite_last_error", "eshkol_sqlite_last_insert_rowid", "eshkol_sqlite_changes"
+    };
+    int index = fid - VM_NATIVE_SQLITE_BASE;
+    return index >= 0 && index < (int)(sizeof(symbols) / sizeof(symbols[0]))
+        ? symbols[index] : NULL;
+}
+
 /* Container boundary for the accessor family (SW-221), the VM twin of
  * TaggedValueCodegen::requireContainer. An accessor reads its operand by the
  * container's layout, so it must first establish that the operand IS that
@@ -9160,6 +9732,18 @@ static Value vm_real_result(VM* vm, double value, double tangent) {
  * has no dual kernel for, so none of them reads a dual as its primal. */
 static void vm_push_real_unary(VM* vm, Value a, double (*f)(double), double (*fp)(double), const char* who,
                                VmDual* (*carrier_fn)(VmRegionStack*, const VmDual*, int), int carrier_op) {
+    if (vm->active_tape) {
+        int input_slot = vm->sp;
+        if (a.type == VAL_DUAL || a.type == VAL_HYPER_DUAL || a.type == VAL_COMPLEX ||
+            (input_slot >= 0 && input_slot < STACK_SIZE && vm->ad_node_map[input_slot] >= 0)) {
+            char message[192];
+            snprintf(message, sizeof(message),
+                "reverse-gradient: %s is unsupported for tracked real scalars on the VM", who);
+            vm_raise_error_msg(vm, message);
+            return;
+        }
+        if (input_slot >= 0 && input_slot < STACK_SIZE) vm->ad_node_map[input_slot] = -1;
+    }
     double x, dx;
     if (a.type == VAL_DUAL && carrier_fn) {
         /* Any carrier kind: the function's own carrier rule (ADR-0027). */
@@ -9193,6 +9777,14 @@ enum { VM_MX_ASINH, VM_MX_ACOSH, VM_MX_ATANH, VM_MX_LOG2, VM_MX_LOG10,
        VM_MX_EXP2, VM_MX_CBRT, VM_MX_SQUARE };
 static void vm_math_ext(VM* vm, Value a, int which) {
     if (which == VM_MX_SQUARE) { vm_push(vm, vm_math_bin(vm, a, a, '*')); return; }
+    if (vm->active_tape && vm->sp >= 0 && vm->sp < STACK_SIZE &&
+        vm->ad_node_map[vm->sp] >= 0) {
+        vm->ad_node_map[vm->sp] = -1;
+        vm_raise_error_msg(vm, "reverse-gradient: this math operator is unsupported for tracked real scalars on the VM");
+        return;
+    }
+    if (vm->active_tape && vm->sp >= 0 && vm->sp < STACK_SIZE)
+        vm->ad_node_map[vm->sp] = -1;
     int carrier = a.type == VAL_DUAL || a.type == VAL_COMPLEX || a.type == VAL_HYPER_DUAL;
     if (!carrier) {
         double x = as_number_vm(vm, a), r = 0.0;
@@ -9288,16 +9880,16 @@ static double vm_d_cosh(double x)  { return sinh(x); }
 
 /* Push a complex result, or raise the operation's no-derivative message. */
 static void vm_push_complex_result(VM* vm, VmComplex* result) {
-    if (vm_dual_error) {
-        const char* msg = vm_dual_error;
-        vm_dual_error = NULL;
+    if (vm->heap.regions.dual_error) {
+        const char* msg = vm->heap.regions.dual_error;
+        vm->heap.regions.dual_error = NULL;
         vm_raise_error_msg(vm, msg);
         return;
     }
     if (!result) {
-        if (vm_complex_d_error) {
-            const char* msg = vm_complex_d_error;
-            vm_complex_d_error = NULL;
+        if (vm->heap.regions.complex_error) {
+            const char* msg = vm->heap.regions.complex_error;
+            vm->heap.regions.complex_error = NULL;
             vm_raise_error_msg(vm, msg);
         } else {
             vm->error = 1;
@@ -9324,6 +9916,11 @@ static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
     VmComplex z;
     VmComplex* result = NULL;
     int32_t ptr;
+    if (vm->active_tape && a.type == VAL_COMPLEX) {
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = -1;
+        vm_raise_error_msg(vm, "reverse-gradient: complex operations are unsupported on the VM");
+        return 1;
+    }
     if (a.type != VAL_COMPLEX) return 0;
     z = *(VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
     switch (fid) {
@@ -9522,6 +10119,222 @@ static VmString* vm_number_value_to_string(VM* vm, Value n) {
     return vm_number_to_string(rs, as_number_vm(vm, n));
 }
 
+static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) {
+    if (!vm || !vm->active_tape || slot < 0 || slot >= STACK_SIZE) return 0;
+    int node = vm->ad_node_map[slot];
+    if (node == -1) { vm->ad_node_map[slot] = -1; return 0; }
+    vm->ad_node_map[slot] = -1;
+    char message[192];
+    snprintf(message, sizeof(message),
+        "reverse-gradient: %s is unsupported for tracked real scalars on the VM", operation);
+    vm_raise_error_msg(vm, message);
+    return 1;
+}
+
+
+/* Checkpoint digests use the VM's existing portable SHA-256 implementation.
+ * Entropy keeps the native core CSPRNG; a WASM host without that facility
+ * raises instead of substituting deterministic or weak random data. */
+#if !defined(__EMSCRIPTEN__)
+extern int eshkol_random_bytes(char*, size_t);
+extern int eshkol_random_hex(char*, size_t);
+#endif
+
+static void vm_dispatch_content_extern(VM* vm, int fid) {
+    int64_t capacity;
+    if (!vm_sqlite_pop_i64(vm, "content extern output size", &capacity)) return;
+    Value target = vm_pop(vm);
+    VmString* output = vm_value_as_string(vm, target);
+    if (!output || !output->data || capacity < 0 || capacity > output->byte_len) {
+        vm_raise_error_msg(vm, "content extern: output size exceeds string buffer");
+        return;
+    }
+    int output_length = output->byte_len;
+    if (fid == VM_NATIVE_RANDOM_BYTES_EXTERN || fid == VM_NATIVE_RANDOM_HEX_EXTERN) {
+        if (fid == VM_NATIVE_RANDOM_HEX_EXTERN && capacity >= output_length) {
+            vm_raise_error_msg(vm, "random-hex-raw: buffer needs room for terminator");
+            return;
+        }
+#if defined(__EMSCRIPTEN__)
+        vm_raise_error_msg(vm, "secure random extern is unavailable on this VM host");
+        return;
+#else
+        char* buffer = (char*)malloc((size_t)output_length + 1);
+        if (!buffer) { vm_raise_error_msg(vm, "content extern: output allocation failed"); return; }
+        memcpy(buffer, output->data, (size_t)output_length + 1);
+        int rc = fid == VM_NATIVE_RANDOM_BYTES_EXTERN
+            ? eshkol_random_bytes(buffer, (size_t)capacity)
+            : eshkol_random_hex(buffer, (size_t)capacity);
+        if (rc == 0 && !vm_sqlite_store_buffer(vm, target, buffer, (size_t)output_length)) {
+            free(buffer); vm_raise_error_msg(vm, "content extern: output update failed"); return;
+        }
+        free(buffer); vm_push(vm, INT_VAL(rc)); return;
+#endif
+    }
+
+    int64_t data_length, key_length = 0;
+    VmString *data, *key = NULL;
+    if (!vm_sqlite_pop_i64(vm, "content extern data size", &data_length) ||
+        !vm_sqlite_pop_string(vm, "content extern data", &data)) return;
+    if (data_length < 0 || data_length > data->byte_len) {
+        vm_raise_error_msg(vm, "content extern: data size exceeds string"); return;
+    }
+    if (fid == VM_NATIVE_HMAC_SHA256_EXTERN) {
+        if (!vm_sqlite_pop_i64(vm, "content extern key size", &key_length) ||
+            !vm_sqlite_pop_string(vm, "content extern key", &key)) return;
+        if (key_length < 0 || key_length > key->byte_len) {
+            vm_raise_error_msg(vm, "content extern: key size exceeds string"); return;
+        }
+    }
+    if (capacity < 65) { vm_push(vm, INT_VAL(-1)); return; }
+    unsigned char digest[32];
+    VmSha256 hash;
+    if (key) {
+        unsigned char block[64] = {0}, inner[32], pad[64];
+        if (key_length > 64) {
+            vm_sha256_init(&hash);
+            vm_sha256_update(&hash, (const unsigned char*)key->data, (size_t)key_length);
+            vm_sha256_final(&hash, block);
+        } else memcpy(block, key->data, (size_t)key_length);
+        for (int i = 0; i < 64; ++i) pad[i] = block[i] ^ 0x36;
+        vm_sha256_init(&hash); vm_sha256_update(&hash, pad, sizeof(pad));
+        vm_sha256_update(&hash, (const unsigned char*)data->data, (size_t)data_length);
+        vm_sha256_final(&hash, inner);
+        for (int i = 0; i < 64; ++i) pad[i] = block[i] ^ 0x5c;
+        vm_sha256_init(&hash); vm_sha256_update(&hash, pad, sizeof(pad));
+        vm_sha256_update(&hash, inner, sizeof(inner)); vm_sha256_final(&hash, digest);
+    } else {
+        vm_sha256_init(&hash);
+        vm_sha256_update(&hash, (const unsigned char*)data->data, (size_t)data_length);
+        vm_sha256_final(&hash, digest);
+    }
+    char* buffer = (char*)malloc((size_t)output_length + 1);
+    if (!buffer) { vm_raise_error_msg(vm, "content extern: output allocation failed"); return; }
+    memcpy(buffer, output->data, (size_t)output_length + 1);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; ++i) {
+        buffer[2*i] = hex[digest[i] >> 4]; buffer[2*i+1] = hex[digest[i] & 15];
+    }
+    buffer[64] = 0;
+    int ok = vm_sqlite_store_buffer(vm, target, buffer, (size_t)output_length);
+    free(buffer);
+    if (!ok) { vm_raise_error_msg(vm, "content extern: output update failed"); return; }
+    vm_push(vm, INT_VAL(0));
+}
+
+static void vm_dispatch_sqlite_extern(VM* vm, int fid) {
+    const char* missing = "SQLite extern is unavailable on this VM host";
+    switch (fid) {
+    case VM_NATIVE_SQLITE_OPEN: {
+        Value v = vm_pop(vm); VmString* s = vm_value_as_string(vm, v);
+        VmSqliteOpenFn fn = (VmSqliteOpenFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_open");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; }
+        if (!s || !s->data) { vm_raise_error_msg(vm, "sqlite-open-raw: expected string"); break; }
+        vm_push(vm, INT_VAL(fn(s->data))); break;
+    }
+    case VM_NATIVE_SQLITE_CLOSE:
+    case VM_NATIVE_SQLITE_FINALIZE: {
+        int64_t h; if (!vm_sqlite_pop_i64(vm, "SQLite close/finalize", &h)) break;
+        if (fid == VM_NATIVE_SQLITE_CLOSE) {
+            VmSqliteCloseFn fn = (VmSqliteCloseFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_close");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } fn(h);
+        } else {
+            VmSqliteVoidHandleFn fn = (VmSqliteVoidHandleFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_finalize");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } fn(h);
+        }
+        vm_push(vm, (Value){.type = VAL_VOID, .as.i = 0}); break;
+    }
+    case VM_NATIVE_SQLITE_EXEC:
+    case VM_NATIVE_SQLITE_PREPARE: {
+        VmString* sql; int64_t h;
+        if (!vm_sqlite_pop_string(vm, "SQLite SQL", &sql) || !vm_sqlite_pop_i64(vm, "SQLite SQL", &h)) break;
+        if (fid == VM_NATIVE_SQLITE_EXEC) {
+            VmSqliteExecFn fn = (VmSqliteExecFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_exec");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, sql->data)));
+        } else {
+            VmSqlitePrepareFn fn = (VmSqlitePrepareFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_prepare");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, sql->data)));
+        }
+        break;
+    }
+    case VM_NATIVE_SQLITE_STEP:
+    case VM_NATIVE_SQLITE_RESET:
+    case VM_NATIVE_SQLITE_COLUMN_COUNT:
+    case VM_NATIVE_SQLITE_CHANGES: {
+        int64_t h; if (!vm_sqlite_pop_i64(vm, "SQLite handle operation", &h)) break;
+        const char* name = fid == VM_NATIVE_SQLITE_STEP ? "eshkol_sqlite_step" :
+            fid == VM_NATIVE_SQLITE_RESET ? "eshkol_sqlite_reset" :
+            fid == VM_NATIVE_SQLITE_COLUMN_COUNT ? "eshkol_sqlite_column_count" : "eshkol_sqlite_changes";
+        VmSqliteHandleFn fn = (VmSqliteHandleFn)(uintptr_t)vm_runtime_symbol(name);
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h))); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_TEXT: {
+        VmString* text; int i; int64_t h;
+        if (!vm_sqlite_pop_string(vm, "sqlite-bind-text-raw", &text) || !vm_sqlite_pop_i32(vm, "sqlite-bind-text-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-text-raw", &h)) break;
+        VmSqliteBindTextFn fn = (VmSqliteBindTextFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_text");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; }
+        char* tagged_text = vm_sqlite_header_string_copy(text);
+        if (!tagged_text) { vm_raise_error_msg(vm, "sqlite-bind-text-raw: text allocation failed"); break; }
+        int rc = fn(h, i, tagged_text);
+        free((VmSqliteStringHeader*)tagged_text - 1);
+        vm_push(vm, INT_VAL(rc)); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_INT: {
+        int64_t v, h; int i;
+        if (!vm_sqlite_pop_i64(vm, "sqlite-bind-int-raw", &v) || !vm_sqlite_pop_i32(vm, "sqlite-bind-int-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-int-raw", &h)) break;
+        VmSqliteBindIntFn fn = (VmSqliteBindIntFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_int");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i, v))); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_DOUBLE: {
+        double v; int i; int64_t h;
+        if (!vm_sqlite_pop_double(vm, "sqlite-bind-double-raw", &v) || !vm_sqlite_pop_i32(vm, "sqlite-bind-double-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-double-raw", &h)) break;
+        VmSqliteBindDoubleFn fn = (VmSqliteBindDoubleFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_double");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i, v))); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_NULL: {
+        int i; int64_t h;
+        if (!vm_sqlite_pop_i32(vm, "sqlite-bind-null-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-null-raw", &h)) break;
+        VmSqliteBindNullFn fn = (VmSqliteBindNullFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_null");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i))); break;
+    }
+    case VM_NATIVE_SQLITE_COLUMN_TEXT:
+    case VM_NATIVE_SQLITE_COLUMN_NAME:
+    case VM_NATIVE_SQLITE_LAST_ERROR: {
+        int64_t cap; if (!vm_sqlite_pop_i64(vm, "SQLite output capacity", &cap)) break;
+        Value target = vm_pop(vm); int index = 0; int64_t h = 0;
+        if (fid != VM_NATIVE_SQLITE_LAST_ERROR && (!vm_sqlite_pop_i32(vm, "SQLite column index", &index) || !vm_sqlite_pop_i64(vm, "SQLite column handle", &h))) break;
+        if (fid == VM_NATIVE_SQLITE_LAST_ERROR && !vm_sqlite_pop_i64(vm, "sqlite-last-error-raw", &h)) break;
+        VmString* old = vm_value_as_string(vm, target);
+        if (!old || cap <= 0 || (uint64_t)cap > (uint64_t)old->byte_len || (uint64_t)cap > SIZE_MAX) { vm_raise_error_msg(vm, "SQLite output capacity exceeds Scheme buffer"); break; }
+        char* buf = (char*)calloc((size_t)cap, 1); if (!buf) { vm_raise_error_msg(vm, "SQLite output allocation failed"); break; }
+        int n = -1;
+        if (fid == VM_NATIVE_SQLITE_COLUMN_TEXT) { VmSqliteCopyColumnFn fn = (VmSqliteCopyColumnFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_text"); if (fn) n = fn(h,index,buf,(size_t)cap); }
+        else if (fid == VM_NATIVE_SQLITE_COLUMN_NAME) { VmSqliteCopyColumnFn fn = (VmSqliteCopyColumnFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_name"); if (fn) n = fn(h,index,buf,(size_t)cap); }
+        else { VmSqliteCopyErrorFn fn = (VmSqliteCopyErrorFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_last_error"); if (fn) n = fn(h,buf,(size_t)cap); }
+        if (n < 0 && !vm_runtime_symbol(fid == VM_NATIVE_SQLITE_COLUMN_TEXT ? "eshkol_sqlite_column_text" : fid == VM_NATIVE_SQLITE_COLUMN_NAME ? "eshkol_sqlite_column_name" : "eshkol_sqlite_last_error")) { free(buf); vm_raise_error_msg(vm, missing); break; }
+        if (n >= 0 && (uint64_t)n < (uint64_t)cap && !vm_sqlite_store_buffer(vm,target,buf,(size_t)n)) { free(buf); vm_raise_error_msg(vm,"SQLite output string update failed"); break; }
+        free(buf); vm_push(vm, INT_VAL(n)); break;
+    }
+    case VM_NATIVE_SQLITE_COLUMN_BYTES:
+    case VM_NATIVE_SQLITE_COLUMN_INT:
+    case VM_NATIVE_SQLITE_COLUMN_DOUBLE:
+    case VM_NATIVE_SQLITE_COLUMN_TYPE: {
+        int i; int64_t h;
+        if (!vm_sqlite_pop_i32(vm, "SQLite column access", &i) || !vm_sqlite_pop_i64(vm, "SQLite column access", &h)) break;
+        if (fid == VM_NATIVE_SQLITE_COLUMN_DOUBLE) { VmSqliteColumnDoubleFn fn = (VmSqliteColumnDoubleFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_double"); if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,FLOAT_VAL(fn(h,i))); }
+        else if (fid == VM_NATIVE_SQLITE_COLUMN_TYPE) { VmSqliteColumnIntFn fn = (VmSqliteColumnIntFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_type"); if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,INT_VAL(fn(h,i))); }
+        else { const char* n = fid == VM_NATIVE_SQLITE_COLUMN_BYTES ? "eshkol_sqlite_column_bytes" : "eshkol_sqlite_column_int"; VmSqliteColumnI64Fn fn = (VmSqliteColumnI64Fn)(uintptr_t)vm_runtime_symbol(n); if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,INT_VAL(fn(h,i))); }
+        break;
+    }
+    case VM_NATIVE_SQLITE_LAST_INSERT_ROWID: {
+        int64_t h; if (!vm_sqlite_pop_i64(vm, "sqlite-last-insert-rowid-raw", &h)) break;
+        typedef int64_t (*Fn)(int64_t); Fn fn = (Fn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_last_insert_rowid");
+        if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,INT_VAL(fn(h))); break;
+    }
+    default: vm_raise_error_msg(vm, "unknown SQLite VM extern"); break;
+    }
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
@@ -9551,6 +10364,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         return;
     }
+    if (fid >= VM_NATIVE_SHA256_EXTERN && fid <= VM_NATIVE_RANDOM_HEX_EXTERN) {
+        if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
+            fprintf(stderr, "VM native policy rejected content extern fid %d\n", fid);
+            vm->error = 1;
+            return;
+        }
+        vm_dispatch_content_extern(vm, fid);
+        return;
+    }
+    if (fid >= VM_NATIVE_SQLITE_BASE && fid <= VM_NATIVE_SQLITE_CHANGES) {
+        if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
+            vm_runtime_symbol(vm_sqlite_extern_symbol(fid))) {
+            fprintf(stderr, "VM native policy rejected desktop native fid %d\n", fid);
+            vm->error = 1;
+            return;
+        }
+        /* On WASM and other hosts without the linked SQLite backend,
+         * vm_runtime_symbol() is NULL and the typed helper raises a catchable
+         * unsupported condition instead of invoking a missing-link stub. */
+        vm_dispatch_sqlite_extern(vm, fid);
+        return;
+    }
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
         fprintf(stderr, "VM native policy rejected desktop native fid %d\n", fid);
         vm->error = 1;
@@ -9560,6 +10395,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math functions (20-35)
      * ══════════════════════════════════════════════════════════════════════ */
+
     /* Reverse-mode AD tracing for the transcendental unary ops: when a tape
      * is active and the operand slot is tracked, record the matching tape node
      * (ad_sin/ad_cos/...) and map the result slot to it, so a closure run under
@@ -9568,13 +10404,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * node's stored value (same libm call), keeping VM/native output aligned. */
 #define VM_AD_TRACE_UNARY(vm, in_node, tape_fn, is_dual) do { \
     if ((vm)->active_tape && (vm)->sp > 0) { \
-        (vm)->ad_node_map[(vm)->sp - 1] = ((in_node) != -1 && !(is_dual)) \
-            ? tape_fn((AdTape*)(vm)->active_tape, (in_node)) : -1; \
+        if (is_dual) { \
+            (vm)->ad_node_map[(vm)->sp - 1] = -1; \
+            vm_raise_error_msg((vm), "reverse-gradient: dual carriers are unsupported on the VM"); \
+        } else { \
+            int _node = ((in_node) != -1) \
+                ? tape_fn((AdTape*)(vm)->active_tape, (in_node)) : -1; \
+            if ((in_node) >= 0 && _node < 0) { \
+                (vm)->ad_node_map[(vm)->sp - 1] = -1; \
+                vm_raise_error_msg((vm), "reverse-gradient: tape allocation failed"); \
+            } else (vm)->ad_node_map[(vm)->sp - 1] = _node; \
+        } \
     } \
 } while (0)
     case 20: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 20)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sin, _d); break; }
     case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 21)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
-    case 22: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 22)) break; if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
+    case 22: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "tan")) break; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 22)) break; if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
     case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 23)) break; int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
     /* MS-05 follow-on: both this case and sqrt (25) directly below share the
      * R7RS 6.2.6 negative-exact -> complex promotion architecture (see
@@ -9606,29 +10451,32 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * rounding, and a ratnum routes to the exact rational natives (342-345),
      * which compute in the bignum domain. Only a genuinely inexact operand
      * takes the double path. */
-    case 26: { Value a = vm_pop(vm);
+    case 26: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "floor")) break; Value a = vm_pop(vm);
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 342); break; }
         vm_push(vm, number_val_contagious1(a, floor(as_number_vm(vm,a)))); break; }
-    case 27: { Value a = vm_pop(vm);
+    case 27: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "ceiling")) break; Value a = vm_pop(vm);
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 343); break; }
         vm_push(vm, number_val_contagious1(a, ceil(as_number_vm(vm,a)))); break; }
-    case 28: { Value a = vm_pop(vm);
+    case 28: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "round")) break; Value a = vm_pop(vm);
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 345); break; }
         vm_push(vm, number_val_contagious1(a, vm_round_half_even(as_number_vm(vm,a)))); break; }
     /* SW-29: `truncate` had NO implementation at all — the BUILTINS table bound
      * it to native id 190, which no case handled, so every call warned
      * "unhandled native call ID 190" and produced the empty list. */
-    case 190: { Value a = vm_pop(vm);
+    case 190: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "truncate")) break; Value a = vm_pop(vm);
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 344); break; }
         vm_push(vm, number_val_contagious1(a, trunc(as_number_vm(vm,a)))); break; }
-    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push_real_unary(vm, a, asin, vm_d_asin, "asin", vm_dual_inverse_trig, 0); break; }
-    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push_real_unary(vm, a, acos, vm_d_acos, "acos", vm_dual_inverse_trig, 1); break; }
-    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push_real_unary(vm, a, atan, vm_d_atan, "atan", vm_dual_inverse_trig, 2); break; }
-    case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+    case 29: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "asin")) break; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push_real_unary(vm, a, asin, vm_d_asin, "asin", vm_dual_inverse_trig, 0); break; }
+    case 30: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "acos")) break; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push_real_unary(vm, a, acos, vm_d_acos, "acos", vm_dual_inverse_trig, 1); break; }
+    case 31: { if (vm_ad_reject_untraced_input(vm, vm->sp - 1, "atan")) break; Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push_real_unary(vm, a, atan, vm_d_atan, "atan", vm_dual_inverse_trig, 2); break; }
+    case 32: {
+        if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "expt") ||
+            vm_ad_reject_untraced_input(vm, vm->sp - 1, "expt")) break;
+        Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,382); break; }
         if ((a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) &&
             a.type != VAL_COMPLEX && b.type != VAL_COMPLEX) {
@@ -9743,7 +10591,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * The hyper-dual arm is the second-order twin (VAL_HYPER_DUAL is the VM's
      * {f,f1,f2,f12} carrier); lbl_ABS already treats the two carriers this way
      * and min/max now agree with it. */
-    case 33: case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+    case 33: case 34: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, fid == 33 ? "min" : "max") ||
+                            vm_ad_reject_untraced_input(vm, vm->sp - 1, fid == 33 ? "min" : "max")) break;
+        Value b = vm_pop(vm); Value a = vm_pop(vm);
         const int want_max = (fid == 34);
         if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) {
             VmHyperDual ah = {as_number_vm(vm,a), 0.0, 0.0, 0.0};
@@ -9809,17 +10659,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (want_max ? (cmp >= 0) : (cmp <= 0)) ? a : b); break; }
         double da=as_number_vm(vm,a),db=as_number_vm(vm,b);
         vm_push(vm, number_val_contagious(a,b, want_max ? (da>db?da:db) : (da<db?da:db))); break; }
-    case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
+    case 35: { int call_sp = vm->sp, call_pc = vm->pc;
+        int input_slot = vm->sp - 1;
+        int input_node = (vm->active_tape && input_slot >= 0 && input_slot < STACK_SIZE)
+            ? vm->ad_node_map[input_slot] : -1;
+        Value a = vm_pop(vm);
+        if (vm->active_tape && (a.type == VAL_COMPLEX || a.type == VAL_DUAL || a.type == VAL_HYPER_DUAL)) {
+            vm_raise_error_msg(vm, "reverse-gradient: abs of complex/dual carriers is unsupported on the VM");
+            break;
+        }
+        if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
         else if (a.type==VAL_RATIONAL) { vm_push(vm,a); vm_dispatch_native(vm,336); }
         else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
-        else vm_push(vm, number_val_contagious1(a, fabs(as_number_vm(vm,a)))); break; }
+        else vm_push(vm, number_val_contagious1(a, fabs(as_number_vm(vm,a))));
+        if (!vm->error && vm->pc == call_pc && vm->sp == call_sp && vm->sp > 0)
+            vm_ad_record_unary_result(vm, input_node, a, vm->sp - 1, ad_abs);
+        break; }
     /* modulo, remainder, quotient — first-class closure versions */
     /* Each of the three used to `break` on a zero divisor with a bare
      * vm->error = 1 and NO message.  Combined with the VM's old exit-0 that
      * made a division by zero completely invisible: no diagnostic, no exit
      * status, and every later top-level form silently dropped.  Every fatal
      * path here now names itself on stderr. */
-    case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+    case 36: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "modulo") ||
+                    vm_ad_reject_untraced_input(vm, vm->sp - 1, "modulo")) break;
+        Value b = vm_pop(vm); Value a = vm_pop(vm);
         /* Inexactness is contagious, including when the exact operand is a
          * bignum or i128. Keep an integral inexact result as a float. */
         if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
@@ -9834,13 +10698,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2119); break;
         }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
-        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         /* `modulo` by zero is fatal for exact AND inexact operands — native
          * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
         if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
-        int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
+        if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
+        int64_t r=vm_i64_remainder_nonzero(ia, ib); if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
-    case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+    case 37: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "remainder") ||
+                    vm_ad_reject_untraced_input(vm, vm->sp - 1, "remainder")) break;
+        Value b = vm_pop(vm); Value a = vm_pop(vm);
         /* Native remainder treats an inexact zero divisor as fatal too. */
         if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
             double x = vm_division_number_to_double(vm, a);
@@ -9852,10 +10720,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2107); break;
         }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
-        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
-        vm_push(vm, INT_VAL(ia%ib)); break; }
-    case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
+        vm_push(vm, INT_VAL(vm_i64_remainder_nonzero(ia, ib))); break; }
+    case 38: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "quotient") ||
+                    vm_ad_reject_untraced_input(vm, vm->sp - 1, "quotient")) break;
+        Value b = vm_pop(vm); Value a = vm_pop(vm);
         /* `quotient` truncates toward zero and preserves inexact contagion.
          * Do the division in double so large results never pass through an
          * int64 conversion (which both wrapped and made them exact). */
@@ -9886,10 +10758,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, INT_VAL(a.as.i / b.as.i));
             break;
         }
-        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia/ib)); break; }
     case 39: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "FLOOR QUOTIENT BY ZERO\n"); vm->error = 1; break; }
+            vm_push(vm, FLOAT_VAL(floor(x / y))); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             int oka = 0, okb = 0;
             __int128 x = vm_coerce_i128(vm, a, &oka);
@@ -9907,9 +10786,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, adjusted); vm_push(vm, b); vm_dispatch_native(vm, 38);
             break;
         }
-        int64_t ia = (int64_t)as_number(a), ib = (int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib == 0) { fprintf(stderr, "FLOOR QUOTIENT BY ZERO\n"); vm->error = 1; break; }
-        int64_t q = ia / ib, r = ia % ib;
+        if (ia == INT64_MIN && ib == -1) {
+            vm_bignum_arith(vm, a, b, 'q');
+            break;
+        }
+        int64_t q = ia / ib, r = vm_i64_remainder_nonzero(ia, ib);
         if (r != 0 && ((ia < 0) != (ib < 0))) q -= 1;
         vm_push(vm, INT_VAL(q));
         break;
@@ -10059,6 +10943,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 invalid_tail = 1;
                 break;
             }
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = vm->active_tape
+                    ? heap_ad_pair_field_node(&vm->heap, cur.as.ptr, vm->ad_tape_generation, 0) : -1;
             vm_push(vm, vm->heap.objects[cur.as.ptr]->cons.car);
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             argc++;
@@ -10296,6 +11183,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 300: case 301: case 302: case 303: case 304: case 305: case 306:
     case 307: case 308: case 309: case 310: case 311: case 312: case 313:
     case 314: case 315: case 316: case 317: case 318: case 319: {
+        /* The complex-number family is not on the reverse tape. In
+         * particular, a real-part projection after make-rectangular used to
+         * look like an untracked real constant and silently report zero.
+         * Refuse any operation that consumes a tracked argument, including
+         * constructors, predicates, and projections. */
+        if (vm->active_tape) {
+            int arity = (fid == 300 || fid == 301 ||
+                         (fid >= 307 && fid <= 310) || fid == 318 || fid == 319) ? 2 : 1;
+            int tracked = 0;
+            for (int i = 0; i < arity && vm->sp - i >= 0; ++i)
+                if (vm->ad_node_map[vm->sp - i] >= 0) tracked = 1;
+            if (tracked) {
+                vm_raise_error_msg(vm,
+                    "reverse-gradient: complex-number operations are unsupported for tracked values");
+                break;
+            }
+        }
         if (fid == 300) { /* make-rectangular */
             Value imag = vm_pop(vm), real = vm_pop(vm);
             /* ADR-0025/0027: a derivative entering a complex number is kept,
@@ -10367,8 +11271,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_push(vm, vm_ad_coeff_value(vm, r));
             } else if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                double dm = vm_complex_magnitude_tangent(z);
-                if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                double dm = vm_complex_magnitude_tangent(&vm->heap.regions, z);
+                if (vm->heap.regions.complex_error) { const char* msg = vm->heap.regions.complex_error; vm->heap.regions.complex_error = NULL; vm_raise_error_msg(vm, msg); break; }
                 vm_push(vm, vm_real_result(vm, vm_complex_magnitude(z), dm));
             } else if (z_val.type == VAL_DUAL) {
                 vm_push(vm, z_val); vm_dispatch_native(vm, 35);   /* abs keeps the tangent */
@@ -10416,8 +11320,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                             vm_push(vm, vm_ad_coeff_value(vm, r));
                             break;
                         }
-                        double da = vm_complex_angle_tangent(&a_z);
-                        if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                        double da = vm_complex_angle_tangent(&vm->heap.regions, &a_z);
+                        if (vm->heap.regions.complex_error) { const char* msg = vm->heap.regions.complex_error; vm->heap.regions.complex_error = NULL; vm_raise_error_msg(vm, msg); break; }
                         vm_push(vm, vm_real_result(vm, vm_complex_angle(&a_z), da));
                         break;
                     }
@@ -10646,7 +11550,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
              * silently produce an inexact value. */
             if (fid == 334 &&
                 (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
-                vm_raise_error_msg(vm, "rational division by zero"); break;
+                vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO); break;
             }
             char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
                      : (fid == 333) ? '*' : '/';
@@ -10759,22 +11663,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
             else vm_push(vm, INT_VAL(1)); break; }
         case 348: { Value b_v = vm_pop(vm), a_v = vm_pop(vm);
             vm_push(vm, INT_VAL(vm_rational_gcd((int64_t)as_number(a_v), (int64_t)as_number(b_v)))); break; }
-        case 349: { Value tol = vm_pop(vm), x = vm_pop(vm);
-            /* as_number_vm, NOT as_number: `rationalize` is the one operation
-             * whose arguments are USUALLY exact rationals — the R7RS-small
-             * example is `(rationalize (exact .3) 1/10) => 1/3` — and the
-             * plain as_number() reads a VAL_RATIONAL's heap index through the
-             * int64 arm of the union and answers 0.0.  Both arguments then
-             * became 0, and `(rationalize 1/3 1/10000)` returned the exact
-             * integer 0 with exit 0 where the native engine returns 1/3
-             * (SW-08).  Rationals, bignums and duals all need the heap-aware
-             * coercion, exactly as native calls 342-347 above already do. */
-            VmRational* r = vm_rationalize(rat_arena, as_number_vm(vm, x), as_number_vm(vm, tol));
-            if (!r) { vm_push(vm, NIL_VAL); break; }
-            if (r->denom == 1) { vm_push(vm, INT_VAL(r->num)); break; }
-            int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
+        case 349: {
+            Value tol = vm_pop(vm), x = vm_pop(vm);
+            const double xf = x.type == VAL_FLOAT ? x.as.f : 0.0;
+            const double ef = tol.type == VAL_FLOAT ? tol.as.f : 0.0;
+            if (!isfinite(xf) || !isfinite(ef)) {
+                vm_push(vm, FLOAT_VAL(isfinite(xf) && isinf(ef) ? 0.0 :
+                                      isinf(xf) && isfinite(ef) ? xf : NAN));
+                break;
+            }
+            VmRational xs, ts;
+            const VmRational* value = vm_taylor_exact_primal(vm, x, x.type == VAL_DUAL ? (VmDual*)vm->heap.objects[x.as.ptr]->opaque.ptr : NULL, &xs);
+            const VmRational* epsilon = vm_taylor_exact_primal(vm, tol, tol.type == VAL_DUAL ? (VmDual*)vm->heap.objects[tol.as.ptr]->opaque.ptr : NULL, &ts);
+            VmRational* r = vm_rationalize_exact(&vm->heap.regions, value, epsilon);
+            if (r && (x.type == VAL_FLOAT || tol.type == VAL_FLOAT))
+                vm_push(vm, FLOAT_VAL(vm_rational_to_double(r)));
+            else
+                vm_push_rational_norm(vm, r);
+            break;
+        }
         default: vm_push(vm, NIL_VAL); break;
         }
         break;
@@ -10828,6 +11735,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmBignum* a_bn = (a_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(a_val));
             VmBignum* b_bn = (b_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(b_val));
             if (!a_bn || !b_bn) { vm_push(vm, NIL_VAL); break; }
+            if ((fid == 358 || fid == 359) && bignum_is_zero(b_bn)) {
+                vm_raise_error_msg(vm, fid == 358 ? VM_QUOTIENT_DIV_ZERO : VM_REMAINDER_DIV_ZERO);
+                break;
+            }
             VmBignum* result = NULL;
             switch (fid) { case 355: result=bignum_add(bn_rs,a_bn,b_bn); break; case 356: result=bignum_sub(bn_rs,a_bn,b_bn); break;
                 case 357: result=bignum_mul(bn_rs,a_bn,b_bn); break; case 358: result=bignum_div(bn_rs,a_bn,b_bn); break; case 359: result=bignum_mod(bn_rs,a_bn,b_bn); break; }
@@ -10897,7 +11808,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 377: case 378: case 379: case 380: case 381: case 382: case 383:
     case 384: case 385: case 386: case 387: case 388: case 389: {
         VmRegionStack* dual_rs = &vm->heap.regions;
-        vm_dual_error = NULL;
+        vm->heap.regions.dual_error = NULL;
         switch (fid) {
         case 370: { Value tangent = vm_pop(vm), primal = vm_pop(vm);
             VmDual* d = vm_dual_make(dual_rs, as_number_vm(vm, primal), as_number_vm(vm, tangent));   /* ESH-0410 */
@@ -10978,9 +11889,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* SW-219: an operation with no value (exact division by exact zero,
          * at any depth of a carrier) raises; its placeholder result is
          * discarded. */
-        if (vm_dual_error) {
-            const char* msg = vm_dual_error;
-            vm_dual_error = NULL;
+        if (vm->heap.regions.dual_error) {
+            const char* msg = vm->heap.regions.dual_error;
+            vm->heap.regions.dual_error = NULL;
             (void)vm_pop(vm);
             vm_raise_error_msg(vm, msg);
         }
@@ -11145,7 +12056,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
         /* SW-06: `diff` compiles to this same native call (see
-         * eshkol_compiler.c's "diff" entry, both aliased to fid 393), so
+         * the retired compiler's historical "diff" entry, both aliased to fid 393), so
          * `(diff '(* x x) 'x)` — a QUOTED s-expression, not a callable —
          * reaches here as f_val. vm_ad_call_closure() -> vm_call_closure_
          * from_native() silently returns NIL_VAL for anything that isn't
@@ -11692,6 +12603,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
         if (!t || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        if (vm_tensor_dtype_name_is_exact(dtype_name->data)) {
+            vm_raise_error_msg(vm, "tensor-cast: the exact tensor element type runs on the "
+                                   "native engines; it is planned for the bytecode VM in v1.4.1");
+            break;
+        }
         VmTensor* out = vm_tensor_cast_dtype(&vm->heap.regions, t,
                                              vm_tensor_dtype_from_name(dtype_name->data));
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -11704,6 +12620,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
         if (!shape || n_dims == 0 || !dtype_name) { vm_raise_error_msg(vm, "make-tensor: invalid shape or dtype"); break; }
+        if (vm_tensor_dtype_name_is_exact(dtype_name->data)) {
+            vm_raise_error_msg(vm, "make-tensor: the exact tensor element type runs on the "
+                                   "native engines; it is planned for the bytecode VM in v1.4.1");
+            break;
+        }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
         if (!t) { vm_raise_error_msg(vm, "make-tensor: invalid shape or allocation limit"); break; }
         t->dtype = vm_tensor_dtype_from_name(dtype_name->data);
@@ -11723,27 +12644,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "matmul");
         if (!b) break;   /* raised: push nothing */
-        const int mm_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
-        /* Try GPU first, fall through to CPU */
-        VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
-        if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
-        if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
-        out->dtype = vm_tensor_promote_dtype(a, b);
-        if (mm_tangent) {
-            /* d(AB) = dA B + A dB */
-            VmRegionStack* rs = &vm->heap.regions;
-            VmTensor* ta = vm_tensor_tangent_of(vm, a, "matmul");
-            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "matmul") : NULL;
-            if (!ta || !tb) break;
-            VmTensor* l = vm_tensor_matmul(rs, ta, b);
-            VmTensor* r = vm_tensor_matmul(rs, a, tb);
-            VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
-            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
-                vm_raise_error_msg(vm, "matmul: could not propagate the derivative");
-                break;
-            }
-        }
-        VM_PUSH_TENSOR(vm, out);
+        vm_push_matmul(vm, a, b);
         break;
     }
     case 441: case 442: case 443: case 444: case 445: case 446: case 447: { /* tensor binary: +,-,*,/,pow,max,min */
@@ -11834,6 +12735,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-dot");
         if (!b) break;   /* raised: push nothing */
+        if (a->n_dims != 1 || b->n_dims != 1) {
+            char message[128];
+            int rank = (a->n_dims != 1 && a->n_dims != 2) ? a->n_dims : b->n_dims;
+            if (rank != 1 && rank != 2) {
+                snprintf(message, sizeof message,
+                         "tensor-dot: only supports 1D and 2D tensors (got %dD)", rank);
+                vm_raise_error_msg(vm, message);
+                break;
+            }
+            int64_t inner_a = a->shape[a->n_dims - 1];
+            if (inner_a != b->shape[0]) {
+                snprintf(message, sizeof message,
+                         "tensor-dot: matmul inner dimensions mismatch (%lld vs %lld)",
+                         (long long)inner_a, (long long)b->shape[0]);
+                vm_raise_error_msg(vm, message);
+                break;
+            }
+            vm_push_matmul(vm, a, b);
+            break;
+        }
+        if (a->total != b->total) {
+            int scheme_vector = a_val.type == VAL_VECTOR &&
+                vm->heap.objects[a_val.as.ptr]->opaque.subtype != VM_SUBTYPE_TENSOR_LITERAL;
+            vm_raise_error_msg(vm, scheme_vector
+                ? "tensor-dot: Scheme vector lengths must match"
+                : "tensor-dot: tensor ranks and extents must match");
+            break;
+        }
         double dot_value = vm_tensor_dot(a, b);
         if (vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b)) {
             /* d(a . b) = da . b + a . db */
@@ -11889,20 +12818,50 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VM_PUSH_TENSOR(vm, out);
         break;
     }
-    case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
-        Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
+    case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis list) */
+        Value axis_arg = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
-        /* SW-202: no axis (the prelude passes #f) is a FULL reduction to a
-         * number, as on native; an explicit axis, negative ones counted from
-         * the last, reduces that axis. -1 used to mean both, so a full
-         * reduction answered a 1-element tensor on a vector and a row of
-         * partial results on a matrix. */
-        int full = axis_val.type != VAL_INT && axis_val.type != VAL_FLOAT;
-        int axis = full ? -1 : (int)as_number(axis_val);
-        if (!full && axis < 0) axis += t->n_dims;
-        if (!full && (axis < 0 || axis >= t->n_dims)) {
-            vm_raise_error_msg(vm, "tensor-reduce: axis out of range");
+        /* The second operand is the wrappers' optional-argument list (the
+         * prelude's tensor-sum/-mean/-max/-min and gpu-reduce): '() means no
+         * axis, a FULL reduction to a number, as on native; (axis ...) carries
+         * the axis the program wrote, negative ones counted from the last.
+         * Because "no axis" is the shape of the list and never a value, every
+         * value a program can write -- #f and the unspecified value included
+         * -- is an axis operand and is checked as one. A bare value (a direct
+         * call of the private name) is taken as the axis itself. */
+        int full = axis_arg.type == VAL_NIL;
+        Value axis_val = axis_arg;
+        if (axis_arg.type == VAL_PAIR && is_valid_heap_ptr(vm, axis_arg.as.ptr)) {
+            HeapObject* cell = vm->heap.objects[axis_arg.as.ptr];
+            if (cell && cell->type == HEAP_CONS) axis_val = cell->cons.car;
+        }
+        /* The axis is structural: an exact integer selects it. Any other
+         * value is a type error, as on the native engines, never a truncated
+         * or ignored axis. */
+        if (!full && axis_val.type != VAL_INT) {
+            /* The native engines' message: operation, expectation, and the
+             * operand's type in the runtime's error vocabulary. */
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "Type error in tensor-reduce-axis: expected integer axis, got %s",
+                     vm_error_operand_type_word(axis_val));
+            vm_raise_error_msg(vm, msg);
+            break;
+        }
+        int64_t axis64 = full ? -1 : axis_val.as.i;
+        if (!full && axis64 < 0) axis64 += t->n_dims;
+        if (!full && (axis64 < 0 || axis64 >= t->n_dims)) {
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "tensor-reduce-axis: axis %lld out of range for rank-%lld tensor",
+                     (long long)axis64, (long long)t->n_dims);
+            vm_raise_error_msg(vm, msg);
+            break;
+        }
+        int axis = (int)axis64;
+        if (!full && t->shape[axis] == 0) {
+            vm_raise_error_msg(vm, "tensor-reduce: cannot reduce a zero-length axis");
             break;
         }
         if (vm_tensor_has_tangent(t) && !(full && (fid == 457 || fid == 458))) {
@@ -12113,60 +13072,118 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 472: { /* linear-solve(A, b) -> x, full-f64 Ax=b (mixed-precision IR) */
+    case 472: { /* linear-solve(A, b) -> x, portable pivoted f64 VM solver */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* A = vm_tensor_operand(vm, a_val, "linear-solve");
         if (!A) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "linear-solve");
         if (!b) break;   /* raised: push nothing */
-
-        /* Dimension vectors are sized from the operands, not clipped to a
-         * fixed rank (the old `i < VM_TENSOR_MAX_DIMS` clamp silently handed
-         * the solver a truncated shape). */
-        int64_t* a_dims = (A->n_dims > 0)
-            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)A->n_dims * sizeof(int64_t)) : NULL;
-        int64_t* b_dims = (b->n_dims > 0)
-            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)b->n_dims * sizeof(int64_t)) : NULL;
-        if ((A->n_dims > 0 && !a_dims) || (b->n_dims > 0 && !b_dims)) {
-            vm_push(vm, NIL_VAL); break;
-        }
-        for (int i = 0; i < A->n_dims; i++) a_dims[i] = A->shape[i];
-        for (int i = 0; i < b->n_dims; i++) b_dims[i] = b->shape[i];
-
-        /* Solution length is A's leading dimension; the runtime validates that
-         * A is a square 2-D matrix and that b's length matches before use. */
-        int64_t n = (A->n_dims >= 1 && A->shape[0] > 0) ? A->shape[0] : 0;
-        double* x = (n > 0)
-            ? (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double))
-            : NULL;
-        if (n > 0 && !x) { vm_push(vm, NIL_VAL); break; }
-
-        int64_t status = eshkol_linear_solve(
-            A->n_dims, a_dims, b->n_dims, b_dims, A->data, b->data, x);
-
-        if (status != 0) {
-            const char* msg =
-                (status == 1) ? "linear-solve: matrix is singular" :
-                (status == 2) ? "linear-solve: A must be a square 2-D matrix" :
-                                "linear-solve: dimension mismatch (b length must equal N)";
-            VmError* e = vm_error_make(&vm->heap.regions, "error", msg, NULL, 0);
-            Value exn = NIL_VAL;
-            if (e) {
-                int32_t ep = heap_alloc(&vm->heap);
-                if (ep >= 0) {
-                    vm->heap.objects[ep]->type = HEAP_ERROR;
-                    vm->heap.objects[ep]->opaque.ptr = e;
-                    exn = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ep};
-                }
-            }
-            vm_dispatch_exception(vm, exn);
+        if (A->n_dims != 2 || !A->shape || A->shape[0] <= 0 ||
+            A->shape[0] != A->shape[1]) {
+            vm_raise_error_msg(vm,
+                "linear-solve: A must be a non-empty square rank-2 tensor");
             break;
         }
-
+        const int64_t n = A->shape[0];
+        if (n > INT64_MAX / n || (uint64_t)n > SIZE_MAX / (uint64_t)n / sizeof(double)) {
+            vm_raise_error_msg(vm, "linear-solve: matrix size overflow");
+            break;
+        }
+        const int64_t matrix_count = n * n;
+        if (A->total != matrix_count || !A->data || b->n_dims <= 0 ||
+            !b->shape || !b->data) {
+            vm_raise_error_msg(vm,
+                "linear-solve: expected a non-empty RHS tensor with N elements");
+            break;
+        }
+        int64_t rhs_count = 1;
+        int bad_rhs_shape = 0;
+        for (int i = 0; i < b->n_dims; ++i) {
+            if (b->shape[i] < 0 ||
+                (b->shape[i] != 0 && rhs_count > INT64_MAX / b->shape[i])) {
+                bad_rhs_shape = 1;
+                break;
+            }
+            rhs_count *= b->shape[i];
+        }
+        if (bad_rhs_shape || rhs_count != n || b->total != n) {
+            vm_raise_error_msg(vm,
+                "linear-solve: dimension mismatch (b must contain N elements)");
+            break;
+        }
+        if ((uint64_t)n > SIZE_MAX / sizeof(double)) {
+            vm_raise_error_msg(vm, "linear-solve: solution size overflow");
+            break;
+        }
+        double* x = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
+        if (!x) {
+            vm_raise_error_msg(vm, "linear-solve: allocation failed");
+            break;
+        }
+        const int status = eshkol_linear_solve_portable(A->data, b->data, x, n);
+        if (status != ESHKOL_LINEAR_SOLVE_PORTABLE_OK) {
+            const char* msg =
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_SINGULAR
+                    ? "linear-solve: matrix is singular" :
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_NONFINITE
+                    ? "linear-solve: inputs or computed solution must be finite" :
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_OUT_OF_MEMORY
+                    ? "linear-solve: workspace allocation failed" :
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_SIZE_OVERFLOW
+                    ? "linear-solve: matrix size overflow" :
+                      "linear-solve: invalid solver arguments";
+            vm_raise_error_msg(vm, msg);
+            break;
+        }
         int64_t shape[1] = { n };
         VmTensor* out = vm_tensor_from_data(&vm->heap.regions, x, shape, 1);
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) {
+            vm_raise_error_msg(vm, "linear-solve: result allocation failed");
+            break;
+        }
         VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+
+    case 479: { /* tensor-inverse(A): checked pivoted elimination, f64 matrix */
+        Value av = vm_pop(vm);
+        VmTensor* a = vm_tensor_operand(vm, av, "tensor-inverse");
+        if (!a) break;
+        if (a->n_dims != 2 || a->shape[0] != a->shape[1] || a->shape[0] <= 0) {
+            vm_raise_error_msg(vm, "tensor-inverse: expected a non-empty square matrix");
+            break;
+        }
+        int64_t n = a->shape[0];
+        if ((uint64_t)n > SIZE_MAX / (uint64_t)n / sizeof(double)) {
+            vm_raise_error_msg(vm, "tensor-inverse: matrix size overflow");
+            break;
+        }
+        size_t count = (size_t)n * (size_t)n;
+        double* work = (double*)vm_alloc(&vm->heap.regions, count * sizeof(double));
+        if (!work) {
+            vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
+            break;
+        }
+        int64_t shape[2] = { n, n };
+        VmTensor* out = vm_tensor_new(&vm->heap.regions, shape, 2);
+        if (!out) {
+            vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
+            break;
+        }
+        int status = eshkol_tensor_inverse_checked(a->data, work, out->data, n);
+        if (status != ESHKOL_TENSOR_INVERSE_OK) {
+            const char* message = status == ESHKOL_TENSOR_INVERSE_SINGULAR
+                ? "tensor-inverse: matrix is singular"
+                : status == ESHKOL_TENSOR_INVERSE_NONFINITE
+                    ? "tensor-inverse: matrix or result is non-finite"
+                    : status == ESHKOL_TENSOR_INVERSE_SIZE
+                        ? "tensor-inverse: matrix size overflow"
+                        : "tensor-inverse: invalid matrix";
+            vm_raise_error_msg(vm, message);
+            goto tensor_inverse_done;
+        }
+        VM_PUSH_TENSOR(vm, out);
+tensor_inverse_done:
         break;
     }
 
@@ -12412,41 +13429,50 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 520: { /* make-factor-graph(num_vars, var_dims) */
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
-        int nv = (int)as_number(nvars_val);
-        int var_dims[64]; int nd = 0;
+        /* Admission matches eshkol_make_factor_graph_tagged() in
+         * lib/core/inference.cpp: a positive integer variable count, one
+         * positive integer state count per variable (a bare number gives
+         * every variable that many states), each condition catchable. */
+        double count = as_number_vm(vm, nvars_val);
+        if (!isfinite(count) || count != floor(count) || count < 1 || count > INT_MAX) {
+            vm_raise_error_msg(vm, "make-factor-graph: variable count must be a positive integer");
+            break;
+        }
+        int nv = (int)count;
         /* var-dims is read by the one factor-graph sequence reader, so the
          * documented `#(2 2 2)` literal (a VECTOR in the VM, a TENSOR
          * natively), a `(2 2 2)` list and a bare scalar all mean the same
-         * thing.  The tensor-or-list reader this replaces matched neither the
-         * documented literal nor a vector: dims collapsed to a single
-         * degenerate dimension, so every multi-variable factor graph silently
-         * became single-variable and inference/free-energy went degenerate. */
+         * thing. */
         int dseq_n = 0;
         const double* dseq = vm_fg_seq_doubles(vm, dims_val, &dseq_n);
-        for (int i = 0; i < dseq_n && nd < 64; i++) {
-            int d = (int)dseq[i];
-            var_dims[nd++] = (d > 0) ? d : 2;   /* a non-positive dim is not a
-                                                 * variable domain; binary is
-                                                 * the documented default */
+        int broadcast = dseq_n == 1 && vm_tensor_collection_len(vm, dims_val) < 0;
+        if (!dseq || (dseq_n < nv && !broadcast)) {
+            vm_raise_error_msg(vm, "make-factor-graph: supply one dimension per variable");
+            break;
         }
-        /* A BARE SCALAR dims argument means "every variable has this many
-         * states", so `(make-factor-graph 2 2)` is a two-variable graph and
-         * `(fg-marginal fg 1)` is a marginal rather than `()`.  Read as a
-         * one-element sequence it hits the clamp below and cuts num_vars to 1,
-         * where the native engine broadcasts — SW-07's own reproducer.  Only a
-         * genuine scalar LEAF broadcasts: a short sequence is an operand
-         * mismatch, not a broadcast, and still clamps. */
-        if (nd == 1 && nv > 1 && vm_tensor_collection_len(vm, dims_val) < 0) {
-            for (int i = 1; i < nv && i < 64; i++) var_dims[i] = var_dims[0];
-            nd = (nv < 64) ? nv : 64;
+        int* var_dims = (int*)vm_alloc(&vm->heap.regions, (size_t)nv * sizeof(int));
+        if (!var_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: allocation failed");
+            break;
         }
-        if (nd == 0) {                          /* dims omitted/unreadable */
-            int want = (nv > 0 && nv < 64) ? nv : 0;
-            for (int i = 0; i < want; i++) var_dims[nd++] = 2;
+        int valid_dims = 1;
+        for (int i = 0; i < nv; ++i) {
+            double extent = dseq[broadcast ? 0 : i];
+            if (!isfinite(extent) || extent != floor(extent) || extent < 1 || extent > INT_MAX) {
+                valid_dims = 0;
+                break;
+            }
+            var_dims[i] = (int)extent;
         }
-        if (nd < nv) nv = nd;
+        if (!valid_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: state counts must be positive integers");
+            break;
+        }
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
-        if (!fg) { vm_push(vm, NIL_VAL); break; }
+        if (!fg) {
+            vm_raise_error_msg(vm, "make-factor-graph: allocation failed");
+            break;
+        }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_FACTOR_GRAPH, VAL_FACTOR_GRAPH, fg);
         break;
     }
@@ -12467,22 +13493,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * reader this replaces silently dropped every factor added
                  * with the documented literal form (n_vars stayed 0), which
                  * left beliefs uniform and free-energy at -0.0. */
-                int var_idx[8], n_vars = 0;
+                int var_idx[VM_FACTOR_MAX_ARITY], n_vars = 0;
                 int vseq_n = 0;
                 const double* vseq = vm_fg_seq_doubles(vm, vars, &vseq_n);
-                for (int i = 0; i < vseq_n && n_vars < 8; i++)
-                    var_idx[n_vars++] = (int)vseq[i];
+                if (vseq_n > VM_FACTOR_MAX_ARITY) {
+                    vm_raise_error_msg(vm, "fg-add-factor!: supports at most 32 variables per factor");
+                    break;
+                }
+                for (int i = 0; i < vseq_n; ++i) {
+                    double index = vseq[i];
+                    if (!isfinite(index) || index != floor(index) || index < 0 || index >= fg->num_vars)
+                        break;
+                    var_idx[n_vars++] = (int)index;
+                }
+                if (n_vars != vseq_n) {
+                    vm_raise_error_msg(vm, "fg-add-factor!: invalid variable index");
+                    break;
+                }
 
                 int cpt_n = 0;
                 const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
 
                 if (n_vars > 0 && cpt_data) {
                     /* Build dims array from factor graph's var_dims */
-                    int dims[8];
+                    int dims[VM_FACTOR_MAX_ARITY];
                     int need = 1;
                     for (int i = 0; i < n_vars; i++) {
                         int vi = var_idx[i];
-                        dims[i] = (vi >= 0 && vi < fg->num_vars) ? fg->var_dims[vi] : 2;
+                        if (need > INT_MAX / fg->var_dims[vi]) {
+                            need = 0;
+                            break;
+                        }
+                        dims[i] = fg->var_dims[vi];
                         need *= dims[i];
                     }
                     /* vm_make_factor() copies exactly `need` doubles out of
@@ -12492,6 +13534,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
                      * reports the mismatch without aborting the program
                      * (lib/core/inference.cpp, eshkol_fg_add_factor_tagged);
                      * mirror both halves of that contract. */
+                    if (need == 0) {
+                        vm_raise_error_msg(vm, "fg-add-factor!: invalid variables or configuration count");
+                        break;
+                    }
                     if (cpt_n == need) {
                         VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
                         if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);
@@ -12929,27 +13975,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         break;
     }
-    case 565: { /* string->list — convert string to list of character codepoints */
-        Value s_val = vm_pop(vm);
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            int len = vm_string_length(s);
-            Value result = NIL_VAL;
-            for (int i = len - 1; i >= 0; i--) {
-                int cp = vm_string_ref(s, i);
-                int32_t p = heap_alloc(&vm->heap);
-                if (p < 0) break;
-                vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0};
-                vm->heap.objects[p]->cons.cdr = result;
-                result = PAIR_VAL(p);
-            }
-            vm_push(vm, result);
-        } else {
-            vm_push(vm, NIL_VAL);
-        }
-        break;
-    }
+    case 565: vm_exec_string_to_list(vm); break; /* string->list */
     case 566: { /* string-copy */
         Value s_val = vm_pop(vm);
         VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
@@ -14225,6 +15251,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2032: { /* dlopen(path) → handle or #f */
         Value path_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "ffi", "dlopen")) break;
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
         VmString* path = vm_value_as_string(vm, path_val);
         if (path && path->data) {
@@ -14244,6 +15271,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2033: { /* dlsym(handle, name) → pointer-integer or #f */
         Value name_val = vm_pop(vm), handle_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "ffi", "dlsym")) break;
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
         int handle = (int)as_number(handle_val);
         VmString* name = vm_value_as_string(vm, name_val);
@@ -14459,6 +15487,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2042: { /* http-server-create(port) → server or #f */
         Value port_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "http-server-create")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         int requested_port = (int)as_number(port_val);
         int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -14598,6 +15627,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2047: { /* http-request(method, url, headers, body, timeout-ms) → (status headers body) or #f */
         Value timeout_val = vm_pop(vm), body_val = vm_pop(vm), headers_val = vm_pop(vm);
         Value url_val = vm_pop(vm), method_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "http-request")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* method = vm_value_as_string(vm, method_val);
         VmString* url = vm_value_as_string(vm, url_val);
@@ -14608,24 +15638,58 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int port = 80;
         int timeout_ms = (int)as_number(timeout_val);
         if (timeout_ms <= 0) timeout_ms = 30000;
-        if (method && method->data && method->byte_len > 0 &&
-            vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+        /* The request line and the header block are decided against the
+         * protocol grammar before a socket exists; the refusal is an ordinary
+         * VM error naming the field that does not fit. */
+        char method_text[64];
+        if (!method || !method->data || method->byte_len <= 0 ||
+            (size_t)method->byte_len >= sizeof(method_text)) {
+            vm_raise_error_msg(vm, "http-request: method does not fit the protocol grammar");
+            break;
+        }
+        memcpy(method_text, method->data, (size_t)method->byte_len);
+        method_text[method->byte_len] = '\0';
+        const char* header_block = (headers && headers->data) ? headers->data : "";
+        const char* offending =
+            eshkol_http_request_offending_field(method_text, NULL, header_block);
+        if (offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "http-request: %s does not fit the protocol grammar", offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char rendered_headers[4096];
+        if (!eshkol_http_render_header_block(header_block, rendered_headers,
+                                             sizeof(rendered_headers), NULL)) {
+            vm_raise_error_msg(vm, "http-request: header does not fit the protocol grammar");
+            break;
+        }
+        if (vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "http-request: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_authority(host)) {
+                vm_raise_error_msg(vm,
+                    "http-request: Host header does not fit the protocol grammar");
+                break;
+            }
             int fd = vm_http_connect(host, port, timeout_ms);
             if (fd >= 0) {
                 const char* body_data = (body && body->data) ? body->data : "";
                 int64_t body_len = (body && body->data) ? body->byte_len : 0;
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char header[8192];
                 int hlen = snprintf(header, sizeof(header),
-                                    "%.*s %s HTTP/1.1\r\n"
+                                    "%s %s HTTP/1.1\r\n"
                                     "Host: %s\r\n"
                                     "Connection: close\r\n"
-                                    "%s%s"
+                                    "%s"
                                     "Content-Length: %lld\r\n\r\n",
-                                    (int)method->byte_len, method->data,
+                                    method_text,
                                     path, host,
-                                    extra_headers,
-                                    extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                                    rendered_headers,
                                     (long long)body_len);
                 int ok = hlen > 0 && hlen < (int)sizeof(header);
                 if (ok) {
@@ -14637,33 +15701,86 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     ok = sent == body_len;
                 }
                 if (ok) {
-                    int cap = 65536;
-                    char* response = (char*)malloc((size_t)cap + 1);
+                    size_t cap = 65536;
+                    size_t total = 0;
+                    int oversized = 0;
+                    char* response = (char*)malloc(cap + 1);
                     if (response) {
-                        int total = 0;
-                        while (total < cap) {
-                            ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
+                        for (;;) {
+                            if (total == cap) {
+                                if (cap >= ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES) {
+                                    char probe = 0;
+                                    ssize_t extra = recv(fd, &probe, 1, 0);
+                                    if (extra > 0) oversized = 1;
+                                    break;
+                                }
+                                size_t next_cap = cap * 2;
+                                if (next_cap > ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES)
+                                    next_cap = ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES;
+                                char* grown = (char*)realloc(response, next_cap + 1);
+                                if (!grown) {
+                                    free(response);
+                                    response = NULL;
+                                    break;
+                                }
+                                response = grown;
+                                cap = next_cap;
+                            }
+                            ssize_t n = recv(fd, response + total, cap - total, 0);
                             if (n <= 0) break;
-                            total += (int)n;
+                            total += (size_t)n;
+                        }
+                        close(fd);
+                        if (!response) {
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        if (oversized) {
+                            free(response);
+                            vm_raise_error_msg(vm,
+                                "http-request: oversized HTTP response does not fit the protocol grammar");
+                            break;
                         }
                         response[total] = '\0';
-                        close(fd);
-                        int status = 0;
-                        (void)sscanf(response, "HTTP/%*s %d", &status);
-                        char* body_start = strstr(response, "\r\n\r\n");
-                        int header_len = total;
-                        int body_offset = total;
-                        if (body_start) {
-                            body_start += 4;
-                            body_offset = (int)(body_start - response);
-                            header_len = body_offset - 4;
-                        } else {
-                            body_start = response + total;
+                        eshkol_http_parsed_response_t parsed;
+                        const char* resp_offending = NULL;
+                        if (!eshkol_http_parse_response(response, total, &parsed, &resp_offending)) {
+                            char message[160];
+                            snprintf(message, sizeof(message),
+                                     "http-request: %s does not fit the protocol grammar",
+                                     resp_offending ? resp_offending : "response");
+                            free(response);
+                            vm_raise_error_msg(vm, message);
+                            break;
                         }
-                        Value result = vm_http_response_value(vm, status,
-                                                              response, header_len,
-                                                              body_start,
-                                                              total - body_offset);
+                        const char* body_ptr = response + parsed.body_offset;
+                        size_t body_len = parsed.body_length;
+                        char* decoded = NULL;
+                        if (parsed.is_chunked) {
+                            decoded = (char*)malloc(parsed.body_length + 1);
+                            if (!decoded) {
+                                free(response);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            size_t decoded_len = 0;
+                            if (!eshkol_http_decode_chunked(body_ptr, parsed.body_length,
+                                                            decoded, parsed.body_length,
+                                                            &decoded_len)) {
+                                free(decoded);
+                                free(response);
+                                vm_raise_error_msg(vm,
+                                    "http-request: chunked response body does not fit the protocol grammar");
+                                break;
+                            }
+                            decoded[decoded_len] = '\0';
+                            body_ptr = decoded;
+                            body_len = decoded_len;
+                        }
+                        Value result = vm_http_response_value(vm, parsed.status,
+                                                              response, (int)parsed.header_length,
+                                                              body_ptr, (int)body_len);
+                        free(decoded);
                         free(response);
                         vm_push(vm, result);
                         break;
@@ -14680,16 +15797,54 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2048: { /* websocket-connect(url, headers) → ws or #f */
         Value headers_val = vm_pop(vm), url_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "websocket-connect")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* url = vm_value_as_string(vm, url_val);
         VmString* headers = vm_value_as_string(vm, headers_val);
         char host[256];
         char path[2048];
         int port = 80;
+        const char* ws_header_block = (headers && headers->data) ? headers->data : "";
+        const char* ws_offending =
+            eshkol_http_request_offending_field_ex("GET", NULL,
+                                                   ws_header_block, 1);
+        if (ws_offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "websocket-connect: %s does not fit the protocol grammar",
+                     ws_offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char ws_rendered_headers[2048];
+        if (!eshkol_http_render_header_block(ws_header_block, ws_rendered_headers,
+                                             sizeof(ws_rendered_headers), NULL)) {
+            vm_raise_error_msg(vm,
+                "websocket-connect: header does not fit the protocol grammar");
+            break;
+        }
         if (vm_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_authority(host)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: Host header does not fit the protocol grammar");
+                break;
+            }
+            /* One key per handshake, from the operating system's
+             * cryptographic source; the server's answer is checked against
+             * it, so without a key there is no handshake to make. */
+            char ws_key[ESHKOL_WS_KEY_CAPACITY];
+            if (!eshkol_ws_generate_key(ws_key, sizeof(ws_key))) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: the cryptographic source for Sec-WebSocket-Key is unavailable");
+                break;
+            }
             int fd = vm_http_connect(host, port, 5000);
             if (fd >= 0) {
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char request[4096];
                 int n = snprintf(request, sizeof(request),
                                  "GET %s HTTP/1.1\r\n"
@@ -14697,19 +15852,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
                                  "Upgrade: websocket\r\n"
                                  "Connection: Upgrade\r\n"
                                  "Sec-WebSocket-Version: 13\r\n"
-                                 "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
-                                 "%s%s"
+                                 "Sec-WebSocket-Key: %s\r\n"
+                                 "%s"
                                  "\r\n",
-                                 path, host, extra_headers,
-                                 extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                                 path, host, ws_key, ws_rendered_headers);
                 if (n > 0 && n < (int)sizeof(request) &&
                     vm_ws_send_all(fd, request, (size_t)n)) {
                     char response[4096];
                     ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
                     if (r > 0) {
                         response[r] = '\0';
-                        if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
-                            strstr(response, " 101\n")) {
+                        /* RFC 6455 section 4.1: 101, the Upgrade and
+                         * Connection fields, and a Sec-WebSocket-Accept
+                         * equal to the value derived from this key. */
+                        if (eshkol_ws_handshake_refusal(response, (size_t)r,
+                                                        ws_key) == NULL) {
                             int handle = vm_ws_store(vm, fd);
                             if (handle > 0) {
                                 vm_push(vm, INT_VAL((int64_t)handle));
@@ -14776,45 +15933,144 @@ static void vm_dispatch_native(VM* vm, int fid) {
             pfd.revents = 0;
             if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
                 unsigned char hdr[2];
-                if (recv(fd, hdr, 2, MSG_WAITALL) == 2) {
+                if (recv(fd, hdr, 2, MSG_WAITALL) != 2) {
+                    vm_ws_fail_connection(vm, handle, 0);
+                    vm_push(vm, BOOL_VAL(0));
+                    break;
+                }
+                {
+                    int fin = (hdr[0] & 0x80) != 0;
                     int opcode = hdr[0] & 0x0f;
-                    int masked = hdr[1] & 0x80;
                     uint64_t len = hdr[1] & 0x7f;
+                    int short_read = 0;
                     if (len == 126) {
                         unsigned char ext[2];
-                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) len = 65537;
+                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) short_read = 1;
                         else len = ((uint64_t)ext[0] << 8) | ext[1];
                     } else if (len == 127) {
                         unsigned char ext[8];
-                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) len = 65537;
+                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) short_read = 1;
                         else {
                             len = 0;
                             for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
                         }
                     }
-                    unsigned char mask[4] = {0, 0, 0, 0};
-                    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) len = 65537;
-                    if (len <= 65536) {
+                    if (short_read) {
+                        vm_ws_fail_connection(vm, handle, 0);
+                        vm_push(vm, BOOL_VAL(0));
+                        break;
+                    }
+                    /* Judged before a byte of payload is read; a refusal fails
+                     * the connection rather than leaving the stream mid-frame
+                     * with the next frame header under the peer's control. */
+                    {
+                        const int in_fragment =
+                            vm->websocket_clients[handle].fragment_opcode != 0;
+                        const eshkol_ws_frame_verdict verdict =
+                            eshkol_ws_examine_frame(hdr[0], hdr[1], len,
+                                                    in_fragment);
+                        if (verdict != ESHKOL_WS_FRAME_OK) {
+                            vm_ws_fail_connection(
+                                vm, handle, eshkol_ws_frame_close_code(verdict));
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                    }
+                    {
                         char* payload = (char*)malloc((size_t)len + 1);
-                        if (payload) {
-                            if (recv(fd, payload, (size_t)len, MSG_WAITALL) == (ssize_t)len) {
-                                if (masked) {
-                                    for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
-                                }
-                                payload[len] = '\0';
-                                const char* type = opcode == 1 ? "text" :
-                                                   opcode == 2 ? "binary" :
-                                                   opcode == 9 ? "ping" :
-                                                   opcode == 8 ? "close" : "unknown";
-                                if (opcode == 8) vm->websocket_clients[handle].closed = 1;
-                                Value result = vm_cons_value(vm,
-                                    vm_string_value(vm, type, -1),
+                        if (!payload) {
+                            vm_ws_fail_connection(vm, handle, 1011);
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        if (len > 0 &&
+                            recv(fd, payload, (size_t)len, MSG_WAITALL) !=
+                                (ssize_t)len) {
+                            free(payload);
+                            vm_ws_fail_connection(vm, handle, 0);
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        payload[len] = '\0';
+                        if (opcode & 0x08) {
+                            const char* control_type =
+                                opcode == 9 ? "ping" :
+                                opcode == 10 ? "pong" :
+                                opcode == 8 ? "close" : "unknown";
+                            if (opcode == 9)
+                                (void)vm_ws_send_frame(fd, 10, payload,
+                                                       (size_t)len);
+                            if (opcode == 8)
+                                vm->websocket_clients[handle].closed = 1;
+                            {
+                                Value control = vm_cons_value(vm,
+                                    vm_string_value(vm, control_type, -1),
                                     vm_string_value(vm, payload, (int64_t)len));
                                 free(payload);
-                                vm_push(vm, result);
+                                vm_push(vm, control);
+                            }
+                            break;
+                        }
+                        {
+                            int message_opcode =
+                                opcode == 0
+                                    ? vm->websocket_clients[handle].fragment_opcode
+                                    : opcode;
+                            size_t total =
+                                vm->websocket_clients[handle].fragment_length +
+                                (size_t)len;
+                            char* gathered;
+                            if (total > eshkol_ws_max_frame_bytes()) {
+                                free(payload);
+                                vm_ws_fail_connection(vm, handle, 1009);
+                                vm_push(vm, BOOL_VAL(0));
                                 break;
                             }
+                            gathered = (char*)realloc(
+                                vm->websocket_clients[handle].fragment_data,
+                                total + 1);
+                            if (!gathered) {
+                                free(payload);
+                                vm_ws_fail_connection(vm, handle, 1011);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            if (len > 0)
+                                memcpy(gathered +
+                                           vm->websocket_clients[handle]
+                                               .fragment_length,
+                                       payload, (size_t)len);
+                            gathered[total] = '\0';
                             free(payload);
+                            vm->websocket_clients[handle].fragment_data = gathered;
+                            vm->websocket_clients[handle].fragment_length = total;
+                            if (!fin) {
+                                vm->websocket_clients[handle].fragment_opcode =
+                                    message_opcode;
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            vm->websocket_clients[handle].fragment_opcode = 0;
+                            vm->websocket_clients[handle].fragment_data = NULL;
+                            vm->websocket_clients[handle].fragment_length = 0;
+                            if (message_opcode == 1 &&
+                                !eshkol_ws_valid_utf8(gathered, total)) {
+                                free(gathered);
+                                vm_ws_fail_connection(vm, handle, 1007);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            {
+                                Value result = vm_cons_value(vm,
+                                    vm_string_value(vm,
+                                        message_opcode == 1 ? "text" : "binary",
+                                        -1),
+                                    vm_string_value(vm, gathered,
+                                                    (int64_t)total));
+                                free(gathered);
+                                vm_push(vm, result);
+                            }
+                            break;
                         }
                     }
                 }
@@ -14833,6 +16089,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
             (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8, "", 0);
             close(vm->websocket_clients[handle].fd);
+            if (vm->websocket_clients[handle].fragment_data)
+                free(vm->websocket_clients[handle].fragment_data);
 #endif
             memset(&vm->websocket_clients[handle], 0, sizeof(vm->websocket_clients[handle]));
             vm_push(vm, BOOL_VAL(1));
@@ -15730,6 +16988,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 661: { /* hash-ref(ht, key, default) */
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
+        /* The compiler pads an omitted optional operand with VAL_VOID. */
+        if (vm_native_absent(dflt)) dflt = BOOL_VAL(0);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             Value* result = (Value*)vm_ht_ref(ht, &key, NULL);
@@ -15853,6 +17113,71 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmBytevector* bv = vm_bv_make(&vm->heap.regions, (int)as_number(n), (int)as_number(fill));
         if (!bv) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2250: { /* bytevector(byte...) — rest arguments arrive as a list. */
+        Value rest = vm_pop(vm);
+        int len = 0;
+        int validation_failed = 0;
+        Value cur = rest;
+        while (cur.type == VAL_PAIR) {
+            if (!is_heap_type(vm, cur, HEAP_CONS)) {
+                vm_raise_error_msg(vm, "bytevector: expected a proper list of exact integers in [0,255]");
+                validation_failed = 1;
+                break;
+            }
+            Value item = vm->heap.objects[cur.as.ptr]->cons.car;
+            if (item.type != VAL_INT || item.as.i < 0 || item.as.i > 255) {
+                vm_raise_error_msg(vm, "bytevector: expected exact integers in [0,255]");
+                validation_failed = 1;
+                break;
+            }
+            if (len == INT_MAX) {
+                vm_raise_error_msg(vm, "bytevector: argument list is too long");
+                validation_failed = 1;
+                break;
+            }
+            ++len;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (validation_failed) break;
+        if (cur.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "bytevector: expected a proper list of exact integers in [0,255]");
+            break;
+        }
+        VmBytevector* bv = vm_bv_make(&vm->heap.regions, len, 0);
+        if (!bv) {
+            vm_raise_error_msg(vm, "bytevector: allocation failed");
+            break;
+        }
+        cur = rest;
+        for (int i = 0; i < len; ++i) {
+            HeapObject* cell = vm->heap.objects[cur.as.ptr];
+            bv->data[i] = (uint8_t)cell->cons.car.as.i;
+            cur = cell->cons.cdr;
+        }
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2251: { /* VM-local counterpart of eshkol_logic_registry_reset. */
+        vm_logic_var_reset();
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+    case 2253: { /* capability-runtime-clear-raw: drop the policy, if allowed.
+                  * An active policy refuses: it is not the governed code's to
+                  * remove. Answers 1 when no policy is left, 0 when refused. */
+        vm_push(vm, INT_VAL((int64_t)eshkol_capability_runtime_clear()));
+        break;
+    }
+    case 2254: { /* capability-runtime-install-raw(names): install the whole set
+                  * at once. The runtime intersects it with any active policy
+                  * and swaps under one lock, so there is no window in which a
+                  * policy is active with its set half-assembled. */
+        Value names_val = vm_pop(vm);
+        VmString* names = vm_value_as_string(vm, names_val);
+        vm_push(vm, INT_VAL((int64_t)eshkol_capability_runtime_install(
+            names && names->data ? names->data : "")));
         break;
     }
     case 681: { /* bytevector-length */
@@ -16018,24 +17343,39 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 688: { /* utf8->string(bv) */
+    case 688:   /* utf8->string(bv) */
+    case 2217:  /* utf8->string(bv, start) */
+    case 2218: { /* utf8->string(bv, start, end) */
+        Value end_val = fid == 2218 ? vm_pop(vm) : NIL_VAL;
+        Value start_val = fid != 688 ? vm_pop(vm) : INT_VAL(0);
         Value bv_val = vm_pop(vm);
-        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
-            VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
-            if (bv) {
-                VmString* s = vm_string_new(&vm->heap.regions, (const char*)bv->data, bv->len);
-                if (s) {
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr >= 0) {
-                        vm->heap.objects[ptr]->type = HEAP_STRING;
-                        vm->heap.objects[ptr]->opaque.ptr = s;
-                        vm_push(vm, (Value){.type = VAL_STRING, .as.ptr = ptr});
-                        break;
-                    }
-                }
+        if (!is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
+            vm_raise_error_msg(vm, "utf8->string: expected bytevector"); break;
+        }
+        VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
+        if (!bv) { vm_raise_error_msg(vm, "utf8->string: expected bytevector"); break; }
+        if (start_val.type != VAL_INT || (fid == 2218 && end_val.type != VAL_INT)) {
+            vm_raise_error_msg(vm, "utf8->string: expected exact integer index"); break;
+        }
+        int64_t start = start_val.as.i;
+        int64_t end = fid == 2218 ? end_val.as.i : bv->len;
+        if (start < 0 || end < start || end > bv->len) {
+            vm_raise_error_msg(vm, "utf8->string: index out of bounds"); break;
+        }
+        if (!vm_bv_utf8_is_valid(bv->data + start, (int)(end - start))) {
+            vm_raise_error_msg(vm, "utf8->string: invalid UTF-8 sequence"); break;
+        }
+        VmString* s = vm_bv_utf8_to_string(&vm->heap.regions, bv, (int)start, (int)end);
+        if (s) {
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr >= 0) {
+                vm->heap.objects[ptr]->type = HEAP_STRING;
+                vm->heap.objects[ptr]->opaque.ptr = s;
+                vm_push(vm, (Value){.type = VAL_STRING, .as.ptr = ptr});
+                break;
             }
         }
-        vm_push(vm, NIL_VAL);
+        vm_raise_error_msg(vm, "utf8->string: allocation failed");
         break;
     }
     case 689:   /* string->utf8(str) */
@@ -16202,10 +17542,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
      *   one variable with tangent=1 and the rest with tangent=0. The
      *   tangent of the result gives the partial derivative ∂f/∂xi.
      *
-     *   Hessian uses central difference of exact gradients:
-     *     f''(x) ≈ (f'(x+h) - f'(x-h)) / (2h)
-     *   where f' is computed exactly via dual numbers, giving O(h²)
-     *   accuracy with exact first derivatives.
+     *   The scalar Hessian takes an order-two Taylor coefficient. Vector
+     *   Hessians take mixed coefficients from nested Taylor levels or
+     *   hyper-dual directions according to the carrier and closure arity.
      *
      * Helper: vm_ad_make_dual_val — allocate a dual on the heap, return Value
      * Helper: vm_ad_extract_point — read point from scalar/list/tensor
@@ -16266,10 +17605,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 752: { /* hessian(f, point) → EXACT second derivative via hyper-dual numbers
-                 * Scalar: seed x = (x,1,1,0) → f₁₂ = f''(x)
-                 * Multi-var: H[i][j] = ∂²f/∂xᵢ∂xⱼ via hyper-dual seeding
-                 * NO finite differences — mathematically exact. */
+    case 752: { /* hessian */
 #define VM_HD_MAKE(vm, fv, f1v, f2v, f12v, out) do { \
     VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
     if (!_h) { (out) = FLOAT_VAL(0); break; } \
@@ -16312,15 +17648,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
             for (int i = 0; i < n; i++) {
                 for (int j = i; j < n; j++) {
                     Value r;
-                    uint32_t hess_e1 = 0, hess_e2 = 0;
+                    uint64_t hess_e1 = 0, hess_e2 = 0;
                     if (vm_closure_arity(vm, f_val) == 1) {
                         /* A unary collection loss receives one vector, just
                          * like gradient. Two nested order-1 levels carry the
                          * two directions (ADR-0027): x_k = p_k + d_ki t1 +
                          * d_kj t2, and H_ij is the t2-coefficient of the
                          * t1-coefficient of the result. */
-                        uint32_t e1 = vm_dual_next_taylor_epoch();
-                        uint32_t e2 = vm_dual_next_taylor_epoch();
+                        uint64_t e1 = vm_dual_next_taylor_epoch();
+                        uint64_t e2 = vm_dual_next_taylor_epoch();
                         for (int k = 0; k < n; k++) {
                             VmDual* x = vm_dual_constant(&vm->heap.regions, point[k], NULL);
                             if (x && k == i) x = vm_dual_level_seed(&vm->heap.regions, x, 1, e1);
@@ -16671,7 +18007,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Compiler-required native functions (merged from eshkol_compiler.c)
+     * VM native-call handlers, including code historically shared with the retired compiler
      * ══════════════════════════════════════════════════════════════════════ */
 
     case 100: /* build-string-from-packed: TOS has packed chars, below that length */
@@ -16807,6 +18143,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case VM_NATIVE_MATCH_LITERAL: {
+        /* A literal pattern matches a value equal to it: equal?, which
+         * compares numbers, characters, booleans and symbols by eqv? and
+         * strings and quoted compound data by structure. Native match uses
+         * the same rule through the runtime equal? routine. */
+        Value literal = vm_pop(vm), subject = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_deep_equal(vm, subject, literal)));
+        break;
+    }
     case 133: { /* eq?: identity equality */
         Value b = vm_pop(vm), a = vm_pop(vm);
         vm_push(vm, BOOL_VAL(vm_identity_equal(vm, a, b)));
@@ -16835,15 +18180,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */
-        if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr]; vm_push(vm, o->cons.car); }
+        if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr];
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = vm->active_tape
+                    ? heap_ad_pair_field_node(&vm->heap, a.as.ptr, vm->ad_tape_generation, 0) : -1;
+            vm_push(vm, o->cons.car); }
         else { fprintf(stderr, "CAR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
     case 201: { Value a = vm_pop(vm); /* cdr */
-        if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr]; vm_push(vm, o->cons.cdr); }
+        if (a.type == VAL_PAIR) { HeapObject* o = vm->heap.objects[a.as.ptr];
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = vm->active_tape
+                    ? heap_ad_pair_field_node(&vm->heap, a.as.ptr, vm->ad_tape_generation, 1) : -1;
+            vm_push(vm, o->cons.cdr); }
         else { fprintf(stderr, "CDR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
-    case 202: { Value b = vm_pop(vm), a = vm_pop(vm); /* cons */
+    /* Native calls push arguments left-to-right, so unlike OP_CONS the cdr
+     * is on top and the car is one slot below it. */
+    case 202: { int car_node = vm->active_tape ? vm->ad_node_map[vm->sp - 2] : -1;
+        int cdr_node = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
+        Value b = vm_pop(vm), a = vm_pop(vm); /* cons */
         int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
         vm->heap.objects[p]->type = HEAP_CONS;
         vm->heap.objects[p]->cons.car = a; vm->heap.objects[p]->cons.cdr = b;
+        if (vm->active_tape && !heap_ad_pair_nodes_set(&vm->heap, p,
+                vm->ad_tape_generation, car_node, cdr_node)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair metadata allocation failed");
+            break;
+        }
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = -1;
         vm_push(vm, (Value){VAL_PAIR, {.ptr = p}}); break; }
     case 203: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_NIL)); break; }  /* null? */
     case 204: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_PAIR)); break; } /* pair? */
@@ -17002,22 +18365,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 219: vm_exec_vec_ref(vm); break; /* vector-ref */
     case 220: vm_exec_vec_set(vm); break; /* vector-set! */
     case 221: vm_exec_vec_len(vm); break; /* vector-length */
-    case 222: { /* string->list */
-        Value s_val = vm_pop(vm);
-        Value result = NIL_VAL;
-        if (s_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            if (s) for (int i = s->char_len - 1; i >= 0; i--) {
-                int cp = vm_string_ref(s, i);
-                int32_t p = heap_alloc(&vm->heap); if (p < 0) break;
-                vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = (Value){.type = VAL_CHAR, .as.i = cp};
-                vm->heap.objects[p]->cons.cdr = result;
-                result = PAIR_VAL(p);
-            }
-        }
-        vm_push(vm, result); break;
-    }
+    case 222: vm_exec_string_to_list(vm); break; /* string->list */
     case 223: { /* list->string */
         Value lst = vm_pop(vm);
         vm_push(vm, vm_list_to_string_value(vm, lst));
@@ -17274,6 +18622,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 250: { /* atan2 */
+        if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "atan2") ||
+            vm_ad_reject_untraced_input(vm, vm->sp - 1, "atan2")) break;
         Value x = vm_pop(vm), y = vm_pop(vm);
         if ((x.type == VAL_DUAL || y.type == VAL_DUAL) &&
             as_number_vm(vm, x) == 0.0 && as_number_vm(vm, y) == 0.0) {
@@ -17328,6 +18678,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         vm_push(vm, FLOAT_VAL(nextafter(as_number_vm(vm, a), -INFINITY)));
+        break;
+    }
+    case 2252: { /* stop-gradient (ADR-0049): the value of a number with
+                  * every derivative carrier removed, mirroring native
+                  * eshkol_stop_gradient_tagged. A dual (scalar, Taylor tower
+                  * or level) answers its primal, exact when the carrier
+                  * holds it exactly; anything else passes through. */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_DUAL) {
+            VmDual* d = (VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            VmRational* ex = vm_dual_exact_value(d);
+            if (ex && vm_push_exact_rational(vm, ex)) break;
+            vm_push(vm, FLOAT_VAL(as_number_vm(vm, a)));
+            break;
+        }
+        if (a.type == VAL_HYPER_DUAL) {
+            vm_push(vm, FLOAT_VAL(as_number_vm(vm, a)));
+            break;
+        }
+        vm_push(vm, a);
         break;
     }
     case 251: { /* call-with-values-apply: unpack multi-value result */
@@ -17435,15 +18805,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, a);
         break;
     }
-    case 2227: { /* gensym: fresh, uninterned symbol "G<counter>".
-                  * Process-wide monotonic counter, mirroring the native
-                  * codegen's eshkol_gensym_prefix (lib/core/introspection.cpp)
-                  * — a separate counter from vm_macro.c's compile-time
-                  * hygienic-renaming gensym, which is a different feature
-                  * (macro-expansion-time, not runtime-visible). */
-        static uint64_t s_vm_gensym_counter = 1;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "G%llu", (unsigned long long)s_vm_gensym_counter++);
+    case 2227: { /* gensym */
+        char buf[22] = "G";
+        eshkol_gensym_suffix(buf + 1);
         VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
         if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_SYMBOL, s); }
         else vm_push(vm, NIL_VAL);
@@ -17733,34 +19097,62 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 908: { /* string-split(str, delim) */
         Value d_val = vm_pop(vm), s_val = vm_pop(vm);
         Value result = NIL_VAL;
-        if (s_val.type == VAL_STRING && d_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            VmString* d = (VmString*)vm->heap.objects[d_val.as.ptr]->opaque.ptr;
-            if (s && d && d->byte_len > 0) {
-                const char* p = s->data; int slen = s->byte_len, dlen = d->byte_len;
-                while (1) {
-                    const char* found = (slen >= dlen) ? strstr(p, d->data) : NULL;
-                    int seg_len = found ? (int)(found - p) : (int)(s->data + slen - p);
-                    VmString* seg = vm_string_new(&vm->heap.regions, p, seg_len);
-                    if (seg) { int32_t sp2 = heap_alloc(&vm->heap); if (sp2 >= 0) {
-                        vm->heap.objects[sp2]->type = HEAP_STRING; vm->heap.objects[sp2]->opaque.ptr = seg;
-                        int32_t cp2 = heap_alloc(&vm->heap); if (cp2 >= 0) {
-                            vm->heap.objects[cp2]->type = HEAP_CONS;
-                            vm->heap.objects[cp2]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp2};
-                            vm->heap.objects[cp2]->cons.cdr = result; result = PAIR_VAL(cp2); } } }
-                    if (!found) break;
-                    p = found + dlen;
+        if (s_val.type == VAL_STRING &&
+            (d_val.type == VAL_STRING || d_val.type == VAL_CHAR)) {
+            VmString* s = vm_value_as_string(vm, s_val);
+            VmString* d = vm_value_as_string_or_char(vm, d_val);
+            if (s && d) {
+                int slen = s->byte_len, dlen = d->byte_len;
+                int failed = 0;
+                int pos = 0;
+                /* The empty delimiter follows the native string-split rule:
+                 * return one element containing the original string. */
+                while (!failed) {
+                    int found = -1;
+                    if (dlen > 0 && pos <= slen - dlen) {
+                        for (int i = pos; i <= slen - dlen; ++i) {
+                            if (memcmp(s->data + i, d->data, (size_t)dlen) == 0) {
+                                found = i;
+                                break;
+                            }
+                        }
+                    }
+                    int end = found >= 0 ? found : slen;
+                    VmString* seg = vm_string_new(&vm->heap.regions,
+                                                   s->data + pos, end - pos);
+                    int32_t sp2 = seg ? heap_alloc(&vm->heap) : -1;
+                    int32_t cp2 = sp2 >= 0 ? heap_alloc(&vm->heap) : -1;
+                    if (!seg || sp2 < 0 || cp2 < 0) {
+                        failed = 1;
+                        break;
+                    }
+                    vm->heap.objects[sp2]->type = HEAP_STRING;
+                    vm->heap.objects[sp2]->opaque.ptr = seg;
+                    vm->heap.objects[cp2]->type = HEAP_CONS;
+                    vm->heap.objects[cp2]->cons.car =
+                        (Value){.type = VAL_STRING, .as.ptr = sp2};
+                    vm->heap.objects[cp2]->cons.cdr = result;
+                    result = PAIR_VAL(cp2);
+                    if (found < 0 || dlen == 0) break;
+                    pos = found + dlen;
+                }
+                if (failed) {
+                    vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                    break;
                 }
                 /* reverse */
                 Value rev2 = NIL_VAL;
                 while (result.type == VAL_PAIR) {
                     Value car2 = vm->heap.objects[result.as.ptr]->cons.car;
-                    int32_t rp2 = heap_alloc(&vm->heap); if (rp2 < 0) break;
+                    int32_t rp2 = heap_alloc(&vm->heap);
+                    if (rp2 < 0) { failed = 1; break; }
                     vm->heap.objects[rp2]->type = HEAP_CONS;
                     vm->heap.objects[rp2]->cons.car = car2; vm->heap.objects[rp2]->cons.cdr = rev2;
                     rev2 = PAIR_VAL(rp2); result = vm->heap.objects[result.as.ptr]->cons.cdr;
                 }
-                vm_push(vm, rev2); break;
+                if (failed) vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                else vm_push(vm, rev2);
+                break;
             }
         }
         vm_push(vm, NIL_VAL); break; }
@@ -18016,6 +19408,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)name_v;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case VM_NATIVE_CHECK_ASCRIPTION: {
+        Value mask = vm_pop(vm);
+        Value value = vm_pop(vm);
+        if (mask.type != VAL_INT ||
+            !((uint64_t)mask.as.i & eshkol_tag_bit(vm_value_type_name_id(vm, value)))) {
+            vm_raise_error_msg(vm, "the: value does not satisfy the ascribed type");
+        } else {
+            vm_push(vm, value);
+        }
         break;
     }
 
@@ -19250,6 +20654,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * Seeded pseudorandom numbers (1863-1865). Native VM uses the same
      * runtime state as AOT/JIT; rand is compiled as a variadic shape form.
      * ══════════════════════════════════════════════════════════════════════ */
+    case 1866: { /* make-prng: backend-owned leaf state */
+        Value seed = vm_pop(vm);
+        if (seed.type != VAL_INT) { vm_raise_error_msg(vm, "make-prng: expected an int64 seed"); break; }
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr < 0) { vm_raise_error_msg(vm, "make-prng: allocation failed"); break; }
+        vm->heap.objects[ptr]->type = HEAP_PRNG;
+        vm->heap.objects[ptr]->prng.state = eshkol_prng_state_seed(seed.as.i);
+        Value result = NIL_VAL; result.type = VAL_PRNG; result.as.ptr = ptr;
+        vm_push(vm, result); break;
+    }
+    case 1867: {
+        Value p = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(p.type == VAL_PRNG && is_valid_heap_ptr(vm, p.as.ptr) &&
+                            vm->heap.objects[p.as.ptr]->type == HEAP_PRNG));
+        break;
+    }
+    case 1868: case 1869: {
+        Value bound = INT_VAL(0);
+        if (fid == 1869) bound = vm_pop(vm);
+        Value p = vm_pop(vm);
+        if (p.type != VAL_PRNG || !is_valid_heap_ptr(vm, p.as.ptr) ||
+            vm->heap.objects[p.as.ptr]->type != HEAP_PRNG) {
+            vm_raise_error_msg(vm, "prng draw: expected an isolated PRNG"); break;
+        }
+        if (fid == 1869 && bound.type != VAL_INT) {
+            vm_raise_error_msg(vm, "prng-random-integer: expected an int64 bound"); break;
+        }
+        uint64_t* state = &vm->heap.objects[p.as.ptr]->prng.state;
+        if (fid == 1868) vm_push(vm, FLOAT_VAL(eshkol_prng_state_random(state)));
+        else vm_push(vm, INT_VAL(eshkol_prng_state_integer(state, bound.as.i)));
+        break;
+    }
     case 1863: { /* random() -> double in [0, 1) */
         vm_push(vm, FLOAT_VAL(vm_prng_next()));
         break;
@@ -19477,8 +20913,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * Uses reverse-mode AD via Wengert tape tracing.
                   * Activates the tape, calls f with traced inputs,
                   * runs backward pass, returns gradient tensor.
-                  * Single backward pass → O(1) regardless of input dimension. */
+                  * This VM convenience differentiates real scalar arithmetic. */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = -1;
+        if (vm->active_tape) {
+            vm_raise_error_msg(vm, "reverse-gradient: nested reverse tapes are unsupported");
+            break;
+        }
+        if (!vm_ad_real_point_value(vm, x_val)) {
+            vm_raise_error_msg(vm, "reverse-gradient: point must contain only real scalar values");
+            break;
+        }
 
         /* Points are classified by runtime value, never by construction form:
          * a scheme (vector ...) point behaves exactly like the equivalent
@@ -19493,12 +20938,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         /* Create tape and variable nodes */
         AdTape* tape = ad_tape_new(&vm->heap.regions);
-        if (!tape) { vm_push(vm, FLOAT_VAL(0)); break; }
+        if (!tape) { vm_raise_error_msg(vm, "reverse-gradient: tape allocation failed"); break; }
         vm->ad_tape_allocations++;
 
         int* var_nodes = (int*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(int));
         Value* args = vm_ad_arg_slots(vm, n);
-        if (!var_nodes || !args) { vm->error = 1; vm_push(vm, FLOAT_VAL(0)); break; }
+        if (!var_nodes || !args) {
+            vm_raise_error_msg(vm, "reverse-gradient: workspace allocation failed");
+            break;
+        }
         for (int i = 0; i < n; i++) {
             var_nodes[i] = ad_var(tape, point[i]);
             args[i] = FLOAT_VAL(point[i]);
@@ -19506,6 +20954,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         /* Activate tape tracing on VM */
         void* saved_tape = vm->active_tape;
+        /* Stack slots and persistent globals may still hold node indices from
+         * an earlier reverse-gradient call. A fresh tape starts with no such
+         * edges; only the argument slots below become variables. */
+        memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
+        vm->ad_tape_generation++;
+        if (vm->ad_tape_generation == 0) vm->ad_tape_generation = 1;
         vm->active_tape = tape;
 
         /* Set up ad_node_map for the argument slots.
@@ -19514,34 +20968,35 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * After frame setup, locals start at fp = sp+N-N = sp.
          * So arg[i] is at stack position (current_sp + 1 + i). */
         int base_sp = vm->sp + 1; /* +1 for closure push */
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = -1;
         for (int i = 0; i < n; i++) {
-            if (base_sp + i < STACK_SIZE)
+            if (base_sp + i >= 0 && base_sp + i < STACK_SIZE)
                 vm->ad_node_map[base_sp + i] = var_nodes[i];
         }
 
-        /* Call f(x1, x2, ..., xn) — arithmetic will record on tape */
-        (void)vm_ad_call_closure(vm, f_val, args, n);
-
-        /* Capture result's tape node (it's at the return value position) */
-        /* The closure bridge captures result from stack[sp-1] before restoring sp.
-         * At that point, ad_node_map[sp-1] holds the result node. But since sp
-         * was already restored by the bridge, we need to find the output node.
-         * The last node on the tape IS the output (tape nodes are appended in order). */
-        int output_node = tape->len - 1;
-
-        /* Deactivate tape */
+        /* Capture the mapping of the actual returned stack slot. Appended tape
+         * nodes may be dead computations or constants discarded by the body. */
+        int output_node = -1;
+        Value output_value = vm_ad_call_closure_traced(vm, f_val, args, n, &output_node);
         vm->active_tape = saved_tape;
-        vm->ad_tape_nodes += (uint64_t)tape->len;
-        vm->ad_scalar_ad_nodes += (uint64_t)tape->len;
-
-        if (output_node < 0) {
-            /* Function didn't produce any tape operations — constant function */
-            int64_t shape[1] = { n };
-            VmTensor* zt = vm_tensor_zeros(&vm->heap.regions, shape, 1);
-            if (zt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, zt); }
-            else { vm_push(vm, NIL_VAL); }
+        if (vm->error) break;
+        if (!vm_ad_real_scalar_value(vm, output_value)) {
+            vm_raise_error_msg(vm,
+                "reverse-gradient: expected a real scalar result; complex, dual, hyper-dual and container outputs are unsupported");
             break;
         }
+        if (output_node == -1) {
+            /* A real constant result (including a body whose differentiable
+             * work was discarded) has zero gradient. Record that exact output
+             * value rather than selecting the tape's unrelated final node. */
+            output_node = ad_const(tape, as_number_vm(vm, output_value));
+        }
+        if (output_node < 0 || output_node >= tape->len) {
+            vm_raise_error_msg(vm, "reverse-gradient: invalid output tape mapping");
+            break;
+        }
+        vm->ad_tape_nodes += (uint64_t)tape->len;
+        vm->ad_scalar_ad_nodes += (uint64_t)tape->len;
 
         /* Run backward pass */
         ad_backward(tape, output_node);
@@ -19552,13 +21007,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, FLOAT_VAL(ad_gradient(tape, var_nodes[0])));
         } else {
             double* grads = vm_ad_double_buf(vm, n);
-            if (!grads) { vm_push(vm, NIL_VAL); break; }
+            if (!grads) { vm_raise_error_msg(vm, "reverse-gradient: gradient allocation failed"); break; }
             for (int i = 0; i < n; i++)
                 grads[i] = ad_gradient(tape, var_nodes[i]);
             int64_t shape[1] = { n };
             VmTensor* t = vm_tensor_from_data(&vm->heap.regions, grads, shape, 1);
             if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
-            else { vm_push(vm, NIL_VAL); }
+            else { vm_raise_error_msg(vm, "reverse-gradient: gradient allocation failed"); }
         }
         break;
     }
@@ -19601,7 +21056,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * argument selects direct argv mode and its second argument
                   * is the child's working directory. */
         Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-spawn")) break;
         int argv_mode = (cmd_val.type == VAL_PAIR);
+        /* A command given as a string is the shell-shaped form of this call,
+         * and asks for `shell` on every engine, so a program gets the same
+         * answer from the policy whichever one runs it. A list first argument
+         * is an argv, which reaches no interpreter. */
+        if (!argv_mode && vm_capability_denied(vm, "shell", "process-spawn")) break;
         Value program_val = cmd_val;
         Value command_args = args_val;
         const char* cwd_path = NULL;
@@ -19735,6 +21196,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1803: { /* process-spawn-argv-options(argv, options) → pid or #f */
         Value options = vm_pop(vm), argv = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-spawn-argv-options")) break;
         Value cwd = vm_string_value(vm, ".", 1);
         Value env = NIL_VAL;
         int valid = 1;
@@ -19811,6 +21273,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1782: { /* process-kill(pid, signal) → #t or #f */
         Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-kill")) break;
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
         DWORD pid = (DWORD)vm_process_pid_from_value(vm, pid_val);
         UINT exit_code = (UINT)((int)as_number(sig_val) > 0 ? (int)as_number(sig_val) : 1);
@@ -19889,6 +21352,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1785: { /* process-setpgid(pid, pgid) → #t or #f */
         Value pgid_val = vm_pop(vm), pid_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-setpgid")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         pid_t pgid = (pid_t)as_number(pgid_val);
@@ -19909,6 +21373,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                   * that stay in that group; direct kill is the fallback for
                   * externally supplied non-group-leader PIDs. */
         Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-kill-tree")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         int sig = (int)as_number(sig_val);
@@ -19932,6 +21397,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1787: { /* process-spawn-pty(command) → (pid . master-fd) or #f */
         Value cmd_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-spawn-pty")) break;
+        if (vm_capability_denied(vm, "shell", "process-spawn-pty")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         if (cmd_val.type == VAL_STRING && is_valid_heap_ptr(vm, cmd_val.as.ptr)) {
             VmString* cmd = (VmString*)vm->heap.objects[cmd_val.as.ptr]->opaque.ptr;
@@ -19991,6 +21458,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     case 1789: { /* fork() → 0 in child, child pid in parent, or #f */
+        if (vm_capability_denied(vm, "subprocess", "fork")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         pid_t pid = fork();
         if (pid >= 0) {
@@ -20004,6 +21472,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1790: { /* unix-socket-connect(path) → fd or #f */
         Value path_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "unix-socket-connect")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* path = vm_value_as_string(vm, path_val);
         if (path && path->data && path->byte_len > 0 &&
@@ -20196,6 +21665,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1799: { /* execv(path, argv) → does not return on success, #f on error */
         Value argv_val = vm_pop(vm), path_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "execv")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* path = vm_value_as_string(vm, path_val);
         if (path && path->data && path->byte_len > 0) {

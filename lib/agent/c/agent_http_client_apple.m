@@ -1,5 +1,11 @@
 #import <Foundation/Foundation.h>
 
+/* Every request path of this client passes through the gate below before a
+ * connection is attempted: an HTTP request is a network operation, and under a
+ * policy that does not grant `network` it raises a catchable capability-denied
+ * error instead of reaching the host. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 #include "eshkol/agent_http.h"
 #include "agent_http_internal.h"
 #include "agent_sse_internal.h"
@@ -66,7 +72,8 @@ static NSMutableURLRequest* apple_request(const char* method,
                                           const char* body,
                                           int64_t body_len,
                                           int32_t timeout_ms) {
-    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+    if (!eshkol_http_valid_method(method) ||
+        !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0) || (uint64_t)body_len > NSUIntegerMax) return nil;
     NSString* urlText = [NSString stringWithUTF8String:url];
     NSURL* target = urlText ? [NSURL URLWithString:urlText] : nil;
@@ -202,6 +209,9 @@ qllm_http_response_t* eshkol_http_request(const char* method,
                                           const char* header_lines,
                                           const char* body,
                                           int32_t timeout_ms) {
+    /* Enforce the capability gate before entering @autoreleasepool so a
+     * capability-denied raise unwinds outside Objective-C pool frames. */
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         return apple_perform(apple_request(method, url, header_lines, body,
                                            body ? (int64_t)strlen(body) : 0,
@@ -216,6 +226,7 @@ qllm_http_response_t* eshkol_http_request_bytes(const char* method,
                                                 const char* body,
                                                 int64_t body_len,
                                                 int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         return apple_perform(apple_request(method, url, header_lines, body,
                                            body_len, timeout_ms), timeout_ms);
@@ -232,16 +243,18 @@ qllm_http_response_t* qllm_http_post(const char* url,
                                      const char* body,
                                      int64_t body_len,
                                      int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         NSMutableString* lines = [[NSMutableString alloc] init];
         for (int64_t i = 0; headers && i < header_count; ++i) {
             if (headers[i]) {
-                if (!eshkol_http_valid_header_line(headers[i])) return NULL;
+                if (!eshkol_http_header_line_admissible(headers[i]))
+                    return NULL;
                 [lines appendFormat:@"%s\n", headers[i]];
             }
         }
-        return eshkol_http_request_bytes("POST", url, lines.UTF8String, body,
-                                         body_len, timeout_ms);
+        return apple_perform(apple_request("POST", url, lines.UTF8String, body,
+                                           body_len, timeout_ms), timeout_ms);
     }
 }
 
@@ -249,14 +262,17 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
                                           const char* body,
                                           const char* auth_header,
                                           int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         NSMutableString* headers =
             [NSMutableString stringWithString:@"Content-Type: application/json\nAccept: application/json\n"];
         if (auth_header && *auth_header) {
-            if (!eshkol_http_valid_header_line(auth_header)) return NULL;
+            if (!eshkol_http_header_line_admissible(auth_header)) return NULL;
             [headers appendFormat:@"%s\n", auth_header];
         }
-        return eshkol_http_request("POST", url, headers.UTF8String, body, timeout_ms);
+        return apple_perform(apple_request("POST", url, headers.UTF8String, body,
+                                           body ? (int64_t)strlen(body) : 0,
+                                           timeout_ms), timeout_ms);
     }
 }
 
@@ -382,6 +398,7 @@ void* eshkol_http_stream_open_bytes(const char* method,
                                     const char* body,
                                     int64_t body_len,
                                     int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         NSMutableURLRequest* request = apple_request(method, url, header_lines,
                                                      body, body_len, timeout_ms);

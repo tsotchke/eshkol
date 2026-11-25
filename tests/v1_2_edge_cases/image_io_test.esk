@@ -2,8 +2,8 @@
 ;;
 ;; Regression: image-read/image-to-grayscale crossed an ownership boundary
 ;; incorrectly and corrupted arena-backed runtime storage. The native image
-;; backends differ by platform, so this test keeps PNG as the required
-;; round-trip and treats extra formats as optional probes.
+;; codecs are built into the runtime, so PNG, JPEG, BMP and WebP round trips
+;; are required on every platform.
 
 (require stdlib)
 
@@ -73,8 +73,7 @@
 (check "temp directory available" (string? temp-root))
 (check "temp PNG path available" (string? path))
 
-;; PNG is the required portable format across ImageIO, GDI+, and the Linux
-;; libpng path.
+;; PNG: lossless, so samples must survive within one 8-bit step.
 (check "image-write RGB PNG"
        (and (string? path)
             (image-write path test-tensor "png")))
@@ -134,13 +133,14 @@
 (check "grayscale PNG read keeps 4x4 dimensions"
        (shape-hw? gray-img-shape 4 4))
 
-(define (optional-format-round-trip label fmt suffix)
+(define (format-round-trip label fmt suffix)
   (let ((optional-path (if (string? temp-root)
-                           (make-temp-file "eshkol-img-native-optional-" suffix temp-root)
+                           (make-temp-file "eshkol-img-native-format-" suffix temp-root)
                            #f)))
     (if (not (string? optional-path))
         (skip label "no temp path")
         (let ((wrote (image-write optional-path test-tensor fmt)))
+          (check (string-append label " write succeeds") wrote)
           (if wrote
               (let* ((round-trip (image-read optional-path))
                      (round-trip-shape (if (tensor? round-trip)
@@ -156,13 +156,38 @@
                             (in-unit-range? (tensor-ref round-trip 0 0 0))
                             (in-unit-range? (tensor-ref round-trip 0 1 1))
                             (in-unit-range? (tensor-ref round-trip 1 0 2)))))
-              (skip label "format not available on this backend"))
+              #f)
           (delete-file optional-path)))))
 
-;; These formats depend on OS codecs or optional libraries. They are useful
-;; when present, but absence must not fail the cross-platform edge suite.
-(optional-format-round-trip "optional JPEG round-trip" "jpeg" ".jpg")
-(optional-format-round-trip "optional WebP round-trip" "webp" ".webp")
+(format-round-trip "JPEG round-trip" "jpeg" ".jpg")
+(format-round-trip "BMP round-trip" "bmp" ".bmp")
+(format-round-trip "WebP round-trip" "webp" ".webp")
+
+;; BMP is lossless: the mixed sample must come back within one 8-bit step.
+(define bmp-path (if (string? temp-root)
+                     (make-temp-file "eshkol-img-native-bmp-" ".bmp" temp-root)
+                     #f))
+(check "BMP keeps mixed quantized sample"
+       (and (string? bmp-path)
+            (image-write bmp-path test-tensor "bmp")
+            (let ((b (image-read bmp-path)))
+              (and (tensor? b)
+                   (shape-color? (tensor-shape b) 4 4)
+                   (pixel-rgb-approx? b 2 2 0.25 0.5 0.75 0.01)))))
+(if (string? bmp-path) (delete-file bmp-path))
+
+;; WebP is lossless here: the mixed sample must come back exactly.
+(define webp-path (if (string? temp-root)
+                      (make-temp-file "eshkol-img-native-webp-" ".webp" temp-root)
+                      #f))
+(check "WebP keeps mixed quantized sample"
+       (and (string? webp-path)
+            (image-write webp-path test-tensor "webp")
+            (let ((b (image-read webp-path)))
+              (and (tensor? b)
+                   (shape-color? (tensor-shape b) 4 4)
+                   (pixel-rgb-approx? b 2 2 0.25 0.5 0.75 0.01)))))
+(if (string? webp-path) (delete-file webp-path))
 
 ;; After all the above calls, the arena has been exercised heavily.
 ;; Allocate more objects to catch invalid ownership/free regressions.

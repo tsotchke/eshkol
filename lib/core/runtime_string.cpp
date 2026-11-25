@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/eshkol.h>
+#include "arena_memory.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -32,12 +33,22 @@ const char* eshkol_runtime_ffi_surface_bytes(void) {
     return bytes;
 }
 
-extern void* arena_allocate_string_with_header(void* arena, uint64_t byte_len);
-
 /* The one string allocation of this file: a header-tagged buffer of
  * @p byte_len bytes plus the terminator (the allocator owns the header). */
 static char* eshkol_string_buffer(void* arena, uint64_t byte_len) {
-    return static_cast<char*>(arena_allocate_string_with_header(arena, byte_len));
+    return arena_allocate_string_with_header(static_cast<arena_t*>(arena), byte_len);
+}
+
+/**
+ * @brief Allocate a header-tagged string in @p arena holding @p len raw bytes
+ *        copied from @p data (preserving embedded NUL bytes) plus a trailing NUL.
+ */
+char* eshkol_alloc_string_bytes(void* arena, const char* data, size_t len) {
+    char* buf = eshkol_string_buffer(arena, (uint64_t)len);
+    if (!buf) return nullptr;
+    if (len > 0 && data) memcpy(buf, data, len);
+    buf[len] = '\0';
+    return buf;
 }
 
 /* Raising entry points, declared here to keep this translation unit's include
@@ -216,6 +227,69 @@ static int64_t decode_utf8_codepoint(const char** s) {
     return cp;
 }
 
+/** Linear, header-length-aware string->list. Fresh cells share the caller's
+ * arena, so linking them cannot publish a pointer into a shorter-lived region.
+ * The caller checks the string type before entering this runtime helper. */
+void* eshkol_runtime_string_to_list(void* arena, const char* s) {
+    const int64_t length = eshkol_string_byte_length(s);
+    const auto* bytes = reinterpret_cast<const unsigned char*>(s);
+    int64_t pos = 0;
+    arena_tagged_cons_cell_t* head = nullptr;
+    arena_tagged_cons_cell_t* tail = nullptr;
+    while (pos < length) {
+        const unsigned char lead = bytes[pos++];
+        int64_t cp = 0xFFFD;
+        int expected = 0;
+        if (lead < 0x80) {
+            cp = lead;
+        } else if ((lead & 0xE0) == 0xC0) {
+            cp = lead & 0x1F;
+            expected = cp < 2 ? 0 : 1;  // Reject C0/C1 overlong leads.
+        } else if ((lead & 0xF0) == 0xE0) {
+            cp = lead & 0x0F;
+            expected = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            cp = lead & 0x07;
+            expected = 3;
+        }
+        if (expected > 0) {
+            int consumed = 0;
+            for (; consumed < expected && pos < length; ++consumed) {
+                const unsigned char continuation = bytes[pos];
+                if ((continuation & 0xC0) != 0x80) break;
+                cp = (cp << 6) | (continuation & 0x3F);
+                ++pos;
+            }
+            if (consumed != expected ||
+                (expected == 1 && cp < 0x80) ||
+                (expected == 2 && cp < 0x800) ||
+                (expected == 3 && cp < 0x10000) ||
+                (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
+                cp = 0xFFFD;
+            }
+        } else if (lead >= 0x80 && (lead & 0xE0) == 0xC0 &&
+                   (lead & 0x1F) < 2) {
+            // Invalid two-byte lead; match VM's one-byte recovery step.
+            cp = 0xFFFD;
+        }
+        auto* cell = arena_allocate_cons_with_header(static_cast<arena_t*>(arena));
+        if (!cell) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "string->list: allocation failed");
+            return nullptr;
+        }
+        std::memset(cell, 0, sizeof(*cell));
+        cell->car.type = ESHKOL_VALUE_CHAR;
+        cell->car.data.int_val = cp;
+        cell->cdr.type = ESHKOL_VALUE_NULL;
+        if (tail) {
+            tail->cdr.type = ESHKOL_VALUE_HEAP_PTR;
+            tail->cdr.data.ptr_val = reinterpret_cast<uint64_t>(cell);
+        } else head = cell;
+        tail = cell;
+    }
+    return head;
+}
+
 /**
  * @brief Return the codepoint at UTF-8 character index `k` in string `s` (`string-ref` support).
  *
@@ -302,6 +376,80 @@ char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* are
         buf[byte_len] = '\0';
     }
     return buf;
+}
+
+/**
+ * @brief Validate that @p len bytes at @p bytes form a well-formed RFC 3629
+ *        UTF-8 sequence.
+ *
+ * Rejects lone continuation bytes, overlong encodings, UTF-16 surrogates
+ * (U+D800..U+DFFF), codepoints above U+10FFFF, and truncated multi-byte
+ * sequences. Permits U+0000 so length-tracked Scheme strings with embedded
+ * NUL characters stay valid.
+ *
+ * @return 1 if valid UTF-8, 0 otherwise.
+ */
+int32_t eshkol_utf8_is_valid(const uint8_t* bytes, int64_t len) {
+    if (len < 0) return 0;
+    if (len == 0) return 1;
+    if (!bytes) return 0;
+    int64_t i = 0;
+    while (i < len) {
+        uint8_t b0 = bytes[i];
+        if (b0 < 0x80u) {
+            i += 1;
+        } else if (b0 >= 0xC2u && b0 <= 0xDFu) {
+            if (i + 1 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            if ((b1 & 0xC0u) != 0x80u) return 0;
+            i += 2;
+        } else if (b0 == 0xE0u) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            if (b1 < 0xA0u || b1 > 0xBFu || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if ((b0 >= 0xE1u && b0 <= 0xECu) || (b0 >= 0xEEu && b0 <= 0xEFu)) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            if ((b1 & 0xC0u) != 0x80u || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if (b0 == 0xEDu) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            if (b1 < 0x80u || b1 > 0x9Fu || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if (b0 == 0xF0u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            uint8_t b3 = bytes[i + 3];
+            if (b1 < 0x90u || b1 > 0xBFu ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else if (b0 >= 0xF1u && b0 <= 0xF3u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            uint8_t b3 = bytes[i + 3];
+            if ((b1 & 0xC0u) != 0x80u ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else if (b0 == 0xF4u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            uint8_t b3 = bytes[i + 3];
+            if (b1 < 0x80u || b1 > 0x8Fu ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 }  // extern "C"

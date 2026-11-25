@@ -1,0 +1,35 @@
+; R7RS inexactness must survive number->string/string->number.
+(require stdlib)
+
+(define failures 0)
+(define checked 0)
+(define (check label condition)
+  (set! checked (+ checked 1))
+  (if (not condition) (set! failures (+ failures 1)))
+  (display (if condition "PASS" "FAIL"))
+  (display ": ") (display label) (newline))
+
+(define (roundtrip-inexact? value)
+  (let ((text (number->string value)))
+    (let ((parsed (string->number text)))
+      (and parsed (inexact? parsed) (= parsed value)))))
+
+(check "positive zero retains inexactness" (roundtrip-inexact? 0.0))
+(check "one retains inexactness" (roundtrip-inexact? 1.0))
+(check "negative one retains inexactness" (roundtrip-inexact? -1.0))
+(check "integral double retains inexactness" (roundtrip-inexact? 1000.0))
+(check "ordinary decimal roundtrips" (roundtrip-inexact? 0.1))
+(check "subnormal roundtrips" (roundtrip-inexact? 5e-324))
+(check "largest finite double roundtrips"
+       (roundtrip-inexact? 1.7976931348623157e308))
+(check "signed negative zero survives"
+       (= (/ 1.0 (string->number (number->string -0.0)))
+          (/ 1.0 -0.0)))
+(check "exact integer spelling unchanged"
+       (string=? (number->string 1) "1"))
+(check "exact rational spelling unchanged"
+       (string=? (number->string 1/2) "1/2"))
+
+(if (or (not (= checked 10)) (> failures 0))
+    (exit 1)
+    (begin (display "PASS: inexact_roundtrip_test 10/10") (newline)))

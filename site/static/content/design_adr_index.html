@@ -209,6 +209,195 @@
 <td>2026-09-22</td>
 <td>v1.3.5</td>
 </tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0030-stackful-coroutines-for-fibers.md" target="_blank" rel="noopener noreferrer">0030</a></td>
+<td>Fibers run on stackful coroutines with a per-context dynamic state</td>
+<td>Accepted — implemented on native JIT and AOT; bytecode VM Planned for v1.4.1</td>
+<td>2026-10-23</td>
+<td><code>inc/eshkol/core/coroutine.h</code>, <code>lib/core/runtime_coroutines_hosted.cpp</code>, <code>lib/core/fibers.esk</code>, gate <code>scripts/run_fibers_gate.py</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0031-differentiable-optimization.md" target="_blank" rel="noopener noreferrer">0031</a></td>
+<td>Differentiating through optimization is one tape pullback per rule</td>
+<td>Accepted — implemented in v1.4.0-connection</td>
+<td>2026-10-23</td>
+<td><code>core.ml.diffopt</code> in <code>lib/core/ml/diffopt.esk</code>, gate <code>tests/ml/diffopt_test.esk</code> (CTest <code>diffopt_runtime_smoke</code>, <code>diffopt_aot_smoke</code>)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0032-exact-forward-control-fine-tuning.md" target="_blank" rel="noopener noreferrer">0032</a></td>
+<td>Exact-forward control fine-tuning of the constructed interpreter</td>
+<td>Accepted — implemented for v1.4.0</td>
+<td>2026-10-23</td>
+<td><code>lib/core/sdnc_finetune.c</code>, <code>inc/eshkol/core/saturating_vjp.h</code>, <code>sdnc_backward_smoothed</code> in <code>lib/core/sdnc_core.h</code>, ctests <code>sdnc_control_finetune</code>, <code>sdnc_finetune_unit</code>, <code>sdnc_finetune_surface_jit</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0033-core-sheaf-finite-sites.md" target="_blank" rel="noopener noreferrer">0033</a></td>
+<td><code>core.sheaf</code>: one sheaf-theory facility on finite sites</td>
+<td>Proposed — implemented in <code>core.sheaf</code></td>
+<td>2026-10-24</td>
+<td><code>lib/core/sheaf.esk</code>, <code>lib/core/sheaf/</code>, <code>lib/core/integer_linalg.esk</code>; suite <code>tests/stdlib/sheaf_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/sheaf.md" target="_blank" rel="noopener noreferrer"><code>sheaf.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0034-ring-carriers-functor-of-points.md" target="_blank" rel="noopener noreferrer">0034</a></td>
+<td>Ring carriers: the functor-of-points evaluation model</td>
+<td>Proposed</td>
+<td>2026-10-24</td>
+<td>— (evidence program <a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_functor_of_points.esk" target="_blank" rel="noopener noreferrer"><code>mathematics_functor_of_points.esk</code></a>; first stage targets v1.4.1)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0035-kripke-joyal-semantics.md" target="_blank" rel="noopener noreferrer">0035</a></td>
+<td>Kripke-Joyal semantics for local truth</td>
+<td>Proposed — library implemented in <code>core.topos</code></td>
+<td>2026-10-24</td>
+<td><code>lib/core/topos.esk</code>; suites <code>tests/stdlib/topos_test.esk</code>, <code>topos_corpus_test.esk</code>, <code>topos_corpus_sheaf_test.esk</code>, <code>topos_reductions_test.esk</code>, <code>topos_jtranslation_test.esk</code>, <code>topos_local_ring_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/topos.md" target="_blank" rel="noopener noreferrer"><code>topos.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0036-core-category-finite-categories.md" target="_blank" rel="noopener noreferrer">0036</a></td>
+<td><code>core.category</code>: finite category theory as the shared base layer</td>
+<td>Proposed — implemented in <code>core.category</code></td>
+<td>2026-10-29</td>
+<td><code>lib/core/category.esk</code>, <code>lib/core/category/</code>; suites <code>tests/stdlib/category_test.esk</code>, <code>category_s62_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/category.md" target="_blank" rel="noopener noreferrer"><code>category.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0037-simplicial-and-homological-algebra.md" target="_blank" rel="noopener noreferrer">0037</a></td>
+<td><code>core.simplicial</code> and <code>core.homological</code>: the algebraic-topology substrate</td>
+<td>Proposed — implemented in <code>core.simplicial</code>, <code>core.homological</code></td>
+<td>2026-10-29</td>
+<td><code>lib/core/simplicial.esk</code>, <code>lib/core/simplicial/</code>, <code>lib/core/homological.esk</code>, <code>lib/core/homological/</code>; suites <code>tests/stdlib/simplicial_test.esk</code>, <code>homological_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/simplicial.md" target="_blank" rel="noopener noreferrer"><code>simplicial.md</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/homological.md" target="_blank" rel="noopener noreferrer"><code>homological.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0038-effective-homology.md" target="_blank" rel="noopener noreferrer">0038</a></td>
+<td><code>core.effective</code>: effective homology, homotopy groups and hypercover descent</td>
+<td>Proposed — implemented in <code>core.effective</code></td>
+<td>2026-10-30</td>
+<td><code>lib/core/effective.esk</code>, <code>lib/core/effective/</code>; suites <code>tests/stdlib/effective_test.esk</code>, <code>effective_homotopy_test.esk</code>, <code>effective_hypercover_test.esk</code>, <code>effective_pi6_s3_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/effective.md" target="_blank" rel="noopener noreferrer"><code>effective.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0039-lawvere-theories.md" target="_blank" rel="noopener noreferrer">0039</a></td>
+<td>Algebraic theories as data: Lawvere theories and their models</td>
+<td>Proposed — library implemented in <code>core.theory</code></td>
+<td>2026-10-29</td>
+<td><code>lib/core/theory.esk</code>, <code>lib/core/theory/</code>; <code>core.ring</code>’s law check; suites <code>tests/stdlib/theory_test.esk</code>, <code>theory_topos_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/theory.md" target="_blank" rel="noopener noreferrer"><code>theory.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0040-groebner-bases.md" target="_blank" rel="noopener noreferrer">0040</a></td>
+<td>Groebner bases on ring carriers</td>
+<td>Proposed</td>
+<td>2026-10-29</td>
+<td><code>core.groebner</code>, K[x1..xn] in <code>core.ring</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/groebner.md" target="_blank" rel="noopener noreferrer">groebner.md</a>)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0041-core-monoidal-string-diagrams-zx.md" target="_blank" rel="noopener noreferrer">0041</a></td>
+<td><code>core.monoidal</code>: monoidal categories, string diagrams and the ZX-calculus</td>
+<td>Proposed — implemented in <code>core.monoidal</code></td>
+<td>2026-10-29</td>
+<td><code>lib/core/monoidal.esk</code>, <code>lib/core/monoidal/</code>; suites <code>tests/stdlib/monoidal_test.esk</code>, <code>zx_test.esk</code>, <code>tests/quantum/zx_moonlab_crosscheck_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/monoidal.md" target="_blank" rel="noopener noreferrer"><code>monoidal.md</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/zx.md" target="_blank" rel="noopener noreferrer"><code>zx.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0042-dependent-type-enforcement.md" target="_blank" rel="noopener noreferrer">0042</a></td>
+<td>Dependent type enforcement — bidirectional checking over one core term language</td>
+<td>Proposed — implemented for v1.9.0-types (stages 1-4)</td>
+<td>2026-10-30</td>
+<td><code>inc/eshkol/types/type_term.h</code>, <code>lib/types/type_term.cpp</code>, <code>TypeChecker::resolveTerm</code>/<code>judgeTails</code> in <code>lib/types/type_checker.cpp</code>; CTest <code>type_term_test</code>, <code>typesystem_dependent_corpus</code>, <code>dependent_type_engine_parity_gate</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0043-hott-identity-types-univalence-hits.md" target="_blank" rel="noopener noreferrer">0043</a></td>
+<td>Identity types, univalence and higher inductive types</td>
+<td>Proposed — the cubical kernel, on native JIT, AOT and the bytecode VM</td>
+<td>2026-10-30</td>
+<td>v1.9.0</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0045-algebraic-effects-and-handlers.md" target="_blank" rel="noopener noreferrer">0045</a></td>
+<td>Algebraic effects and handlers, with effect rows</td>
+<td>Proposed — implemented on native JIT, AOT and the bytecode VM</td>
+<td>2026-10-30</td>
+<td>v1.9.0</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0046-structural-types-rows-rank-sessions.md" target="_blank" rel="noopener noreferrer">0046</a></td>
+<td>Structural types: row polymorphism, arbitrary rank and session types</td>
+<td>Proposed — implemented on native JIT, AOT and the bytecode VM checker</td>
+<td>2026-10-30</td>
+<td>v1.9.0</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0047-certificates-and-independent-checker.md" target="_blank" rel="noopener noreferrer">0047</a></td>
+<td>Certificates, an independent checker and a Lean export</td>
+<td>Proposed — implemented in <code>core.certificate</code> and <code>tools/certcheck</code></td>
+<td>2026-10-30</td>
+<td><code>lib/core/certificate.esk</code>, <code>tools/certcheck/</code>; suites <code>tests/stdlib/certificate_test.esk</code>, <code>tests/certificates/</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certificate.md" target="_blank" rel="noopener noreferrer"><code>certificate.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0048-quantum-register-types-and-circuit-compilation.md" target="_blank" rel="noopener noreferrer">0048</a></td>
+<td>Quantum register types <code>qreg&lt;n&gt;</code>, quantum regions and circuit compilation</td>
+<td>Proposed — implemented in the checker and <code>core.quantum</code></td>
+<td>2026-10-30</td>
+<td><code>lib/types/quantum_types.cpp</code>, <code>lib/core/quantum/</code>; corpus <code>tests/typesystem/qreg_*.esk</code>; suites <code>tests/stdlib/quantum_*_test.esk</code>, <code>qaoa_test.esk</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/quantum.md" target="_blank" rel="noopener noreferrer"><code>quantum.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0049-neuro-symbolic-bridge.md" target="_blank" rel="noopener noreferrer">0049</a></td>
+<td>The v1.5.0 neuro-symbolic bridge — Noesis for the cognition, Eshkol for the substrate</td>
+<td>Proposed — substrate and gap items implemented; upstreaming planned</td>
+<td>2026-10-30</td>
+<td><code>core.ml.recurrent</code>, <code>core.ml.gradient_estimators</code>, <code>core.ml.hnsw</code>, <code>core.ml.bpe</code>, <code>core.ml.sparse</code>; builtin <code>stop-gradient</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0050-rigorous-numerics.md" target="_blank" rel="noopener noreferrer">0050</a></td>
+<td>Rigorous numerics: directed rounding by default, compact-set bounds, torus averaging, interval and Taylor-model element tensors</td>
+<td>Accepted — implemented on native JIT, AOT and the bytecode VM (for root review)</td>
+<td>2026-10-30</td>
+<td>v1.5.0</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0051-reasoning.md" target="_blank" rel="noopener noreferrer">0051</a></td>
+<td><code>core.reasoning</code>: chaining, constraints and SAT, knowledge graphs</td>
+<td>Proposed</td>
+<td>2026-10-30</td>
+<td>— (targets v1.6.0-reasoning; library <code>lib/core/reasoning/</code>, gate <code>scripts/run_reasoning_gate.sh</code>)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0052-program-synthesis.md" target="_blank" rel="noopener noreferrer">0052</a></td>
+<td>Program synthesis, <code>??</code> synthesis holes and graph neural networks</td>
+<td>Proposed — implemented on native JIT and AOT</td>
+<td>2026-10-30</td>
+<td>v1.7.0</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0054-effective-and-presented-categories.md" target="_blank" rel="noopener noreferrer">0054</a></td>
+<td>Effective and finitely presented categories: infinite categories in <code>core.category</code></td>
+<td>Proposed — implemented in <code>core.category.effective</code>, <code>.presented</code>, <code>.standard</code>, <code>.effective_kan</code></td>
+<td>2026-10-30</td>
+<td><code>lib/core/category/effective.esk</code>, <code>presented.esk</code>, <code>standard.esk</code>, <code>effective_kan.esk</code>; suites <code>tests/stdlib/category_effective_test.esk</code>, <code>tests/nlab/nlab_category_effective_test.esk</code>; proofs <code>tests/formal/coq/StringRewriting.v</code>; reference <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/category-effective.md" target="_blank" rel="noopener noreferrer"><code>category-effective.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0055-socket-resource-leases.md" target="_blank" rel="noopener noreferrer">0055</a></td>
+<td>Sockets and TLS sessions as resource leases</td>
+<td>Proposed — implemented on native JIT and AOT</td>
+<td>2026-11-08</td>
+<td>v1.4.0</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0056-linear-handle-typestate.md" target="_blank" rel="noopener noreferrer">0056</a></td>
+<td>Linear handle typestate for the strict resource profile</td>
+<td>Proposed</td>
+<td>2026-11-08</td>
+<td><code>inc/eshkol/strict_resource_contracts.h</code>, the ownership checker in <code>exe/eshkol-run.cpp</code> (<code>--strict-resources</code>), borrow-scope cleanup frames in <code>lib/core/runtime_continuations.cpp</code>; corpus <code>tests/v1_4_resource_ownership/</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0057-nested-differentiation-in-every-mode.md" target="_blank" rel="noopener noreferrer">0057</a></td>
+<td>Nested differentiation in every mode</td>
+<td>Proposed</td>
+<td>2026-11-08</td>
+<td><code>esh_taylor_t::epoch</code>, <code>eshkol_ad_nested_seed</code> in <code>lib/core/runtime_taylor.c</code>; <code>emitForwardColumnGradient</code>, <code>emitPassLiveAt</code> in <code>lib/backend/autodiff_codegen.cpp</code>; <code>eshkol_ad_linear_record</code> in <code>lib/core/runtime_autodiff.cpp</code>; gate <code>tests/ad/nested_depth_matrix_test.esk</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0058-exact-tensor-element-type.md" target="_blank" rel="noopener noreferrer">0058</a></td>
+<td>The exact tensor element type: exact rationals in tensor storage, exact linear-algebra kernels, contagion by operand dtype</td>
+<td>Proposed — implemented on native JIT and AOT; the bytecode VM refuses the dtype explicitly</td>
+<td>2026-11-08</td>
+<td>v1.4.0</td>
+</tr>
 </tbody>
 </table>
 <h2 id="numbering">Numbering</h2>

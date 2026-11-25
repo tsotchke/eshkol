@@ -531,7 +531,7 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1]))
 PYSRC
 
-"$CC" -O0 -I"$INC_DIR" "$WORK/abi_harness.c" -o "$WORK/abi_harness" \
+"$CC" -O0 -I"$INC_DIR" -I"$BUILD_DIR/generated" "$WORK/abi_harness.c" -o "$WORK/abi_harness" \
     $( [ "$(uname -s)" = "Darwin" ] || echo -ldl ) \
     > "$WORK/harness_build.log" 2>&1 \
     || { sed -n '1,40p' "$WORK/harness_build.log"; fail "could not build the C ABI harness"; }

@@ -42,6 +42,125 @@
       "from": 3,
       "to": 2,
       "reason": "make-string moved into this file (eshkol_make_string_checked); rather than add a fourth call of arena_allocate_string_with_header, every string allocation of the file now goes through one helper, eshkol_string_buffer, leaving the extern declaration and that helper as the only header-aware sites."
+    },
+    {
+      "class": "S1_clang_header_member",
+      "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+      "from": 1,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S2_clang_sizeof",
+      "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+      "from": 1,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S3_clang_header_cast",
+      "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+      "from": 1,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S1_clang_header_member",
+      "path": "lib/agent/c/agent_unix_socket_binding.c",
+      "from": 2,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S2_clang_sizeof",
+      "path": "lib/agent/c/agent_unix_socket_binding.c",
+      "from": 2,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S3_clang_header_cast",
+      "path": "lib/agent/c/agent_unix_socket_binding.c",
+      "from": 2,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "K_raw_byte_offset",
+      "path": "lib/core/rational.cpp",
+      "from": 5,
+      "to": 4,
+      "reason": "PR #939 (57cae2e79) simplified exact-rational rationalize on bignums/duals and eliminated one raw ptr-8 byte offset site in lib/core/rational.cpp."
+    },
+    {
+      "class": "L_layout_in_prose",
+      "path": "lib/backend/llvm_codegen.cpp",
+      "from": 11,
+      "to": 10,
+      "reason": "PR #939 (9cde83c9b) unified LLVMCodeGen's declaration in inc/eshkol/backend/llvm_codegen.h, removing the duplicated getObjectSubtype prose layout comment from lib/backend/llvm_codegen.cpp."
+    },
+    {
+      "class": "J_secondary_prefix_abi",
+      "path": "lib/core/runtime_shared_memory.cpp",
+      "from": 26,
+      "to": 13,
+      "reason": "Shared lifetime operations centralize atomic count access and final header reclamation."
+    },
+    {
+      "class": "G_header_field_write",
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "from": 7,
+      "to": 6,
+      "reason": "Numeric subtype tests share the subtype accessor for rational and i128 payloads."
+    },
+    {
+      "class": "D2_ir_field_offset",
+      "path": "lib/backend/llvm_codegen.cpp",
+      "from": 8,
+      "to": 7,
+      "reason": "Ownership move lowering removes an inline negative-offset GEP into the object header flags byte in lib/backend/llvm_codegen.cpp."
+    },
+    {
+      "class": "A_macro_api",
+      "path": "lib/core/sexp_to_ast.cpp",
+      "from": 3,
+      "to": 1,
+      "reason": "Hosted eval datum conversion routes through a single iterative token-spelling path in lib/core/sexp_to_ast.cpp, leaving one ESHKOL_GET_HEADER check."
+    },
+    {
+      "class": "G_header_field_write",
+      "path": "lib/core/sexp_to_ast.cpp",
+      "from": 3,
+      "to": 1,
+      "reason": "Hosted eval datum conversion routes through a single iterative token-spelling path in lib/core/sexp_to_ast.cpp, leaving one header subtype check."
+    },
+    {
+      "class": "E_alloc_with_header",
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "from": 8,
+      "to": 6,
+      "reason": "List and quoted-datum cons allocations in lib/core/runtime_list_helpers.cpp route through one local alloc_cons_cell helper."
+    },
+    {
+      "class": "H_wasm_glue",
+      "path": "scripts/wasm_exact_runtime.fragment.js",
+      "from": 28,
+      "to": 27,
+      "reason": "Browser WASM exact runtime fragment consolidated one duplicate subtype header read in commit 63b4d1a05."
+    },
+    {
+      "class": "H_wasm_glue",
+      "path": "site/static/eshkol-runtime.js",
+      "from": 45,
+      "to": 44,
+      "reason": "Generated browser runtime glue inherits the consolidated exact runtime fragment from commit 63b4d1a05."
+    },
+    {
+      "class": "H_wasm_glue",
+      "path": "web/eshkol-repl.js",
+      "from": 45,
+      "to": 44,
+      "reason": "Generated browser REPL glue inherits the consolidated exact runtime fragment from commit 63b4d1a05."
     }
   ]
 }

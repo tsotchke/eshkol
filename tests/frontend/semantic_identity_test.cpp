@@ -68,12 +68,12 @@ int main() {
           "nominal types are interned");
 
     eshkol::frontend::ImportResolver imports;
-    eshkol::frontend::LibraryInterface interface;
-    interface.module = 11;
-    interface.name = "demo.math";
-    interface.exports.emplace("x", declaration_id);
-    interface.exports.emplace("y", use_id);
-    imports.define(interface);
+    eshkol::frontend::LibraryInterface library_interface;
+    library_interface.module = 11;
+    library_interface.name = "demo.math";
+    library_interface.exports.emplace("x", declaration_id);
+    library_interface.exports.emplace("y", use_id);
+    imports.define(library_interface);
     std::map<std::string, eshkol_binding_id_t> view;
     std::string import_error;
     const auto transformed = eshkol::frontend::ImportSet::prefixing(

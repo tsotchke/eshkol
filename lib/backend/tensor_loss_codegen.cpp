@@ -12,6 +12,7 @@
  * pre-loss-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/tensor_shape_guard.h>
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/tensor_cross_entropy.h>
 
@@ -73,6 +74,7 @@ llvm::Value* TensorCodegen::mseLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "mse-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "mse-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "mse-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
@@ -290,117 +292,7 @@ llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
-    refuseUnsupportedLossAD("bce-loss");
-    // bce-loss: (bce-loss predictions targets)
-    // BCE = -sum(target * log(pred) + (1-target) * log(1-pred)) / n
-    if (op->call_op.num_vars < 2) {
-        eshkol_error("bce-loss requires 2 arguments: predictions, targets");
-        return nullptr;
-    }
-
-    llvm::IRBuilder<>& builder = ctx_.builder();
-
-    llvm::Value* pred_tagged = codegenAST(&op->call_op.variables[0]);
-    llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
-    if (!pred_tagged || !target_tagged) return nullptr;
-
-    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "bce-loss");
-    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "bce-loss");
-
-    llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
-    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), num_dims_ptr);
-    llvm::Value* dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
-    llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), dims_ptr);
-
-    llvm::Value* pred_elems_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 2);
-    llvm::Value* pred_elems = builder.CreateLoad(ctx_.ptrType(), pred_elems_ptr);
-    llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
-    llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
-
-    llvm::Function* log_func = eshkol::libm_codegen::unary(
-        ctx_.module(), "log", ctx_.doubleType());
-
-    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-
-    // Compute total elements
-    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "bce_size_loop", current_func);
-    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "bce_size_body", current_func);
-    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "bce_size_done", current_func);
-    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "bce_sum_loop", current_func);
-    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "bce_sum_body", current_func);
-    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "bce_sum_done", current_func);
-
-    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* total_size = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), total_size);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_loop);
-    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(si, num_dims), size_body, size_done);
-
-    builder.SetInsertPoint(size_body);
-    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), dims, si);
-    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
-    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), total_size);
-    builder.CreateStore(builder.CreateMul(cur_size, dim_val), total_size);
-    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_done);
-    llvm::Value* num_elements = builder.CreateLoad(ctx_.int64Type(), total_size);
-
-    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-4); // For numerical stability (JAX/PyTorch standard)
-
-    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* bce_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), bce_sum);
-    builder.CreateBr(sum_loop);
-
-    builder.SetInsertPoint(sum_loop);
-    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(sui, num_elements), sum_body, sum_done);
-
-    builder.SetInsertPoint(sum_body);
-    llvm::Value* pred_elem_ptr = builder.CreateGEP(ctx_.int64Type(), pred_elems, sui);
-    llvm::Value* pred_bits = builder.CreateLoad(ctx_.int64Type(), pred_elem_ptr);
-    llvm::Value* pred_val = builder.CreateBitCast(pred_bits, ctx_.doubleType());
-    // Clamp predictions for numerical stability
-    llvm::Value* pred_clamp = builder.CreateSelect(
-        builder.CreateFCmpOLT(pred_val, eps), eps,
-        builder.CreateSelect(
-            builder.CreateFCmpOGT(pred_val, builder.CreateFSub(one, eps)),
-            builder.CreateFSub(one, eps), pred_val));
-
-    llvm::Value* target_elem_ptr = builder.CreateGEP(ctx_.int64Type(), target_elems, sui);
-    llvm::Value* target_bits = builder.CreateLoad(ctx_.int64Type(), target_elem_ptr);
-    llvm::Value* target_val = builder.CreateBitCast(target_bits, ctx_.doubleType());
-
-    // BCE term: target * log(pred) + (1-target) * log(1-pred)
-    llvm::Value* log_pred = builder.CreateCall(log_func, {pred_clamp});
-    llvm::Value* one_minus_pred = builder.CreateFSub(one, pred_clamp);
-    llvm::Value* log_one_minus_pred = builder.CreateCall(log_func, {one_minus_pred});
-    llvm::Value* one_minus_target = builder.CreateFSub(one, target_val);
-
-    llvm::Value* term1 = builder.CreateFMul(target_val, log_pred);
-    llvm::Value* term2 = builder.CreateFMul(one_minus_target, log_one_minus_pred);
-    llvm::Value* term = builder.CreateFAdd(term1, term2);
-
-    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), bce_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_sum, term), bce_sum);
-    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
-    builder.CreateBr(sum_loop);
-
-    builder.SetInsertPoint(sum_done);
-    llvm::Value* total_sum = builder.CreateLoad(ctx_.doubleType(), bce_sum);
-    llvm::Value* n_double = builder.CreateSIToFP(num_elements, ctx_.doubleType());
-    llvm::Value* bce = builder.CreateFDiv(builder.CreateFNeg(total_sum), n_double);
-
-    return tagged_.packDouble(bce);
+    return emitBinaryCrossEntropy(op, "bce-loss");
 }
 
 llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
@@ -420,6 +312,7 @@ llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "huber-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "huber-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "huber-loss");
 
     llvm::Value* delta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     if (op->call_op.num_vars >= 3) {
@@ -534,6 +427,7 @@ llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "mae-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "mae-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "mae-loss");
 
     // Get tensor layouts (index 0 = dims ptr, index 1 = ndims, index 2 = elems)
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -617,11 +511,15 @@ llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op) {
-    refuseUnsupportedLossAD("binary-cross-entropy-loss");
+    return emitBinaryCrossEntropy(op, "binary-cross-entropy-loss");
+}
+
+llvm::Value* TensorCodegen::emitBinaryCrossEntropy(const eshkol_operations_t* op, const char* name) {
+    refuseUnsupportedLossAD(name);
     // binary-cross-entropy-loss: (binary-cross-entropy-loss predictions targets)
     // BCE = -(1/n) * sum(target * log(pred) + (1-target) * log(1-pred))
     if (op->call_op.num_vars != 2) {
-        eshkol_error("binary-cross-entropy-loss requires 2 arguments: predictions, targets");
+        eshkol_error("%s requires 2 arguments: predictions, targets", name);
         return nullptr;
     }
 
@@ -633,8 +531,9 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
     llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
     if (!pred_tagged || !target_tagged) return nullptr;
 
-    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "binary-cross-entropy-loss");
-    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "binary-cross-entropy-loss");
+    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, name);
+    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, name);
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, name);
 
     // Get tensor layouts (index 0 = dims ptr, index 1 = ndims, index 2 = elems)
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -704,11 +603,13 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     llvm::Value* one_minus_eps = builder.CreateFSub(one, eps);
 
-    // pred_clipped = max(eps, min(1-eps, pred))
-    llvm::Value* cmp_high = builder.CreateFCmpOLT(pred_val, one_minus_eps);
-    llvm::Value* pred_upper = builder.CreateSelect(cmp_high, pred_val, one_minus_eps);
-    llvm::Value* cmp_low = builder.CreateFCmpOGT(pred_upper, eps);
-    llvm::Value* pred_clipped = builder.CreateSelect(cmp_low, pred_upper, eps);
+    // Clamp finite predictions to [eps, 1-eps]. Each select replaces the
+    // prediction only when an ordered comparison holds, so a NaN prediction
+    // reaches log unchanged and the loss is NaN.
+    llvm::Value* above_high = builder.CreateFCmpOGT(pred_val, one_minus_eps);
+    llvm::Value* pred_upper = builder.CreateSelect(above_high, one_minus_eps, pred_val);
+    llvm::Value* below_low = builder.CreateFCmpOLT(pred_upper, eps);
+    llvm::Value* pred_clipped = builder.CreateSelect(below_low, eps, pred_upper);
 
     // BCE term: target * log(pred) + (1-target) * log(1-pred)
     llvm::Function* log_func = ESHKOL_GET_INTRINSIC(
@@ -758,6 +659,7 @@ llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
 
     llvm::Value* p_ptr = unpackTensorOperandChecked(p_tagged, "kl-div-loss");
     llvm::Value* q_ptr = unpackTensorOperandChecked(q_tagged, "kl-div-loss");
+    emitMatchingTensorShapes(ctx_, {p_ptr, q_ptr}, "kl-div-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* p_dims_ptr = builder.CreateStructGEP(tensor_type, p_ptr, 0);
@@ -866,6 +768,7 @@ llvm::Value* TensorCodegen::hingeLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "hinge-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "hinge-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "hinge-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
@@ -974,6 +877,7 @@ llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "smooth-l1-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "smooth-l1-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "smooth-l1-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
@@ -1180,6 +1084,7 @@ llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
     llvm::Value* anchor_ptr = unpackTensorOperandChecked(anchor_tagged, "triplet-loss");
     llvm::Value* pos_ptr = unpackTensorOperandChecked(positive_tagged, "triplet-loss");
     llvm::Value* neg_ptr = unpackTensorOperandChecked(negative_tagged, "triplet-loss");
+    emitMatchingTensorShapes(ctx_, {anchor_ptr, pos_ptr, neg_ptr}, "triplet-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     // Get anchor total elements from field 3
@@ -1287,6 +1192,7 @@ llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
 
     llvm::Value* t1_ptr = unpackTensorOperandChecked(t1_tagged, "contrastive-loss");
     llvm::Value* t2_ptr = unpackTensorOperandChecked(t2_tagged, "contrastive-loss");
+    emitMatchingTensorShapes(ctx_, {t1_ptr, t2_ptr}, "contrastive-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* t1_total_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 3);
@@ -1383,6 +1289,7 @@ llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
 
     llvm::Value* logits_ptr = unpackTensorOperandChecked(logits_tagged, "label-smoothing-loss");
     llvm::Value* targets_ptr = unpackTensorOperandChecked(targets_tagged, "label-smoothing-loss");
+    emitMatchingTensorShapes(ctx_, {logits_ptr, targets_ptr}, "label-smoothing-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* logits_total_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 3);
@@ -1536,6 +1443,7 @@ llvm::Value* TensorCodegen::cosineEmbeddingLoss(const eshkol_operations_t* op) {
 
     llvm::Value* t1_ptr = unpackTensorOperandChecked(t1_tagged, "cosine-embedding-loss");
     llvm::Value* t2_ptr = unpackTensorOperandChecked(t2_tagged, "cosine-embedding-loss");
+    emitMatchingTensorShapes(ctx_, {t1_ptr, t2_ptr}, "cosine-embedding-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* t1_total_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 3);

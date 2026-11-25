@@ -1,0 +1,72 @@
+;; core.effective.hypercover: stage S6.3 of the S6 definition of done.
+;; Statements fixed before the computation:
+;;   1. On the pseudo-2-sphere, whose cover by its two maximal opens has the
+;;      pseudocircle as intersection, the Cech nerve gives Map(-, BG) = 1/2,
+;;      2, 1 for BZ/2, K(Z/2,2) and the split 2-type (program 19), and a
+;;      hypercover refining that cover gives the values of the space,
+;;      1/2, 4, 2 (descent restored, Lurie HTT 6.5.4; Dugger-Isaksen).
+;;   2. On a Leray cover (the pseudocircle) the hypercover is the Cech nerve.
+;;   3. On the 4-dimensional finite model S2p x S2p of S^2 x S^2, covered by
+;;      its four maximal opens, the 3-type K(Z/4,3) x_k K(Z/2,2) with k the
+;;      Pontryagin square (a generator of H^4(K(Z/2,2); Z/4) = Z/4) has
+;;      |Map| = 3/32 (and 1/8 for k = 0: P(a + b) = 2ab is not zero) on the
+;;      space, while the Cech nerve (a contractible simplicial set) gives 1/2
+;;      for both. The same values on the product hypercover are the long-run
+;;      check effective_hypercover_3type_test (about 3 minutes and 29 GB).
+(require stdlib)
+(require core.sheaf.site)
+(require core.simplicial)
+(require core.effective)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (maxcover X) (map (lambda (x) (finite-space-down-set X x)) (finite-space-maximal-points X)))
+(define (trivial n m) m)
+
+;; the pseudo-2-sphere: minimal points 0 1, then 2 3, then 4 5
+(define S2p (make-finite-space 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+(define cover2 (maxcover S2p))
+(define H (finite-space-hypercover S2p cover2 3))
+(define C (finite-space-cech-nerve S2p cover2 3))
+(define O (poset-nerve S2p))
+(show "hypercover levels" (hypercover-level-counts H 3))
+(check "the hypercover of the pseudo-2-sphere through level 3 has (2 4 28 196) nondegenerate pieces, every piece a cone inside its faces, and H_n -> (cosk_(n-1) H)_n surjective over every point"
+       (and (equal? (hypercover-level-counts H 3) (list 2 4 28 196)) (null? (hypercover-violations S2p H 3))))
+(check "the Cech nerve of the same cover (the nerve of the indiscrete groupoid on the two opens, (2 2 2 2) pieces) is contractible: H^* mod 2 = (1 0 0); the hypercover and the order complex have (1 0 1)"
+       (and (equal? (hypercover-level-counts C 3) (list 2 2 2 2)) (equal? (mod-p-cohomology-dimensions C 2 2) (list 1 0 0)) (equal? (mod-p-cohomology-dimensions H 2 2) (list 1 0 1))
+            (equal? (mod-p-cohomology-dimensions O 2 2) (list 1 0 1))))
+(define vH (two-type-cardinalities H 2)) (define vC (two-type-cardinalities C 2)) (define vO (two-type-cardinalities O 2))
+(show "(BZ/2 K(Z/2,2) split) on the hypercover, the space, the Cech nerve" (list vH vO vC))
+(check "S6.3: the hypercover gives Map(-, BG) = 1/2, 4, 2 as the space does, where the Cech nerve gives 1/2, 2, 1"
+       (and (equal? vH (list 1/2 4 2)) (equal? vO (list 1/2 4 2)) (equal? vC (list 1/2 2 1))))
+(define K22x (abelian-crossed-module 2 1 0 trivial)) (define SPx (abelian-crossed-module 2 2 0 trivial)) (define BZ2x (abelian-crossed-module 1 2 0 trivial))
+(define states (map (lambda (x) (mapping-space-cardinality H x (crossed-module-nerve x))) (list BZ2x K22x SPx)))
+(define statesC (map (lambda (x) (mapping-space-cardinality C x (crossed-module-nerve x))) (list BZ2x K22x SPx)))
+(show "state sums Map(H, BG), Map(C(U), BG)" (list states statesC))
+(check "Map(hypercover, BG) counted as simplicial maps into the nerves of the crossed modules (Faria Martins-Porter): 1/2, 4, 2 on the hypercover, 1/2, 2, 1 on the Cech nerve"
+       (and (equal? states (list 1/2 4 2)) (equal? statesC (list 1/2 2 1))))
+
+;; a Leray cover: the pseudocircle and its two maximal opens (cones meeting in two points)
+(define S1p (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define H1 (finite-space-hypercover S1p (maxcover S1p) 3))
+(define C1 (finite-space-cech-nerve S1p (maxcover S1p) 3))
+(check "on the pseudocircle (a Leray cover) hypercover and Cech nerve have the same number of pieces in each level and the values of the circle (1 1 1)"
+       (and (equal? (hypercover-level-counts H1 3) (hypercover-level-counts C1 3))
+            (equal? (two-type-cardinalities H1 2) (list 1 1 1)) (equal? (two-type-cardinalities C1 2) (list 1 1 1))))
+
+;; the 3-type on the 4-dimensional model S2p x S2p
+(define X (finite-space-product S2p S2p))
+(define CX (finite-space-cech-nerve X (maxcover X) 4))
+(define vCX (postnikov-cardinalities (hypercover-space CX 4)))
+(define N (finite-effective-space O))
+(define vX (postnikov-cardinalities (product-space "N(S2p) x N(S2p)" N N)))
+(show "S2p x S2p: ((2-types) (Z/2,Z/4: k=0, Pontryagin) (Z/2,Z/2: k=0, cup square)) on the space, the Cech nerve" (list vX vCX))
+(check "the order complex of S2p x S2p (the product of the nerves, by Eilenberg-Zilber): 2-types 1/2, 8, 4; the 3-type with the Pontryagin square 3/32 against 1/8 for k = 0; the cup-square 3-type 1 and 1 (x u x = 0 mod 2 on S^2 x S^2)"
+       (equal? vX (list (list 1/2 8 4) (list 1/8 3/32) (list 1 1))))
+(check "the Cech nerve of the four maximal opens (all intersections connected, a contractible simplicial set with (4 12 36 108 324) pieces) gives 1/2, 2, 1 and 1/2 for both k: Cech descent fails at level 2 and the k-invariant is invisible to it"
+       (and (equal? (hypercover-level-counts CX 4) (list 4 12 36 108 324)) (equal? vCX (list (list 1/2 2 1) (list 1/2 1/2) (list 1 1)))))
+(display "core.effective hypercover: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: effective_hypercover_test") (newline)) (begin (display "FAIL: effective_hypercover_test") (newline)))

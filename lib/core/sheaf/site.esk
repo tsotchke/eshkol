@@ -1,0 +1,416 @@
+;;; core.sheaf.site -- finite categories, sieves, Grothendieck topologies,
+;;; sites, and finite (Alexandrov) spaces.
+;;;
+;;; Usage: (require core.sheaf.site)   or   (require core.sheaf)
+;;;
+;;; Sources: A. Grothendieck, M. Artin, J.-L. Verdier, SGA 4, Expose I-II
+;;; (sieves, topologies, sites); S. Mac Lane, I. Moerdijk, "Sheaves in
+;;; Geometry and Logic" (1992), I.4 and III.2 (sieves, the three axioms of a
+;;; Grothendieck topology); P. S. Alexandroff (1937), M. C. McCord (1966) and
+;;; J. A. Barmak, LNM 2032 (2011), for finite T_0 spaces as finite posets.
+;;;
+;;; Representation (public and stable; core.topos builds on it):
+;;;
+;;;   finite category  #(finite-category nobj arrows compose ids labels)
+;;;       objects are the integers 0 .. nobj-1; `arrows` is a vector of
+;;;       #(src tgt name); arrows are named by their index. `compose` is a
+;;;       procedure (g f) -> index of g o f, or #f when tgt f /= src g.
+;;;       `labels` gives each object a printable label (default: itself).
+;;;   sieve            a list of arrow indices, ascending, all with target c,
+;;;       closed under precomposition (f in S, tgt g = src f => f o g in S).
+;;;   site             #(site category covering? minimal)
+;;;       `covering?` is a procedure (c sieve) -> boolean that decides J(c);
+;;;       `minimal` is #f or a procedure c -> the smallest covering sieve of c
+;;;       (a basis supplied by the constructor; otherwise it is computed).
+;;;   finite space     #(finite-space n leq) with leq[x][y] = (x <= y); the
+;;;       opens are the down-sets, represented as ascending lists of points.
+;;;
+;;; Composition convention: (category-compose C g f) is g o f ("first f, then
+;;; g"), defined when (arrow-target C f) = (arrow-source C g).
+
+(require stdlib)
+
+(provide make-finite-category make-category-from-presentation poset-category category-opposite
+         finite-category? category-object-count category-arrow-count category-arrows
+         arrow-source arrow-target arrow-name category-identity category-compose
+         category-composable? category-hom category-arrows-into category-arrows-from
+         category-object-label category-object-of-label category-laws-violations category-laws?
+         category-arrow-named category-thin? category-meet category-thin-arrow
+         sieve? sieve-maximal sieve-generated sieve-pullback sieve-intersection sieve-union
+         sieve-contains? sieve-subset? sieves-on sieve-domains
+         make-site make-site-from-sieves site? site-category site-covering? site-covering-sieves
+         site-minimal-covering-sieve grothendieck-topology-violations grothendieck-topology?
+         trivial-site dense-site
+         make-finite-space finite-space? finite-space-size finite-space-leq? finite-space-lt?
+         finite-space-down-set finite-space-up-set finite-space-open? finite-space-opens
+         finite-space-maximal-points finite-space-minimal-points finite-space-product
+         finite-space-components finite-space-covers finite-space-finest-cover
+         finite-space-chains finite-space-site
+         sheaf-subsets sheaf-subsets-of-size sheaf-intersect-all sheaf-set-equal?)
+
+;; ---------------------------------------------------------------------------
+;; Small list utilities (private, prefixed)
+;; ---------------------------------------------------------------------------
+(define (st-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (st-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (st-all? pred (cdr xs))) (else #f)))
+(define (st-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (st-any? pred (cdr xs)))))
+(define (st-subset? A B) (st-all? (lambda (x) (memv x B)) A))
+(define (sheaf-set-equal? A B) (and (st-subset? A B) (st-subset? B A)))
+(define (st-union-all sets)
+  (let loop ((ss sets) (acc '()))
+    (if (null? ss) acc (loop (cdr ss) (append (filter (lambda (x) (not (memv x acc))) (car ss)) acc)))))
+;; all subsets, in the order: subsets without the first item, then with it
+(define (sheaf-subsets items)
+  (if (null? items) (list '())
+      (let ((rest (sheaf-subsets (cdr items)))) (append rest (map (lambda (s) (cons (car items) s)) rest)))))
+;; increasing k-element sublists of items, lexicographic
+(define (sheaf-subsets-of-size items k)
+  (if (= k 0) (list '())
+      (let loop ((l items) (acc '()))
+        (if (null? l) (reverse acc)
+            (loop (cdr l) (append (reverse (map (lambda (rest) (cons (car l) rest)) (sheaf-subsets-of-size (cdr l) (- k 1)))) acc))))))
+(define (sheaf-intersect-all sets)
+  (if (null? (cdr sets)) (car sets) (filter (lambda (x) (memv x (car sets))) (sheaf-intersect-all (cdr sets)))))
+(define (st-sort-ints xs)            ;; ascending, duplicates removed
+  (let loop ((l xs) (acc '()))
+    (if (null? l) acc
+        (loop (cdr l)
+              (let ins ((x (car l)) (ys acc))
+                (cond ((null? ys) (list x))
+                      ((<= x (car ys)) (if (= x (car ys)) ys (cons x ys)))
+                      (else (cons (car ys) (ins x (cdr ys))))))))))
+(define (st-dedup xs)
+  (let loop ((l xs) (acc '()))
+    (cond ((null? l) (reverse acc)) ((member (car l) acc) (loop (cdr l) acc)) (else (loop (cdr l) (cons (car l) acc))))))
+(define (st-position item items)
+  (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Finite categories
+;; ---------------------------------------------------------------------------
+;; arrows: list or vector of (src tgt name) lists or #(src tgt name) vectors;
+;; compose: (g f) -> index or #f; ids: list/vector object -> identity index.
+(define (make-finite-category nobj arrows compose ids . labels)
+  (let ((av (list->vector (map (lambda (a) (if (vector? a) a (list->vector a)))
+                                (if (vector? arrows) (vector->list arrows) arrows)))))
+    (vector 'finite-category nobj av compose
+            (if (vector? ids) ids (list->vector ids))
+            (if (null? labels) (list->vector (st-range nobj)) (list->vector (car labels))))))
+(define (finite-category? C) (and (vector? C) (= 6 (vector-length C)) (eq? (vector-ref C 0) 'finite-category)))
+(define (category-object-count C) (vector-ref C 1))
+(define (category-arrows C) (vector-ref C 2))
+(define (category-arrow-count C) (vector-length (vector-ref C 2)))
+(define (arrow-source C a) (vector-ref (vector-ref (category-arrows C) a) 0))
+(define (arrow-target C a) (vector-ref (vector-ref (category-arrows C) a) 1))
+(define (arrow-name C a) (vector-ref (vector-ref (category-arrows C) a) 2))
+(define (category-identity C x) (vector-ref (vector-ref C 4) x))
+(define (category-composable? C g f) (= (arrow-target C f) (arrow-source C g)))
+(define (category-compose C g f) (if (category-composable? C g f) ((vector-ref C 3) g f) #f))
+(define (category-object-label C x) (vector-ref (vector-ref C 5) x))
+(define (category-object-of-label C label)
+  (let loop ((x 0)) (cond ((= x (category-object-count C)) #f) ((equal? (category-object-label C x) label) x) (else (loop (+ x 1))))))
+(define (category-hom C x y)
+  (filter (lambda (a) (and (= x (arrow-source C a)) (= y (arrow-target C a)))) (st-range (category-arrow-count C))))
+(define (category-arrows-into C c) (filter (lambda (a) (= c (arrow-target C a))) (st-range (category-arrow-count C))))
+(define (category-arrows-from C c) (filter (lambda (a) (= c (arrow-source C a))) (st-range (category-arrow-count C))))
+(define (category-arrow-named C name)
+  (let loop ((a 0)) (cond ((= a (category-arrow-count C)) #f) ((equal? (arrow-name C a) name) a) (else (loop (+ a 1))))))
+;; identity and associativity laws, as a list of explicit violations
+(define (category-laws-violations C)
+  (let* ((n (category-arrow-count C)) (as (st-range n)) (out '()))
+    (for-each (lambda (a)
+                (if (not (and (eqv? a (category-compose C a (category-identity C (arrow-source C a))))
+                              (eqv? a (category-compose C (category-identity C (arrow-target C a)) a))))
+                    (set! out (cons (list 'identity a) out))))
+              as)
+    (for-each (lambda (h)
+                (for-each (lambda (g)
+                            (if (category-composable? C h g)
+                                (for-each (lambda (f)
+                                            (if (and (category-composable? C g f)
+                                                     (not (eqv? (category-compose C h (category-compose C g f))
+                                                                (category-compose C (category-compose C h g) f))))
+                                                (set! out (cons (list 'associativity h g f) out))))
+                                          as)))
+                          as))
+              as)
+    (reverse out)))
+(define (category-laws? C) (null? (category-laws-violations C)))
+
+;; From generators and relations: objects 0..n-1, generators (src tgt name),
+;; and a normal-form procedure on words (lists of generator indices applied
+;; right to left: (g2 g1) is g2 o g1). Arrows are the distinct normal forms
+;; of composable words up to max-len; identities are empty words.
+(define (make-category-from-presentation n gens normal-form max-len)
+  (let* ((ngen (length gens))
+         (gsrc (lambda (g) (car (list-ref gens g)))) (gtgt (lambda (g) (cadr (list-ref gens g))))
+         (word-tgt (lambda (w x) (if (null? w) x (gtgt (car w)))))
+         (words (let loop ((len 0) (frontier (map (lambda (x) (cons x '())) (st-range n))) (acc '()))
+                  (if (> len max-len) acc
+                      (let* ((new (st-dedup (map (lambda (p) (cons (car p) (normal-form (cdr p)))) frontier)))
+                             (fresh (filter (lambda (p) (not (member p acc))) new))
+                             (next (let ext ((ps fresh) (out '()))
+                                     (if (null? ps) out
+                                         (ext (cdr ps)
+                                              (append (map (lambda (g) (cons (car (car ps)) (cons g (cdr (car ps)))))
+                                                           (filter (lambda (g) (= (gsrc g) (word-tgt (cdr (car ps)) (car (car ps))))) (st-range ngen)))
+                                                      out))))))
+                        (loop (+ len 1) next (append acc fresh))))))
+         (arrows (list->vector (map (lambda (p) (vector (car p) (word-tgt (cdr p) (car p)) (cdr p))) words)))
+         (narr (vector-length arrows))
+         (index (let ((t (make-hash-table)))
+                  (let loop ((i 0))
+                    (if (< i narr)
+                        (begin (hash-table-set! t (list (vector-ref (vector-ref arrows i) 0) (vector-ref (vector-ref arrows i) 2)) i)
+                               (loop (+ i 1)))))
+                  t))
+         (comp (make-hash-table))
+         (ids (map (lambda (x) (hash-table-ref/default index (list x '()) #f)) (st-range n))))
+    (let loop-g ((g 0))
+      (if (< g narr)
+          (begin
+            (let loop-f ((f 0))
+              (if (< f narr)
+                  (begin
+                    (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0))
+                        (let* ((w (normal-form (append (vector-ref (vector-ref arrows g) 2) (vector-ref (vector-ref arrows f) 2))))
+                               (k (hash-table-ref/default index (list (vector-ref (vector-ref arrows f) 0) w) #f)))
+                          (if k (hash-table-set! comp (+ (* narr g) f) k)
+                              (error "make-category-from-presentation: composite outside the enumerated arrows; raise max-len"))))
+                    (loop-f (+ f 1)))))
+            (loop-g (+ g 1)))))
+    (make-finite-category n arrows (lambda (g f) (hash-table-ref/default comp (+ (* narr g) f) #f)) ids)))
+
+;; The thin category of a preorder on 0..n-1: one arrow x -> y exactly when
+;; leq?(x, y). Arrows are enumerated by (x, y) in lexicographic order and
+;; named (x y). Optional labels name the objects.
+(define (poset-category n leq? . labels)
+  (let* ((table (make-vector (* n n) #f))
+         (pairs (let loop ((x (- n 1)) (acc '()))
+                  (if (< x 0) acc
+                      (loop (- x 1)
+                            (append (filter (lambda (p) p)
+                                            (map (lambda (y) (if (leq? x y) (list x y) #f)) (st-range n)))
+                                    acc)))))
+         (arrows (map (lambda (p) (vector (car p) (cadr p) p)) pairs)))
+    (let loop ((ps pairs) (i 0))
+      (if (not (null? ps))
+          (begin (vector-set! table (+ (* n (car (car ps))) (cadr (car ps))) i) (loop (cdr ps) (+ i 1)))))
+    (let ((arrv (list->vector arrows)))
+      (apply make-finite-category
+             n arrv
+             (lambda (g f)
+               (vector-ref table (+ (* n (vector-ref (vector-ref arrv f) 0)) (vector-ref (vector-ref arrv g) 1))))
+             (map (lambda (x) (vector-ref table (+ (* n x) x))) (st-range n))
+             labels))))
+(define (category-opposite C)
+  (let* ((n (category-arrow-count C))
+         (arrows (map (lambda (a) (vector (arrow-target C a) (arrow-source C a) (arrow-name C a))) (st-range n))))
+    (make-finite-category (category-object-count C) arrows
+                          (lambda (g f) (category-compose C f g))
+                          (vector-ref C 4)
+                          (vector->list (vector-ref C 5)))))
+;; A category is thin when each hom-set has at most one arrow.
+(define (category-thin? C)
+  (st-all? (lambda (x) (st-all? (lambda (y) (<= (length (category-hom C x y)) 1)) (st-range (category-object-count C))))
+           (st-range (category-object-count C))))
+;; the unique arrow x -> y of a thin category, or #f
+(define (category-thin-arrow C x y) (let ((h (category-hom C x y))) (if (null? h) #f (car h))))
+;; Meet (product) of x and y in a thin category: the lower bound through which
+;; every lower bound factors; #f when there is none.
+(define (category-meet C x y)
+  (let* ((objs (st-range (category-object-count C)))
+         (lower (filter (lambda (z) (and (pair? (category-hom C z x)) (pair? (category-hom C z y)))) objs))
+         (greatest (filter (lambda (z) (st-all? (lambda (w) (pair? (category-hom C w z))) lower)) lower)))
+    (if (null? greatest) #f (car greatest))))
+
+;; ---------------------------------------------------------------------------
+;; Sieves
+;; ---------------------------------------------------------------------------
+(define (sieve-contains? S f) (if (memv f S) #t #f))
+(define (sieve-subset? S R) (st-subset? S R))
+(define (sieve? C c S)
+  (and (st-all? (lambda (f) (= c (arrow-target C f))) S)
+       (st-all? (lambda (f)
+                  (st-all? (lambda (g) (or (not (category-composable? C f g)) (memv (category-compose C f g) S)))
+                           (st-range (category-arrow-count C))))
+                S)))
+(define (sieve-maximal C c) (category-arrows-into C c))
+;; the smallest sieve on c containing the given arrows into c
+(define (sieve-generated C c arrows)
+  (st-sort-ints
+   (let loop ((fs arrows) (acc '()))
+     (if (null? fs) acc
+         (loop (cdr fs)
+               (append (map (lambda (g) (category-compose C (car fs) g))
+                            (category-arrows-into C (arrow-source C (car fs))))
+                       acc))))))
+;; f : d -> c pulls a sieve S on c back to f*S = {g : f o g in S} on d
+(define (sieve-pullback C f S)
+  (filter (lambda (g) (memv (category-compose C f g) S)) (category-arrows-into C (arrow-source C f))))
+(define (sieve-intersection S R) (filter (lambda (f) (memv f R)) S))
+(define (sieve-union S R) (st-sort-ints (append S R)))
+(define (sieve-domains C S) (map (lambda (f) (arrow-source C f)) S))
+;; every sieve on c (enumerates subsets of the arrows into c: small sites only)
+(define (sieves-on C c)
+  (map st-sort-ints (filter (lambda (S) (sieve? C c S)) (sheaf-subsets (category-arrows-into C c)))))
+
+;; ---------------------------------------------------------------------------
+;; Sites and Grothendieck topologies
+;; ---------------------------------------------------------------------------
+(define (make-site C covering? . minimal)
+  (vector 'site C covering? (if (null? minimal) #f (car minimal))))
+;; J given extensionally: a list (or vector), indexed by object, of lists of
+;; covering sieves
+(define (make-site-from-sieves C J)
+  (let ((Jv (if (vector? J) J (list->vector J))))
+    (make-site C (lambda (c S) (if (member (st-sort-ints S) (map st-sort-ints (vector-ref Jv c))) #t #f)))))
+(define (site? s) (and (vector? s) (= 4 (vector-length s)) (eq? (vector-ref s 0) 'site)))
+(define (site-category s) (vector-ref s 1))
+(define (site-covering? s c S) ((vector-ref s 2) c (st-sort-ints S)))
+(define (site-covering-sieves s c)
+  (filter (lambda (S) (site-covering? s c S)) (sieves-on (site-category s) c)))
+;; The covering sieves of c are closed under finite intersection, so on a
+;; finite site there is a smallest one; the colimit over covering sieves in
+;; the plus construction is computed there.
+(define (site-minimal-covering-sieve s c)
+  (if (vector-ref s 3)
+      ((vector-ref s 3) c)
+      (let ((all (site-covering-sieves s c)))
+        (if (null? all) (error "site-minimal-covering-sieve: no covering sieve (maximal-sieve axiom fails)" c))
+        (let loop ((l (cdr all)) (m (car all))) (if (null? l) m (loop (cdr l) (sieve-intersection m (car l))))))))
+;; The three axioms (SGA 4 II.1.1; Mac Lane-Moerdijk III.2), each failure
+;; named: (maximal c), (stability c S f), (transitivity c S R).
+(define (grothendieck-topology-violations s)
+  (let* ((C (site-category s)) (out '()))
+    (for-each
+     (lambda (c)
+       (if (not (site-covering? s c (sieve-maximal C c))) (set! out (cons (list 'maximal c) out)))
+       (let ((covering (site-covering-sieves s c)))
+         (for-each (lambda (S)
+                     (for-each (lambda (f)
+                                 (if (not (site-covering? s (arrow-source C f) (sieve-pullback C f S)))
+                                     (set! out (cons (list 'stability c S f) out))))
+                               (category-arrows-into C c)))
+                   covering)
+         (for-each (lambda (S)
+                     (for-each (lambda (R)
+                                 (if (and (not (site-covering? s c R))
+                                          (st-all? (lambda (f) (site-covering? s (arrow-source C f) (sieve-pullback C f R))) S))
+                                     (set! out (cons (list 'transitivity c S R) out))))
+                               (sieves-on C c)))
+                   covering)))
+     (st-range (category-object-count C)))
+    (reverse out)))
+(define (grothendieck-topology? s) (null? (grothendieck-topology-violations s)))
+;; the trivial topology: only maximal sieves cover (every presheaf is a sheaf)
+(define (trivial-site C)
+  (make-site C (lambda (c S) (sheaf-set-equal? S (sieve-maximal C c))) (lambda (c) (sieve-maximal C c))))
+;; the dense (double negation) topology: S covers c when every arrow into c
+;; can be extended into S
+(define (dense-site C)
+  (make-site C (lambda (c S)
+                 (st-all? (lambda (f)
+                            (st-any? (lambda (g) (and (category-composable? C f g) (memv (category-compose C f g) S)))
+                                     (category-arrows-into C (arrow-source C f))))
+                          (sieve-maximal C c)))))
+
+;; ---------------------------------------------------------------------------
+;; Finite spaces (finite preorders with the Alexandrov topology)
+;; ---------------------------------------------------------------------------
+;; covers: list of (x . y) meaning x <= y; the reflexive transitive closure is
+;; computed.
+(define (make-finite-space n covers)
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (begin
+                            (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j))
+                                (vector-set! (vector-ref leq i) j #t))
+                            (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (outer (+ k 1)))))
+    (vector 'finite-space n leq)))
+(define (finite-space? X) (and (vector? X) (= 3 (vector-length X)) (eq? (vector-ref X 0) 'finite-space)))
+(define (finite-space-size X) (vector-ref X 1))
+(define (finite-space-leq? X x y) (vector-ref (vector-ref (vector-ref X 2) x) y))
+(define (finite-space-lt? X x y) (and (finite-space-leq? X x y) (not (= x y))))
+(define (st-points X) (st-range (finite-space-size X)))
+;; the minimal open neighbourhood U_x = {y : y <= x}
+(define (finite-space-down-set X x) (filter (lambda (y) (finite-space-leq? X y x)) (st-points X)))
+(define (finite-space-up-set X x) (filter (lambda (y) (finite-space-leq? X x y)) (st-points X)))
+(define (finite-space-maximal-points X)
+  (filter (lambda (x) (st-all? (lambda (y) (not (finite-space-lt? X x y))) (st-points X))) (st-points X)))
+(define (finite-space-minimal-points X)
+  (filter (lambda (x) (st-all? (lambda (y) (not (finite-space-lt? X y x))) (st-points X))) (st-points X)))
+(define (finite-space-open? X U)
+  (st-all? (lambda (x) (st-all? (lambda (y) (or (not (finite-space-leq? X y x)) (memv y U))) (st-points X))) U))
+;; all opens, as ascending point lists, in sheaf-subsets order (empty first)
+(define (finite-space-opens X) (filter (lambda (U) (finite-space-open? X U)) (sheaf-subsets (st-points X))))
+;; product space: (x, y) is encoded x * |Y| + y, ordered componentwise
+(define (finite-space-product X Y)
+  (let* ((m (finite-space-size Y)) (n (* (finite-space-size X) m)) (leq (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin
+                    (vector-set! row j (and (finite-space-leq? X (quotient i m) (quotient j m))
+                                            (finite-space-leq? Y (remainder i m) (remainder j m))))
+                    (inner (+ j 1)))))
+            (vector-set! leq i row) (loop (+ i 1)))))
+    (vector 'finite-space n leq)))
+;; connected components of a subset U (comparability graph), in discovery order
+(define (finite-space-components X U)
+  (let loop ((rest U) (comps '()))
+    (if (null? rest) (reverse comps)
+        (let grow ((comp (list (car rest))) (frontier (list (car rest))))
+          (let ((new (filter (lambda (y) (and (memv y U) (not (memv y comp))
+                                              (st-any? (lambda (x) (or (finite-space-leq? X x y) (finite-space-leq? X y x))) frontier)))
+                             (st-points X))))
+            (if (null? new)
+                (loop (filter (lambda (x) (not (memv x comp))) rest) (cons comp comps))
+                (grow (append comp new) new)))))))
+;; open covers of U: families of nonempty opens inside U whose union is U,
+;; in sheaf-subsets order
+(define (finite-space-covers X U)
+  (let ((subopens (filter (lambda (V) (and (not (null? V)) (st-subset? V U))) (finite-space-opens X))))
+    (filter (lambda (fam) (and (not (null? fam)) (sheaf-set-equal? (st-union-all fam) U))) (sheaf-subsets subopens))))
+;; the cover of U by the minimal opens of its points; it refines every cover
+(define (finite-space-finest-cover X U) (map (lambda (x) (finite-space-down-set X x)) U))
+;; strictly decreasing chains x_0 > x_1 > ... > x_k of points in `allowed`,
+;; each listed largest first
+(define (finite-space-chains X k allowed)
+  (let extend ((k k) (partial '()))
+    (if (= k -1)
+        (list partial)
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (finite-space-lt? X (car partial) x))))
+                             (st-points X))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+;; The site of opens of X: objects are the opens (labels are the point
+;; lists, in finite-space-opens order), arrows the inclusions, and a sieve on
+;; U covers when the union of its domains is U. The smallest covering sieve
+;; of U is generated by the minimal opens U_x, x in U.
+(define (finite-space-site X)
+  (let* ((opens (finite-space-opens X)) (ov (list->vector opens)) (n (length opens))
+         (C (poset-category n (lambda (i j) (st-subset? (vector-ref ov i) (vector-ref ov j))) opens))
+         (obj (lambda (U) (st-position U opens))))
+    (make-site C
+               (lambda (c S) (sheaf-set-equal? (st-union-all (map (lambda (f) (vector-ref ov (arrow-source C f))) S))
+                                               (vector-ref ov c)))
+               (lambda (c)
+                 (sieve-generated C c
+                                  (map (lambda (x) (car (category-hom C (obj (finite-space-down-set X x)) c)))
+                                       (vector-ref ov c)))))))

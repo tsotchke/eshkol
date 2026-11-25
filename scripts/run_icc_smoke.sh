@@ -20,6 +20,14 @@
 #   3. The command must exit 0 for PASS; any nonzero exits → FAIL
 set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
+ICC_SMOKE_ONLY_ID=""
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || ! [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "Usage: $0 [--only PROBE_ID]" >&2
+        exit 2
+    fi
+    ICC_SMOKE_ONLY_ID="$2"
+fi
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
@@ -126,6 +134,7 @@ rm() {
 }
 
 . "$REPO_ROOT/scripts/lib/icc_probe.sh"
+PROBE_ONLY_ID="$ICC_SMOKE_ONLY_ID"
 
 # Keep a full per-probe transcript beside durable smoke evidence.  The trace
 # retains its existing bounded summary; these logs preserve diagnostics that
@@ -339,16 +348,11 @@ probe eskm_v1_model_load_engine_parity \
         "$ESHKOL_RUN" "$BUILD_DIR_PATH/eshkol-vm-standalone-test"'
 
 probe image_io_works "image-read returns a tensor of expected shape" \
-    'tmp=$(mktemp).esk; img=$(mktemp).png;
-     printf "\\x89PNG\\r\\n\\x1a\\n" > "$img";  ## just a header — image-read should error gracefully
-     cat > "$tmp" <<EOF
-;; Smoke: builtin recognized and callable. Real shape probe deferred to
-;; tests/v1_2_edge_cases/image_io_test.esk.
-(define (probe) (with-exception-handler (lambda (e) #t)
-                                         (lambda () (image-read "/nonexistent.png"))))
-(probe) (exit 0)
-EOF
-     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp" "$img"; exit $rc'
+    'cd "$REPO_ROOT";
+     ## The real shape test: PNG/JPEG/BMP/WebP round trips through image-write
+     ## and image-read with shape and sample checks.
+     out=$("$ESHKOL_RUN" -r tests/v1_2_edge_cases/image_io_test.esk 2>&1) || { printf "%s" "$out"; exit 1; };
+     printf "%s" "$out" | grep -q "RESULT: ALL PASS"'
 
 probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
     'cd "$REPO_ROOT";
@@ -534,13 +538,14 @@ probe parallel_map_scope_reclaim_race \
 probe jit_cache_hit_invalidates 'eshkol-run -r persistent cache hits and source edits invalidate' \
     'bash "$REPO_ROOT/tests/v1_3_edge_cases/jit_cache_test.sh" "$ESHKOL_RUN"'
 
-probe native_image_io_no_stb 'image-read uses platform APIs, not bundled deps/stb' \
+probe native_image_io_no_stb 'image-read uses the built-in codecs: no deps/stb and no external codec library' \
     'cd "$REPO_ROOT";
-     ## v1.3 commits to removing deps/stb in favour of native platform
-     ## media APIs. This probe fails if the vendored tree or direct include
-     ## path comes back.
-     if grep -q "deps/stb" lib/core/image_io.c 2>/dev/null; then exit 1; fi;
+     ## v1.4 moves image codecs into the runtime. This probe fails if the
+     ## vendored stb tree comes back, if image I/O includes a system or
+     ## third-party codec header, or if the CMake module searches for one.
      if [ -d deps/stb ]; then exit 1; fi;
+     if grep -qE "deps/stb|<png[.]h>|<jpeglib[.]h>|<webp/|<ImageIO/|<gdiplus[.]h>" lib/core/image_io.c lib/core/image_*.cpp 2>/dev/null; then exit 1; fi;
+     if sed "s/#.*//" cmake/EshkolImageIO.cmake | grep -qE "find_package|find_library|pkg_check_modules"; then exit 1; fi;
      exit 0'
 
 probe pgo_pipeline_works 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary' \
@@ -893,23 +898,18 @@ probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solve
      fi;
      exit 0'
 
-probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display emit the SHORTEST decimal that reads back to the exact same double (round-trip), no 6-sig-fig truncation, integral doubles keep the no-".0" form — byte-identical across JIT, AOT and the VM' \
-    'cd "$REPO_ROOT"; t=tests/features/printer_roundtrip_test.esk;
-     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
-     printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
-     printf "%s" "$out" | grep -q "error:" && exit 1;
-     bin=$(mktemp) || exit 1;
-     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
-     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
-     printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
-     printf "%s" "$out" | grep -q "error:" && exit 1;
-     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
-     if [ -x "$vm" ]; then
-       out=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_PATH="$REPO_ROOT/lib" "$vm" "$t" 2>/dev/null) || exit 1;
-       printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
-       printf "%s" "$out" | grep -q "error:" && exit 1;
-     fi;
-     exit 0'
+printer_roundtrip_probe() (
+    local source="$REPO_ROOT/tests/features/printer_roundtrip_test.esk"
+    local vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
+    local work
+    work=$(mktemp -d) || exit 125
+    if ! eshkol_durable_enabled; then
+        trap 'rm -f -- "$work/jit.out" "$work/aot.out" "$work/vm.out" "$work/aot.bin"; rmdir -- "$work"' EXIT
+    fi
+    ESHKOL_PATH="$REPO_ROOT/lib" bash "$REPO_ROOT/scripts/lib/check_printer_roundtrip.sh" \
+        "$source" "$ESHKOL_RUN" "$vm" "$work"
+)
+probe printer_roundtrip_oracle 'flonum printer (#310): shortest round-trip decimal preserving inexactness and signed zero, with identical JIT, AOT and VM output' 'printer_roundtrip_probe'
 
 probe pipe_symbol_oracle 'R7RS 7.1.1 vertical-line symbols: |weird sym| reads as ONE symbol (not two tokens), the full <symbol element> alphabet incl. \x<hex>; decodes, |.| is a symbol distinct from the bare dotted-pair delimiter, write emits bars iff the R7RS 7.1.1 <identifier> grammar cannot spell the name bare, display never bars, and write -> read recovers an eq? symbol — byte-identical across JIT, AOT and the VM' \
     'cd "$REPO_ROOT"; t=tests/features/pipe_symbol_test.esk;
@@ -1078,6 +1078,26 @@ probe event_loop_works \
      exit 0'
 
 # ───────────────────────────────────────────────────────────────────
+# Differentiable optimization (ADR-0031, core.ml.diffopt): blackbox solver,
+# perturbed-optimizer, Fenchel-Young, implicit-differentiation and
+# sparsemax/softmax pullbacks against exact closed forms, exact rationals and
+# central differences, on JIT and AOT with the same seeded draws.
+# ───────────────────────────────────────────────────────────────────
+probe diffopt_pullbacks_exact \
+    'core.ml.diffopt: blackbox ranking and shortest-path pullbacks equal hand-computed exact rationals and train to their targets; Gumbel-perturbed argmax matches softmax(theta/eps) and its Jacobian, Normal noise matches Phi in two dimensions, the perturbed maximum matches eps logsumexp + eps gamma; the Fenchel-Young gradient is y_eps - y; implicit ridge sensitivity is the exact rational closed form and the compiled-AD default agrees to 1e-12; exact sparsemax and its Jacobian — green on JIT and AOT' \
+    'cd "$REPO_ROOT";
+     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/ml/diffopt_test.esk -L"$BUILD_DIR_PATH" 2>&1) || exit 1;
+     echo "$out" | grep -q "=== ALL TESTS PASSED ===" || exit 1;
+     echo "$out" | grep -qE "^FAIL:" && exit 1;
+     bin=$(mktemp "$ESHKOL_SCRATCH_ROOT/eshkol-diffopt.XXXXXX");
+     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" tests/ml/diffopt_test.esk -o "$bin" -L"$BUILD_DIR_PATH" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     aot=$("$bin" 2>&1); rc=$?; rm -f "$bin";
+     [ $rc -eq 0 ] || exit 1;
+     echo "$aot" | grep -q "=== ALL TESTS PASSED ===" || exit 1;
+     echo "$aot" | grep -qE "^FAIL:" && exit 1;
+     exit 0'
+
+# ───────────────────────────────────────────────────────────────────
 # Silent-wrong flaw gate. Every probe above certifies that something
 # WORKS; none of them can certify that nothing silently LIES. This one
 # grades .icc/silent-wrong-ledger.yaml — the enumeration of defects that
@@ -1133,15 +1153,15 @@ EOF
 # (examples/mathematics_navier_stokes_*.esk), matching the CTest ns_*_jit
 # names in CMakeLists.txt and the icc-target each program's own
 # ICC-EVENT lines use. Each program is itself a compile-and-run
-# executable check with an internal pass/fail ledger; exit 0 iff its own
-# "RESULT: ALL PASS" line fires, so the probe command is just running it
-# and grepping that line.
+# executable check with an internal pass/fail ledger. A selected probe
+# captures the complete JIT output and exit status; both must agree before
+# the exact "RESULT: ALL PASS" line can count.
 # ───────────────────────────────────────────────────────────────────
 _ns_probe() {
     local id="$1" file="$2"
     probe "$id" \
-        "Navier-Stokes mechanization: examples/${file}.esk exits ALL PASS on both engines' shared JIT path" \
-        "cd \"\$REPO_ROOT\"; \"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1 | grep -q '^RESULT: ALL PASS$'"
+        "Navier-Stokes mechanization: examples/${file}.esk exits cleanly and prints the exact ALL PASS marker" \
+        "cd \"\$REPO_ROOT\"; ns_output=\$(\"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1); ns_status=\$?; if [ \"\$ns_status\" -ne 0 ]; then printf '%s\\n' \"\$ns_output\"; exit \"\$ns_status\"; fi; printf '%s\\n' \"\$ns_output\" | grep -q '^RESULT: ALL PASS$'"
 }
 
 _ns_probe ns_viscosity_scaling_exact     mathematics_navier_stokes_viscosity_scaling
@@ -1157,7 +1177,14 @@ _ns_probe ns_pulse_growth_crossover      mathematics_navier_stokes_pulse_growth
 eshkol_durable_mirror_trace "$TRACE_FILE" eshkol_smoke.jsonl
 
 echo
+if [ -n "$ICC_SMOKE_ONLY_ID" ] && [ "$PROBE_SELECTED_COUNT" -eq 0 ]; then
+    echo "Unknown ICC smoke probe: $ICC_SMOKE_ONLY_ID" >&2
+    exit 2
+fi
 echo "Trace written: $TRACE_FILE"
+if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+    echo "Scope: only $ICC_SMOKE_ONLY_ID (partial run; no full-smoke claim)"
+fi
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES - PROBE_INFRA))/$PROBE_TOTAL passed, $PROBE_INFRA infra (no verdict), $PROBE_FAILURES failed"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
 echo "         completion-oracle --repo eshkol_lang \\"
@@ -1176,7 +1203,19 @@ if [ "$PROBE_INFRA" -ne 0 ]; then
 fi
 
 if [ "$PROBE_FAILURES" -ne 0 ]; then
-    echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+        echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: FAIL ($PROBE_FAILURES failure(s))" >&2
+    else
+        echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    fi
     exit 1
 fi
-echo "ICC smoke gate: PASS"
+if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+    if [ "$PROBE_INFRA" -ne 0 ]; then
+        echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: INFRA ($PROBE_INFRA probe(s) had no verdict)" >&2
+        exit 2
+    fi
+    echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: PASS (partial run; no full-smoke claim)"
+else
+    echo "ICC smoke gate: PASS"
+fi

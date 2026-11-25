@@ -1,0 +1,607 @@
+;;; nLab conformance: toposes, subobject classifiers and their internal logic.
+;;;
+;;; Each claim below is quoted from the nLab page named in its header
+;;; (https://ncatlab.org/nlab/show/<page>, read 2026-10-29) and decided exactly
+;;; by enumeration over finite categories with core.sheaf and core.topos. A
+;;; claim prints one line "PASS: [page#k] ..." or "FAIL: [page#k] ...", with
+;;; the computed value; the suite passes only when every claim passes.
+;;; The page-by-page coverage, and the claims not yet computable, are listed
+;;; in docs/reports/NLAB_CONFORMANCE.md.
+(require stdlib)
+(require core.sheaf)
+(require core.topos)
+
+(define passed 0)
+(define failed 0)
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (any? p (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (objects C) (range (category-object-count C)))
+(define (arrows C) (range (category-arrow-count C)))
+(define (count p xs) (length (filter p xs)))
+
+;; ---------------------------------------------------------------------------
+;; The finite categories every claim is checked on
+;; ---------------------------------------------------------------------------
+(define point (poset-category 1 (lambda (x y) #t)))
+(define arrow (poset-category 2 (lambda (x y) (<= x y))))                 ;; 0 -> 1, the interval [1]
+(define cospan (poset-category 3 (lambda (x y) (or (= x y) (= y 2)))))   ;; 0 -> 2 <- 1
+(define span (poset-category 3 (lambda (x y) (or (= x y) (= x 0)))))     ;; 1 <- 0 -> 2
+(define circle4 (poset-category 4 (lambda (x y) (or (= x y) (and (< x 2) (> y 1)))))) ;; the pseudocircle poset
+(define discrete2 (poset-category 2 (lambda (x y) (= x y))))
+(define (cyclic-group-category n)
+  (make-category-from-presentation 1 (list (list 0 0 's))
+                                   (lambda (w) (let loop ((k (remainder (length w) n)) (acc '())) (if (= k 0) acc (loop (- k 1) (cons 0 acc)))))
+                                   n))
+(define BZ2 (cyclic-group-category 2))
+(define BZ3 (cyclic-group-category 3))
+;; the walking isomorphism f : 0 -> 1, g : 1 -> 0, g f = id, f g = id
+(define iso
+  (make-category-from-presentation 2 (list (list 0 1 'f) (list 1 0 'g))
+                                   (lambda (w) (let loop ((w w))
+                                                 (cond ((or (null? w) (null? (cdr w))) w)
+                                                       ((not (= (car w) (cadr w))) (loop (cddr w)))
+                                                       (else w))))
+                                   2))
+(define categories
+  (list (cons "point" point) (cons "arrow" arrow) (cons "cospan" cospan) (cons "span" span)
+        (cons "pseudocircle" circle4) (cons "discrete2" discrete2) (cons "BZ2" BZ2) (cons "BZ3" BZ3) (cons "iso" iso)))
+(define (cat-name C) (let loop ((l categories)) (cond ((null? l) "?") ((eq? (cdar l) C) (caar l)) (else (loop (cdr l))))))
+
+;; independent of core.sheaf/core.topos: invertible arrows, groupoids, the Ore condition
+(define (invertible? C f)
+  (any? (lambda (g) (and (eqv? (category-compose C g f) (category-identity C (arrow-source C f)))
+                         (eqv? (category-compose C f g) (category-identity C (arrow-target C f)))))
+        (category-hom C (arrow-target C f) (arrow-source C f))))
+(define (groupoid? C) (all? (lambda (f) (invertible? C f)) (arrows C)))
+;; every cospan a -f-> c <-g- b completes to a commuting square d -> a, d -> b
+(define (ore? C)
+  (all? (lambda (f)
+          (all? (lambda (g)
+                  (or (not (= (arrow-target C f) (arrow-target C g)))
+                      (any? (lambda (h) (any? (lambda (k) (and (= (arrow-source C h) (arrow-source C k))
+                                                               (eqv? (category-compose C f h) (category-compose C g k))))
+                                              (category-arrows-into C (arrow-source C g))))
+                            (category-arrows-into C (arrow-source C f)))))
+                (arrows C)))
+        (arrows C)))
+
+;; sub-presheaves of a presheaf F, enumerated from scratch: one index subset per
+;; object, closed under every restriction map (no sieves involved)
+(define (sub-presheaf-count F)
+  (let* ((C (presheaf-category F)) (objs (objects C)))
+    (let search ((cs objs) (chosen '()))
+      (if (null? cs)
+          (let ((A (list->vector (reverse chosen))))
+            (if (all? (lambda (a) (all? (lambda (i) (memv (presheaf-restrict-index F a i) (vector-ref A (arrow-source C a))))
+                                        (vector-ref A (arrow-target C a))))
+                      (arrows C))
+                1 0))
+          (apply + (map (lambda (s) (search (cdr cs) (cons s chosen)))
+                        (sheaf-subsets (range (presheaf-element-count F (car cs))))))))))
+
+;; ---------------------------------------------------------------------------
+;; subobject classifier
+;; ---------------------------------------------------------------------------
+;; [subobject classifier#1] "The subobject classifier in a presheaf topos PSh(S)
+;; is the presheaf that sends each object U ∈ S to the set sieves(U) of sieves on it"
+(let ((rows (map (lambda (p) (let* ((C (cdr p)) (T (presheaf-topos C)))
+                               (list (car p) (map (lambda (c) (topos-type-size (topos-omega T) c)) (objects C))
+                                     (all? (lambda (c) (equal? (topos-closed-sieves T c) (sieves-on C c))) (objects C)))))
+                 categories)))
+  (claim "subobject classifier" 1 "Omega(U) = sieves(U) in PSh(C): |Omega(U)| per object"
+         (map (lambda (r) (list (car r) (cadr r))) rows) (all? caddr rows)))
+;; [subobject classifier#2] "Here sieves(U) is equivalently the set of subobjects
+;; of the representable presheaf Y(U)."
+(let ((rows (map (lambda (p) (let ((C (cdr p)))
+                               (map (lambda (c) (list (sub-presheaf-count (representable-presheaf C c)) (length (sieves-on C c)))) (objects C))))
+                 categories)))
+  (claim "subobject classifier" 2 "|Sub(Y(U))| (sub-presheaves enumerated directly) = |sieves(U)|"
+         (map car (apply append rows)) (all? (lambda (r) (= (car r) (cadr r))) (apply append rows))))
+;; [subobject classifier#3] "For G a discrete group and GSet = [BG, Set] the topos
+;; of G-sets, there are precisely two sieves on the single object of the delooping
+;; groupoid BG: the trivial one and the empty one."
+(let ((v (map (lambda (G) (sieves-on G 0)) (list BZ2 BZ3))))
+  (claim "subobject classifier" 3 "sieves on the object of BZ/2 and BZ/3" v
+         (all? (lambda (s) (and (= 2 (length s)) (member '() s))) v)))
+;; [subobject classifier#4] "Hence the subobject classifier here is the 2-element
+;; set as in Set, but now regarded as a G-set with trivial G-action."
+(let* ((ok (map (lambda (G) (let* ((T (presheaf-topos G)) (O (topos-omega T)))
+                              (all? (lambda (a) (all? (lambda (S) (equal? S (topos-type-restrict O a S))) (topos-type-elements O 0)))
+                                    (arrows G))))
+                (list BZ2 BZ3))))
+  (claim "subobject classifier" 4 "every element of BZ/2, BZ/3 acts as the identity on Omega" ok (all? (lambda (x) x) ok)))
+;; [subobject classifier#5] "In the category Sets of sets, the 2-element set
+;; 2 = {f, t} (the classical Boolean domain) plays the role of Ω" and "Given a
+;; subset S ⊆ X, the characteristic function χ_S: X → 2 is the function defined
+;; by χ_S(x) = t if x ∈ S, and χ_S(x) = f if x ∉ S."
+(let* ((T (presheaf-topos point)) (O (topos-omega T))
+       (X (topos-object T (constant-set-presheaf point '(a b c d))))
+       (subsets (sheaf-subsets (range 4)))
+       (round-trip (all? (lambda (S) (equal? (list S) (topos-classified-subobject T X (topos-classifying-map T X (list S))))) subsets))
+       (maps (length (topos-morphisms T X O))))
+  (claim "subobject classifier" 5 "Set = PSh(point): |Omega|, |Hom(X, Omega)| for |X| = 4, chi round trip on all 16 subsets"
+         (list (topos-type-size O 0) maps) (and (= 2 (topos-type-size O 0)) (= 16 maps) round-trip)))
+
+;; ---------------------------------------------------------------------------
+;; sieve
+;; ---------------------------------------------------------------------------
+;; [sieve#1] "sieves are closed under pulling back. Concretely,
+;; g^* S = ⋃_{e ∈ Ob(C)} {f: e → d: gf ∈ S}"
+(let ((n 0) (ok #t))
+  (for-each (lambda (p)
+              (let ((C (cdr p)))
+                (for-each (lambda (g)
+                            (for-each (lambda (S)
+                                        (let ((direct (filter (lambda (f) (and (= (arrow-target C f) (arrow-source C g)) (memv (category-compose C g f) S))) (arrows C)))
+                                              (pb (sieve-pullback C g S)))
+                                          (set! n (+ n 1))
+                                          (if (not (and (equal? (sort direct <) (sort pb <)) (sieve? C (arrow-source C g) pb))) (set! ok #f))))
+                                      (sieves-on C (arrow-target C g))))
+                          (arrows C))))
+            categories)
+  (claim "sieve" 1 "g^* S equals {f : g f in S} and is a sieve, for every arrow g and sieve S (pairs checked)" n ok))
+;; [sieve#2] "the sieve generated by ℱ is the smallest sieve on c containing ℱ:
+;; it equals the sieve of morphisms e → c for which there exists i with
+;; factorization e → d_i → c"
+(let ((n 0) (ok #t))
+  (for-each (lambda (p)
+              (let ((C (cdr p)))
+                (for-each (lambda (c)
+                            (for-each (lambda (F)
+                                        (let ((factor (filter (lambda (h) (any? (lambda (fi) (any? (lambda (k) (eqv? h (category-compose C fi k)))
+                                                                                                   (category-arrows-into C (arrow-source C fi))))
+                                                                                F))
+                                                              (category-arrows-into C c)))
+                                              (smallest (let ((cands (filter (lambda (S) (all? (lambda (f) (memv f S)) F)) (sieves-on C c))))
+                                                          (filter (lambda (S) (all? (lambda (R) (sieve-subset? S R)) cands)) cands))))
+                                          (set! n (+ n 1))
+                                          (if (not (and (= 1 (length smallest)) (equal? (sort factor <) (car smallest))
+                                                        (equal? (sieve-generated C c F) (car smallest))))
+                                              (set! ok #f))))
+                                      (sheaf-subsets (category-arrows-into C c))))
+                          (objects C))))
+            categories)
+  (claim "sieve" 2 "generated sieve = arrows factoring through a generator = smallest sieve containing them (families checked)" n ok))
+;; [sieve#3] "The set of sieves on c is a poset ordered by inclusion and it is
+;; stable under arbitrary unions and intersections"
+(let ((n 0) (ok #t))
+  (for-each (lambda (p)
+              (let ((C (cdr p)))
+                (for-each (lambda (c)
+                            (let ((ss (sieves-on C c)))
+                              (for-each (lambda (fam)
+                                          (set! n (+ n 1))
+                                          (let ((u (sort (let loop ((l fam) (acc '())) (if (null? l) acc (loop (cdr l) (sieve-union acc (car l))))) <))
+                                                (i (if (null? fam) (sieve-maximal C c) (let loop ((l (cdr fam)) (acc (car fam))) (if (null? l) acc (loop (cdr l) (sieve-intersection acc (car l))))))))
+                                            (if (not (and (sieve? C c u) (sieve? C c i))) (set! ok #f))))
+                                        (sheaf-subsets ss))))
+                          (objects C))))
+            categories)
+  (claim "sieve" 3 "the union and the intersection of every family of sieves on c is a sieve (families checked)" n ok))
+
+;; ---------------------------------------------------------------------------
+;; Heyting algebra (on Omega(c) of presheaf and sheaf toposes)
+;; ---------------------------------------------------------------------------
+(define heyting-cases
+  (append (map (lambda (p) (presheaf-topos (cdr p))) categories)
+          (list (make-topos (finite-space-site (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3)))))
+                (make-topos (dense-site circle4)))))
+(define (every-stage f) ;; f T c Om -> boolean, over every stage of every case
+  (all? (lambda (T) (all? (lambda (c) (f T c (topos-closed-sieves T c))) (objects (topos-category T)))) heyting-cases))
+(define (leq S R) (sieve-subset? S R))
+(define (stage-count) (apply + (map (lambda (T) (category-object-count (topos-category T))) heyting-cases)))
+;; [Heyting algebra#1] "(x ∧ a) ≤ b if and only if x ≤ (a ⇒ b)"
+(claim "Heyting algebra" 1 "(x meet a) <= b iff x <= (a => b) for all x, a, b in Omega(c); stages checked" (stage-count)
+       (every-stage (lambda (T c Om) (all? (lambda (x) (all? (lambda (a) (all? (lambda (b) (eq? (leq (topos-omega-meet T c x a) b) (leq x (topos-omega-implies T c a b)))) Om)) Om)) Om))))
+;; [Heyting algebra#2] "¬x = (x ⇒ 0), where 0 is the bottom element of the
+;; lattice": checked against the pseudo-complement found by enumeration, the
+;; largest y with y ∧ x = 0
+(claim "Heyting algebra" 2 "not x = the largest y with y meet x = 0 (found by enumeration)" (stage-count)
+       (every-stage (lambda (T c Om)
+                      (all? (lambda (x) (let* ((bot (topos-omega-bottom T c))
+                                               (disj (filter (lambda (y) (equal? (topos-omega-meet T c y x) bot)) Om))
+                                               (largest (filter (lambda (y) (all? (lambda (z) (leq z y)) disj)) disj)))
+                                          (and (= 1 (length largest)) (equal? (car largest) (topos-omega-not T c x)))))
+                            Om))))
+;; [Heyting algebra#3] "a ∧ (a ⇒ b) ≤ b", "b ≤ a ⇒ b", "a ⇒ (a ⇒ b) = a ⇒ b"
+(claim "Heyting algebra" 3 "modus ponens, b <= a => b, and a => (a => b) = a => b" (stage-count)
+       (every-stage (lambda (T c Om) (all? (lambda (a) (all? (lambda (b) (let ((ab (topos-omega-implies T c a b)))
+                                                                            (and (leq (topos-omega-meet T c a ab) b) (leq b ab)
+                                                                                 (equal? (topos-omega-implies T c a ab) ab))))
+                                                             Om)) Om))))
+;; [Heyting algebra#4] "b ≤ (b ⇒ a) ⇒ a"
+(claim "Heyting algebra" 4 "b <= (b => a) => a" (stage-count)
+       (every-stage (lambda (T c Om) (all? (lambda (a) (all? (lambda (b) (leq b (topos-omega-implies T c (topos-omega-implies T c b a) a))) Om)) Om))))
+;; [Heyting algebra#5] A Heyting algebra is Boolean when "∀x. ¬¬x = x" or
+;; "∀x. x ∨ ¬x = 1" or "∀x,y. x ⇒ y = ¬x ∨ y": the three agree at every stage
+(let ((verdicts '()))
+  (claim "Heyting algebra" 5 "the three Boolean criteria agree at every stage; number of Boolean stages"
+         (begin (every-stage (lambda (T c Om) (set! verdicts (cons (topos-omega-boolean? T c) verdicts)) #t)) (count (lambda (x) x) verdicts))
+         (every-stage (lambda (T c Om)
+                        (let* ((top (topos-omega-top T c))
+                               (b1 (all? (lambda (x) (equal? x (topos-omega-not T c (topos-omega-not T c x)))) Om))
+                               (b2 (all? (lambda (x) (equal? top (topos-omega-join T c x (topos-omega-not T c x)))) Om))
+                               (b3 (all? (lambda (x) (all? (lambda (y) (equal? (topos-omega-implies T c x y) (topos-omega-join T c (topos-omega-not T c x) y))) Om)) Om)))
+                          (and (eq? b1 b2) (eq? b2 b3) (eq? b1 (topos-omega-boolean? T c))))))))
+;; [Heyting algebra#6] Full De Morgan "¬(x ∨ y) = ¬x ∧ ¬y" and partial De Morgan
+;; "¬x ∨ ¬y ≤ ¬(x ∧ y)" hold in every Heyting algebra
+(claim "Heyting algebra" 6 "not (x join y) = not x meet not y, and not x join not y <= not (x meet y)" (stage-count)
+       (every-stage (lambda (T c Om) (all? (lambda (x) (all? (lambda (y)
+                                                               (and (equal? (topos-omega-not T c (topos-omega-join T c x y)) (topos-omega-meet T c (topos-omega-not T c x) (topos-omega-not T c y)))
+                                                                    (leq (topos-omega-join T c (topos-omega-not T c x) (topos-omega-not T c y)) (topos-omega-not T c (topos-omega-meet T c x y)))))
+                                                             Om)) Om))))
+;; [Heyting algebra#7] "the topology of a topological space X is a complete
+;; lattice" with implication "(U ⇒ V) = int(U^c ∨ V)": on the opens of finite
+;; spaces, the largest open W with W ∩ U ⊆ V equals the interior of (X \ U) ∪ V
+(let* ((spaces (list (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3)))
+                     (make-finite-space 3 (list (cons 0 1) (cons 0 2)))
+                     (make-finite-space 5 (list (cons 0 2) (cons 1 2) (cons 2 3) (cons 2 4)))))
+       (ok (all? (lambda (X)
+                   (let* ((opens (finite-space-opens X)) (pts (range (finite-space-size X)))
+                          (interior (lambda (A) (sort (let loop ((os opens) (acc '())) (if (null? os) acc (loop (cdr os) (if (all? (lambda (x) (memv x A)) (car os)) (sort (append (filter (lambda (x) (not (memv x acc))) (car os)) acc) <) acc)))) <))))
+                     (all? (lambda (U) (all? (lambda (V)
+                                               (let* ((cands (filter (lambda (W) (all? (lambda (x) (or (not (memv x U)) (memv x V))) W)) opens))
+                                                      (largest (filter (lambda (W) (all? (lambda (Z) (all? (lambda (x) (memv x W)) Z)) cands)) cands)))
+                                                 (and (= 1 (length largest))
+                                                      (equal? (sort (car largest) <) (interior (filter (lambda (x) (or (not (memv x U)) (memv x V))) pts))))))
+                                             opens))
+                           opens)))
+                 spaces)))
+  (claim "Heyting algebra" 7 "(U => V) = int(U^c union V) on the opens of three finite spaces; opens per space"
+         (map (lambda (X) (length (finite-space-opens X))) spaces) ok))
+
+;; ---------------------------------------------------------------------------
+;; Grothendieck topology
+;; ---------------------------------------------------------------------------
+(define all-sieves-site (lambda (C) (make-site C (lambda (c S) #t))))
+;; [Grothendieck topology#1] the three axioms: "If F is a sieve that covers c and
+;; g: d → c is any morphism, then the pullback sieve g* F covers d." /
+;; "Suppose F covers c and g*F′ covers d for every morphism g:d→c in F. Then F′
+;; covers c." / "The maximal sieve ... is always a covering sieve"; a family that
+;; drops one covering sieve of the open-cover topology breaks an axiom, named
+(let* ((X (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+       (site (finite-space-site X)) (C (site-category site))
+       (ab (category-object-of-label C (list 0 1)))
+       (no-ab (make-site C (lambda (c S) (and (not (= c ab)) (site-covering? site c S)))))
+       (pos (map (lambda (s) (grothendieck-topology? s))
+                 (list site (dense-site circle4) (trivial-site circle4) (all-sieves-site circle4) (dense-site BZ2) (trivial-site span))))
+       (neg (map car (grothendieck-topology-violations no-ab))))
+  (claim "Grothendieck topology" 1 "axioms hold for six topologies; removing the covers of {a, b} violates" (list pos (car neg))
+         (and (all? (lambda (x) x) pos) (eq? 'maximal (car neg)))))
+;; [Grothendieck topology#2] "for these, the covering sieves on c∈C equals
+;; {Ob(C/c)} and all sieves on c, respectively" (trivial and discrete topologies)
+(let ((ok (all? (lambda (p) (let ((C (cdr p)))
+                              (all? (lambda (c) (and (equal? (site-covering-sieves (trivial-site C) c) (list (sieve-maximal C c)))
+                                                     (equal? (site-covering-sieves (all-sieves-site C) c) (sieves-on C c))))
+                                    (objects C))))
+                categories)))
+  (claim "Grothendieck topology" 2 "trivial topology covers only by Ob(C/c), the discrete one by all sieves, both topologies"
+         (map (lambda (p) (grothendieck-topology? (all-sieves-site (cdr p)))) categories)
+         (and ok (all? (lambda (p) (and (grothendieck-topology? (trivial-site (cdr p))) (grothendieck-topology? (all-sieves-site (cdr p))))) categories))))
+;; [Grothendieck topology#3] "(∩_α J_α)(c)=∩_α J_α(c), for each c in C": the
+;; objectwise intersection of topologies is a topology
+(let* ((X (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+       (s1 (finite-space-site X)) (C (site-category s1)) (s2 (dense-site C))
+       (meet (make-site C (lambda (c S) (and (site-covering? s1 c S) (site-covering? s2 c S)))))
+       (sizes (map (lambda (c) (length (site-covering-sieves meet c))) (objects C))))
+  (claim "Grothendieck topology" 3 "open-cover topology meet dense topology on the opens of the pseudocircle: covering sieves per object"
+         sizes (grothendieck-topology? meet)))
+
+;; ---------------------------------------------------------------------------
+;; Lawvere-Tierney topology
+;; ---------------------------------------------------------------------------
+;; j as a function on sieves at each object, from a site through topos-lawvere-tierney
+(define (lt-of-site site)
+  (let* ((C (site-category site)) (j (topos-lawvere-tierney (make-topos site))))
+    (lambda (c S) (list-ref (sieves-on C c) (vector-ref (vector-ref j c) (let loop ((l (sieves-on C c)) (i 0)) (if (equal? (car l) S) i (loop (cdr l) (+ i 1)))))))))
+(define lt-sites (list (finite-space-site (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+                       (dense-site circle4) (dense-site arrow) (dense-site span) (trivial-site arrow) (all-sieves-site arrow)))
+;; [Lawvere-Tierney topology#1] "j true = true", "j j = j", "j ∘ ∧ = ∧ ∘ (j × j)"
+(let ((rows (map (lambda (site)
+                   (let* ((C (site-category site)) (j (lt-of-site site)))
+                     (all? (lambda (c) (let ((ss (sieves-on C c)))
+                                         (and (equal? (j c (sieve-maximal C c)) (sieve-maximal C c))
+                                              (all? (lambda (S) (equal? (j c (j c S)) (j c S))) ss)
+                                              (all? (lambda (S) (all? (lambda (R) (equal? (j c (sieve-intersection S R)) (sieve-intersection (j c S) (j c R)))) ss)) ss))))
+                           (objects C))))
+                 lt-sites)))
+  (claim "Lawvere-Tierney topology" 1 "j true = true, j j = j, j preserves meets, for the j of six sites" rows (all? (lambda (x) x) rows)))
+;; [Lawvere-Tierney topology#2] "For C a small category and E := [C^op, Set] its
+;; presheaf topos, Lawvere–Tierney topologies in E are equivalent to Grothendieck
+;; topologies on C." Counted on the walking arrow: all endomaps of Omega satisfying
+;; the axioms, all families of sieves satisfying the Grothendieck axioms, and the
+;; two translations inverse to each other
+(let* ((C arrow) (objs (objects C)) (sv (map (lambda (c) (sieves-on C c)) objs))
+       (maps-at (lambda (n) (let loop ((k n) (acc (list '()))) (if (= k 0) acc (loop (- k 1) (apply append (map (lambda (m) (map (lambda (v) (cons v m)) (range n))) acc)))))))
+       (endos (apply append (map (lambda (m0) (map (lambda (m1) (vector (list->vector m0) (list->vector m1))) (maps-at (length (list-ref sv 1))))) (maps-at (length (list-ref sv 0))))))
+       (lts (filter (lambda (j) (topos-lawvere-tierney? C j)) endos))
+       (families (apply append (map (lambda (J0) (map (lambda (J1) (list J0 J1)) (sheaf-subsets (list-ref sv 1)))) (sheaf-subsets (list-ref sv 0)))))
+       (gts (filter (lambda (J) (grothendieck-topology? (make-site-from-sieves C J))) families))
+       (norm (lambda (J) (map (lambda (c) (filter (lambda (S) (member S (list-ref J c))) (list-ref sv c))) objs)))
+       (back (map (lambda (j) (let ((s (topos-lawvere-tierney-site C j))) (norm (map (lambda (c) (site-covering-sieves s c)) objs)))) lts))
+       (forth (map (lambda (J) (topos-lawvere-tierney (make-topos (make-site-from-sieves C J)))) gts)))
+  (claim "Lawvere-Tierney topology" 2 "walking arrow: (endomaps of Omega, Lawvere-Tierney topologies, Grothendieck topologies); the translations are mutually inverse"
+         (list (length endos) (length lts) (length gts))
+         (and (= (length lts) (length gts))
+              (all? (lambda (J) (member (norm J) back)) gts)
+              (all? (lambda (j) (member j lts)) forth))))
+
+;; ---------------------------------------------------------------------------
+;; dense topology and double negation topology
+;; ---------------------------------------------------------------------------
+;; [dense topology#1] "A sieve S is in J_d(Y) iff for all f:X→Y there exists a
+;; g:Z→X such that f∘g:Z→Y is in S."
+(let ((ok (all? (lambda (p) (let* ((C (cdr p)) (s (dense-site C)))
+                              (all? (lambda (c) (all? (lambda (S)
+                                                        (eq? (site-covering? s c S)
+                                                             (all? (lambda (f) (any? (lambda (g) (memv (category-compose C f g) S)) (category-arrows-into C (arrow-source C f))))
+                                                                   (category-arrows-into C c))))
+                                                      (sieves-on C c)))
+                                    (objects C))))
+                categories)))
+  (claim "dense topology" 1 "the covering sieves of dense-site are exactly the sieves of the definition, on nine categories" (length categories) ok))
+;; [dense topology#2] "If S∈J_d then S≠∅" and "J_d=J_at precisely if 𝒞 satisfies
+;; the Ore condition" (atomic: every nonempty sieve covers)
+(let ((rows (map (lambda (p) (let* ((C (cdr p)) (s (dense-site C))
+                                    (same (all? (lambda (c) (all? (lambda (S) (eq? (site-covering? s c S) (not (null? S)))) (sieves-on C c))) (objects C)))
+                                    (nonempty (all? (lambda (c) (all? (lambda (S) (not (null? S))) (site-covering-sieves s c))) (objects C))))
+                               (list (car p) (ore? C) same nonempty)))
+                 categories)))
+  (claim "dense topology" 2 "(category, Ore?, J_d = J_at?): every dense sieve is nonempty and J_d = J_at exactly for Ore categories"
+         (map (lambda (r) (list (car r) (cadr r) (caddr r))) rows)
+         (all? (lambda (r) (and (cadddr r) (eq? (cadr r) (caddr r)))) rows)))
+;; [double negation topology#1] "For every presheaf topos [C^op, Set] the double
+;; negation topology coincides with the dense topology."
+(let ((ok (all? (lambda (p) (let* ((C (cdr p)) (T (presheaf-topos C)) (j (lt-of-site (dense-site C))))
+                              (all? (lambda (c) (all? (lambda (S) (equal? (j c S) (topos-omega-not T c (topos-omega-not T c S)))) (sieves-on C c))) (objects C))))
+                categories)))
+  (claim "double negation topology" 1 "not not on Omega of PSh(C) equals the closure of the dense topology, nine categories" (length categories) ok))
+;; [double negation topology#2] "The sheaf topos ℰ_{¬¬} ↪ ℰ corresponding to the
+;; double negation topology is a Boolean topos."
+(let ((rows (map (lambda (p) (let ((T (make-topos (dense-site (cdr p))))) (all? (lambda (c) (topos-omega-boolean? T c)) (objects (cdr p))))) categories)))
+  (claim "double negation topology" 2 "Omega_{not not}(c) is Boolean at every object, nine categories" rows (all? (lambda (x) x) rows)))
+
+;; ---------------------------------------------------------------------------
+;; Boolean topos and De Morgan topos (decided by forcing in the internal language)
+;; ---------------------------------------------------------------------------
+(define (valid-in T phi) (topos-valid? (topos-formula (make-topos-language T '() '()) '() phi)))
+(define lem '(forall (p Omega) (or (holds p) (not (holds p)))))
+(define wlem '(forall (p Omega) (or (not (holds p)) (not (not (holds p))))))
+(define demorgan '(forall (p Omega) (forall (q Omega) (implies (not (and (holds p) (holds q))) (or (not (holds p)) (not (holds q)))))))
+;; [Boolean topos#1] "A presheaf topos on a category C is Boolean if and only if C
+;; is a groupoid."
+(let ((rows (map (lambda (p) (list (car p) (groupoid? (cdr p)) (valid-in (presheaf-topos (cdr p)) lem))) categories)))
+  (claim "Boolean topos" 1 "(category, groupoid?, excluded middle forced?)" rows (all? (lambda (r) (eq? (cadr r) (caddr r))) rows)))
+;; [Boolean topos#2] "The maps ⊤, ⊥: 1 → Ω are a coproduct cone (so in
+;; particular, Ω ≅ 1 + 1)": in PSh(C), Omega(c) has exactly the two elements top
+;; and bottom at every object iff the topos is Boolean
+(let ((rows (map (lambda (p) (let* ((C (cdr p)) (T (presheaf-topos C)))
+                               (list (car p) (all? (lambda (c) (= 2 (topos-type-size (topos-omega T) c))) (objects C)) (groupoid? C))))
+                 categories)))
+  (claim "Boolean topos" 2 "(category, Omega = 1 + 1?, Boolean?)" rows (all? (lambda (r) (eq? (cadr r) (caddr r))) rows)))
+;; [Boolean topos#3] "If ℰ is any topos, the category of sheaves for the
+;; double-negation topology is a Boolean subtopos of ℰ." (excluded middle forced)
+(let ((rows (map (lambda (p) (valid-in (make-topos (dense-site (cdr p))) lem)) categories)))
+  (claim "Boolean topos" 3 "excluded middle is forced in Sh_{not not}(C), nine categories" rows (all? (lambda (x) x) rows)))
+;; [Boolean topos#4] "The topos of sheaves on a Boolean algebra B for the coherent
+;; topology is Boolean if and only if the Boolean algebra is finite.": the finite
+;; direction, for B = 2^n (the opens of the discrete n-point space, covered by
+;; finite joins), n = 1..3
+(let ((rows (map (lambda (n) (let* ((site (finite-space-site (make-finite-space n '()))) (T (make-topos site)))
+                               (and (valid-in T lem) (all? (lambda (c) (topos-omega-boolean? T c)) (objects (site-category site))))))
+                 '(1 2 3))))
+  (claim "Boolean topos" 4 "Sh(2^n) Boolean for n = 1, 2, 3" rows (all? (lambda (x) x) rows)))
+;; [De Morgan topos#1] "For every formula φ : ℰ ⊧ ¬φ ∨ ¬¬φ." and
+;; "¬(φ∧ψ)⇔(¬φ∨¬ψ)" are equivalent definitions; "The presheaf topos
+;; Set^{𝒞^{op}} is De Morgan precisely if 𝒞 satisfies the Ore condition."
+(let ((rows (map (lambda (p) (let ((T (presheaf-topos (cdr p))))
+                               (list (car p) (ore? (cdr p)) (valid-in T wlem) (valid-in T demorgan))))
+                 categories)))
+  (claim "De Morgan topos" 1 "(category, Ore?, weak excluded middle forced?, De Morgan law forced?)" rows
+         (all? (lambda (r) (and (eq? (cadr r) (caddr r)) (eq? (caddr r) (cadddr r)))) rows)))
+;; [De Morgan topos#2] "Every Boolean topos is a De Morgan topos." and "The topos
+;; Set^→ the arrow category of Set: the diagram category → is easily seen to
+;; satisfy the Ore condition."
+(let ((bool (filter (lambda (p) (valid-in (presheaf-topos (cdr p)) lem)) categories)))
+  (claim "De Morgan topos" 2 "Boolean presheaf toposes are De Morgan; Set^-> is Ore and De Morgan but not Boolean"
+         (map car bool)
+         (and (all? (lambda (p) (valid-in (presheaf-topos (cdr p)) wlem)) bool)
+              (ore? arrow) (valid-in (presheaf-topos arrow) wlem) (not (valid-in (presheaf-topos arrow) lem)))))
+;; [De Morgan topos#3] "The topos Sh(X) of sheaves on a topological space X is De
+;; Morgan precisely iff X is extremally disconnected." (closure of every open is open)
+(let* ((spaces (list (cons "pseudocircle" (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+                     (cons "Sierpinski" (make-finite-space 2 (list (cons 0 1))))
+                     (cons "V" (make-finite-space 3 (list (cons 0 2) (cons 1 2))))
+                     (cons "Lambda" (make-finite-space 3 (list (cons 0 1) (cons 0 2))))
+                     (cons "two points" (make-finite-space 2 '()))))
+       (ed? (lambda (X) (let* ((opens (finite-space-opens X)) (pts (range (finite-space-size X)))
+                               ;; closure of U: points x with every open neighbourhood of x meeting U;
+                               ;; the smallest open around x is its down-set
+                               (closure (lambda (U) (filter (lambda (x) (any? (lambda (u) (memv u U)) (finite-space-down-set X x))) pts))))
+                          (all? (lambda (U) (member (sort (closure U) <) (map (lambda (O) (sort O <)) opens))) opens))))
+       (rows (map (lambda (p) (list (car p) (ed? (cdr p)) (valid-in (make-topos (finite-space-site (cdr p))) wlem))) spaces)))
+  (claim "De Morgan topos" 3 "(finite space, extremally disconnected?, Sh(X) De Morgan?)" rows (all? (lambda (r) (eq? (cadr r) (caddr r))) rows)))
+
+;; [De Morgan topos#4] "Ω_{¬¬} is decidable." (equivalent to De Morgan): the
+;; presheaf of not-not-closed sieves, as an object of PSh(C), satisfies
+;; forall p q. p = q or not p = q exactly for the Ore categories
+(let ((rows (map (lambda (p)
+                   (let* ((C (cdr p)) (T (presheaf-topos C))
+                          (closed (lambda (c) (filter (lambda (S) (equal? S (topos-omega-not T c (topos-omega-not T c S)))) (sieves-on C c))))
+                          (Onn (topos-object T (make-set-presheaf C (map closed (objects C)) (lambda (a S) (sieve-pullback C a S)))))
+                          (L (make-topos-language T (list (cons 'N Onn)) '())))
+                     (list (car p) (ore? C) (topos-valid? (topos-formula L '() '(forall (p N) (forall (q N) (or (= p q) (not (= p q))))))))))
+                 categories)))
+  (claim "De Morgan topos" 4 "(category, Ore?, Omega_{not not} decidable?)" rows (all? (lambda (r) (eq? (cadr r) (caddr r))) rows)))
+
+;; ---------------------------------------------------------------------------
+;; Kripke-Joyal semantics
+;; ---------------------------------------------------------------------------
+(define kj-formulas
+  (list lem wlem demorgan
+        '(forall (p Omega) (implies (holds p) (not (not (holds p)))))
+        '(forall (p Omega) (implies (not (not (holds p))) (holds p)))
+        '(forall (p Omega) (forall (q Omega) (or (implies (holds p) (holds q)) (implies (holds q) (holds p)))))
+        '(exists (p Omega) (and (not (holds p)) (not (not (holds p)))))))
+(define kj-toposes (list (presheaf-topos arrow) (presheaf-topos cospan) (presheaf-topos span) (presheaf-topos BZ2)
+                         (make-topos (finite-space-site (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3)))))))
+(define kj-compiled (apply append (map (lambda (T) (let ((L (make-topos-language T '() '()))) (map (lambda (phi) (topos-formula L '() phi)) kj-formulas))) kj-toposes)))
+;; [Kripke-Joyal semantics#1] "A generalized element U→αX is said to satisfy the
+;; formula φ(x) or more suggestively, U forces φ, denoted U⊧φ(α), when α factors
+;; through {x|φ(x)}": forcing agrees with the Omega-valued (subobject) truth
+(let ((n (apply + (map (lambda (F) (car (topos-cross-check F))) kj-compiled))))
+  (claim "Kripke-Joyal semantics" 1 "forcing = factoring through [[phi]] on every instance (formula, topos, stage)" n
+         (all? (lambda (F) (cadr (topos-cross-check F))) kj-compiled)))
+;; [Kripke-Joyal semantics#2] "If f:V→U and U⊧φ(α) then V⊧φ(α∘f)" and local
+;; character for covering families
+(claim "Kripke-Joyal semantics" 2 "monotone and local on every formula of the corpus" (length kj-compiled)
+       (all? (lambda (F) (and (topos-monotone? F) (topos-local? F))) kj-compiled))
+;; [Kripke-Joyal semantics#3] "U⊧¬φ(α) iff for all g:V→U, V⊧φ(α∘g) implies that
+;; V≃0" and "U⊧φ(α)⇒ψ(α) iff for any g:V→U, V⊧φ(α∘g) implies V⊧ψ(α∘g)", checked
+;; against the clauses evaluated by hand over every arrow into U (no V of a
+;; presheaf topos is initial)
+(let* ((T (presheaf-topos cospan)) (C cospan) (L (make-topos-language T '() '()))
+       (O (topos-omega T))
+       (p (topos-formula L '((p Omega)) '(holds p)))
+       (notp (topos-formula L '((p Omega)) '(not (holds p))))
+       (imp (topos-formula L '((p Omega) (q Omega)) '(implies (holds p) (holds q))))
+       (atom (lambda (U S) (topos-forces? p U (list S))))
+       (n 0)
+       (ok (all? (lambda (U)
+                   (all? (lambda (S)
+                           (set! n (+ n 1))
+                           (and (eq? (topos-forces? notp U (list S))
+                                     (all? (lambda (g) (not (atom (arrow-source C g) (topos-type-restrict O g S)))) (category-arrows-into C U)))
+                                (all? (lambda (R) (eq? (topos-forces? imp U (list S R))
+                                                       (all? (lambda (g) (or (not (atom (arrow-source C g) (topos-type-restrict O g S)))
+                                                                             (atom (arrow-source C g) (topos-type-restrict O g R))))
+                                                             (category-arrows-into C U))))
+                                      (topos-type-elements O U))))
+                         (topos-type-elements O U)))
+                 (objects C))))
+  (claim "Kripke-Joyal semantics" 3 "the negation and implication clauses, recomputed over every g : V -> U (instances)" n ok))
+;; [Kripke-Joyal semantics#4] "the rules resulting for presheaf toposes over
+;; posets (when restricted to first-order formulas) correspond to the original
+;; notion of model for IPL": the two-world Kripke model 0 <= 1 refutes excluded
+;; middle at the world where p is not yet decided
+(let* ((T (presheaf-topos arrow)) (F (topos-formula (make-topos-language T '() '()) '() lem)) (w (topos-counter-witness F)))
+  (claim "Kripke-Joyal semantics" 4 "excluded middle on the walking arrow: first refuting (stage env)" w
+         (and w (= 1 (car w)) (not (topos-valid? F)))))
+;; [Kripke-Joyal semantics#5] "U⊧φ(α)∨ψ(α) iff there exists maps g₁:U₁→U and
+;; g₂:U₂→U with g₁+g₂:U₁+U₂→U epic and such that U₁⊧φ(α∘g₁) and U₂⊧ψ(α∘g₂)":
+;; on the pseudocircle, the open {a, b} forces x = 0 or x = 1 for the section that
+;; is 0 on a and 1 on b although neither disjunct holds on {a, b}
+(let* ((space (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+       (site (finite-space-site space)) (C (site-category site)) (T (make-topos site))
+       (two (topos-object T (sheafify site (constant-set-presheaf C '(0 1)))))
+       (top (category-object-of-label C '(0 1 2 3)))
+       (global (lambda (i U) (topos-type-restrict two (car (category-hom C U top)) (topos-type-element two top i))))
+       (L (make-topos-language T (list (cons 'X two)) (list (topos-constant 'zero 'X (lambda (U) (global 0 U))) (topos-constant 'one 'X (lambda (U) (global 1 U))))))
+       (ab (category-object-of-label C '(0 1)))
+       (F (topos-formula L '((x X)) '(or (= x zero) (= x one))))
+       (Z (topos-formula L '((x X)) '(= x zero))) (O (topos-formula L '((x X)) '(= x one)))
+       (split (filter (lambda (e) (and (not (topos-forces? Z ab e)) (not (topos-forces? O ab e)))) (topos-environments F ab))))
+  (claim "Kripke-Joyal semantics" 5 "sections on {a, b} forcing the disjunction but neither disjunct" (length split)
+         (and (= 2 (length split)) (all? (lambda (e) (topos-forces? F ab e)) split))))
+
+;; ---------------------------------------------------------------------------
+;; Yoneda lemma, exponential object, power object
+;; ---------------------------------------------------------------------------
+;; [Yoneda lemma#1] "Hom_{[C^op,Set]}(y(c),X) ≃ X(c)", with the bijection
+;; eta |-> eta_c(id_c)
+(let* ((rows '()) (ok #t))
+  (for-each (lambda (C)
+              (let* ((T (presheaf-topos C))
+                     (Xs (list (topos-omega T) (topos-product T (topos-omega T) (topos-omega T))
+                               (topos-object T (constant-set-presheaf C '(u v w))))))
+                (for-each (lambda (c)
+                            (let ((yc (topos-object T (representable-presheaf C c))))
+                              (for-each (lambda (X)
+                                          (let* ((nats (topos-morphisms T yc X))
+                                                 (idpos (let loop ((l (presheaf-elements (representable-presheaf C c) c)) (i 0)) (if (eqv? (car l) (category-identity C c)) i (loop (cdr l) (+ i 1)))))
+                                                 (evals (map (lambda (eta) (vector-ref (vector-ref eta c) idpos)) nats)))
+                                            (set! rows (cons (length nats) rows))
+                                            (if (not (and (= (length nats) (topos-type-size X c))
+                                                          (equal? (sort evals <) (range (topos-type-size X c)))))
+                                                (set! ok #f))))
+                                        Xs)))
+                          (objects C))))
+            (list arrow cospan BZ2 BZ3 iso))
+  (claim "Yoneda lemma" 1 "|Nat(y(c), X)| = |X(c)| and eta |-> eta_c(id_c) is a bijection; counts" (reverse rows) ok))
+;; [Yoneda lemma#2] "[C^{op},Set](C(-,c),C(-,d)) ≃ (C(-,d))(c) = C(c,d)": the
+;; Yoneda embedding is full and faithful
+(let ((ok (all? (lambda (p) (let* ((C (cdr p)) (T (presheaf-topos C)))
+                              (all? (lambda (c) (all? (lambda (d) (= (length (topos-morphisms T (topos-object T (representable-presheaf C c)) (topos-object T (representable-presheaf C d))))
+                                                                     (length (category-hom C c d))))
+                                                      (objects C)))
+                                    (objects C))))
+                categories)))
+  (claim "Yoneda lemma" 2 "|Nat(y(c), y(d))| = |C(c, d)| for all objects of nine categories" (length categories) ok))
+;; [exponential object#1] "hom_C(Z,X^Y) ≅ hom_C(Z × Y,X)" in presheaf toposes
+(let* ((rows '())
+       (ok (all? (lambda (C)
+                   (let* ((T (presheaf-topos C)) (O (topos-omega T)) (one (topos-terminal T))
+                          (K (topos-object T (constant-set-presheaf C '(0 1))))
+                          (objs (list one O K)))
+                     (all? (lambda (Z) (all? (lambda (Y) (all? (lambda (X)
+                                                                 (let ((a (length (topos-morphisms T Z (topos-exponential T Y X))))
+                                                                       (b (length (topos-morphisms T (topos-product T Z Y) X))))
+                                                                   (set! rows (cons a rows))
+                                                                   (= a b)))
+                                                               objs)) objs)) objs)))
+                 (list arrow BZ2 span))))
+  (claim "exponential object" 1 "|Hom(Z, X^Y)| = |Hom(Z x Y, X)| for 27 triples on three categories; counts" (reverse rows) ok))
+;; [exponential object#2] "|X^S| = |X|^{|S|}" in Set
+(let* ((T (presheaf-topos point))
+       (pairs (list (list '(a b c) '(0 1)) (list '(a b) '(0 1 2)) (list '(a) '(0 1 2 3)) (list '() '(0 1)) (list '(a b) '())))
+       (rows (map (lambda (pr) (let ((X (topos-object T (constant-set-presheaf point (car pr)))) (S (topos-object T (constant-set-presheaf point (cadr pr)))))
+                                 (list (topos-type-size (topos-exponential T S X) 0) (expt (length (car pr)) (length (cadr pr))))))
+                  pairs)))
+  (claim "exponential object" 2 "(|X^S|, |X|^|S|) in Set" rows (all? (lambda (r) (= (car r) (cadr r))) rows)))
+;; [power object#1] "A power object in Set is precisely a power set." and "If 1 is
+;; a terminal object, then Ω^1 is precisely a subobject classifier."
+(let* ((T (presheaf-topos point))
+       (sizes (map (lambda (n) (topos-type-size (topos-power T (topos-object T (constant-set-presheaf point (range n)))) 0)) (range 5)))
+       (T2 (presheaf-topos span)) (P1 (topos-power T2 (topos-terminal T2)))
+       (same (all? (lambda (c) (= (topos-type-size P1 c) (topos-type-size (topos-omega T2) c))) (objects span))))
+  (claim "power object" 1 "|P(A)| for |A| = 0..4 in Set, and |Omega^1| = |Omega| in PSh(span)" sizes
+         (and same (equal? sizes (map (lambda (n) (expt 2 n)) (range 5))))))
+;; [power object#2] "for every other object d and every monomorphism r ↪ c × d
+;; there is a unique morphism χ_r : d → Ω^c": |Sub(c x d)| = |Hom(d, P c)|,
+;; sub-objects enumerated directly
+(let* ((rows '())
+       (ok (all? (lambda (C)
+                   (let* ((T (presheaf-topos C)) (K (topos-object T (constant-set-presheaf C '(0 1)))) (one (topos-terminal T)))
+                     (all? (lambda (pr) (let ((a (sub-presheaf-count (topos-type-presheaf (topos-product T (car pr) (cadr pr)))))
+                                              (b (length (topos-morphisms T (cadr pr) (topos-power T (car pr))))))
+                                          (set! rows (cons a rows)) (= a b)))
+                           (list (list one one) (list K one) (list one K) (list K K)))))
+                 (list arrow BZ2 cospan))))
+  (claim "power object" 2 "|Sub(c x d)| = |Hom(d, P c)| on three categories; counts" (reverse rows) ok))
+
+;; ---------------------------------------------------------------------------
+;; Sierpinski topos
+;; ---------------------------------------------------------------------------
+;; [Sierpinski topos#1] "Equivalently, this is the category of presheaves over the
+;; interval category Δ[1] := 2 = {0 → 1}" and "Sh(Sierp) ≃ PSh(Δ[1])": the
+;; sheaves on Sierpinski space have the same subobject classifier sizes on the
+;; nonempty opens as presheaves on 0 -> 1, a single truth value on the empty open,
+;; and the same refutation of excluded middle
+(let* ((S (make-finite-space 2 (list (cons 0 1)))) (site (finite-space-site S)) (C (site-category site)) (Tsh (make-topos site))
+       (Tps (presheaf-topos arrow))
+       (opens (map (lambda (U) (category-object-of-label C U)) (list '() '(0) '(0 1))))
+       (sh (map (lambda (c) (length (topos-closed-sieves Tsh c))) opens))
+       (ps (map (lambda (c) (topos-type-size (topos-omega Tps) c)) (objects arrow))))
+  (claim "Sierpinski topos" 1 "|Omega| on the opens (), (0), (0 1) of Sierpinski space vs on 0, 1 of the interval" (list sh ps)
+         (and (equal? (cdr sh) ps) (= 1 (car sh)) (eq? (valid-in Tsh lem) (valid-in Tps lem)) (eq? (valid-in Tsh wlem) (valid-in Tps wlem)))))
+
+(if (= failed 0)
+    (begin (display "PASS: nlab_topos_test (") (display passed) (display " claims)") (newline))
+    (begin (display "FAIL: nlab_topos_test (") (display failed) (display " of ") (display (+ passed failed)) (display " claims failed)") (newline)))

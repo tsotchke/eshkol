@@ -28,20 +28,21 @@ invalidation and the stdlib object cache.
 
 | Variable | Effect |
 |----------|--------|
-| `ESHKOL_PATH` | Module/include search path for `require`. Searched after the requiring file's own directory and the project root, and **before** the installed `lib/` tree, so a path you name overrides a module that ships with the compiler. `-I` directories are merged into it. |
+| `ESHKOL_PATH` | Project module search path. The resolver checks the referring file's directory and working directory first. It merges `-I` directories into this path. Installed stdlib names are reserved. |
 | `ESHKOL_LIB_DIR` | Directory holding the precompiled stdlib (`stdlib.o`, `stdlib.bc`) and the runtime archives (`libeshkol-runtime.a`, or the legacy `libeshkol-static.a`). Highest precedence of all: it is searched — together with its `eshkol/` subdirectory — before `-L` paths, before the compiler's own install, and before any system location. |
 | `ESHKOL_SYSTEM_PREFIXES` | Replaces the built-in list of system install prefixes searched as a last resort (`/usr/local`, `/usr`, `/opt/homebrew`). Path-list syntax; each entry contributes `<prefix>/lib`, `<prefix>/lib/eshkol` and `<prefix>/share/eshkol/lib`. For unusual installs and for packaging tests that must not read the host's real system directories. |
+| `ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS` | How long a compile waits for another live compile that is producing the same native output path before it reports that the output is owned. Default `30`; `0` does not wait. |
 | `ESHKOL_PROJECT_ROOT` | Project root used for relative paths in exception/backtrace reporting. |
 
 ### Resolution precedence
 
-Every install artifact the toolchain resolves at run time — the runtime
-archive, the agent-FFI archives beside it, `stdlib.o`, `stdlib.bc`, and the
-`lib/**.esk` module tree — is looked up in one order, highest precedence
-first:
+Project module lookup and stdlib source identity are described in the
+[modules reference](../language/modules.md). Native archives and precompiled
+stdlib artifacts use the following search order. The precompiled stdlib must
+carry this compiler's identity.
 
-1. `$ESHKOL_LIB_DIR` (native artifacts) / `$ESHKOL_PATH` (module sources).
-2. Directories named by `-L` (native) or `-I` (modules) flags.
+1. `$ESHKOL_LIB_DIR`.
+2. Directories named by `-L`.
 3. The install the running compiler belongs to: the directory holding its
    **real** path (symlinks resolved, so a `bin/eshkol-run` symlink into a
    Homebrew Cellar keg resolves inside the keg), plus that directory's
@@ -201,6 +202,62 @@ so a run that does not set it is not on a clock. Arming a 30-second wall-clock
 kill on every invocation would also bound AOT compilation and interactive REPL
 sessions.
 
+### Reading: the input-size cap, and why there is no depth limit
+
+Nesting depth, when Eshkol reads a datum, is bounded by memory and by nothing
+else. Both readers — the native front end and the bytecode VM's — carry the
+open containers on their own heap-allocated stack, so the native stack does
+not grow with the source, and there is no nesting limit to raise. A quoted
+datum a million levels deep reads, compares with `equal?`, prints in full and
+is collected, on the JIT, ahead-of-time and the VM alike. The same applies to
+releasing the tree, to lowering effect forms, and to emitting the code that
+builds the datum.
+
+Two numbers *are* configurable, and both are shared by the two readers and by
+every entry point — `eshkol-run`, the REPL, `eshkol-vm-standalone`, the
+compile server and the WebAssembly playground:
+
+| Variable | Option | Default | What it bounds |
+| --- | --- | --- | --- |
+| `ESHKOL_MAX_SOURCE_BYTES` | `--max-source-bytes=N` | `64M` | The largest source text a reader accepts. `0` removes the cap. |
+| `ESHKOL_MAX_PASS_DEPTH` | `--max-pass-depth=N` | `1000` | Levels of **code** nesting the compiler will descend. `0` removes the count. |
+
+Both accept a plain byte count or the suffixes `K`, `M` and `G` (1024-based),
+so `--max-source-bytes=128M` is written as it reads.
+
+A text over the cap is refused before it is read, and the refusal names the
+cap and how to raise it:
+
+```
+source text is 67108865 bytes, over the 67108864-byte input cap (raise it with
+ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N; 0 removes the cap)
+```
+
+`eval`, `compile` and an evaluation environment's binding values convert a
+runtime datum with no depth limit: the datum is spelled as the reader's tokens
+on a heap work stack and handed to the parser. The spelling is weighed against
+the same input cap, and a datum over it raises a condition a `guard` catches,
+with the same message.
+
+`ESHKOL_MAX_PASS_DEPTH` is about **code**, not data. A thousand levels of
+nested *expression* is not something a person writes, and the passes that
+compile one — expression emission and the binding scanners — are natively
+recursive, so that is the budget they name when they refuse. Quoted data is unaffected by it at any depth. The
+native stack headroom guard (the one `check_stack_space` has always applied in
+the front end, reserving 64 KB) is consulted alongside the count, so raising
+`ESHKOL_MAX_PASS_DEPTH` cannot turn a refusal into a signal: the pass still
+stops one frame short of the bound and says so.
+
+Running out of memory while reading is an ordinary diagnostic too, with the
+form's position, on every entry point: the compiler driver exits nonzero with
+a message, the REPL reports it and keeps the session, and the compile server
+answers the request and keeps serving every other one.
+
+One modest ceiling remains, and it is on syntax rather than on data: at most
+64 levels of `~{...}` string interpolation nested inside `~{...}`, since each
+level is a fresh source text read on its own frames. Reaching it is an
+ordinary diagnostic naming the number.
+
 ### Bytecode-VM region reclamation and heap growth watchdog
 
 `(with-region ...)` reclaims on the bytecode VM as of the Stage-1 region
@@ -290,6 +347,9 @@ Resource caps applied to children spawned by [`agent.subprocess`](../agent/subpr
 | Variable | Effect | Default |
 |----------|--------|---------|
 | `ESHKOL_SERVER_TOKEN` | Auth token for `agent.http_server` / `eshkol-server`. | unset |
+| `ESHKOL_SERVER_MAX_HEADER_BYTES` | Header section `eshkol-server` will hold for one request; passing it answers 431. See [the compilation server](compilation-server.md). | `65536` |
+| `ESHKOL_SERVER_MAX_BODY_BYTES` | Request body `eshkol-server` will accept; passing it answers 413. | `10485760` |
+| `ESHKOL_SERVER_REQUEST_DEADLINE_SECONDS` | Seconds one request has, from accept, to arrive complete; passing it answers 408 and the connection is closed. | `15` |
 | `ESHKOL_VERBOSE` | Metal GPU per-call logging. Requires a leading `1`. Despite the name it affects nothing outside the Metal backend; the CUDA equivalent is `ESHKOL_GPU_VERBOSE`. | off |
 | `ESHKOL_ARENA_POISON` | Poison freed arena memory (debug). See the VM region table above for the accepted-value caveat; set it to exactly `1`. | off |
 | `ESHKOL_ARENA_REPORT` | Set to exactly `1` to print the process-global arena's own byte total once at exit, on stderr, as `[eshkol-arena] global_total_allocated_bytes=N`. Diagnostic only — it changes no allocation behaviour. This is the retention signal `tests/memory/resident_longrun_flat_gate.sh` gates on, because it is deterministic to the byte, whereas peak RSS is a high-water mark of *instantaneous* residency and reads low on a loaded host. | off |
@@ -307,6 +367,9 @@ undocumented.
 
 | Variable | Effect | Default |
 |----------|--------|---------|
+| `ESHKOL_REFINEMENT_SOLVER` | Solver for refinement-type obligations ([refinement types](../language/refinement-types.md)): `internal`, `z3` (builds with `-DESHKOL_REFINEMENT_Z3=ON`), or `cross` (both; a disagreement is an error). Other values are ignored. | `internal` |
+| `ESHKOL_REFINEMENT_BUDGET` | Deterministic step budget per refinement query (positive base-10 integer); exhausting it answers "undecided", never "proved". | `2000000` |
+| `ESHKOL_Z3` | z3 executable used by the z3 refinement backend. | path found at configure time, else `z3` on `PATH` |
 | `ESHKOL_LLVM_REMARKS` | Let LLVM optimization remarks reach stderr. Off by default: the optimizer runs behind `eshkol-run`, so its stderr is the compiled program's stderr and a remark about a stdlib loop is not part of the program's output. Covers both the AOT and the `-r` JIT pipeline. Errors and module-verification diagnostics are never suppressed. | off |
 | `ESHKOL_TARGET_CPU` | Override the LLVM target CPU used for codegen (`lib/backend/llvm_codegen.cpp`, `lib/backend/tensor_codegen.cpp`). | host CPU |
 | `ESHKOL_TARGET_FEATURES` | Override the LLVM target feature string. | host features |

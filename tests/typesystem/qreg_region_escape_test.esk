@@ -1,0 +1,13 @@
+;; Type System Test: a register cannot leave the region that owns its simulator state
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: the body of a quantum region returns qreg<2>
+;; EXPECT-STDERR: cannot leave the region
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (escapes-region)
+  (qh (qalloc qr 2) 0))
+
+(display (escapes-region))

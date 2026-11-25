@@ -1,0 +1,21 @@
+;; Unary / is exact reciprocal division, evaluates its operand once, and
+;; shares the numeric opcode behavior used by binary division.
+(define exact-reciprocal (/ 3))
+(display exact-reciprocal) (newline)
+(display (exact? exact-reciprocal)) (newline)
+(display (/ 2.0)) (newline)
+(display (exact? (/ 2.0))) (newline)
+
+(define calls 0)
+(define (operand-once)
+  (set! calls (+ calls 1))
+  4)
+(display (/ (operand-once))) (newline)
+(display calls) (newline)
+
+;; Exact zero denominator is an error, while an inexact zero follows IEEE.
+(display (guard (e (#t 'caught)) (/ 0) 'missed)) (newline)
+(display (/ 0.0)) (newline)
+
+;; The VM's differentiable arithmetic path must see the same reciprocal.
+(display (derivative (lambda (x) (/ x)) 2.0)) (newline)

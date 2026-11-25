@@ -1,0 +1,78 @@
+format = "eshkol-mix-qualification-v1"
+date = "2026-10-24"
+verdict = "pass"
+base_revision = "341ac812ed600fd9d27c28e9509d66ab71363947"
+compiler_release = "v1.3.6-evolve Linux x64 lite"
+compiler_sha256 = "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb"
+compiler_rebuilt = false
+jit_cache_enabled = false
+source_manifest = "SOURCE.toml"
+source_manifest_sha256 = "60d60c1095b35531df32c464d0c65869056e108623b2c3caba9cfa7869fca6a9"
+source_manifest_verified_before_gate = false
+source_manifest_generated_after_gate = true
+source_manifest_verified_after_gate = true
+whole_project_test_sweep = false
+vm_wasm_qualified = false
+native_compiler_internals_changed = false
+licensing = "MIT for the selected contribution"
+
+[gate]
+command = "ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_mix_gate.sh"
+exit_code = 0
+engines = ["LLVM JIT", "separately compiled and executed AOT"]
+library_checks_per_engine = 4668
+library_comparisons_per_engine = 2251
+projection_interpreters = 2
+projection_programs = 7
+inputs_per_program = 40
+projection_comparisons_per_engine = 2240
+additional_numeric_comparisons_per_engine = 8
+additional_identifier_comparisons_per_engine = 3
+emitted_f3_programs = 14
+emitted_native_comparisons_per_engine = 571
+self_hosted_native_comparisons_per_engine = 41
+library_stdout_identical = true
+emitted_residual_stdout_identical = true
+self_hosted_generator_stdout_identical = true
+self_hosted_native_stdout_identical = true
+erased_input_guard_rejects_noninteger_on_both_engines = true
+address_space_limit_kib = 4194304
+
+[observations]
+measured_revision = "5c9f15eca7126d55c19c5bf6de267b8744673248"
+measurement_scope = "complete shell gate including compilation and child processes"
+wall_seconds = 108.03
+user_seconds = 90.90
+system_seconds = 16.84
+maximum_resident_kib = 1408840
+native_throughput_claim = false
+
+[limits]
+profile = "mix-v1 strict exact integer/symbol/pair programs; emitted calls must be acyclic"
+whole_compiler_correctness_claim = false
+general_jones_optimality_claim = false
+source_origin_is_cryptographic_attestation = false
+
+[emitter_review]
+constructor_binding_identity_regressions = 3
+conflicting_exports_refuse_before_emission = true
+native_assertion_count_checked = true
+missing_native_assertion_control_refuses = true
+original_identifier_probe = "runtime exception: car argument is not a pair"
+fixed_identifier_probe = "normal"
+original_modulo_export_native_timeout_seconds = 3
+original_modulo_export_native_exit_code = 124
+scope = "grammar-aware call discovery and generated wrapper export identity"
+
+[verification]
+command = "ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_mix_verify_gate.sh"
+checks_per_engine = 64
+engines = ["LLVM JIT", "separately compiled and executed AOT"]
+stdout_identical = true
+verdict = "pass"
+fragment = "exact integer literals/statics, variables, sequential let, binary + - *, reached acyclic first-order calls"
+unsupported_verdict = "unknown"
+producer_origin_trusted = false
+sample_battery_counterfeit_rejected = true
+original_workbench_gate_rerun = "pass: 4668 checks, 571 emitted and 41 self-hosted comparisons per engine"
+native_emitter_verified_by_polynomial_checker = false

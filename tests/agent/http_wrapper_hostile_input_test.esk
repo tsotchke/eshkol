@@ -1,0 +1,97 @@
+;; http_wrapper_hostile_input_test.esk — the same hostile inputs, through the
+;; agent.http module rather than the native builtins.
+;;
+;; http_hostile_input_test.esk drives the builtins directly so that one file
+;; can run on the bytecode VM too. That leaves two layers of the same rule
+;; untested: this module's own http-check-url and http-reserved-field-name?,
+;; and the header-line check the native clients apply line by line. They are
+;; separate implementations of one rule, in another language and another
+;; translation unit, which is where drift appears. This lane covers them on
+;; the JIT and the AOT path; the VM does not admit this module's externs.
+
+(require stdlib)
+(require agent.http)
+
+(define passed 0)
+(define failed 0)
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+(define (raises? thunk)
+  (call-with-current-continuation
+    (lambda (k)
+      (with-exception-handler
+        (lambda (e) (k #t))
+        (lambda () (thunk) #f)))))
+
+;; ── http-check-url ──────────────────────────────────────────────────
+(check "a URL carrying CRLF is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/a\r\nX: 1" '() "" 1))))
+(check "a URL carrying a space is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/a b" '() "" 1))))
+(check "a relative URL is refused" #t
+       (raises? (lambda () (http-request "GET" "/health" '() "" 1))))
+(check "a URL with no scheme is refused" #t
+       (raises? (lambda () (http-request "GET" "127.0.0.1:1/health" '() "" 1))))
+
+;; ── http-check-headers: the grammar ─────────────────────────────────
+(check "a header name carrying a space is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("Bad Header" . "1")) "" 1))))
+(check "a header value carrying CRLF is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("X" . "a\r\nInjected: 1")) "" 1))))
+
+;; ── http-check-headers: the fields the client sets itself ───────────
+(check "a caller Transfer-Encoding is refused" #t
+       (raises? (lambda ()
+                  (http-post "http://127.0.0.1:1/x"
+                             '(("Transfer-Encoding" . "chunked"))
+                             "0\r\n\r\nGET /admin HTTP/1.1\r\nHost: internal\r\nX: "
+                             1))))
+(check "a caller Content-Length is refused" #t
+       (raises? (lambda ()
+                  (http-post "http://127.0.0.1:1/x"
+                             '(("Content-Length" . "0")) "body" 1))))
+(check "a caller Host is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("Host" . "internal")) "" 1))))
+(check "a caller Connection is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("Connection" . "keep-alive")) "" 1))))
+(check "a caller Upgrade is refused" #t
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("Upgrade" . "h2c")) "" 1))))
+(check "the reserved match is case-insensitive" #t
+       (raises? (lambda ()
+                  (http-post "http://127.0.0.1:1/x"
+                             '(("CONTENT-length" . "0")) "body" 1))))
+;; Not a grammar refusal: the name only starts with a reserved one, so the
+;; call proceeds to a connection that fails on its own.
+(check "a longer name starting with a reserved one is not a grammar refusal" #f
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("Content-Length-Note" . "5")) "" 1))))
+(check "an ordinary header is not a grammar refusal" #f
+       (raises? (lambda ()
+                  (http-request "GET" "http://127.0.0.1:1/"
+                                '(("Accept" . "application/json")) "" 1))))
+
+(display "passed: ") (display passed) (newline)
+(display "failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "HTTP-WRAPPER-HOSTILE-INPUT OK") (newline))
+    (begin (display "HTTP-WRAPPER-HOSTILE-INPUT FAILED") (newline)))

@@ -1,0 +1,10 @@
+;; Direct primitive checks isolate byte-safe splitting from the separately
+;; tracked higher-order WASM length path. Tail shape checks reject extra cells.
+(define u (string-split "aλbλ" #\λ))
+(display (if (and (null? (cdr (cdr (cdr u)))) (string=? (car u) "a") (string=? (cadr u) "b") (string=? (caddr u) "")) 1 -1)) (newline)
+(define nz (string-split "a\x00;b\x00;c" "\x00;"))
+(display (if (and (null? (cdr (cdr (cdr nz)))) (string=? (car nz) "a") (string=? (cadr nz) "b") (string=? (caddr nz) "c")) 1 -1)) (newline)
+(define uz (string-split "a\x00;λb\x00;λc" "\x00;λ"))
+(display (if (and (null? (cdr (cdr (cdr uz)))) (string=? (car uz) "a") (string=? (cadr uz) "b") (string=? (caddr uz) "c")) 1 -1)) (newline)
+(define empty (string-split "whole" ""))
+(display (if (and (null? (cdr empty)) (string=? (car empty) "whole")) 1 -1)) (newline)

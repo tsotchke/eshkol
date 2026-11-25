@@ -109,6 +109,44 @@ int main(int argc, char** argv) {
     fs::remove_all(fixture, ec);
     fs::create_directories(fixture);
 
+#if defined(__APPLE__)
+    const fs::path llvm_fixture = fixture / "runtime-deps";
+    fs::create_directories(llvm_fixture);
+    std::ofstream(llvm_fixture / "libLLVM-21.dylib") << "fixture";
+    const auto packaged_llvm =
+        eshkol::platform::macos_packaged_llvm_link_args(llvm_fixture);
+    const auto llvm_canonical = fs::absolute(llvm_fixture).string();
+    ok &= expect(contains(packaged_llvm, "-L" + llvm_canonical) &&
+                     contains(packaged_llvm, "-Wl,-rpath," + llvm_canonical),
+                 "packaged LLVM link marker resolves for a regular runtime closure");
+    const auto missing_llvm = eshkol::platform::macos_packaged_llvm_link_args(
+        fixture / "missing-runtime-deps");
+    ok &= expect(missing_llvm.size() == 1 &&
+                     missing_llvm.front().find("/__eshkol_package_runtime_missing__/") == 0,
+                 "missing packaged LLVM closure returns a guaranteed linker failure");
+    const fs::path symlinked_llvm = fixture / "symlinked-runtime-deps";
+    std::error_code llvm_symlink_ec;
+    fs::create_directory_symlink(llvm_fixture, symlinked_llvm, llvm_symlink_ec);
+    if (!llvm_symlink_ec) {
+        const auto rejected_llvm = eshkol::platform::macos_packaged_llvm_link_args(
+            symlinked_llvm);
+        ok &= expect(rejected_llvm.size() == 1 &&
+                         rejected_llvm.front().find("/__eshkol_package_runtime_missing__/") == 0,
+                     "symlinked packaged LLVM directory fails closed");
+    }
+    const fs::path symlink_file_dir = fixture / "symlinked-llvm-file";
+    fs::create_directories(symlink_file_dir);
+    fs::create_symlink(llvm_fixture / "libLLVM-21.dylib",
+                       symlink_file_dir / "libLLVM-21.dylib", llvm_symlink_ec);
+    if (!llvm_symlink_ec) {
+        const auto rejected_file = eshkol::platform::macos_packaged_llvm_link_args(
+            symlink_file_dir);
+        ok &= expect(rejected_file.size() == 1 &&
+                         rejected_file.front().find("/__eshkol_package_runtime_missing__/") == 0,
+                     "symlinked packaged LLVM file fails closed");
+    }
+#endif
+
     for (const auto& name : {"cudart", "cublas", "cublasLt"}) {
         create_library(fixture, name);
     }

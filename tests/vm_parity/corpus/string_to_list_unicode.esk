@@ -1,0 +1,12 @@
+;; Unicode codepoint and embedded-NUL parity; output is deliberately ASCII.
+(define chars (list #\A (integer->char 0) (integer->char 955)
+                    (integer->char 20013) (integer->char 128578) #\Z))
+(define s (list->string chars))
+(display (map char->integer (string->list s))) (newline)
+(display (length (string->list s))) (newline)
+(display (string=? (list->string (string->list s)) s)) (newline)
+(display (string->list "")) (newline)
+(display (map char->integer (string->list "éλ中🙂"))) (newline)
+(display (length (string->list (make-string 5000 (integer->char 955))))) (newline)
+(define convert string->list)
+(display (map char->integer (convert s))) (newline)

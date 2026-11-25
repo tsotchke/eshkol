@@ -12,6 +12,7 @@
 #include <eshkol/core/resource_limits.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/coroutine.h>
 
 #include <atomic>
 #include <mutex>
@@ -541,6 +542,16 @@ size_t eshkol_get_stack_depth(void) {
     return t_stack_depth;
 }
 
+/* The recursion depth counts frames on the running stack, so each coroutine
+ * (one stack each) keeps its own count (inc/eshkol/core/coroutine.h). */
+extern "C" void eshkol_resource_limits_context_save(eshkol_exec_context_t* ctx) {
+    ctx->limit_stack_depth = (uint64_t)t_stack_depth;
+}
+
+extern "C" void eshkol_resource_limits_context_load(const eshkol_exec_context_t* ctx) {
+    t_stack_depth = (size_t)ctx->limit_stack_depth;
+}
+
 // ----------------------------------------------------------------------------
 // Timeout Watchdog
 // ----------------------------------------------------------------------------
@@ -766,31 +777,67 @@ static const char* limit_env_var(eshkol_limit_error_t error) {
 }
 
 /** The configured ceiling for each limit, rendered for the diagnostic. */
+static void format_u64_with_suffix(uint64_t value, const char* suffix,
+                                   char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    char digits[24];
+    size_t n = 0;
+    do {
+        digits[n++] = static_cast<char>('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0u && n < sizeof(digits));
+    size_t pos = 0;
+    while (n > 0 && pos + 1 < out_size) {
+        out[pos++] = digits[--n];
+    }
+    if (suffix) {
+        while (*suffix && pos + 1 < out_size) {
+            out[pos++] = *suffix++;
+        }
+    }
+    out[pos] = '\0';
+}
+
+static void format_literal(const char* text, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    size_t pos = 0;
+    if (text) {
+        while (*text && pos + 1 < out_size) {
+            out[pos++] = *text++;
+        }
+    }
+    out[pos] = '\0';
+}
+
 static void format_limit_ceiling(eshkol_limit_error_t error,
                                  char* out, size_t out_size) {
     switch (error) {
         case ESHKOL_LIMIT_OK:
-            snprintf(out, out_size, "n/a");
+            format_literal("n/a", out, out_size);
             break;
         case ESHKOL_LIMIT_HEAP_HARD:
         case ESHKOL_LIMIT_HEAP_SOFT:
-            snprintf(out, out_size, "%zu bytes", g_limits.max_heap_bytes);
+            format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_heap_bytes),
+                                   " bytes", out, out_size);
             break;
         case ESHKOL_LIMIT_STACK_OVERFLOW:
-            snprintf(out, out_size, "%zu frames", g_limits.max_stack_depth);
+            format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_stack_depth),
+                                   " frames", out, out_size);
             break;
         case ESHKOL_LIMIT_TENSOR_SIZE:
-            snprintf(out, out_size, "%zu elements", g_limits.max_tensor_elements);
+            format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_tensor_elements),
+                                   " elements", out, out_size);
             break;
         case ESHKOL_LIMIT_STRING_LENGTH:
-            snprintf(out, out_size, "%zu bytes", g_limits.max_string_length);
+            format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_string_length),
+                                   " bytes", out, out_size);
             break;
         case ESHKOL_LIMIT_TIMEOUT:
-            snprintf(out, out_size, "%llums",
-                     (unsigned long long)g_limits.max_execution_time_ms);
+            format_u64_with_suffix(g_limits.max_execution_time_ms,
+                                   "ms", out, out_size);
             break;
         default:
-            snprintf(out, out_size, "n/a");
+            format_literal("n/a", out, out_size);
             break;
     }
 }

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "engines": [
+    "jit",
+    "aot-O0"
+  ],
+  "jit_qualification": "passed",
+  "jit_executable_cache": "disabled",
+  "eshkol_bin_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "checks_per_engine": 29,
+  "full_model_ensemble_prefixes": 16,
+  "activation_dimensions": [
+    3,
+    4
+  ],
+  "signed_ticks": 12,
+  "covariance": "aggregate moments before nonlinear observation",
+  "global_revisions": "explicit reconstruction from retained raw observations",
+  "stdout_sha256": "10a934332791b68b44f7406c765597e214e0794aec9bf22aa1f9feb9cd43d64b",
+  "files_sha256": {
+    "repro/hawkes-live/live.esk": "d79fb30f36effd20cba4c815aabdabf2f561d6dcda5256a19759c83749d09e81",
+    "repro/hawkes-live/live_test.esk": "880060b625ceb59850d4e409e9b4904eeaf7c18a6ca0045a3cdcbf6063a35202",
+    "repro/hawkes-forecast/source.esk": "5eb5b62aec891cfc6d3fa1e745359153b2e13de6a643951a1a1f3f6f40b40230",
+    "repro/hawkes-forecast/forecast.esk": "42878f2d76687822190def7d617b4fd7fe7e96a46f24ad70fc38fba6e9b04ecd",
+    "repro/hawkes-live/live_oracle.py": "02897590c5b35f54d9b62adcf9a173b851437787a37509f7c77671c2d5f1da24",
+    "repro/hawkes-forecast/oracle.py": "f64fc7640a4f29bb8348b057825280158790cbbaef6a9c059c0c0e7c28cb9a19",
+    "repro/hawkes-live/run_live_gate.py": "93a7302b52d9f3fe338481e769af2ccfd4fcfcee90d82d9ad3567c2cf979da07",
+    "lib/core/observable_closure.esk": "dc068e5529ba4b4163841911a34357123b78aa9b1e244e33d404232d31a4d32e",
+    "scripts/run_observable_closure_gate.py": "96386b3b010cf78b7f8d240a388714b823ae437b6fa1e7b905f4e2c7ad944e11"
+  }
+}

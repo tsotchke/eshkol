@@ -1,0 +1,74 @@
+(require stdlib)
+(require core.algebraic_field)
+(require core.ad.algebraic)
+
+(define checks 0)
+(define (check label ok)
+  (if (not ok) (error label))
+  (set! checks (+ checks 1)))
+(define (raises? thunk)
+  (guard (e (else #t)) (thunk) #f))
+
+;; Independent oracle: theta=sqrt(2)+sqrt(3) obeys
+;; theta^4-10 theta^2+1=0, and lies strictly between 3 and 16/5.
+(define pair (make-multiquadratic-field '(2 3 8 6)))
+(define field (vector-ref pair 0))
+(define roots (vector-ref pair 1))
+(define theta (algebraic-add (vector-ref roots 0) (vector-ref roots 1)))
+(define theta2 (algebraic-mul theta theta))
+(define residual
+  (algebraic-add
+    (algebraic-sub (algebraic-mul theta2 theta2) (algebraic-scale theta2 10))
+    (algebraic-element field 1)))
+(check "independent quartic residual is exact zero" (algebraic-zero? residual))
+(check "selected positive branch exceeds 3"
+  (= (algebraic-sign (algebraic-sub theta (algebraic-element field 3))) 1))
+(check "selected branch is less than 16/5"
+  (= (algebraic-sign (algebraic-sub theta (algebraic-element field 16/5))) -1))
+(check "independent degree is four" (= (algebraic-field-degree field) 4))
+(check "sqrt(8) is twice sqrt(2)"
+  (algebraic-equal? (vector-ref roots 2) (algebraic-scale (vector-ref roots 0) 2)))
+(check "sqrt(6) is sqrt(2)*sqrt(3)"
+  (algebraic-equal? (vector-ref roots 3)
+    (algebraic-mul (vector-ref roots 0) (vector-ref roots 1))))
+(check "all selected radicals are positive"
+  (let loop ((i 0))
+    (or (= i (vector-length roots))
+        (and (= (algebraic-sign (vector-ref roots i)) 1) (loop (+ i 1))))))
+(check "source certificate records only independent square classes"
+  (equal? (cadr (algebraic-field-certificate field)) #(2 3)))
+
+;; Rational-square roots stay in Q; empty inputs denote Q as well.
+(define rational-field (make-multiquadratic-field '(1 4 9)))
+(check "rational radicands do not inflate degree"
+  (= (algebraic-field-degree (vector-ref rational-field 0)) 1))
+(check "rational roots are exact"
+  (equal? (map algebraic-rational (vector->list (vector-ref rational-field 1))) '(1 2 3)))
+(check "empty input is Q"
+  (= (algebraic-field-degree (vector-ref (make-multiquadratic-field '()) 0)) 1))
+
+;; Modular admission still refuses reducible polynomials. Distinct fields with
+;; non-coprime degrees are not tensor-composed, even if radical dependence is
+;; suspected; the square-class constructor above handles that domain explicitly.
+(check "reducible modular polynomial is refused"
+  (raises? (lambda () (make-algebraic-field '(-1 0 1) 3 0))))
+(define sqrt2-field (make-algebraic-field '(-2 0 1) 3 1))
+(define sqrt8-field (make-algebraic-field '(-8 0 1) 3 1))
+(check "distinct non-coprime fields refuse unchecked compositum"
+  (raises? (lambda () (make-algebraic-compositum sqrt2-field sqrt8-field))))
+(define identity-composition (make-algebraic-compositum sqrt2-field sqrt2-field))
+(check "same-object composition preserves checked identity transports"
+  (and (eq? (vector-ref identity-composition 0) sqrt2-field)
+       (algebraic-equal? ((vector-ref identity-composition 1)
+         (algebraic-generator sqrt2-field)) (algebraic-generator sqrt2-field))))
+
+;; Rational square-class admission is an exact equivalence: nonpositive,
+;; inexact, too-large, and over-rank inputs refuse instead of approximating.
+(for-each (lambda (bad)
+  (check "inadmissible radical input refuses" (raises? (lambda () (make-multiquadratic-field bad)))))
+  (list '(-1) '(0) '(2.0) '(1/2) '(65536) '(2 3 5 7 11)))
+(check "inexact refinement budget refuses"
+  (raises? (lambda () (make-multiquadratic-field '(2) 4.0))))
+
+(display "Checks: ") (display checks) (newline)
+(display "RESULT: PASS\n")

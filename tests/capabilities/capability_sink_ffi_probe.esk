@@ -1,0 +1,18 @@
+;;; FFI capability: `(dlopen path)` brings foreign code into the process.
+;;; An empty path asks for a handle on the running program itself, which every
+;;; host provides, so the probe loads nothing from disk and still exercises
+;;; the sink.
+(require stdlib)
+(require core.capabilities)
+
+(define mode (getenv "ESHKOL_CAP_MODE"))
+(if (string=? mode "deny") (capability-install-policy! (list 'file-read)) #t)
+(if (string=? mode "grant") (capability-install-policy! (list 'file-read 'ffi)) #t)
+
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((handle (dlopen "")))
+      (if handle
+          (begin (dlclose handle) "ran:loaded")
+          "ran:unavailable"))))
+(newline)

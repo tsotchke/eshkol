@@ -1,0 +1,3 @@
+;; expect-error: does not cover constructor
+(hott (import circle)
+  (define bad : (-> S1 Int) (split (base (pos 0)))))

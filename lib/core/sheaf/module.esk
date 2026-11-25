@@ -1,0 +1,288 @@
+;;; core.sheaf.module -- presheaves of free abelian groups (ring 'Z) and of
+;;; Q-vector spaces (ring 'Q) on a finite category: functoriality, the sheaf
+;;; condition decided by exact linear algebra, gluing with obstructions, and
+;;; sheafification by the plus construction.
+;;;
+;;; Usage: (require core.sheaf.module)   or   (require core.sheaf)
+;;;
+;;; Sources: R. Godement, "Topologie algebrique et theorie des faisceaux"
+;;; (1958), II.1-II.3; SGA 4 II.3 and II.6 (abelian sheaves, the plus
+;;; construction); S. Mac Lane, I. Moerdijk, "Sheaves in Geometry and Logic"
+;;; III.4-III.5.
+;;;
+;;; Representation (public):
+;;;   #(module-presheaf C ring ranks res bases)
+;;;     ranks: vector, object c -> rank of F(c) (F(c) = R^rank, R = Z or Q);
+;;;     res:   vector, arrow a : d -> c -> the matrix of F(a) : F(c) -> F(d),
+;;;            rank(d) rows by rank(c) columns, exact entries;
+;;;     bases: #f, or (for presheaves built by module-presheaf-plus) a vector
+;;;            object -> the basis of matching families each section stands for.
+;;;   A family on a sieve S is an alist ((f . v_f) ...), v_f a vector in
+;;;   F(source f). The matching module Match(S, F) is the kernel of
+;;;   (v_f) |-> (F(g) v_f - v_{f o g}) over f in S and g with f o g in S.
+;;;
+;;; Over Z the sheaf condition asks that F(c) -> Match(S, F) be an isomorphism
+;;; of lattices (separated: injective; sheaf: also onto, decided by lattice
+;;; membership); over Q it is the same statement for spans.
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.sheaf.site)
+(require core.sheaf.glue)
+
+(provide make-module-presheaf module-presheaf? module-presheaf-category module-presheaf-ring
+         module-presheaf-rank module-presheaf-restriction module-presheaf-bases
+         module-presheaf-functoriality-violations module-presheaf-functorial?
+         constant-module-presheaf
+         sheaf-module-kernel sheaf-module-rank sheaf-module-solve sheaf-module-same-span? sheaf-module-cochain-cohomology
+         module-sieve-offsets module-restriction-to-sieve module-matching-basis
+         module-family-incompatibilities module-glue
+         module-separated-on-sieve? module-sheaf-on-sieve? module-sheaf-on-family?
+         module-separated-on-family? module-presheaf-sheaf-violations module-presheaf-sheaf?
+         module-presheaf-plus module-sheafify module-presheaf-unit)
+
+(define (mp-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (mp-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (mp-all? pred (cdr xs))) (else #f)))
+
+;; ---------------------------------------------------------------------------
+;; Linear algebra over the coefficient ring
+;; ---------------------------------------------------------------------------
+(define (mp-check-ring ring)
+  (if (not (or (eq? ring 'Z) (eq? ring 'Q))) (error "core.sheaf: coefficient ring must be 'Z or 'Q" ring))
+  ring)
+(define (sheaf-module-kernel ring A ncols) (if (eq? ring 'Z) (integer-kernel A ncols) (rational-kernel A ncols)))
+(define (sheaf-module-rank ring A)
+  (cond ((or (not A) (= 0 (integer-matrix-rows A)) (= 0 (integer-matrix-cols A))) 0)
+        ((eq? ring 'Z) (integer-rank A))
+        (else (rational-rank A))))
+;; coordinates of v in the basis given by the columns of B; #f when v is not
+;; in the Z-lattice (ring 'Z) or the Q-span (ring 'Q) of the basis
+(define (sheaf-module-solve ring B ncols v)
+  (cond ((= ncols 0) (if (mp-all? (lambda (x) (= x 0)) (vector->list v)) (make-vector 0 0) #f))
+        ((eq? ring 'Z) (integer-solve-in-basis (smith-normal-form B) ncols v))
+        (else (rational-solve B ncols v))))
+(define (sheaf-module-same-span? ring A B nrows)
+  (if (eq? ring 'Z) (integer-same-lattice? A B) (rational-same-span? A B nrows)))
+;; cochain cohomology; over Q the matrices are cleared to integer rows (rank
+;; preserving) and no torsion is reported
+(define (sheaf-module-cochain-cohomology ring dims Ds)
+  (if (eq? ring 'Z) (cochain-cohomology dims Ds)
+      (map (lambda (h) (list (car h) (cadr h) '()))
+           (cochain-cohomology dims (map matrix-clear-denominators Ds)))))
+
+;; ---------------------------------------------------------------------------
+;; Module presheaves
+;; ---------------------------------------------------------------------------
+;; rank: object -> rank; res: arrow -> matrix. Identity arrows may be omitted
+;; by res (return #f): the identity matrix is filled in.
+(define (make-module-presheaf C ring rank res . bases)
+  (mp-check-ring ring)
+  (let ((ranks (list->vector (map rank (mp-range (category-object-count C))))))
+    (vector 'module-presheaf C ring ranks
+            (list->vector
+             (map (lambda (a)
+                    (let ((m (res a)))
+                      (cond (m m)
+                            ((= a (category-identity C (arrow-target C a)))
+                             (integer-identity-matrix (vector-ref ranks (arrow-target C a))))
+                            (else (error "make-module-presheaf: no matrix for arrow" a)))))
+                  (mp-range (category-arrow-count C))))
+            (if (null? bases) #f (car bases)))))
+(define (module-presheaf? F) (and (vector? F) (= 6 (vector-length F)) (eq? (vector-ref F 0) 'module-presheaf)))
+(define (module-presheaf-category F) (vector-ref F 1))
+(define (module-presheaf-ring F) (vector-ref F 2))
+(define (module-presheaf-rank F c) (vector-ref (vector-ref F 3) c))
+(define (module-presheaf-restriction F a) (vector-ref (vector-ref F 4) a))
+(define (module-presheaf-bases F) (vector-ref F 5))
+(define (mp-apply M n v) (if (= n 0) (make-vector 0 0) (integer-matrix-vector M v)))
+(define (mp-shape-ok? M rows cols)
+  (and (= rows (integer-matrix-rows M)) (or (= rows 0) (= cols (integer-matrix-cols M)))))
+;; shapes, identities and F(g o f) = F(f) F(g), as explicit violations
+(define (module-presheaf-functoriality-violations F)
+  (let* ((C (module-presheaf-category F)) (as (mp-range (category-arrow-count C))) (out '())
+         (rk (lambda (c) (module-presheaf-rank F c)))
+         (mul (lambda (A B rowsA colsB)
+                (if (or (= rowsA 0) (= colsB 0)) (integer-matrix rowsA colsB) (integer-matrix-mul A B)))))
+    (for-each (lambda (a)
+                (if (not (mp-shape-ok? (module-presheaf-restriction F a) (rk (arrow-source C a)) (rk (arrow-target C a))))
+                    (set! out (cons (list 'shape a) out))))
+              as)
+    (if (null? out)
+        (begin
+          (for-each (lambda (c)
+                      (if (not (integer-matrix-equal? (module-presheaf-restriction F (category-identity C c))
+                                                      (integer-identity-matrix (rk c))))
+                          (set! out (cons (list 'identity c) out))))
+                    (mp-range (category-object-count C)))
+          (for-each (lambda (g)
+                      (for-each (lambda (f)
+                                  (if (and (category-composable? C g f)
+                                           (> (rk (arrow-source C f)) 0) (> (rk (arrow-target C g)) 0)
+                                           (not (integer-matrix-equal?
+                                                 (module-presheaf-restriction F (category-compose C g f))
+                                                 (mul (module-presheaf-restriction F f) (module-presheaf-restriction F g)
+                                                      (rk (arrow-source C f)) (rk (arrow-target C g))))))
+                                      (set! out (cons (list 'composite g f) out))))
+                                as))
+                    as)))
+    (reverse out)))
+(define (module-presheaf-functorial? F) (null? (module-presheaf-functoriality-violations F)))
+;; R^r on every object with identity restrictions (on a site of opens, use
+;; the constant sheaf of a finite space instead: see core.sheaf.cohomology)
+(define (constant-module-presheaf C ring r)
+  (make-module-presheaf C ring (lambda (c) r) (lambda (a) (integer-identity-matrix r))))
+
+;; ---------------------------------------------------------------------------
+;; Matching modules
+;; ---------------------------------------------------------------------------
+;; offsets of the blocks F(source f), f in S, inside (+)_f F(source f); returns
+;; (offsets . total)
+(define (module-sieve-offsets F S)
+  (let* ((C (module-presheaf-category F)))
+    (let loop ((fs S) (o 0) (acc '()))
+      (if (null? fs) (cons (reverse acc) o)
+          (loop (cdr fs) (+ o (module-presheaf-rank F (arrow-source C (car fs)))) (cons o acc))))))
+(define (mp-index-of f S) (let loop ((l S) (i 0)) (cond ((null? l) #f) ((= (car l) f) i) (else (loop (cdr l) (+ i 1))))))
+;; rho : F(c) -> (+)_{f in S} F(source f), stacked F(f); #f when there are no rows
+(define (module-restriction-to-sieve F S)
+  (integer-matrix-vstack (map (lambda (f) (module-presheaf-restriction F f)) S)))
+;; the compatibility matrix, #f when there are no constraints
+(define (mp-compatibility-matrix F S)
+  (let* ((C (module-presheaf-category F)) (oo (module-sieve-offsets F S)) (offs (car oo)) (total (cdr oo))
+         (blocks '()))
+    (for-each
+     (lambda (f)
+       (let ((of (list-ref offs (mp-index-of f S))) (rf (module-presheaf-rank F (arrow-source C f))))
+         (for-each
+          (lambda (g)
+            (let ((fg (category-compose C f g)))
+              (if (and (not (= g (category-identity C (arrow-source C f)))) (memv fg S))
+                  (let* ((rd (module-presheaf-rank F (arrow-source C g)))
+                         (ofg (list-ref offs (mp-index-of fg S)))
+                         (Mg (module-presheaf-restriction F g))
+                         (row (integer-matrix rd total)))
+                    (let fill ((r 0))
+                      (if (< r rd)
+                          (begin
+                            (let fc ((k 0))
+                              (if (< k rf) (begin (integer-matrix-set! row r (+ of k) (integer-matrix-ref Mg r k)) (fc (+ k 1)))))
+                            (integer-matrix-set! row r (+ ofg r) (- (integer-matrix-ref row r (+ ofg r)) 1))
+                            (fill (+ r 1)))))
+                    (set! blocks (cons row blocks))))))
+          (category-arrows-into C (arrow-source C f)))))
+     S)
+    (integer-matrix-vstack (reverse blocks))))
+;; (basis . total): a basis of Match(S, F) as vectors in (+)_{f in S} F(source f)
+(define (module-matching-basis F S)
+  (let ((total (cdr (module-sieve-offsets F S))))
+    (cons (sheaf-module-kernel (module-presheaf-ring F) (mp-compatibility-matrix F S) total) total)))
+(define (mp-family-vector F S fam)
+  (let* ((C (module-presheaf-category F)) (oo (module-sieve-offsets F S)) (v (make-vector (cdr oo) 0)))
+    (for-each (lambda (f o)
+                (let ((e (assv f fam)))
+                  (if (not e) (error "module family has no entry for arrow" f))
+                  (let fill ((k 0))
+                    (if (< k (module-presheaf-rank F (arrow-source C f)))
+                        (begin (vector-set! v (+ o k) (vector-ref (cdr e) k)) (fill (+ k 1)))))))
+              S (car oo))
+    v))
+(define (mp-family-from-vector F S v)
+  (let* ((C (module-presheaf-category F)) (oo (module-sieve-offsets F S)))
+    (map (lambda (f o) (cons f (vector-copy v o (+ o (module-presheaf-rank F (arrow-source C f)))))) S (car oo))))
+;; (incompatible f g) whenever F(g) v_f /= v_{f o g}
+(define (module-family-incompatibilities F S fam)
+  (let ((C (module-presheaf-category F)) (out '()))
+    (for-each (lambda (f)
+                (for-each (lambda (g)
+                            (let ((fg (category-compose C f g)))
+                              (if (memv fg S)
+                                  (let ((lhs (mp-apply (module-presheaf-restriction F g) (module-presheaf-rank F (arrow-source C g)) (cdr (assv f fam))))
+                                        (rhs (cdr (assv fg fam))))
+                                    (if (not (equal? (vector->list lhs) (vector->list rhs)))
+                                        (set! out (cons (list 'incompatible f g) out)))))))
+                          (category-arrows-into C (arrow-source C f))))
+              S)
+    (reverse out)))
+;; Glue a family of local sections on a sieve S of c: the unique section of
+;; F(c) restricting to it, or the obstruction.
+(define (module-glue F c S fam)
+  (let ((bad (module-family-incompatibilities F S fam)))
+    (if (not (null? bad)) (gluing-failure bad)
+        (let* ((R (module-restriction-to-sieve F S)) (rc (module-presheaf-rank F c))
+               (v (mp-family-vector F S fam)) (ring (module-presheaf-ring F)))
+          (cond ((not R) (if (= rc 0) (gluing-success (make-vector 0 0))
+                             (gluing-failure (list (list 'not-unique 'infinite)))))
+                ((not (null? (sheaf-module-kernel ring R rc))) (gluing-failure (list (list 'not-unique 'infinite))))
+                (else
+                 (let ((y (sheaf-module-solve ring R rc v)))
+                   (if y (gluing-success y) (gluing-failure (list (list 'no-amalgamation)))))))))))
+(define (module-separated-on-sieve? F c S)
+  (let ((R (module-restriction-to-sieve F S)) (rc (module-presheaf-rank F c)))
+    (if (not R) (= 0 rc) (null? (sheaf-module-kernel (module-presheaf-ring F) R rc)))))
+(define (module-sheaf-on-sieve? F c S)
+  (and (module-separated-on-sieve? F c S)
+       (let* ((R (module-restriction-to-sieve F S)) (mb (module-matching-basis F S)) (matching (car mb)) (total (cdr mb))
+              (ring (module-presheaf-ring F)))
+         (cond ((not R) (null? matching))
+               ((null? matching) (= 0 (sheaf-module-rank ring R)))
+               (else (and (= (length matching) (sheaf-module-rank ring R))
+                          (sheaf-module-same-span? ring R (integer-matrix-from-columns matching total) total)))))))
+;; a family of arrows into c is tested through the sieve it generates
+(define (module-sheaf-on-family? F c arrows)
+  (module-sheaf-on-sieve? F c (sieve-generated (module-presheaf-category F) c arrows)))
+(define (module-separated-on-family? F c arrows)
+  (module-separated-on-sieve? F c (sieve-generated (module-presheaf-category F) c arrows)))
+;; (c S not-separated) and (c S not-a-sheaf) over every covering sieve
+(define (module-presheaf-sheaf-violations site F)
+  (let ((C (site-category site)) (out '()))
+    (for-each (lambda (c)
+                (for-each (lambda (S)
+                            (cond ((not (module-separated-on-sieve? F c S)) (set! out (cons (list c S 'not-separated) out)))
+                                  ((not (module-sheaf-on-sieve? F c S)) (set! out (cons (list c S 'not-a-sheaf) out)))))
+                          (site-covering-sieves site c)))
+              (mp-range (category-object-count C)))
+    (reverse out)))
+(define (module-presheaf-sheaf? site F) (null? (module-presheaf-sheaf-violations site F)))
+
+;; ---------------------------------------------------------------------------
+;; The plus construction
+;; ---------------------------------------------------------------------------
+;; F^+(c) = Match(R_min(c), F) with the kernel basis; F^+(a) for a : d -> c
+;; sends a family (x_g) to (x_{a o h})_{h in R_min(d)}, in the basis of d.
+(define (module-presheaf-plus site F)
+  (let* ((C (site-category site)) (ring (module-presheaf-ring F)) (objs (mp-range (category-object-count C)))
+         (R (list->vector (map (lambda (c) (site-minimal-covering-sieve site c)) objs)))
+         (MB (list->vector (map (lambda (c) (module-matching-basis F (vector-ref R c))) objs)))
+         (basis (lambda (c) (car (vector-ref MB c))))
+         (total (lambda (c) (cdr (vector-ref MB c)))))
+    (make-module-presheaf
+     C ring
+     (lambda (c) (length (basis c)))
+     (lambda (a)
+       (let* ((d (arrow-source C a)) (c (arrow-target C a)) (Bc (basis c)) (Bd (basis d))
+              (M (integer-matrix (length Bd) (length Bc))))
+         (if (or (null? Bc) (null? Bd)) M
+             (let ((BdM (integer-matrix-from-columns Bd (total d))))
+               (let loop ((bs Bc) (col 0))
+                 (if (null? bs) M
+                     (let* ((fam (mp-family-from-vector F (vector-ref R c) (car bs)))
+                            (pulled (map (lambda (h) (cons h (cdr (assv (category-compose C a h) fam)))) (vector-ref R d)))
+                            (y (sheaf-module-solve ring BdM (length Bd) (mp-family-vector F (vector-ref R d) pulled))))
+                       (if (not y) (error "module-presheaf-plus: restricted family left the matching module" a))
+                       (let put ((t 0)) (if (< t (length Bd)) (begin (integer-matrix-set! M t col (vector-ref y t)) (put (+ t 1)))))
+                       (loop (cdr bs) (+ col 1)))))))))
+     (list->vector (map (lambda (c) (cons (vector-ref R c) (basis c))) objs)))))
+(define (module-sheafify site F) (module-presheaf-plus site (module-presheaf-plus site F)))
+;; the unit F(c) -> F^+(c) as a matrix (rank F^+(c) rows, rank F(c) columns):
+;; a section goes to its family of restrictions, in the plus basis
+(define (module-presheaf-unit site F Fplus c)
+  (let* ((rb (vector-ref (module-presheaf-bases Fplus) c)) (S (car rb)) (B (cdr rb))
+         (total (cdr (module-sieve-offsets F S))) (rc (module-presheaf-rank F c))
+         (M (integer-matrix (length B) rc)) (ring (module-presheaf-ring F)))
+    (if (or (null? B) (= rc 0)) M
+        (let ((BM (integer-matrix-from-columns B total)) (rho (module-restriction-to-sieve F S)))
+          (let loop ((j 0))
+            (if (= j rc) M
+                (let* ((v (integer-matrix-column rho j)) (y (sheaf-module-solve ring BM (length B) v)))
+                  (let put ((t 0)) (if (< t (length B)) (begin (integer-matrix-set! M t j (vector-ref y t)) (put (+ t 1)))))
+                  (loop (+ j 1)))))))))

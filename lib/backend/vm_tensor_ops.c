@@ -328,11 +328,8 @@ static VmTensor* vm_tensor_batch_matmul(VmRegionStack* rs, const VmTensor* a, co
     return out;
 }
 
-/** @brief Native call 459: 1D inner product (0.0 if either operand isn't
- *         1D or lengths mismatch). */
+/** Inner product of two checked, equal-length rank-one operands. */
 static double vm_tensor_dot(const VmTensor* a, const VmTensor* b) {
-    if (!a || !b || a->n_dims != 1 || b->n_dims != 1) return 0.0;
-    if (a->total != b->total) return 0.0;
     double sum = 0.0;
     for (int64_t i = 0; i < a->total; i++) {
         sum += a->data[i] * b->data[i];

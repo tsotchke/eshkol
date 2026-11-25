@@ -1,0 +1,125 @@
+;;; core.monoidal.scalars -- the exact coefficient carriers of core.monoidal:
+;;; the integers and rationals of core.sheaf.module (ring 'Z, ring 'Q) and the
+;;; cyclotomic fields Q(zeta_n) of core.cyclotomic, behind one descriptor so
+;;; that FinVect, tensor networks and the ZX-calculus are written once.
+;;;
+;;; Usage: (require core.monoidal.scalars)   or   (require core.monoidal)
+;;;
+;;; Representation (public):
+;;;   #(exact-scalars name order zero one add mul neg conj equal? zero? inverse
+;;;                   embed root ->complex)
+;;;     name   'Z, 'Q, or (cyclotomic n)
+;;;     order  0 for Z and Q, n for Q(zeta_n)
+;;;     elements of Z and Q are exact Scheme numbers (the entries of
+;;;     core.integer_linalg matrices); elements of Q(zeta_n) are
+;;;     core.cyclotomic elements. `conj` is complex conjugation (the identity
+;;;     on Z and Q, the Galois automorphism zeta -> zeta^-1 on Q(zeta_n)),
+;;;     `embed` maps an exact rational into the carrier, `root` k gives
+;;;     zeta_n^k, and `->complex` gives (re . im) as binary64 numbers for
+;;;     comparisons with floating-point simulators.
+;;;
+;;; This is the bridge to core.ring (ADR-0034): the carriers there are not on
+;;; this library's base yet; moving onto them is Planned for v1.4.1, and the
+;;; descriptor's operations are the ones a ring carrier provides.
+;;;
+;;; Sources: core.cyclotomic (exact Q(zeta_n)); S. Lang, "Algebra" (2002),
+;;; VI.3 (cyclotomic fields); nLab: "cyclotomic field".
+
+(require stdlib)
+(require core.cyclotomic)
+
+(provide integer-scalars rational-scalars cyclotomic-scalars exact-scalars?
+         scalars-name scalars-order scalars-zero scalars-one scalars-add scalars-sub scalars-mul
+         scalars-neg scalars-conj scalars-equal? scalars-zero? scalars-inverse scalars-div
+         scalars-embed scalars-root scalars->complex scalars-sum scalars-product scalars-expt
+         scalars-sqrt2 scalars-inverse-sqrt2 scalars-real? scalars->real scalars-field?
+         scalars-phase)
+
+(define (es-make name order zero one add mul neg conj eq zero? inv embed root to-complex)
+  (vector 'exact-scalars name order zero one add mul neg conj eq zero? inv embed root to-complex))
+(define (exact-scalars? S) (and (vector? S) (= 15 (vector-length S)) (eq? (vector-ref S 0) 'exact-scalars)))
+(define (scalars-name S) (vector-ref S 1))
+(define (scalars-order S) (vector-ref S 2))
+(define (scalars-zero S) (vector-ref S 3))
+(define (scalars-one S) (vector-ref S 4))
+(define (scalars-add S a b) ((vector-ref S 5) a b))
+(define (scalars-mul S a b) ((vector-ref S 6) a b))
+(define (scalars-neg S a) ((vector-ref S 7) a))
+(define (scalars-sub S a b) ((vector-ref S 5) a ((vector-ref S 7) b)))
+(define (scalars-conj S a) ((vector-ref S 8) a))
+(define (scalars-equal? S a b) ((vector-ref S 9) a b))
+(define (scalars-zero? S a) ((vector-ref S 10) a))
+(define (scalars-inverse S a) ((vector-ref S 11) a))
+(define (scalars-div S a b) (scalars-mul S a (scalars-inverse S b)))
+(define (scalars-embed S q) ((vector-ref S 12) q))
+(define (scalars-root S k) ((vector-ref S 13) k))
+(define (scalars->complex S a) ((vector-ref S 14) a))
+(define (scalars-field? S) (not (eq? (scalars-name S) 'Z)))
+(define (scalars-sum S xs) (let loop ((l xs) (acc (scalars-zero S))) (if (null? l) acc (loop (cdr l) (scalars-add S acc (car l))))))
+(define (scalars-product S xs) (let loop ((l xs) (acc (scalars-one S))) (if (null? l) acc (loop (cdr l) (scalars-mul S acc (car l))))))
+;; a^k for an exact integer k (k < 0 needs a unit)
+(define (scalars-expt S a k)
+  (if (< k 0) (scalars-expt S (scalars-inverse S a) (- k))
+      (let loop ((k k) (base a) (acc (scalars-one S)))
+        (cond ((= k 0) acc)
+              ((odd? k) (loop (quotient k 2) (scalars-mul S base base) (scalars-mul S acc base)))
+              (else (loop (quotient k 2) (scalars-mul S base base) acc))))))
+(define (scalars-real? S a) (scalars-equal? S a (scalars-conj S a)))
+
+(define (es-exact x who)
+  (if (not (and (number? x) (exact? x) (rational? x))) (error "core.monoidal.scalars: exact rational expected" who x))
+  x)
+
+;; Z: exact integers; inverse only of +-1
+(define (integer-scalars)
+  (let ((int-check (lambda (x) (if (not (and (integer? x) (exact? x))) (error "core.monoidal.scalars: exact integer expected" x)) x)))
+    (es-make 'Z 0 0 1 (lambda (a b) (+ a b)) (lambda (a b) (* a b)) (lambda (a) (- a)) (lambda (a) a)
+             (lambda (a b) (= a b)) (lambda (a) (= a 0))
+             (lambda (a) (if (or (= a 1) (= a -1)) a (error "core.monoidal.scalars: not a unit of Z" a)))
+             (lambda (q) (int-check (es-exact q 'embed)))
+             (lambda (k) (error "core.monoidal.scalars: Z has no roots of unity beyond +-1" k))
+             (lambda (a) (cons (exact->inexact a) 0.0)))))
+
+;; Q: exact rationals
+(define (rational-scalars)
+  (es-make 'Q 0 0 1 (lambda (a b) (+ a b)) (lambda (a b) (* a b)) (lambda (a) (- a)) (lambda (a) a)
+           (lambda (a b) (= a b)) (lambda (a) (= a 0))
+           (lambda (a) (if (= a 0) (error "core.monoidal.scalars: zero has no inverse") (/ 1 a)))
+           (lambda (q) (es-exact q 'embed))
+           (lambda (k) (error "core.monoidal.scalars: Q has no roots of unity beyond +-1" k))
+           (lambda (a) (cons (exact->inexact a) 0.0))))
+
+;; Q(zeta_n) through core.cyclotomic
+(define (cyclotomic-scalars n)
+  (let* ((K (make-cyclotomic-field n))
+         (zero (cyclotomic-element K 0)) (one (cyclotomic-element K 1))
+         (pi (* 4 (atan 1.0))))
+    (es-make (list 'cyclotomic n) n zero one cyclotomic-add cyclotomic-mul
+             (lambda (a) (cyclotomic-scale a -1))
+             (lambda (a) (cyclotomic-galois a (- n 1)))
+             cyclotomic-equal? cyclotomic-zero?
+             (lambda (a) (if (cyclotomic-zero? a) (error "core.monoidal.scalars: zero has no inverse") (cyclotomic-inverse a)))
+             (lambda (q) (cyclotomic-element K (es-exact q 'embed)))
+             (lambda (k) (cyclotomic-root K k))
+             (lambda (a)
+               (let ((c (cyclotomic-coefficients a)))
+                 (let loop ((i 0) (re 0.0) (im 0.0))
+                   (if (= i (vector-length c)) (cons re im)
+                       (let ((x (exact->inexact (vector-ref c i))) (t (/ (* 2.0 pi i) n)))
+                         (loop (+ i 1) (+ re (* x (cos t))) (+ im (* x (sin t))))))))))))
+
+;; sqrt 2 = zeta_8 + zeta_8^-1, in Q(zeta_n) for 8 | n
+(define (scalars-sqrt2 S)
+  (let ((n (scalars-order S)))
+    (if (not (and (> n 0) (= 0 (modulo n 8)))) (error "core.monoidal.scalars: sqrt 2 needs Q(zeta_n) with 8 | n" (scalars-name S)))
+    (scalars-add S (scalars-root S (quotient n 8)) (scalars-root S (- n (quotient n 8))))))
+(define (scalars-inverse-sqrt2 S) (scalars-mul S (scalars-sqrt2 S) (scalars-embed S (/ 1 2))))
+;; e^{i pi p} for an exact rational p, in Q(zeta_n) when n p / 2 is an integer
+(define (scalars-phase S p)
+  (let* ((n (scalars-order S)) (k (* p (/ n 2))))
+    (if (not (and (> n 0) (integer? k))) (error "core.monoidal.scalars: phase not in the carrier" p (scalars-name S)))
+    (scalars-root S k)))
+;; the binary64 value of a real element (its imaginary part is exactly zero)
+(define (scalars->real S a)
+  (if (not (scalars-real? S a)) (error "core.monoidal.scalars: element is not real" a))
+  (car (scalars->complex S a)))

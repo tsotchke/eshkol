@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 import sys
 
@@ -20,20 +22,84 @@ def read_cache(path: Path) -> dict[str, str]:
     return values
 
 
-def build_graph_text(build_dir: Path) -> str:
-    # Single-config Ninja keeps the graph in build.ninja. Ninja Multi-Config
-    # uses thin build-<Config>.ninja entry points and stores the actual edges
-    # under CMakeFiles/impl-<Config>.ninja, so inspect the complete generated
-    # Ninja graph rather than only the default wrapper.
-    candidates = sorted(build_dir.rglob("*.ninja"))
-    candidates.extend(build_dir.rglob("*.vcxproj"))
-    texts: list[str] = []
-    for candidate in candidates:
-        if candidate.is_file():
-            texts.append(candidate.read_text(encoding="utf-8", errors="replace"))
-    if not texts:
+_GPU_RUNTIME_TARGET = "eshkol-gpu-runtime-obj"
+_CUDA_SOURCES = ("gpu_memory_cuda.cpp", "gpu_cuda_kernels.cu")
+
+
+def ninja_gpu_runtime_sources(build_dir: Path) -> set[str] | None:
+    """Return target source basenames, or None when its compile edge is absent."""
+    sources: set[str] = set()
+    found_target_edge = False
+    target_output = re.compile(
+        rf"(?:^|/)CMakeFiles/{re.escape(_GPU_RUNTIME_TARGET)}\.dir/"
+    )
+    # Single-config Ninja stores edges in build.ninja. Ninja Multi-Config
+    # keeps them in CMakeFiles/impl-<Config>.ninja. In both cases scope source
+    # checks to outputs belonging to eshkol-gpu-runtime-obj; recursively
+    # scanning all graph text also sees unrelated generated targets/deps.
+    for path in build_dir.rglob("*.ninja"):
+        if not path.is_file():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.replace("\\", "/")
+            if not line.startswith("build "):
+                continue
+            outputs, separator, inputs = line[6:].partition(":")
+            if not separator or not target_output.search(outputs):
+                continue
+            found_target_edge = True
+            # Ninja's implicit/order-only prerequisites follow ` |` or ` ||`;
+            # only explicit inputs are compiled sources for this edge.
+            explicit_inputs = re.split(r"\s\|", inputs, maxsplit=1)[0]
+            for source in (*_CUDA_SOURCES, "gpu_memory_stub.cpp"):
+                if re.search(
+                    rf"(?<![A-Za-z0-9_.-]){re.escape(source)}(?![A-Za-z0-9_.-])",
+                    explicit_inputs,
+                ):
+                    sources.add(source)
+    return sources if found_target_edge else None
+
+
+def visual_studio_gpu_runtime_sources(build_dir: Path) -> set[str] | None:
+    """Return target source basenames, or None when its project is absent."""
+    project_name = f"{_GPU_RUNTIME_TARGET}.vcxproj".casefold()
+    projects = [
+        path for path in build_dir.rglob("*.vcxproj")
+        if path.name.casefold() == project_name
+    ]
+    sources: set[str] = set()
+    for path in projects:
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError as error:
+            raise ValueError(f"cannot parse GPU runtime project {path}: {error}") from error
+        for element in root.iter():
+            tag = element.tag.rsplit("}", 1)[-1]
+            if tag not in {"ClCompile", "CudaCompile", "CustomBuild"}:
+                continue
+            include = element.attrib.get("Include", "").replace("\\", "/")
+            for source in (*_CUDA_SOURCES, "gpu_memory_stub.cpp"):
+                if include.endswith(source):
+                    sources.add(source)
+    return sources
+
+
+def gpu_runtime_sources(build_dir: Path) -> set[str]:
+    ninja_files = list(build_dir.rglob("*.ninja"))
+    visual_studio_projects = list(build_dir.rglob("*.vcxproj"))
+    if ninja_files:
+        sources = ninja_gpu_runtime_sources(build_dir)
+        if sources is not None:
+            return sources
+    if visual_studio_projects:
+        sources = visual_studio_gpu_runtime_sources(build_dir)
+        if sources is not None:
+            return sources
+    if not ninja_files and not visual_studio_projects:
         raise ValueError("no Ninja or Visual Studio build graph found")
-    return "\n".join(texts).replace("\\", "/")
+    raise ValueError(
+        f"{_GPU_RUNTIME_TARGET} source edges not found in the generated build graph"
+    )
 
 
 def verify(build_dir: Path, expected: str) -> list[str]:
@@ -102,14 +168,14 @@ def verify(build_dir: Path, expected: str) -> list[str]:
                     "CMAKE_CUDA_ARCHITECTURES"
                 )
         try:
-            graph = build_graph_text(build_dir)
+            sources = gpu_runtime_sources(build_dir)
         except ValueError as error:
             failures.append(str(error))
         else:
-            for required in ("gpu_memory_cuda.cpp", "gpu_cuda_kernels.cu"):
-                if required not in graph:
+            for required in _CUDA_SOURCES:
+                if required not in sources:
                     failures.append(f"real CUDA source missing from build graph: {required}")
-            if "gpu_memory_stub.cpp" in graph:
+            if "gpu_memory_stub.cpp" in sources:
                 failures.append("CPU GPU stub is present in a CUDA-labeled build graph")
 
     return failures

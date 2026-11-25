@@ -11,7 +11,7 @@ sources:
 # `core.cyclotomic` — exact cyclotomic number fields
 
 **Source:** [cyclotomic.esk](../../../lib/core/cyclotomic.esk).
-**Require:** `(require core.cyclotomic)`; depends on `stdlib`, no compiler changes.
+**Require:** `(require core.cyclotomic)`; depends on `core.polynomial_exact` and `stdlib`, no compiler changes.
 
 The module owns arithmetic in `Q(zeta_n) = Q[x]/(Phi_n)`. It promotes the
 coefficient arithmetic previously repeated in the

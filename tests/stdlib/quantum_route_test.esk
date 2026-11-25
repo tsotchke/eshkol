@@ -1,0 +1,188 @@
+;; core.quantum.route: coupling graphs (edges, neighbours, all-pairs
+;; distances on lines, rings and grids), layouts, and routing soundness --
+;; random Clifford+T circuits routed by SABRE and by the shortest-path
+;; baseline on line, ring and grid devices (also with more physical wires
+;; than logical qubits), each checked against the coupling graph and
+;; verified as a unitary (exact over Q(zeta_8); binary64 for the
+;; five-qubit circuits on the 2x3 grid), float-angle circuits verified in
+;; binary64, and SABRE's SWAP total against the baseline's.
+(require stdlib)
+(require core.quantum.circuit)
+(require core.quantum.route)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (iota n))
+(define (pairs n) (apply append (map (lambda (a) (map (lambda (b) (list a b)) (range n))) (range n))))
+(define seed 4148)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+;; ---------------------------------------------------------------------------
+;; Coupling graphs
+;; ---------------------------------------------------------------------------
+(define line5 (coupling-line 5))
+(define ring6 (coupling-ring 6))
+(define grid33 (coupling-grid 3 3))
+(check "line 5: four edges, distance |a - b| for all 25 pairs"
+       (and (equal? (coupling-edges line5) '((0 1) (1 2) (2 3) (3 4)))
+            (all? (lambda (p) (= (coupling-distance line5 (car p) (cadr p)) (abs (- (car p) (cadr p))))) (pairs 5))))
+(check "ring 6: six edges, distance min(|a - b|, 6 - |a - b|) for all 36 pairs"
+       (and (= 6 (length (coupling-edges ring6)))
+            (all? (lambda (p) (let ((d (abs (- (car p) (cadr p)))))
+                                (= (coupling-distance ring6 (car p) (cadr p)) (min d (- 6 d)))))
+                  (pairs 6))))
+(check "grid 3x3: twelve edges, Manhattan distance for all 81 pairs"
+       (and (= 12 (length (coupling-edges grid33)))
+            (all? (lambda (p) (let ((a (car p)) (b (cadr p)))
+                                (= (coupling-distance grid33 a b)
+                                   (+ (abs (- (quotient a 3) (quotient b 3))) (abs (- (remainder a 3) (remainder b 3)))))))
+                  (pairs 9))))
+(check "neighbours and adjacency: centre of the 3x3 grid, ends of the line, ring closure"
+       (and (equal? (coupling-neighbors grid33 4) '(1 3 5 7)) (equal? (coupling-neighbors line5 0) '(1))
+            (coupling-adjacent? ring6 5 0) (coupling-adjacent? ring6 0 5) (not (coupling-adjacent? line5 0 4))
+            (not (coupling-adjacent? line5 2 2))))
+(check "edges are normalised, sorted and deduplicated; size is kept"
+       (let ((g (coupling-graph 4 '((3 2) (1 0) (0 1) (2 1)))))
+         (and (= 4 (coupling-size g)) (equal? (coupling-edges g) '((0 1) (1 2) (2 3))))))
+(check "connectivity: lines, rings, grids are connected; two components are not (distance -1)"
+       (let ((g (coupling-graph 4 '((0 1) (2 3)))))
+         (and (coupling-connected? line5) (coupling-connected? ring6) (coupling-connected? grid33)
+              (not (coupling-connected? g)) (= -1 (coupling-distance g 0 3)) (not (coupling-shortest-path g 0 3)))))
+(check "shortest paths: endpoints, length distance + 1, consecutive wires adjacent"
+       (all? (lambda (p) (let ((path (coupling-shortest-path grid33 (car p) (cadr p))))
+                           (and (= (car path) (car p)) (= (car (reverse path)) (cadr p))
+                                (= (length path) (+ 1 (coupling-distance grid33 (car p) (cadr p))))
+                                (let walk ((ws path)) (or (null? (cdr ws)) (and (coupling-adjacent? grid33 (car ws) (cadr ws)) (walk (cdr ws))))))))
+             (pairs 9)))
+(check "malformed graphs are refused: self loop, wire out of range, negative size"
+       (and (raises? (lambda () (coupling-graph 3 '((1 1))))) (raises? (lambda () (coupling-graph 3 '((0 3)))))
+            (raises? (lambda () (coupling-graph -1 '())))))
+
+;; ---------------------------------------------------------------------------
+;; Layouts and argument checks
+;; ---------------------------------------------------------------------------
+(check "layouts: trivial, inverse with -1 on unused wires, validity"
+       (and (equal? (layout-trivial 3) (vector 0 1 2)) (equal? (layout-inverse (vector 4 0 2) 5) (vector 1 -1 2 -1 0))
+            (layout-valid? (vector 4 0 2) 3 5) (not (layout-valid? (vector 4 0 4) 3 5)) (not (layout-valid? (vector 5 0 2) 3 5))
+            (not (layout-valid? (vector 0 1) 3 5))))
+(define small (make-qcircuit 3 '((H 0) (CNOT 0 2) (CZ 2 1) (CNOT 1 0))))
+(check "routing refuses a circuit wider than the device and a disconnected device"
+       (and (raises? (lambda () (qroute (make-qcircuit 6 '((CNOT 0 5))) line5)))
+            (raises? (lambda () (qroute small (coupling-graph 4 '((0 1) (2 3))))))
+            (raises? (lambda () (qroute-naive (make-qcircuit 6 '((CNOT 0 5))) line5)))))
+(check "an explicit layout is used as given, in either option form; a bad layout is refused"
+       (let ((r1 (qroute small line5 (cons 'layout (vector 4 2 3))))
+             (r2 (qroute small line5 (list (cons 'layout (vector 1 0 2)) (cons 'iterations 1)))))
+         (and (equal? (qrouting-initial-layout r1) (vector 4 2 3)) (equal? (qrouting-initial-layout r2) (vector 1 0 2))
+              (qrouting-verify r1 small) (qrouting-verify r2 small)
+              (raises? (lambda () (qroute small line5 (cons 'layout (vector 0 0 1))))))))
+
+;; ---------------------------------------------------------------------------
+;; All-adjacent circuits need no SWAPs
+;; ---------------------------------------------------------------------------
+(define nn-line (make-qcircuit 5 '((H 0) (CNOT 0 1) (CZ 2 1) (T 3) (CNOT 3 4) (SWAP 2 3) (CNOT 4 3) (CZ 0 1))))
+(check "nearest-neighbour circuit on a line: zero SWAPs (SABRE from the trivial and the searched layout, baseline), the same gates in dependency order"
+       (let ((r (qroute nn-line line5 (cons 'layout 'trivial))) (s (qroute-naive nn-line line5)) (t (qroute nn-line line5)))
+         (and (= 0 (qrouting-swap-count r)) (= 0 (qrouting-swap-count s)) (= 0 (qrouting-swap-count t))
+              (equal? (qrouting-final-layout r) (vector 0 1 2 3 4))
+              (= (qcircuit-gate-count (qrouting-circuit r)) (qcircuit-gate-count nn-line)) (qrouting-verify r nn-line (quote exact)))))
+
+;; ---------------------------------------------------------------------------
+;; Random circuits
+;; ---------------------------------------------------------------------------
+(define (other n a) (modulo (+ a 1 (rand (- n 1))) n))
+(define (random-clifford+t n)
+  (let ((k (+ 10 (rand 31))))
+    (make-qcircuit n
+      (map (lambda (i)
+             (let* ((a (rand n)) (b (other n a)) (t (rand 30)))
+               (cond ((< t 4) (list 'H a)) ((< t 7) (list 'T a)) ((< t 9) (list 'Tdg a)) ((< t 11) (list 'S a))
+                     ((< t 12) (list 'X a)) ((< t 20) (list 'CNOT a b)) ((< t 25) (list 'CZ a b))
+                     ((< t 28) (list 'SWAP a b))
+                     (else (let ((c (let pick () (let ((c (rand n))) (if (or (= c a) (= c b)) (pick) c)))))
+                             (list 'CCX a b c))))))
+           (range k)))))
+(define (random-angle) (* 0.001 (- (rand 6284) 3142)))
+(define (random-rotations n)
+  (let ((k (+ 10 (rand 21))))
+    (make-qcircuit n
+      (map (lambda (i)
+             (let* ((a (rand n)) (b (other n a)) (t (rand 10)))
+               (cond ((< t 2) (list 'RZ a (random-angle))) ((< t 4) (list 'RX a (random-angle)))
+                     ((< t 5) (list 'H a)) ((< t 7) (list 'RZZ a b (random-angle))) (else (list 'CNOT a b)))))
+           (range k)))))
+
+(define complete5 (coupling-complete 5))
+(check "random circuits on the complete graph: zero SWAPs (SABRE and baseline), exact verification"
+       (all? (lambda (i) (let* ((c (random-clifford+t 4)) (r (qroute c complete5)) (s (qroute-naive c complete5)))
+                           (and (= 0 (qrouting-swap-count r)) (= 0 (qrouting-swap-count s)) (qrouting-verify r c 'exact))))
+             (range 3)))
+
+;; (name coupling logical-width count verification-mode)
+(define devices
+  (list (list "line 3" (coupling-line 3) 3 4 'exact)
+        (list "line 4" (coupling-line 4) 4 4 'exact)
+        (list "ring 4" (coupling-ring 4) 4 4 'exact)
+        (list "grid 2x2" (coupling-grid 2 2) 4 4 'exact)
+        (list "line 5" line5 5 4 'exact)
+        (list "ring 5" (coupling-ring 5) 5 4 'exact)
+        (list "line 5, 3 logical" line5 3 4 'exact)
+        (list "grid 2x3, 4 logical" (coupling-grid 2 3) 4 4 'exact)
+        (list "grid 2x3, 5 logical" (coupling-grid 2 3) 5 2 'float)))
+(define sabre-total 0) (define naive-total 0) (define routed 0) (define exact-checks 0)
+(for-each
+ (lambda (d)
+   (let ((name (car d)) (cg (cadr d)) (n (caddr d)) (count (cadddr d)) (mode (car (cddddr d))))
+     (for-each
+      (lambda (i)
+        (let* ((c (random-clifford+t n)) (r (qroute c cg)) (s (qroute-naive c cg)))
+          (set! routed (+ routed 1))
+          (set! sabre-total (+ sabre-total (qrouting-swap-count r)))
+          (set! naive-total (+ naive-total (qrouting-swap-count s)))
+          (if (eq? mode 'exact) (set! exact-checks (+ exact-checks 2)))
+          (check (string-append "SABRE routing respects the coupling graph: " name) (qrouting-respects-coupling? r cg))
+          (check (string-append "baseline routing respects the coupling graph: " name) (qrouting-respects-coupling? s cg))
+          (check (string-append "SABRE routing is the logical circuit up to the layouts: " name) (qrouting-verify r c mode))
+          (check (string-append "baseline routing is the logical circuit up to the layouts: " name) (qrouting-verify s c mode))))
+      (range count))))
+ devices)
+(display "route: ") (display routed) (display " Clifford+T circuits, ") (display exact-checks)
+(display " exact verifications; sabre swaps ") (display sabre-total) (display ", naive swaps ") (display naive-total) (newline)
+(check "SABRE inserts no more SWAPs than the shortest-path baseline over the random set" (<= sabre-total naive-total))
+(check "at least 30 random Clifford+T circuits were routed" (>= routed 30))
+
+(check "random RZ/RX/RZZ circuits: SABRE and baseline routings verified in binary64 (12 circuits)"
+       (all? (lambda (i)
+               (let* ((cg (if (= 0 (modulo i 3)) (coupling-line 4) (if (= 1 (modulo i 3)) (coupling-ring 5) (coupling-grid 2 3))))
+                      (n (if (= 0 (modulo i 3)) 4 5))
+                      (c (random-rotations n)) (r (qroute c cg)) (s (qroute-naive c cg)))
+                 (and (not (qcircuit-exact? c))
+                      (qrouting-respects-coupling? r cg) (qrouting-respects-coupling? s cg)
+                      (qrouting-verify r c) (qrouting-verify s c 'float))))
+             (range 12)))
+
+;; ---------------------------------------------------------------------------
+;; The checks reject routings that are not sound
+;; ---------------------------------------------------------------------------
+(define far (make-qcircuit 4 '((H 0) (CNOT 0 3) (T 3) (CNOT 3 0) (CZ 1 3))))
+(define line4 (coupling-line 4))
+(define fr (qroute far line4 (cons 'layout 'trivial)))
+(define (drop-first-swap gs) (cond ((null? gs) '()) ((eq? 'SWAP (car (car gs))) (cdr gs)) (else (cons (car gs) (drop-first-swap (cdr gs))))))
+(check "a routing with a SWAP removed, or with its final layout permuted, is rejected"
+       (and (> (qrouting-swap-count fr) 0) (qrouting-verify fr far 'exact)
+            (let ((bad (vector 'qrouting (make-qcircuit 4 (drop-first-swap (qcircuit-gates (qrouting-circuit fr))))
+                               (qrouting-initial-layout fr) (qrouting-final-layout fr) (qrouting-swap-count fr))))
+              (not (and (qrouting-respects-coupling? bad line4) (qrouting-verify bad far 'exact))))
+            (let* ((pf (vector-copy (qrouting-final-layout fr))) (x (vector-ref pf 0)))
+              (vector-set! pf 0 (vector-ref pf 3)) (vector-set! pf 3 x)
+              (not (qrouting-verify (vector 'qrouting (qrouting-circuit fr) (qrouting-initial-layout fr) pf 1) far 'exact)))))
+(check "the unrouted circuit on a line does not respect the coupling graph"
+       (not (qrouting-respects-coupling? (vector 'qrouting far (vector 0 1 2 3) (vector 0 1 2 3) 0) line4)))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: quantum_route_test") (newline) (display "RESULT: PASS") (newline)

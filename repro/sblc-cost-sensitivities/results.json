@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "engines": [
+    "jit",
+    "aot-O0"
+  ],
+  "checks_per_engine": 20,
+  "contexts": 11,
+  "cost_degree": 24,
+  "operational_oracle": "existing sblc-step with exact Bernoulli branch weights",
+  "derivative_oracle": "independent rational-function Taylor and Catalan coefficient expansion",
+  "refusals": [
+    "critical point",
+    "interval crossing critical boundary",
+    "zero conditioning mass",
+    "unadmitted source"
+  ],
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "files_sha256": {
+    "repro/sblc-cost-sensitivities/cost.esk": "6b9f4d5e949d0789c6b70b599766c501279934c7810be8de9838c687c288b1aa",
+    "repro/sblc-cost-sensitivities/cost_test.esk": "12c4a7aeaef632e82fb51b7fda044526574388304e4ac9ef25f90a4c709be4ab",
+    "repro/sblc-cost-sensitivities/run_cost_gate.py": "fe31d2b9f7004270af2205b2fe0d2a95edffcd74595de5ae6a027fdd565fa741"
+  }
+}

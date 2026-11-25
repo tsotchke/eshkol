@@ -1,5 +1,13 @@
 # Eshkol compiler roadmap — v1.2-scale → v2.0-starlight
 
+> **Publication update, 2026-10-19:** [v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)
+> was published at 11:53:31 UTC from source
+> `341ac812ed600fd9d27c28e9509d66ab71363947`. The dated “prepared for
+> publication” passages below retain their historical snapshot meaning.
+> v1.4 development is active; its recovered integration scope and acceptance
+> requirements are recorded in [the development plan](design/V1_4_CONNECTION_START_2026_10_19.md).
+
+
 **Date**: 2026-05-20
 **Position in the doc set**: this is the **engineering-detail companion** to
 the canonical [`ROADMAP.md`](../ROADMAP.md) at the repo root. When the two
@@ -725,9 +733,12 @@ clocks, vector clocks, state-based G-Counter / PN-Counter CRDTs, OR-Set, LWW
 register/map CRDTs, and an RGA-style ordered sequence. The first wire-format
 substrate also landed early: `core.msgpack` provides bytevector MessagePack
 encode/decode for null, booleans, exact 32-bit-range integers, UTF-8 strings,
-binary bytevectors, list arrays, and explicit maps. The remaining v1.8 work is
-networked replication over the v1.4 socket layer plus broader MessagePack /
-Proto3 coverage.
+binary bytevectors, list arrays, and explicit maps. `core.protobuf` (#163)
+provides proto3: a `.proto` parser for the message subset, a schema compiler,
+and generated encoders/decoders covering every scalar type, repeated, map,
+oneof, presence and unknown-field preservation, on JIT, AOT, VM and ESKB. The
+remaining v1.8 work is networked replication over the v1.4 socket layer plus
+broader MessagePack coverage.
 
 ---
 
@@ -736,7 +747,7 @@ Proto3 coverage.
 Types-as-proofs.
 
 - Dependent types (full enforcement on existing HoTT scaffolding)
-- Refinement types with SMT solver (Z3 or miniZ3)
+- Refinement types with a built-in decision procedure and an optional z3 backend (ADR-0044)
 - Effect types (Pure / IO / State / Exception)
 - Algebraic effects
 - Row polymorphism

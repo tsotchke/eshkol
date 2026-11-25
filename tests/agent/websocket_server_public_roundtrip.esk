@@ -1,0 +1,48 @@
+;; Public Scheme API round-trip. The Python harness acts as the RFC 6455
+;; client and coalesces the first masked frame with the HTTP handshake.
+(require agent.http_server)
+
+(define server (http-server-create 0))
+(define port-file (get-environment-variable "ESHKOL_WS_SERVER_PORT_FILE"))
+(if (and (> server 0) port-file)
+    (let ((out (open-output-file port-file)))
+      (write-string (number->string (http-server-port server)) out)
+      (close-port out))
+    #t)
+
+;; Let the client's complete upgrade + 64 KiB first-frame burst queue before
+;; accepting it, so the read-ahead boundary is exercised consistently.
+(sleep-ms 100)
+(define request (if (> server 0)
+                    (http-server-accept server 131072 15000)
+                    #f))
+(define ws (if request (ws-server-upgrade server request) -1))
+(define text-frame (if (> ws 0) (ws-receive ws 65537 5000) #f))
+(define text-ok
+  (and text-frame
+       (= (car text-frame) WS-FRAME-TEXT)
+       (string=? (cdr text-frame) (make-string 65536 #\x))
+       (= (ws-send-text ws (cdr text-frame)) 0)))
+(define empty-frame (if text-ok (ws-receive ws 256 5000) #f))
+(define empty-ok
+  (and empty-frame
+       (= (car empty-frame) WS-FRAME-TEXT)
+       (= (string-byte-length (cdr empty-frame)) 0)
+       (= (ws-send-text ws (cdr empty-frame)) 0)))
+(define binary-frame (if empty-ok (ws-receive ws 256 5000) #f))
+(define binary-ok
+  (and binary-frame
+       (= (car binary-frame) WS-FRAME-BINARY)
+       (string=? (cdr binary-frame) "public\x0;binary")
+       (= (ws-send-binary ws (cdr binary-frame)) 0)))
+(define close-frame (if binary-ok (ws-receive ws 256 5000) #f))
+(define roundtrip
+  (and text-ok empty-ok binary-ok close-frame
+       (= (car close-frame) WS-FRAME-CLOSE)))
+
+(if roundtrip
+    (display "PUBLIC-WS-ROUNDTRIP-OK")
+    (display "PUBLIC-WS-ROUNDTRIP-FAIL"))
+(newline)
+(if (> ws 0) (ws-close ws) #t)
+(if (> server 0) (http-server-close server) #t)

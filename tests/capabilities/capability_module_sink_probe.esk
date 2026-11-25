@@ -1,0 +1,69 @@
+;;; The module layers that reach a socket or a child, under a policy that
+;;; withholds their capability: core.net, core.tls and the agent subprocess and
+;;; HTTP layers. These are the entry points a program actually uses, above the
+;;; runtime ones the table probe covers.
+;;;
+;;; Each must refuse, and the refusal must name the capability. core.net and
+;;; core.tls are not carried by the bytecode VM, so the driver runs this on the
+;;; native engines.
+(require stdlib)
+(require core.capabilities)
+(require core.net)
+(require core.tls)
+(require agent.subprocess)
+(require agent.http)
+
+(define failures 0)
+
+(define (condition-text e capability)
+  "The condition as one string, message and irritants together. The module
+wrappers raise \"capability denied\" with the capability as an irritant, while
+the runtime entry points put it in the message; this reads both."
+  (if (error-object? e)
+      (string-append (error-object-message e)
+                     " "
+                     (if (memq capability (error-object-irritants e))
+                         (symbol->string capability)
+                         ""))
+      "non-error-object"))
+
+(define (refused? name capability thunk)
+  (let ((outcome
+          (guard (e (#t (condition-text e capability)))
+            (let ((value (thunk)))
+              ;; core.net and core.tls answer in outcome vectors as well as by
+              ;; raising; a refusal reported that way reads as 'denied.
+              (if (and (vector? value) (> (vector-length value) 1))
+                  (string-append "outcome:"
+                                 (symbol->string
+                                   (guard (e2 (#t 'unknown)) (network-error-reason value))))
+                  "ran")))))
+    (display name)
+    (display ":")
+    (if (or (and (string-contains? outcome "capability denied")
+                 (string-contains? outcome (symbol->string capability)))
+            (string=? outcome "outcome:denied"))
+        (display "refused")
+        (begin
+          (set! failures (+ failures 1))
+          (display "NOT-REFUSED(")
+          (display outcome)
+          (display ")")))
+    (newline)))
+
+(capability-install-policy! (list 'file-read))
+
+(refused? "tcp-listen" 'network (lambda () (tcp-listen "127.0.0.1" 0)))
+(refused? "tcp-connect" 'network (lambda () (tcp-connect "127.0.0.1" 9 500)))
+(refused? "udp-bind" 'network (lambda () (udp-bind "127.0.0.1" 0)))
+(refused? "tls-client-context" 'network (lambda () (tls-client-context #f)))
+;; run-command asks for subprocess before it asks for shell, so under a
+;; policy that grants neither this is the one it names.
+(refused? "run-command" 'subprocess (lambda () (run-command "echo should-not-run")))
+(refused? "process-spawn-argv" 'subprocess
+          (lambda () (process-spawn-argv (list "/bin/true") ".")))
+(refused? "http-get" 'network (lambda () (http-get "http://127.0.0.1:1/")))
+
+(display "failures:")
+(display failures)
+(newline)

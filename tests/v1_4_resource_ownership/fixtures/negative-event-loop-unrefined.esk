@@ -1,0 +1,4 @@
+;; make-event-loop may return #f: the handle must be refined before use.
+(define loop (make-event-loop 4))
+(event-loop-poll loop 0)
+(event-loop-close loop)

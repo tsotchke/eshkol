@@ -214,6 +214,22 @@ public:
                                llvm::Value* tagged_value, const char* who);
 
     /**
+     * Tensor slot layout predicates over a dtype value (field 4 of a tensor).
+     * The one IR spelling of eshkol_tensor_dtype_is_tagged /
+     * eshkol_tensor_dtype_is_tagged_numeric (lib/core/arena_memory.h), so every
+     * site that chooses a slot width or a kernel agrees with the runtime.
+     *  - HasTaggedSlots: `elements` holds 16-byte tagged values (a jet tensor,
+     *    a boxed carrier or an exact tensor, ADR-0020 / ADR-0058).
+     *  - IsTaggedNumeric: a numeric tensor whose slots are tagged, so it takes
+     *    the generic-scalar kernels (a jet tensor or an exact tensor).
+     */
+    llvm::Value* emitDtypeHasTaggedSlots(llvm::Value* dtype);
+    llvm::Value* emitDtypeIsTaggedNumeric(llvm::Value* dtype);
+    /** Load field 4 of @p tensor_ptr and apply the predicate above. */
+    llvm::Value* emitTensorHasTaggedSlots(llvm::Value* tensor_ptr);
+    llvm::Value* emitTensorIsTaggedNumeric(llvm::Value* tensor_ptr);
+
+    /**
      * Store @p tagged_value at linear @p index of the tensor @p tensor_ptr
      * (payload pointer; the index is NOT bounds-checked inline because tensor
      * callers have already checked it per dimension). A DOUBLE into an f64
@@ -301,6 +317,21 @@ public:
      * @param message Diagnostic text. Copied by the runtime.
      */
     void emitRaise(const char* message);
+
+    /**
+     * Continue after an unconditional no-return emission.
+     *
+     * emitRaise() closes the failure block of a guard, and its caller seats
+     * the builder on the guard's success block. A no-return emission with no
+     * success block (raise, error, exit, an operand that can never satisfy
+     * its operation) is the other shape: the caller that asked for the form
+     * still lowers the rest of the enclosing expression. This seats the
+     * builder on a fresh block of the current function with no predecessors
+     * and returns it, so that IR is unreachable and well formed. It is the
+     * only sanctioned way to return to a caller after such an emission; see
+     * eshkol/backend/noreturn_blocks.h.
+     */
+    llvm::BasicBlock* continueAfterNoReturn(const char* name = "post_noreturn_dead");
 
     /**
      * printf-style variant of emitRaise() for diagnostics that need to report a

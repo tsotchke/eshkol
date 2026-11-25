@@ -40,6 +40,21 @@ TypeId TypeRelation::canonicalPair(TypeId car, TypeId cdr) const {
     return env_.makePairType(car, cdr);
 }
 
+bool TypeRelation::isTermBacked(TypeId t) const {
+    return env_.isTermType(t);
+}
+
+TermEq TypeRelation::termCompare(TypeId a, TypeId b,
+                                 const std::function<bool(TypeId, TypeId)>& leaf) const {
+    TermStore& terms = env_.terms();
+    const auto judge = [this, &terms, &leaf](uint32_t x, uint32_t y) {
+        const TypeId tx = env_.typeFromTerm(terms.constant(x));
+        const TypeId ty = env_.typeFromTerm(terms.constant(y));
+        return leaf(tx, ty) ? TermEq::Equal : TermEq::Unequal;
+    };
+    return terms.unify(env_.termOf(a), env_.termOf(b), judge, /*solve=*/false);
+}
+
 /** @brief A member of the numeric tower (not the empty type). */
 bool TypeRelation::isNumeric(TypeId t) const {
     return t != BuiltinTypes::Never && !isDynamic(t) && isSubtype(t, BuiltinTypes::Number);
@@ -92,6 +107,19 @@ bool TypeRelation::subtypeUncached(TypeId sub, TypeId super) const {
     if (super == BuiltinTypes::Value) return true;     // top
     if (super == BuiltinTypes::Never) return false;
     if (sub == BuiltinTypes::Value) return false;
+
+    // Dependent types: structural on terms, or through the erasure of the
+    // term-backed side. A nominal type is never a static subtype of a
+    // dependent one: nothing proves its index.
+    if (isTermBacked(sub) || isTermBacked(super)) {
+        if (isTermBacked(sub) && isTermBacked(super)) {
+            return termCompare(sub, super, [this](TypeId x, TypeId y) {
+                       return isSubtype(x, y);
+                   }) == TermEq::Equal;
+        }
+        if (isTermBacked(sub)) return isSubtype(env_.erase(sub), super);
+        return false;
+    }
 
     // Sums: sub <: (+ A B) when sub fits an arm; (+ A B) <: super when every arm does.
     const auto super_members = env_.getSumMembers(super);
@@ -148,6 +176,14 @@ bool TypeRelation::signatureConsistent(const PiType& a, const PiType& b) const {
 bool TypeRelation::isConsistent(TypeId a, TypeId b) const {
     if (a == b) return true;
     if (isDynamic(a) || isDynamic(b)) return true;
+    if (isTermBacked(a) || isTermBacked(b)) {
+        if (isTermBacked(a) && isTermBacked(b)) {
+            return termCompare(a, b, [this](TypeId x, TypeId y) {
+                       return isConsistent(x, y);
+                   }) != TermEq::Unequal;
+        }
+        return isConsistent(env_.erase(a), env_.erase(b));
+    }
     if (const auto arms = env_.getSumMembers(a)) {
         for (const auto& arm : *arms) {
             if (isConsistent(arm, b)) return true;
@@ -178,6 +214,17 @@ bool TypeRelation::isConsistentSubtype(TypeId sub, TypeId super) const {
     if (sub == super) return true;
     if (isDynamic(sub) || isDynamic(super)) return true;
     if (sub == BuiltinTypes::Never) return true;
+    if (isTermBacked(sub) || isTermBacked(super)) {
+        // Components flow by the same judgment as an argument; indices must
+        // be definitionally equal. Against a nominal side the index is
+        // unknown, which consistency accepts (a checked boundary).
+        if (isTermBacked(sub) && isTermBacked(super)) {
+            return termCompare(sub, super, [this](TypeId x, TypeId y) {
+                       return accepts(x, y);
+                   }) != TermEq::Unequal;
+        }
+        return isConsistentSubtype(env_.erase(sub), env_.erase(super));
+    }
 
     const auto super_members = env_.getSumMembers(super);
     if (super_members) {
@@ -227,6 +274,16 @@ bool TypeRelation::accepts(TypeId from, TypeId to) const {
 
 bool TypeRelation::castable(TypeId actual, TypeId ascribed) const {
     if (isDynamic(actual) || isDynamic(ascribed)) return true;
+    if (isTermBacked(actual) || isTermBacked(ascribed)) {
+        // A known index that contradicts the ascribed one is a contradiction;
+        // an unknown index is what an ascription supplies.
+        if (isTermBacked(actual) && isTermBacked(ascribed)) {
+            return termCompare(actual, ascribed, [this](TypeId x, TypeId y) {
+                       return castable(x, y);
+                   }) != TermEq::Unequal;
+        }
+        return castable(env_.erase(actual), env_.erase(ascribed));
+    }
     if (accepts(actual, ascribed) || accepts(ascribed, actual)) return true;
     return meet(actual, ascribed) != BuiltinTypes::Never;
 }
@@ -242,6 +299,7 @@ TypeId TypeRelation::join(TypeId a, TypeId b) const {
     if (isDynamic(a) || isDynamic(b)) return BuiltinTypes::Value;
     if (isSubtype(a, b)) return b;
     if (isSubtype(b, a)) return a;
+    if (isTermBacked(a) || isTermBacked(b)) return join(env_.erase(a), env_.erase(b));
 
     // A sum absorbs a type that fits one of its arms.
     if (const auto arms = env_.getSumMembers(a)) {
@@ -312,6 +370,12 @@ TypeId TypeRelation::meet(TypeId a, TypeId b) const {
     if (isDynamic(b)) return a;
     if (isSubtype(a, b)) return a;
     if (isSubtype(b, a)) return b;
+    if (isTermBacked(a) || isTermBacked(b)) {
+        // Two dependent types that are not related meet only if they are
+        // consistent; the precise one is the result.
+        if (!castable(a, b)) return BuiltinTypes::Never;
+        return isTermBacked(a) ? a : b;
+    }
 
     // A sum meets arm by arm.
     const auto distribute = [this](const std::vector<TypeId>& arms, TypeId other) {
@@ -385,6 +449,21 @@ WidenResult TypeRelation::widen(TypeId slot, TypeId incoming, WidenPolicy policy
 // ============================================================================
 
 TypeId TypeRelation::pairProjection(TypeId pair, PairSide side) const {
+    if (isTermBacked(pair)) {
+        TermStore& terms = env_.terms();
+        const TermRef t = terms.normalize(env_.termOf(pair));
+        const TermNode node = terms.node(t);
+        if (node.kind == TermKind::Sigma) {
+            if (side == PairSide::Car) return env_.typeFromTerm(node.args[0]);
+            // The second component may depend on the first; without the
+            // value of the first the checker can only say what it erases to.
+            if (!terms.mentionsBound(node.args[1], 0)) {
+                return env_.typeFromTerm(terms.shift(node.args[1], -1, 1));
+            }
+            return env_.erase(env_.typeFromTerm(node.args[1]));
+        }
+        return pairProjection(env_.erase(pair), side);
+    }
     if (auto elems = env_.getPairElementTypes(pair)) {
         return side == PairSide::Car ? elems->first : elems->second;
     }
@@ -395,6 +474,7 @@ TypeId TypeRelation::pairProjection(TypeId pair, PairSide side) const {
 }
 
 std::string TypeRelation::print(TypeId type) const {
+    if (isTermBacked(type)) return env_.printTerm(env_.termOf(type));
     if (const auto arms = env_.getSumMembers(type)) {
         std::string out = "(+";
         for (const auto& arm : *arms) out += " " + print(arm);

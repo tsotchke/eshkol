@@ -13,6 +13,7 @@
 ;; check used for promises.
 
 (require stdlib)
+(require core.threads)
 
 (define passed 0)
 (define failed 0)
@@ -46,10 +47,17 @@
        1 (vector-ref call-count 0))
 
 ;; ── future-ready? ───────────────────────────────────────────────────
-;; Lazy futures are NOT ready until forced.
-(define f-not-yet (future (lambda () 1)))
-(check "future-ready? before force" #f (future-ready? f-not-yet))
-(force f-not-yet)
+;; Hold a mutex so the eagerly submitted future stays blocked until released,
+;; verifying future-ready? deterministically before and after completion.
+(define gate-mutex (make-mutex))
+(mutex-lock! gate-mutex)
+(define f-not-yet (future (lambda ()
+                            (mutex-lock! gate-mutex)
+                            (mutex-unlock! gate-mutex)
+                            1)))
+(check "future-ready? before completion" #f (future-ready? f-not-yet))
+(mutex-unlock! gate-mutex)
+(check "force returns blocked future value" 1 (force f-not-yet))
 (check "future-ready? after force" #t (future-ready? f-not-yet))
 
 ;; ── Eager future (plain value, not a thunk) ─────────────────────────

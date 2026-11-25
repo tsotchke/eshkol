@@ -1,0 +1,33 @@
+;; Exact AD over Q(cuberoot(2)): the local branch y(t)^3 = 2+t.
+(require stdlib)
+(require core.ad.algebraic)
+(define field (make-algebraic-field '(-2 0 0 1) 7 0))
+(define alpha (algebraic-generator field))
+(define context (make-algebraic-taylor field 4))
+(define parameter (algebraic-ad-seed context 2))
+(define root (algebraic-ad-root context
+  (list (algebraic-ad-sub (algebraic-ad-constant context 0) parameter) 0 0 1) alpha))
+(define failures 0)
+(define (check name ok)
+  (if (not ok) (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(check "entire defining equation" (algebraic-ad-equal?
+  (algebraic-ad-mul (algebraic-ad-mul root root) root) parameter))
+(check "first exact derivative" (algebraic-equal?
+  (algebraic-ad-derivative root 1) (algebraic-scale alpha 1/6)))
+(check "second exact derivative" (algebraic-equal?
+  (algebraic-ad-derivative root 2) (algebraic-scale alpha -1/18)))
+(check "fourth exact derivative" (algebraic-equal?
+  (algebraic-ad-derivative root 4) (algebraic-scale alpha -5/81)))
+(define hyper (make-algebraic-hyperdual field))
+(define seed (algebraic-ad-seed hyper alpha))
+(check "field relation retains nonzero derivatives"
+  (let ((relation (algebraic-ad-sub (algebraic-ad-mul (algebraic-ad-mul seed seed) seed)
+                                 (algebraic-ad-constant hyper 2))))
+    (and (algebraic-zero? (vector-ref (algebraic-ad-coefficients relation) 0))
+         (not (algebraic-zero? (vector-ref (algebraic-ad-coefficients relation) 1))))))
+(check "no finite differences" (= (ad-finite-difference-evals) 0))
+(display "Taylor coefficients in the basis (1, alpha, alpha^2):") (newline)
+(for-each (lambda (coefficient) (display (algebraic-coefficients coefficient)) (newline))
+          (vector->list (algebraic-ad-coefficients root)))
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)

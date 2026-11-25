@@ -1,0 +1,4 @@
+;; A module exports a closure that captures a handle constructor. Every use
+;; of the export is checked: here the port it returns is dropped.
+(require test.strict.export_opener)
+(opener "strict-exported.txt")

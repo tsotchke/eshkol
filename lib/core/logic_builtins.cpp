@@ -129,15 +129,15 @@ void eshkol_fg_entropy_tagged(arena_t* arena,
     for (uint32_t i = 1; i < n_states; i++) {
         if (log_beliefs[i] > max_log) max_log = log_beliefs[i];
     }
+    /* Two passes over every state: the normaliser, then the entropy, so
+     * the result covers the variable's whole domain. */
     double sum = 0.0;
-    double probs[256]; /* max states */
-    for (uint32_t i = 0; i < n_states && i < 256; i++) {
-        probs[i] = exp(log_beliefs[i] - max_log);
-        sum += probs[i];
+    for (uint32_t i = 0; i < n_states; i++) {
+        sum += exp(log_beliefs[i] - max_log);
     }
     double entropy = 0.0;
-    for (uint32_t i = 0; i < n_states && i < 256; i++) {
-        double p = probs[i] / sum;
+    for (uint32_t i = 0; i < n_states; i++) {
+        double p = exp(log_beliefs[i] - max_log) / sum;
         if (p > 1e-15) {
             entropy -= p * log(p);
         }

@@ -1,0 +1,330 @@
+;;; core.reasoning.datalog -- forward chaining as incremental DBSP circuits.
+;;;
+;;; Usage: (require core.reasoning.datalog)
+;;;
+;;;   (define db (make-datalog
+;;;     '((<- (reach ?x ?y) (edge ?x ?y))
+;;;       (<- (reach ?x ?y) (reach ?x ?z) (edge ?z ?y))
+;;;       (<- (unreachable ?x ?y) (node ?x) (node ?y) (not (reach ?x ?y))))))
+;;;   (datalog-assert! db '((edge a b) (edge b c) (node a) (node b) (node c)))
+;;;   (map (lambda (s) (walk '?y s)) (datalog-query db '(reach a ?y)))  ;; => (b c)
+;;;   (datalog-retract! db '((edge b c)))   ;; only the affected facts change
+;;;
+;;; A program is a list of rules (<- head literal ...). A literal is an atom
+;;; (pred term ...), a negated atom (not (pred term ...)), or a comparison
+;;; (< a b), (<= a b), (> a b), (>= a b), (= a b), (/= a b). Terms are
+;;; constants or logic variables (`?x`; `?_` is anonymous). Rules must be
+;;; safe: every variable of the head, of a negated atom and of a comparison
+;;; occurs in a positive atom of the body. Facts are ground atoms.
+;;;
+;;; Semantics: the stratified (perfect) model. Predicates are split into
+;;; strata by the strongly connected components of the dependency graph; a
+;;; negative edge inside a component is reported as an unstratifiable
+;;; program. Each stratum is compiled to one nested-clock recursive DBSP
+;;; circuit (core.dbsp.recursive): positive atoms are filters over the base
+;;; relation or the stratum's own approximant, conjunctions are joins on the
+;;; shared variables, comparisons are filters, negation is a difference
+;;; against a semijoin with the distinct negated relation of a lower stratum,
+;;; and the heads are unioned and made distinct. Evaluating from empty is
+;;; semi-naive fixed-point iteration; asserting or retracting facts pushes a
+;;; signed change through the strata, and each circuit recomputes only what
+;;; the change reaches, deletions included.
+;;;
+;;; Matching an atom against a row is the consciousness engine's `unify`.
+;;; `datalog-saturate-kb!` runs a program over a `make-kb` knowledge base and
+;;; asserts the derived facts back into it.
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051.
+;;; Sources: K. R. Apt, H. A. Blair, A. Walker, "Towards a theory of
+;;; declarative knowledge" (1988); S. Abiteboul, R. Hull, V. Vianu,
+;;; "Foundations of Databases" ch. 12-15 (1995); F. Bancilhon, "Naive
+;;; evaluation of recursively defined relations" (1986); M. Budiu et al.,
+;;; "DBSP: automatic incremental view maintenance" (VLDB 2023).
+
+(require stdlib)
+(require core.dbsp)
+(require core.dbsp.recursive)
+
+(provide make-datalog datalog? datalog-assert! datalog-retract! datalog-update!
+         datalog-query datalog-facts datalog-relation datalog-strata datalog-work
+         datalog-eval datalog-saturate-kb!)
+
+(define dl-comparisons '(< <= > >= = /=))
+
+;; ---------------------------------------------------------------------------
+;; Program analysis
+;; ---------------------------------------------------------------------------
+(define (dl-var? x) (logic-var? x))
+(define (dl-negated? lit) (and (pair? lit) (eq? (car lit) 'not)))
+(define (dl-comparison? lit) (and (pair? lit) (memq (car lit) dl-comparisons) (= (length lit) 3)))
+(define (dl-atom-of lit) (if (dl-negated? lit) (cadr lit) lit))
+(define (dl-vars-of term)
+  (cond ((dl-var? term) (list term))
+        ((pair? term) (append (dl-vars-of (car term)) (dl-vars-of (cdr term))))
+        (else '())))
+(define (dl-unique xs)
+  (let loop ((xs xs) (out '()))
+    (cond ((null? xs) (reverse out)) ((member (car xs) out) (loop (cdr xs) out))
+          (else (loop (cdr xs) (cons (car xs) out))))))
+
+;; Give each anonymous variable its own name so unification keeps them apart.
+(define dl-anon-counter 0)
+(define (dl-rename-anonymous term)
+  (cond ((eq? term '?_)
+         (set! dl-anon-counter (+ dl-anon-counter 1))
+         (string->symbol (string-append "?_anon" (number->string dl-anon-counter))))
+        ((pair? term) (cons (dl-rename-anonymous (car term)) (dl-rename-anonymous (cdr term))))
+        (else term)))
+
+(define (dl-check-atom atom where)
+  (if (not (and (pair? atom) (symbol? (car atom)) (not (dl-var? (car atom))) (list? atom)))
+      (error "datalog: expected an atom (pred term ...)" where atom))
+  (for-each (lambda (t) (if (pair? t) (error "datalog: terms are constants or variables" atom))) (cdr atom)))
+
+;; rule: #(head positives negatives comparisons)
+(define (dl-parse-rule r)
+  (if (not (and (pair? r) (eq? (car r) '<-) (pair? (cdr r))))
+      (error "datalog: a rule is (<- head literal ...)" r))
+  ;; Safety on the source rule: `?_` in a negated atom is existential
+  ;; inside the negation; every other variable must be bound positively.
+  (let* ((body0 (cddr r))
+         (pos0 (filter (lambda (l) (not (or (dl-negated? l) (dl-comparison? l)))) body0))
+         (bound0 (dl-vars-of pos0)))
+    (for-each (lambda (v) (if (not (or (eq? v '?_) (member v bound0))) (error "datalog: unsafe variable" v r)))
+              (append (dl-vars-of (cadr r)) (dl-vars-of (map cadr (filter dl-negated? body0)))
+                      (dl-vars-of (filter dl-comparison? body0)))))
+  (let* ((r (dl-rename-anonymous r)) (head (cadr r)) (body (cddr r)))
+    (dl-check-atom head 'head)
+    (let ((pos (filter (lambda (l) (not (or (dl-negated? l) (dl-comparison? l)))) body))
+          (neg (map cadr (filter dl-negated? body)))
+          (cmp (filter dl-comparison? body)))
+      (for-each (lambda (a) (dl-check-atom a 'body)) pos)
+      (for-each (lambda (a) (dl-check-atom a 'negation)) neg)
+      (if (null? pos) (error "datalog: a rule needs a positive body atom" r))
+      (vector head pos neg cmp))))
+
+;; Strata: Tarjan SCCs of the dependency graph in dependency order.
+(define (dl-stratify rules)
+  (let* ((idb (dl-unique (map (lambda (r) (car (vector-ref r 0))) rules)))
+         (edges (apply append
+                       (map (lambda (r)
+                              (let ((h (car (vector-ref r 0))))
+                                (append (map (lambda (a) (list (car a) h #f)) (vector-ref r 1))
+                                        (map (lambda (a) (list (car a) h #t)) (vector-ref r 2)))))
+                            rules)))
+         (nodes (dl-unique (append idb (map car edges))))
+         (index (make-hash-table)) (low (make-hash-table)) (on (make-hash-table))
+         (stack '()) (counter 0) (sccs '()))
+    (define (succ p) (map cadr (filter (lambda (e) (eq? (car e) p)) edges)))
+    (define (visit p)
+      (hash-set! index p counter) (hash-set! low p counter) (set! counter (+ counter 1))
+      (set! stack (cons p stack)) (hash-set! on p #t)
+      (for-each (lambda (q)
+                  (cond ((not (hash-ref index q #f))
+                         (visit q) (hash-set! low p (min (hash-ref low p 0) (hash-ref low q 0))))
+                        ((hash-ref on q #f) (hash-set! low p (min (hash-ref low p 0) (hash-ref index q 0))))))
+                (succ p))
+      (if (= (hash-ref low p 0) (hash-ref index p 0))
+          (let pop ((comp '()))
+            (let ((q (car stack)))
+              (set! stack (cdr stack)) (hash-set! on q #f)
+              (if (eq? q p) (set! sccs (cons (cons q comp) sccs)) (pop (cons q comp)))))))
+    (for-each (lambda (p) (if (not (hash-ref index p #f)) (visit p))) nodes)
+    ;; Tarjan emits components in reverse topological order of the edges
+    ;; p -> head; consing reversed that, so sccs is already dependency-first.
+    (for-each (lambda (e)
+                (if (and (caddr e)
+                         (let same ((cs sccs)) (and (pair? cs) (or (and (memq (car e) (car cs)) (memq (cadr e) (car cs))) (same (cdr cs))))))
+                    (error "datalog: the program is not stratifiable (negation inside recursion)" (car e) (cadr e))))
+              edges)
+    (filter (lambda (comp) (let any ((ps comp)) (and (pair? ps) (or (memq (car ps) idb) (any (cdr ps))))))
+            sccs)))
+
+;; ---------------------------------------------------------------------------
+;; Compilation of a stratum to circuit declarations
+;; ---------------------------------------------------------------------------
+(define (dl-match atom row)
+  (let ((s (unify atom row (make-substitution)))) (if s s #f)))
+(define (dl-index-of x xs) (let loop ((xs xs) (i 0)) (cond ((null? xs) #f) ((equal? (car xs) x) i) (else (loop (cdr xs) (+ i 1))))))
+(define (dl-values-of vars binding-vars binding)
+  (map (lambda (v) (list-ref binding (dl-index-of v binding-vars))) vars))
+(define (dl-term-value t vars binding) (if (dl-var? t) (list-ref binding (dl-index-of t vars)) t))
+(define (dl-compare op a b)
+  (cond ((eq? op '=) (equal? a b)) ((eq? op '/=) (not (equal? a b)))
+        ((eq? op '<) (< a b)) ((eq? op '<=) (<= a b)) ((eq? op '>) (> a b)) (else (>= a b))))
+
+(define (dl-compile-stratum preds rules)
+  (let ((decls '()) (counter 0) (heads '()))
+    (define (fresh prefix)
+      (set! counter (+ counter 1))
+      (string->symbol (string-append prefix (number->string counter))))
+    (define (emit! d) (set! decls (cons d decls)))
+    ;; rows of ATOM from its source, as binding lists over the atom's vars
+    (define (atom-node atom)
+      (let* ((source (if (memq (car atom) preds) 'recur 'base))
+             (vars (dl-unique (dl-vars-of atom)))
+             (f (fresh "dl-f")) (m (fresh "dl-m")) (k (length atom)))
+        (emit! (list 'filter f source (lambda (row) (and (pair? row) (eq? (car row) (car atom)) (= (length row) k)
+                                                         (dl-match atom row) #t))))
+        (emit! (list 'map m f (lambda (row) (let ((s (dl-match atom row))) (map (lambda (v) (walk v s)) vars)))))
+        (cons m vars)))
+    (for-each
+     (lambda (r)
+       (let* ((head (vector-ref r 0)) (pos (vector-ref r 1)) (neg (vector-ref r 2)) (cmp (vector-ref r 3))
+              (first (atom-node (car pos))))
+         ;; left-deep joins on shared variables
+         (let loop ((node (car first)) (vars (cdr first)) (rest (cdr pos)))
+           (if (pair? rest)
+               (let* ((right (atom-node (car rest))) (rvars (cdr right))
+                      (shared (filter (lambda (v) (member v vars)) rvars))
+                      (new (filter (lambda (v) (not (member v vars))) rvars))
+                      (j (fresh "dl-j")) (lv vars))
+                 (emit! (list 'join j node (car right)
+                              (lambda (b) (dl-values-of shared lv b))
+                              (lambda (b) (dl-values-of shared rvars b))
+                              (lambda (lb rb) (append lb (dl-values-of new rvars rb)))))
+                 (loop j (append vars new) (cdr rest)))
+               ;; comparisons, then negations, then the head
+               (let* ((node (if (null? cmp) node
+                                (let ((c (fresh "dl-c")) (vs vars))
+                                  (emit! (list 'filter c node
+                                               (lambda (b) (let all ((cs cmp))
+                                                             (or (null? cs)
+                                                                 (and (dl-compare (car (car cs))
+                                                                                  (dl-term-value (cadr (car cs)) vs b)
+                                                                                  (dl-term-value (caddr (car cs)) vs b))
+                                                                      (all (cdr cs))))))))
+                                  c)))
+                      (node (let negs ((node node) (ns neg))
+                              (if (null? ns) node
+                                  (let* ((atom (car ns))
+                                         (nvars (filter (lambda (v) (member v vars)) (dl-unique (dl-vars-of atom))))
+                                         (src (atom-node atom))
+                                         (keys (fresh "dl-k")) (dk (fresh "dl-d")) (sj (fresh "dl-s"))
+                                         (df (fresh "dl-n")) (vs vars) (svars (cdr src)))
+                                    (if (memq (car atom) preds)
+                                        (error "datalog: negation of a predicate in the same stratum" (car atom)))
+                                    (emit! (list 'map keys (car src) (lambda (b) (dl-values-of nvars svars b))))
+                                    (emit! (list 'distinct dk keys))
+                                    (emit! (list 'join sj node dk
+                                                 (lambda (b) (dl-values-of nvars vs b))
+                                                 (lambda (key) key)
+                                                 (lambda (lb key) lb)))
+                                    (emit! (list 'difference df node sj))
+                                    (negs df (cdr ns))))))
+                      (h (fresh "dl-h")) (vs vars))
+                 (emit! (list 'map h node (lambda (b) (cons (car head) (map (lambda (t) (dl-term-value t vs b)) (cdr head))))))
+                 (set! heads (cons h heads)))))))
+     rules)
+    ;; ground facts of this stratum's predicates that arrive in the base
+    (let ((bf (fresh "dl-b")))
+      (emit! (list 'filter bf 'base (lambda (row) (and (pair? row) (memq (car row) preds) #t))))
+      (set! heads (cons bf heads)))
+    (let ((all (let unite ((hs (cdr heads)) (acc (car heads)))
+                 (if (null? hs) acc
+                     (let ((u (fresh "dl-u"))) (emit! (list 'union u acc (car hs))) (unite (cdr hs) u))))))
+      (emit! (list 'distinct 'dl-out all)))
+    (reverse decls)))
+
+;; ---------------------------------------------------------------------------
+;; The database
+;; ---------------------------------------------------------------------------
+;; db: #(datalog strata edb model work)
+;;   strata: list of #(preds state)    edb/model: hash row -> #t
+(define (datalog? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'datalog)))
+(define (dl-check db) (if (not (datalog? db)) (error "datalog: expected a database made by make-datalog")))
+
+(define (make-datalog rules . opt)
+  (let* ((budget (if (null? opt) 1024 (car opt)))
+         (parsed (map dl-parse-rule rules))
+         (strata (dl-stratify parsed)))
+    (vector 'datalog
+            (map (lambda (preds)
+                   (let ((rs (filter (lambda (r) (memq (car (vector-ref r 0)) preds)) parsed)))
+                     (vector preds (make-dbsp-recursive (dl-compile-stratum preds rs) 'dl-out budget))))
+                 strata)
+            (make-hash-table) (make-hash-table) (vector 0 0 0 0 0 0) parsed)))
+
+(define (dl-ground-fact f)
+  (dl-check-atom f 'fact)
+  (if (pair? (dl-vars-of f)) (error "datalog: facts are ground atoms" f))
+  f)
+
+;; Apply a signed change to the base facts; returns the change of the model
+;; (base and derived facts) as a Z-set.
+(define (datalog-update! db inserts retracts)
+  (dl-check db)
+  (let* ((edb (vector-ref db 2))
+         (pairs (append
+                 (let loop ((fs inserts) (out '()))
+                   (if (null? fs) (reverse out)
+                       (let ((f (dl-ground-fact (car fs))))
+                         (if (or (hash-ref edb f #f) (member (list 1 f) out)) (loop (cdr fs) out)
+                             (loop (cdr fs) (cons (list 1 f) out))))))
+                 (let loop ((fs retracts) (out '()))
+                   (if (null? fs) (reverse out)
+                       (let ((f (dl-ground-fact (car fs))))
+                         (if (or (not (hash-ref edb f #f)) (member (list -1 f) out)) (loop (cdr fs) out)
+                             (loop (cdr fs) (cons (list -1 f) out))))))))
+         (base-delta (zset-from-weighted pairs)))
+    (for-each (lambda (p) (if (= (car p) 1) (hash-set! edb (cadr p) #t) (hash-remove! edb (cadr p)))) pairs)
+    ;; The model is the base facts of base-only predicates plus every
+    ;; stratum's output (which already includes base facts of its predicates).
+    (let loop ((strata (vector-ref db 1)) (delta base-delta)
+               (total (let ((idb (apply append (datalog-strata db))))
+                        (zset-from-weighted (filter (lambda (p) (not (memq (car (cadr p)) idb))) pairs)))))
+      (if (null? strata)
+          (begin
+            (for-each (lambda (e)
+                        (let ((row (cadr e)) (model (vector-ref db 3)))
+                          (if (> (car e) 0) (hash-set! model row #t) (hash-remove! model row))))
+                      (zset-entries total))
+            total)
+          (let* ((st (car strata)) (res (dbsp-recursive-step (vector-ref st 1) delta))
+                 (out (vector-ref res 1)) (work (vector-ref res 2)) (acc (vector-ref db 4)))
+            (vector-set! st 1 (vector-ref res 0))
+            (let add ((i 0)) (if (< i 6) (begin (vector-set! acc i (+ (vector-ref acc i) (vector-ref work i))) (add (+ i 1)))))
+            (loop (cdr strata) (zset-add delta out) (zset-add total out)))))))
+
+(define (datalog-assert! db facts) (datalog-update! db facts '()))
+(define (datalog-retract! db facts) (datalog-update! db '() facts))
+
+(define (dl-row<? a b) (string<? (zset-row-key a) (zset-row-key b)))
+(define (datalog-facts db)
+  (dl-check db)
+  (sort (hash-keys (vector-ref db 3)) dl-row<?))
+(define (datalog-relation db pred)
+  (filter (lambda (row) (eq? (car row) pred)) (datalog-facts db)))
+(define (datalog-query db pattern)
+  (dl-check db)
+  (let loop ((rows (datalog-relation db (car pattern))) (out '()))
+    (if (null? rows) (reverse out)
+        (let ((s (and (= (length (car rows)) (length pattern)) (dl-match pattern (car rows)))))
+          (loop (cdr rows) (if s (cons s out) out))))))
+(define (datalog-strata db) (dl-check db) (map (lambda (st) (vector-ref st 0)) (vector-ref db 1)))
+;; Accumulated #(rounds checked-base-rows executed-nodes join-probes
+;; trace-updates index-writes) over every update so far.
+(define (datalog-work db) (dl-check db) (vector-copy (vector-ref db 4)))
+
+;; One-shot evaluation: the model of RULES over FACTS, sorted.
+(define (datalog-eval rules facts)
+  (let ((db (make-datalog rules))) (datalog-assert! db facts) (datalog-facts db)))
+
+;; Run RULES over a consciousness-engine knowledge base. SIGNATURES lists
+;; (pred arity) for the base relations to read with kb-query. Derived facts
+;; not already in the KB are asserted with kb-assert!; returns their count.
+(define (datalog-saturate-kb! kb rules signatures)
+  (if (not (kb? kb)) (error "datalog-saturate-kb!: expected a knowledge base made by make-kb"))
+  (let* ((facts (apply append
+                       (map (lambda (sig)
+                              (let* ((vars (let mk ((i 0)) (if (= i (cadr sig)) '()
+                                                               (cons (string->symbol (string-append "?_kbarg" (number->string i)))
+                                                                     (mk (+ i 1))))))
+                                     (pattern (cons (car sig) vars)))
+                                (map (lambda (s) (cons (car sig) (map (lambda (v) (walk v s)) vars)))
+                                     (kb-query kb pattern))))
+                            signatures)))
+         (model (datalog-eval rules facts))
+         (new (filter (lambda (row) (not (member row facts))) model)))
+    (for-each (lambda (row) (kb-assert! kb row)) new)
+    (length new)))

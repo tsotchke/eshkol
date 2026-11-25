@@ -274,6 +274,15 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
 <p><code>-I inc</code> is required (the VM includes <code>eshkol/backend/vm_limits.h</code>). The <code>model_io_atomic.c</code> source supplies the VM’s checkpoint-save dependency; omitting it leaves <code>tensor-save</code> and <code>model-save</code> as unresolved aborting stubs. Only the three native leaf runtime dependencies listed below are intentionally unresolved. Accordingly, <code>ERROR_ON_UNDEFINED_SYMBOLS=0</code> leaves the three native leaf runtime deps that are not linked into the VM WASM (<code>eshkol_qrng_uint64</code>, <code>eshkol_qrng_double</code>, <code>eshkol_linear_solve</code>) as aborting stubs, so a program that calls them fails cleanly instead of silently mis-executing. <code>scripts/run_wasm_differential.sh</code> builds the same translation unit with the same two settings.</p>
 <h3 id="filesystem-free-stdlib-bootstrap">Filesystem-free stdlib bootstrap</h3>
 <p>The browser VM has no host filesystem. Its checked-in <code>lib/backend/vm_prelude_cache.h</code> is therefore a compiled bootstrap image, not just a convenience cache: it contains the VM builtin preamble, the VM Scheme prelude, and the complete dependency closure of the canonical <code>lib/stdlib.esk</code>. The cache generator is built from the current source tree and is the only path that reads those <code>.esk</code> files while producing the image. The cache staleness gate compares the generated header byte-for-byte, so a stdlib edit cannot leave the WASM VM running an older surface.</p>
+<p>The browser product VM also embeds these pure source modules, generated from their exact UTF-8 bytes by <code>scripts/build-wasm-repl.sh</code>:</p>
+<ul>
+<li><code>core.msgpack</code></li>
+<li><code>core.utf8</code></li>
+<li><code>core.testing</code></li>
+<li><code>core.list.query</code></li>
+<li><code>core.list.transform</code></li>
+</ul>
+<p>They use the normal VM module compiler, including import aliases, exports, privacy, and per-compilation cache tracking. Product WASM has no filesystem or general source loader. A module outside this five-module set fails compilation before the program runs; it is not treated as a successful no-op. The generated header records source hashes and can be checked with <code>python3 scripts/generate_wasm_embedded_modules.py --output build/generated/vm_embedded_modules.h --check</code>.</p>
 <p>The WASM execute-and-diff lane admits fixtures from <code>tests/vm_parity/corpus/</code> by default. A fixture that requires a host file, descriptor, or another unavailable host capability must have an explicit <code>EXCLUDED</code> row in <code>tests/wasm_diff/EXCLUSIONS.tsv</code> with its individual reason. The row emits an <code>EXCLUDED</code> trace event; it is not a blanket corpus skip. Stdlib-only fixtures remain in the supported corpus and must match desktop.</p>
 <h2 id="eskb-binary-format">ESKB Binary Format</h2>
 <p>Programs compile to ESKB (Eshkol Bytecode) binary format:</p>

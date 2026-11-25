@@ -1,0 +1,7 @@
+(require core.net)
+(define is-error? network-error?)
+(set! is-error? (lambda (value) #t))
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (is-error? socket)
+    #t
+    (tcp-close socket))

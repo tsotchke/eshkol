@@ -1,0 +1,9 @@
+;; Boxing a predeclared function location must retain every neighboring global.
+(define sentinel 37)
+(define target (lambda () 0.0))
+(define (replace-target x)
+  (set! target (lambda () (* x 2.0)))
+  x)
+(display (replace-target 5.0)) (newline)
+(display (target)) (newline)
+(display sentinel) (newline)

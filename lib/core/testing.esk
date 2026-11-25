@@ -128,18 +128,19 @@
 (define (certify-kernel name actual expected tolerance)
   (assert-close actual expected tolerance))
 
-;; check-raises: thunk MUST raise. If it returns normally, that's a failure.
-(define (check-raises thunk)
-  (let ((raised #f))
-    (guard (exn (#t (set! raised #t)))
-      (thunk))
-    (if raised
-        (record-check! #t "")
-        (begin
-          (set! *test-fail-count* (+ *test-fail-count* 1))
-          (set! *current-test-fails* (+ *current-test-fails* 1))
-          (display "    FAIL: expected thunk to raise, but it returned normally")
-          (newline)))))
+;; (check-raises thunk) accepts any raised value. In the two-argument
+;; form, kind is a predicate on the condition or a symbol raised by the thunk.
+(define (check-raises kind . thunks)
+  (if (and (pair? thunks) (pair? (cdr thunks)))
+      (error "check-raises expects a thunk or a kind and a thunk"))
+  (let* ((any-kind (null? thunks))
+         (thunk (if any-kind kind (car thunks)))
+         (matched (guard (exn (else (cond (any-kind #t)
+                                          ((procedure? kind) (kind exn))
+                                          (else (eq? kind exn)))))
+                    (thunk)
+                    #f)))
+    (record-check! matched "expected thunk to raise the requested condition")))
 
 ;; FFI into the runtime's logic/predicate registry reset. Lets every
 ;; test batch start from a clean logic-var ID counter + predicate
@@ -169,8 +170,10 @@
           (display "  Passed: ") (display *test-pass-count*) (newline)
           (display "  Failed: ") (display *test-fail-count*) (newline)
           (if (= *test-fail-count* 0)
-              (begin (display "  RESULT: OK") (newline) #t)
-              (begin (display "  RESULT: FAILURES") (newline) #f)))
+              (display "  RESULT: OK")
+              (display "  RESULT: FAILURES"))
+          (newline)
+          (values *test-pass-count* *test-fail-count*))
         (let* ((entry (car remaining))
                (name  (car entry))
                (thunk (car (cdr entry))))

@@ -166,9 +166,7 @@ struct GraphBuilder {
 namespace eshkol::frontend {
 
 WorkspaceResolver::WorkspaceResolver(std::string module_root)
-    : module_root_(std::move(module_root)) {
-    if (module_root_.empty()) module_root_ = platform::module_source_root().path.string();
-}
+    : module_root_(std::move(module_root)) {}
 
 std::string WorkspaceResolver::resolve_path(const std::string& reference,
                                             const std::string& requiring_file) const {
@@ -197,8 +195,12 @@ SymbolId WorkspaceResolver::stable_symbol_id(const std::string& module_name,
 
 WorkspaceCheckResult WorkspaceResolver::check(const std::string& entry_path) const {
     WorkspaceCheckResult result;
-    const std::string entry = resolve_path(entry_path, {});
-    const std::string actual = entry.empty() ? canonical_path(entry_path) : entry;
+    std::string actual = canonical_path(entry_path);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(actual, ec)) {
+        auto module = resolve_path(entry_path, {});
+        if (!module.empty()) actual = std::move(module);
+    }
     GraphBuilder builder{*this};
     builder.add(actual);
     result.diagnostics = std::move(builder.diagnostics);

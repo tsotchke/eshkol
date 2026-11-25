@@ -1,0 +1,13 @@
+(require core.threads)
+;; A semaphore and a barrier each own the mutex and condition variable they are
+;; built from, so each has exactly one close site.
+(define sem (make-semaphore 1))
+(define bar (make-barrier 1))
+(semaphore-acquire! sem)
+(semaphore-release! sem)
+(display (semaphore-value sem))
+(barrier-wait! bar)
+(display (barrier-generation bar))
+(barrier-destroy! bar)
+(semaphore-destroy! sem)
+(newline)

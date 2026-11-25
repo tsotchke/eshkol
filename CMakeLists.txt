@@ -4,13 +4,29 @@
 # SPDX-License-Identifier: MIT
 #
 cmake_minimum_required(VERSION 3.14)
+
+# The semantic ABI ratchet reads the compile database. A target picks the
+# setting up when it is created, so it belongs ahead of every target rather
+# than beside the test that consumes it.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.3.6")
+project("Eshkol" VERSION 1.4.0 LANGUAGES C CXX)
+set(ESHKOL_RELEASE_NAME "connection")
+set(ESHKOL_RELEASE_VERSION "${PROJECT_VERSION}-${ESHKOL_RELEASE_NAME}")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/release-tag" CONTENT "v${ESHKOL_RELEASE_VERSION}\n")
 
-project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
+# Release macOS packages carry the OpenSSL closure. Keep developer builds
+# compatible with their existing host OpenSSL installation, while allowing
+# the release compiler to resolve AOT TLS links from the relocated package.
+option(ESHKOL_RELOCATABLE_MACOS_TLS
+    "Resolve macOS AOT OpenSSL archives from the installed Eshkol package"
+    OFF)
+if(APPLE AND ESHKOL_RELOCATABLE_MACOS_TLS)
+    add_compile_definitions(ESHKOL_RELOCATABLE_MACOS_TLS=1)
+endif()
 
 # Python's ELF extension force-loads the static compiler, REPL, runtime and
 # agent dependency closure into a shared object. Enable PIC before creating
@@ -199,6 +215,26 @@ set(CMAKE_CXX_STANDARD 20)
 
 # Options
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
+
+# Refinement types (ADR-0044) are decided by a built-in procedure on every
+# platform. This option adds the z3 backend (SMT-LIB2 over a pipe to the z3
+# executable; no library link), selectable with ESHKOL_REFINEMENT_SOLVER=z3 or
+# =cross at compile time of a program, and a corpus test that compares the two.
+option(ESHKOL_REFINEMENT_Z3 "Build the optional z3 backend for refinement types" OFF)
+if(ESHKOL_REFINEMENT_Z3)
+    if(WIN32)
+        message(FATAL_ERROR "ESHKOL_REFINEMENT_Z3 needs a POSIX host (the backend spawns z3 over a pipe)")
+    endif()
+    find_program(ESHKOL_Z3_EXECUTABLE z3)
+    if(ESHKOL_Z3_EXECUTABLE)
+        set(_eshkol_z3_default "${ESHKOL_Z3_EXECUTABLE}")
+    else()
+        set(_eshkol_z3_default "z3")
+        message(STATUS "Refinement z3 backend: z3 not found now; ESHKOL_Z3 or PATH decides at run time")
+    endif()
+    add_compile_definitions(ESHKOL_REFINEMENT_Z3=1 ESHKOL_Z3_DEFAULT_PATH="${_eshkol_z3_default}")
+    message(STATUS "Refinement z3 backend: ON (${_eshkol_z3_default})")
+endif()
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 # OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4). MUST stay OFF by
@@ -234,6 +270,8 @@ option(ESHKOL_QLLM_ENABLED
 set(ESHKOL_QLLM_ROOT "" CACHE PATH
     "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
 include(cmake/QllmBridge.cmake)
+include(cmake/EmbedHottLibrary.cmake)
+eshkol_embed_hott_library("${CMAKE_CURRENT_BINARY_DIR}/generated/hott")
 
 # lib/backend/vm_geometric.c used to carry a SECOND dispatch body for the same
 # 62 VM builtins (ids 804-861), selected by a legacy qLLM build branch and
@@ -347,6 +385,12 @@ endif()
 # When enabled, provides accelerated tensor operations via XLA/StableHLO
 # Requires MLIR and StableHLO libraries
 option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations" OFF)
+if(ESHKOL_XLA_ENABLED AND UNIX AND CMAKE_DL_LIBS)
+    # PJRT's POSIX plugin loader is part of the guarded XLA runtime objects.
+    # Carry its loader dependency through static/runtime consumers as well.
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS ${CMAKE_DL_LIBS})
+    list(REMOVE_DUPLICATES ESHKOL_EXTRA_LINK_LIBS)
+endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LLVMToolchain.cmake)
 set(ESHKOL_LLVM_USE_CMAKE_PACKAGE FALSE)
 set(ESHKOL_LLVM_ROOT "")
@@ -622,6 +666,10 @@ else()
 endif()
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+configure_file(cmake/version.h.in "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/version.h" @ONLY)
+include_directories("${ESHKOL_GENERATED_INCLUDE_DIR}")
+install(FILES "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/version.h"
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
   "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
@@ -1101,6 +1149,29 @@ foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIB
 endforeach()
 eshkol_append_elf_runtime_search_paths(ESHKOL_HOST_LLVM_LINK_ARGS)
 eshkol_append_host_cxx_runtime_search_paths(ESHKOL_HOST_LLVM_LINK_ARGS)
+if(APPLE AND ESHKOL_RELOCATABLE_MACOS_TLS)
+    # `-r` cached programs link the shared LLVM dylib. Record a package marker
+    # so the installed compiler derives its search/RPATH directory after the
+    # package has moved, instead of embedding the builder's Homebrew prefix.
+    set(_eshkol_relocatable_llvm_args "")
+    foreach(_llvm_arg IN LISTS ESHKOL_HOST_LLVM_LINK_ARGS)
+        set(_is_builder_llvm_search_path FALSE)
+        if(_llvm_arg MATCHES "^-L(.+)$")
+            set(_llvm_arg_libdir "${CMAKE_MATCH_1}")
+            list(FIND LLVM_LIBRARY_DIRS "${_llvm_arg_libdir}" _llvm_arg_libdir_index)
+            if(NOT _llvm_arg_libdir_index EQUAL -1 OR
+               _llvm_arg_libdir MATCHES "/llvm(@[^/]+)?/lib$" OR
+               _llvm_arg_libdir MATCHES "/Cellar/llvm@[^/]+/[^/]+/lib$")
+                set(_is_builder_llvm_search_path TRUE)
+            endif()
+        endif()
+        if(NOT _is_builder_llvm_search_path)
+            list(APPEND _eshkol_relocatable_llvm_args "${_llvm_arg}")
+        endif()
+    endforeach()
+    set(ESHKOL_HOST_LLVM_LINK_ARGS "${_eshkol_relocatable_llvm_args}")
+    list(PREPEND ESHKOL_HOST_LLVM_LINK_ARGS "__ESHKOL_MACOS_LLVM_LINK__")
+endif()
 
 # Keep LLVM's defines and unwind flags, but let the project control language mode
 # and exception support.
@@ -1225,6 +1296,10 @@ function(eshkol_windows_export_runtime target_name)
         eshkol-static
         eshkol-runtime
         eshkol-repl-lib)
+    get_target_property(_eshkol_seed_host ${target_name} ESHKOL_COMPILER_SEED_HOST)
+    if(_eshkol_seed_host)
+        list(REMOVE_ITEM _eshkol_runtime_export_targets eshkol-runtime)
+    endif()
     if(TARGET eshkol-agent-ffi)
         list(APPEND _eshkol_runtime_export_targets eshkol-agent-ffi)
     endif()
@@ -1860,6 +1935,35 @@ if(ESHKOL_GPU_ENABLED)
         endif()
     endif()
 
+    # ── Vulkan compute (ADR-0053) ───────────────────────────────────────
+    # lib/backend/gpu/gpu_vulkan.c opens the Vulkan loader (libvulkan.so.1)
+    # at run time, so the build needs neither the loader nor the Khronos
+    # headers and no binary gains a link-time Vulkan dependency. In a CUDA
+    # build it is the fallback device backend of gpu_memory_cuda.cpp; without
+    # CUDA it is the device backend of gpu_memory_stub.cpp. Linux/BSD only;
+    # Windows (vulkan-1.dll) and Apple (MoltenVK) are not wired yet.
+    # ESHKOL_REQUIRE_GPU_BACKEND keeps its meaning (Metal or CUDA): a
+    # run-time-loaded backend never satisfies it.
+    option(ESHKOL_VULKAN_COMPUTE "Build the run-time-loaded Vulkan compute backend" ON)
+    set(ESHKOL_VULKAN_COMPUTE_ENABLED FALSE)
+    if(ESHKOL_VULKAN_COMPUTE AND UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
+        if(GPU_FOUND)
+            set(ESHKOL_VULKAN_COMPUTE_ENABLED TRUE)
+            list(APPEND GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_vulkan.c")
+            message(STATUS "GPU: Vulkan compute linked as the fallback device backend (loader opened at run time)")
+        elseif(NOT ESHKOL_REQUIRE_GPU_BACKEND)
+            set(ESHKOL_VULKAN_COMPUTE_ENABLED TRUE)
+            set(GPU_FOUND TRUE)
+            set(ESHKOL_GPU_BACKEND "VULKAN" CACHE INTERNAL
+                "Resolved Eshkol GPU backend (NONE, METAL, CUDA, VULKAN, or WEBGPU)" FORCE)
+            set(GPU_LIBRARIES ${CMAKE_DL_LIBS})
+            set(GPU_SOURCES
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_vulkan.c")
+            message(STATUS "GPU: Vulkan compute (loader opened at run time; CPU when no device)")
+        endif()
+    endif()
+
     if(GPU_FOUND)
         add_compile_definitions(ESHKOL_GPU_ENABLED)
         message(STATUS "GPU acceleration: ENABLED")
@@ -1960,7 +2064,28 @@ if(NOT APPLE AND NOT WIN32)
     # more-frequently-rebuilt eshkol-agent-ffi archive being complete/whole
     # at AOT-link time.
     find_package(OpenSSL)
+elseif(APPLE AND ESHKOL_RELOCATABLE_MACOS_TLS)
+    # The release workflow stages this exact provider's dynamic and static
+    # closure. Fail configuration if TLS cannot be packaged as promised.
+    find_package(OpenSSL 1.1.1 REQUIRED)
 endif()
+
+# Discover optional OpenSSL early enough to populate generated AOT link args.
+set(ESHKOL_TLS_AVAILABLE 0)
+if(NOT WIN32 AND NOT EMSCRIPTEN)
+    if(OpenSSL_FOUND AND OPENSSL_VERSION VERSION_GREATER_EQUAL "1.1.1")
+        set(ESHKOL_TLS_OPENSSL_FOUND TRUE)
+        set(ESHKOL_TLS_AVAILABLE 1)
+    elseif(NOT OpenSSL_FOUND)
+        find_package(OpenSSL 1.1.1 QUIET)
+        if(OpenSSL_FOUND)
+            set(ESHKOL_TLS_OPENSSL_FOUND TRUE)
+            set(ESHKOL_TLS_AVAILABLE 1)
+        endif()
+    endif()
+endif()
+set(ESHKOL_TLS_AVAILABLE "${ESHKOL_TLS_AVAILABLE}" CACHE INTERNAL
+    "Whether the optional OpenSSL TLS API is compiled" FORCE)
 
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
@@ -2009,6 +2134,7 @@ if(NOT APPLE)
     if(WIN32)
         eshkol_append_host_runtime_link_arg("bcrypt")
     elseif(OpenSSL_FOUND)
+        eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
         eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
     else()
         message(WARNING
@@ -2026,6 +2152,25 @@ if(NOT APPLE)
     # optional agent-FFI archive.
     if(WIN32)
         eshkol_append_host_runtime_link_arg("ws2_32")
+    endif()
+endif()
+
+# Apple normally uses platform Security APIs and has no OpenSSL runtime
+# dependency. If optional OpenSSL was discovered for TLS, carry its dylibs
+# into generated AOT links as well as the CMake runtime targets below.
+if(APPLE AND ESHKOL_TLS_OPENSSL_FOUND)
+    if(ESHKOL_RELOCATABLE_MACOS_TLS)
+        list(APPEND ESHKOL_HOST_RUNTIME_LINK_ARGS
+            "__ESHKOL_OPENSSL_STATIC__/libssl.a"
+            "__ESHKOL_OPENSSL_STATIC__/libcrypto.a")
+    else()
+        eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
+        eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
+        get_target_property(_eshkol_tls_ssl_location OpenSSL::SSL IMPORTED_LOCATION)
+        if(_eshkol_tls_ssl_location)
+            get_filename_component(_eshkol_tls_ssl_dir "${_eshkol_tls_ssl_location}" DIRECTORY)
+            eshkol_append_host_runtime_link_arg("-Wl,-rpath,${_eshkol_tls_ssl_dir}")
+        endif()
     endif()
 endif()
 
@@ -2095,12 +2240,13 @@ add_custom_command(
   TARGET "debug"
   POST_BUILD
   COMMENT "Creates the debian files for building the debug files."
-  COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make-docker.sh ${CMAKE_CURRENT_BINARY_DIR} ${ESHKOL_VERSION} debug
+  COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make-docker.sh ${CMAKE_CURRENT_BINARY_DIR} ${ESHKOL_RELEASE_VERSION} debug
 )
 
 # Get all the source code recursively.
 file(GLOB_RECURSE EXE_SRC RELATIVE ${CMAKE_SOURCE_DIR} "exe/*.cpp")
 file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
+list(REMOVE_ITEM LIB_SRC lib/frontend/incremental_plan_host.cpp lib/frontend/scalar_lowering_host.cpp)
 
 # Exclude REPL sources from main library (REPL will be separate)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
@@ -2114,7 +2260,7 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/gpu/.*")
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
 
 # Exclude ALL .c files from lib/backend/ — they are either standalone programs
-# (eshkol_compiler.c, weight_matrices.c, eshkol_asm.c, etc.) or unity-build
+# (weight_matrices.c, eshkol_asm.c, etc.) or unity-build
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
 # Only eshkol_vm.c is added back below (compiled in library mode).
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
@@ -2122,6 +2268,13 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
 # weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
 # These are reference-only — kept for paper-section history but never linked.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
+# lib/platform/embedded/ is the freestanding runtime subset for bare-metal
+# targets.  It is cross-compiled per target by the embedded-runtime block
+# (ESHKOL_BUILD_EMBEDDED_RUNTIME) and never belongs to a host library.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/platform/embedded/.*")
+# The hosted platform layer (windows, audio, MIDI; ADR-0053) is listed in
+# cmake/EshkolPlatform.cmake and compiled into the runtime-support archive.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/platform/(platform\\.c|event/|window/|audio/|midi/)")
 
 # ESH-0011: exactly one event-loop backend is compiled, chosen below the same
 # way GPU_SOURCES picks gpu_memory.mm / gpu_memory_cuda.cpp / gpu_memory_stub.cpp.
@@ -2201,6 +2354,7 @@ set(ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC
   lib/backend/vm_parser.c
   lib/backend/vm_macro.c
   lib/backend/vm_compiler.c
+  lib/backend/vm_match.c
   lib/backend/vm_peephole.c
 )
 
@@ -2322,8 +2476,15 @@ endif()
 list(APPEND LIB_SRC ${ESHKOL_EVENT_LOOP_SRC})
 message(STATUS "Event-loop backend: ${ESHKOL_EVENT_LOOP_BACKEND} (${ESHKOL_EVENT_LOOP_SRC})")
 
-# Image I/O (native platform/system codec backends)
-list(APPEND LIB_SRC lib/core/image_io.c)
+# Image I/O (built-in runtime codecs; no external codec library)
+set(ESHKOL_IMAGE_CODEC_SRC
+  lib/core/image_zlib.cpp
+  lib/core/image_png.cpp
+  lib/core/image_jpeg_decode.cpp
+  lib/core/image_jpeg_encode.cpp
+  lib/core/image_bmp.cpp
+  lib/core/image_webp.cpp)
+list(APPEND LIB_SRC lib/core/image_io.c ${ESHKOL_IMAGE_CODEC_SRC})
 set_source_files_properties(lib/core/image_io.c PROPERTIES LANGUAGE CXX)
 
 # C FFI (stable embedding API)
@@ -2332,13 +2493,17 @@ list(APPEND LIB_SRC lib/ffi/eshkol_ffi.cpp)
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
+elseif(NOT UNIX)
+    # The portable XLA host path may be enabled on Windows, but this PJRT
+    # loader currently has only a POSIX implementation.
+    list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/pjrt_client\\.cpp$")
 endif()
 
 # Get REPL sources separately
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}-evolve"
+  ESHKOL_VER="${ESHKOL_RELEASE_VERSION}"
 )
 
 # ADR-0001 SS3 / ADR-0000 Stage 4. Whole-project, not per-target: the object
@@ -2386,6 +2551,7 @@ endif()
 
 set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/abi_fingerprint.c
+  lib/core/reader_limits.c
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
   lib/core/complex_math.cpp
@@ -2401,11 +2567,16 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_deep_equal.cpp
   lib/core/runtime_math_compat.c
   lib/core/runtime_hash_table.cpp
+  lib/core/table_hash.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
+  lib/core/linear_solve_portable.c
   lib/core/memory_abi_v2.cpp
   lib/core/runtime_object_alloc.cpp
   lib/core/runtime_regions.cpp
+  lib/core/runtime_regions_evacuation.cpp
+  lib/core/runtime_regions_handles.cpp
+  lib/core/runtime_regions_resident.cpp
   lib/core/runtime_shared_memory.cpp
   lib/core/runtime_string.cpp
   lib/core/unicode.cpp
@@ -2418,6 +2589,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
+  lib/core/runtime_exact_tensor.cpp
   lib/core/tensor_validation.cpp
   lib/core/runtime_vector_mutation.cpp
   lib/core/tensor_cross_entropy.c
@@ -2429,12 +2601,16 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/logger.cpp
   lib/core/platform_runtime.cpp
   lib/core/resource_limits.cpp
+  lib/core/runtime_handle.cpp
   lib/core/runtime_arena_diagnostics_hosted.cpp
   lib/core/runtime_arena_sync_hosted.cpp
   lib/core/runtime_display_hosted.cpp
   lib/core/runtime_errors_hosted.cpp
   lib/core/runtime_exceptions_hosted.cpp
   lib/core/runtime_exports_hosted.cpp
+  # The capability policy store: one copy, linked by the native runtime, the
+  # bytecode VM and the VM's WebAssembly bundle (scripts/lib/wasm_vm_sources.sh).
+  lib/core/capability_policy.cpp
   lib/core/runtime_lifecycle_hosted.cpp
   lib/core/runtime_operations_hosted.cpp
   lib/core/runtime_parameters_hosted.cpp
@@ -2443,6 +2619,9 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/runtime_shutdown_hooks_hosted.cpp
   lib/core/runtime_signals_hosted.cpp
   lib/core/runtime_stack_hosted.cpp
+  # Stackful coroutines (inc/eshkol/core/coroutine.h): stacks, the machine
+  # context switch and the coroutine builtins. Hosted: it maps memory.
+  lib/core/runtime_coroutines_hosted.cpp
   lib/core/linear_solve_hosted.cpp
   lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c
@@ -2497,11 +2676,16 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/crypto_primitives.c
   # Native face of the ADR-0018 signed-curvature chart (core.curvature).
   lib/core/curvature_runtime.c
+  lib/core/keychain_native.c
   lib/core/dnc_api.c
   lib/core/image_io.c
+  ${ESHKOL_IMAGE_CODEC_SRC}
   lib/core/inference.cpp
   lib/core/kb_persistence.cpp
   lib/core/sdnc_api.c
+  # Exact-forward control fine-tuning of the constructed SDNC interpreter
+  # (tied-gate threshold optimizer; ADR 0032).
+  lib/core/sdnc_finetune.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
@@ -2512,10 +2696,14 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/prng.cpp
   lib/core/runtime_arena_cpp.cpp
   lib/core/runtime_frame_trace.cpp
+  lib/core/gensym_sequence.cpp
   lib/core/runtime_gensym.cpp
   lib/core/runtime_type_name.cpp
   lib/core/symbol_intern.cpp
   lib/core/threads.c
+  lib/core/net.c
+  lib/core/tls.c
+  lib/core/resource_lease.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -2524,6 +2712,10 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
 if(ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2)
   list(APPEND ESHKOL_RUNTIME_SUPPORT_SRC lib/core/eskm_v2_preflight.c)
 endif()
+
+# Platform layer: windows/events, real-time audio, MIDI (ADR-0053).
+set(ESHKOL_PLATFORM_STAGE sources)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
 
 list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
   ${ESHKOL_BACKEND_RUNTIME_SRC}
@@ -2539,6 +2731,17 @@ list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
 set(ESHKOL_XLA_RUNTIME_SRC "")
 if(ESHKOL_XLA_ENABLED)
   set(ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/xla_runtime.cpp)
+  if(UNIX)
+    # The PJRT wrapper uses the POSIX dlopen/dlsym interface. Keep it in the
+    # guarded XLA runtime object set; native Windows support needs a loader
+    # implementation using LoadLibrary/GetProcAddress.
+    list(APPEND ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/pjrt_client.cpp)
+  else()
+    message(STATUS
+      "PJRT plugin loading is unavailable on this platform; "
+      "the XLA host runtime remains enabled"
+    )
+  endif()
   list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC ${ESHKOL_XLA_RUNTIME_SRC})
 endif()
 
@@ -2556,6 +2759,240 @@ if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
     list(APPEND ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
       "$<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>"
     )
+endif()
+
+# This is an offline loader contract test. Its fixture libraries export either
+# no PJRT entry point or an intentionally incompatible API major version; no
+# plugin discovery, device, or model is needed.
+if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
+    add_executable(pjrt_loader_test
+        tests/xla/pjrt_loader_test.cpp
+        lib/backend/xla/pjrt_client.cpp
+        lib/core/capability_policy.cpp
+    )
+    target_include_directories(pjrt_loader_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_compile_features(pjrt_loader_test PRIVATE cxx_std_17)
+    target_link_libraries(pjrt_loader_test PRIVATE ${CMAKE_DL_LIBS})
+
+    add_library(pjrt_test_nonplugin MODULE tests/xla/pjrt_test_nonplugin.cpp)
+    add_library(pjrt_test_incompatible MODULE tests/xla/pjrt_test_incompatible.cpp)
+    add_library(pjrt_test_short_table MODULE tests/xla/pjrt_test_short_table.cpp)
+    add_library(pjrt_test_null_initializer MODULE tests/xla/pjrt_test_null_initializer.cpp)
+    add_library(pjrt_test_compatible MODULE tests/xla/pjrt_test_compatible.cpp)
+    add_library(pjrt_test_missing_buffer_element_type MODULE
+        tests/xla/pjrt_test_compatible.cpp
+    )
+    target_compile_definitions(pjrt_test_missing_buffer_element_type PRIVATE
+        PJRT_TEST_MISSING_BUFFER_ELEMENT_TYPE=1
+    )
+    add_library(pjrt_test_output_mismatch MODULE
+        tests/xla/pjrt_test_output_mismatch.cpp
+    )
+    target_compile_features(pjrt_test_output_mismatch PRIVATE cxx_std_17)
+    target_include_directories(pjrt_test_output_mismatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_incompatible PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_short_table PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_null_initializer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_compatible PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_missing_buffer_element_type PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    set_target_properties(
+        pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
+        pjrt_test_null_initializer pjrt_test_compatible
+        pjrt_test_missing_buffer_element_type pjrt_test_output_mismatch PROPERTIES
+        PREFIX ""
+    )
+    add_dependencies(pjrt_loader_test
+        pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
+        pjrt_test_null_initializer pjrt_test_compatible
+        pjrt_test_missing_buffer_element_type pjrt_test_output_mismatch
+    )
+
+    add_test(NAME pjrt_loader_missing_library
+        COMMAND pjrt_loader_test missing
+            "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+    add_test(NAME pjrt_loader_non_pjrt_library
+        COMMAND pjrt_loader_test nonplugin $<TARGET_FILE:pjrt_test_nonplugin>
+    )
+    add_test(NAME pjrt_loader_incompatible_api_version
+        COMMAND pjrt_loader_test incompatible $<TARGET_FILE:pjrt_test_incompatible>
+    )
+    add_test(NAME pjrt_loader_short_api_table
+        COMMAND pjrt_loader_test short $<TARGET_FILE:pjrt_test_short_table>
+    )
+    add_test(NAME pjrt_loader_null_initializer
+        COMMAND pjrt_loader_test null_init $<TARGET_FILE:pjrt_test_null_initializer>
+    )
+    add_test(NAME pjrt_loader_compatible_initialize_unload
+        COMMAND pjrt_loader_test compatible $<TARGET_FILE:pjrt_test_compatible>
+    )
+    add_test(NAME pjrt_loader_missing_buffer_element_type
+        COMMAND pjrt_loader_test missing_element_type
+            $<TARGET_FILE:pjrt_test_missing_buffer_element_type>
+    )
+
+    # Runtime control test: verifies the default-off path still executes a
+    # host function and that the StableHLO entry point refuses to imply a
+    # device compile when PJRT was not selected.
+    add_executable(pjrt_runtime_control_test
+        tests/xla/pjrt_runtime_control_test.cpp
+    )
+    target_include_directories(pjrt_runtime_control_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    target_compile_options(pjrt_runtime_control_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_runtime_control_test)
+    target_link_libraries(pjrt_runtime_control_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_runtime_control_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    add_test(NAME pjrt_runtime_cpu_control
+        COMMAND pjrt_runtime_control_test off
+    )
+    add_test(NAME pjrt_runtime_requested_plugin_refusal
+        COMMAND pjrt_runtime_control_test missing-plugin
+            "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+
+    # Offline fake-plugin controls prove output metadata mismatches refuse
+    # before a host copy and still release input/output/executable handles.
+    add_executable(pjrt_runtime_output_mismatch_test
+        tests/xla/pjrt_runtime_output_mismatch_test.cpp
+    )
+    add_dependencies(pjrt_runtime_output_mismatch_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_runtime_output_mismatch_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    target_compile_options(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_runtime_output_mismatch_test)
+    target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_runtime_output_mismatch_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    add_test(NAME pjrt_runtime_output_dtype_mismatch
+        COMMAND pjrt_runtime_output_mismatch_test dtype
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_output_shape_mismatch
+        COMMAND pjrt_runtime_output_mismatch_test shape
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_reject_on_device_input
+        COMMAND pjrt_runtime_output_mismatch_test on-device-input
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_reject_on_device_output
+        COMMAND pjrt_runtime_output_mismatch_test on-device-output
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+
+    # Typed host descriptors exercise semantic f32/bf16 metadata, same-width
+    # integer mismatches, and all-or-nothing host output staging offline.
+    add_executable(pjrt_typed_buffers_test
+        tests/xla/pjrt_typed_buffers_test.cpp
+    )
+    add_dependencies(pjrt_typed_buffers_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_typed_buffers_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_compile_options(pjrt_typed_buffers_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_typed_buffers_test)
+    target_link_libraries(pjrt_typed_buffers_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST} ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_typed_buffers_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_typed_buffers_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_typed_buffers_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_typed_buffers_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    foreach(_pjrt_typed_mode f32 bf16 f32-matrix f32-int32 bf16-uint16 later-transfer-failure overflow negative on-device output-shape output-on-device invalid-output-type)
+        add_test(NAME pjrt_typed_buffers_${_pjrt_typed_mode}
+            COMMAND pjrt_typed_buffers_test ${_pjrt_typed_mode}
+                $<TARGET_FILE:pjrt_test_output_mismatch>
+        )
+    endforeach()
+
+    add_executable(pjrt_reusable_program_test
+        tests/xla/pjrt_reusable_program_test.cpp
+    )
+    add_dependencies(pjrt_reusable_program_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_reusable_program_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_options(pjrt_reusable_program_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_reusable_program_test)
+    target_link_libraries(pjrt_reusable_program_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST} ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_reusable_program_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_reusable_program_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_reusable_program_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_reusable_program_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    foreach(control reuse baseline owner reinit moved-from compile-fail no-active
+            uninitialized empty typed-dtype typed-shape
+            typed-on-device-input typed-on-device-output)
+        add_test(NAME pjrt_reusable_program_${control}
+            COMMAND pjrt_reusable_program_test ${control}
+                $<TARGET_FILE:pjrt_test_output_mismatch>
+        )
+    endforeach()
 endif()
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -2620,7 +3057,12 @@ eshkol_require_exhaustive_dispatch(
   # Region evacuation: heap_subtype_t -> EvacKind classification and the
   # EvacKind interior-walk switch. The ESH-0214d class — a subtype that falls
   # to a shallow leaf copy leaves interior pointers in a reclaimed arena.
+  # The other region units keep the flags they were compiled with before the
+  # region code was split into four translation units.
   lib/core/runtime_regions.cpp
+  lib/core/runtime_regions_evacuation.cpp
+  lib/core/runtime_regions_handles.cpp
+  lib/core/runtime_regions_resident.cpp
 )
 
 function(eshkol_apply_common_compile_settings target_name)
@@ -2648,6 +3090,14 @@ add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
 add_library(eshkol-backend-runtime-obj OBJECT ${ESHKOL_BACKEND_RUNTIME_SRC})
 add_library(eshkol-runtime-support-obj OBJECT ${ESHKOL_RUNTIME_SUPPORT_SRC})
 target_link_libraries(eshkol-runtime-support-obj PRIVATE eshkol-qllm-abi)
+if(ESHKOL_TLS_OPENSSL_FOUND)
+    set_source_files_properties(lib/core/tls.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    target_link_libraries(eshkol-runtime-support-obj PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+else()
+    set_source_files_properties(lib/core/tls.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+endif()
 set(ESHKOL_VM_UNITY_OBJECTS)
 if(ESHKOL_VM_UNITY_SRC)
     add_library(eshkol-vm-unity-obj OBJECT ${ESHKOL_VM_UNITY_SRC})
@@ -2661,6 +3111,11 @@ endif()
 set(ESHKOL_XLA_RUNTIME_OBJECTS)
 if(ESHKOL_XLA_RUNTIME_SRC)
     add_library(eshkol-xla-runtime-obj OBJECT ${ESHKOL_XLA_RUNTIME_SRC})
+    if(ESHKOL_XLA_ENABLED AND UNIX)
+        target_compile_definitions(eshkol-xla-runtime-obj PRIVATE
+            ESHKOL_XLA_PJRT_AVAILABLE=1
+        )
+    endif()
     set(ESHKOL_XLA_RUNTIME_OBJECTS $<TARGET_OBJECTS:eshkol-xla-runtime-obj>)
 endif()
 
@@ -2691,6 +3146,16 @@ if(TARGET eshkol-gpu-runtime-obj)
     eshkol_apply_common_compile_settings(eshkol-gpu-runtime-obj)
     if(CUDAToolkit_FOUND)
         target_include_directories(eshkol-gpu-runtime-obj SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    endif()
+    if(ESHKOL_VULKAN_COMPUTE_ENABLED)
+        # Only the GPU backend objects see the Vulkan switch. The admission
+        # probe's host references must stay unfused.
+        target_compile_definitions(eshkol-gpu-runtime-obj PRIVATE ESHKOL_GPU_VULKAN_ENABLED=1)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            set_source_files_properties(
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_vulkan.c"
+                PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+        endif()
     endif()
 endif()
 if(TARGET eshkol-xla-runtime-obj)
@@ -2761,6 +3226,13 @@ set(ESHKOL_RUNTIME_OBJECTS
 add_library(eshkol-runtime STATIC
   ${ESHKOL_RUNTIME_OBJECTS}
 )
+# Agent implementations need the native runtime helpers, never compiler-generated
+# incremental objects. Reuse the already compiled objects in an uninstalled base
+# archive so bootstrapping the compiler cannot depend on its own output.
+add_library(eshkol-runtime-base STATIC EXCLUDE_FROM_ALL ${ESHKOL_RUNTIME_OBJECTS})
+target_include_directories(eshkol-runtime-base PUBLIC ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS})
+target_link_libraries(eshkol-runtime-base PUBLIC
+    "$<TARGET_PROPERTY:eshkol-runtime,INTERFACE_LINK_LIBRARIES>")
 target_include_directories(
   eshkol-runtime
   PUBLIC
@@ -2790,6 +3262,8 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 # hosted reader/runtime support but no LLVM libraries or code-generation TU.
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
+  lib/frontend/differentiation_graph.cpp
+  lib/frontend/scalar_lowering.cpp
   lib/frontend/ast_strings.cpp
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
@@ -2799,7 +3273,15 @@ add_library(eshkol-workspace STATIC
   lib/frontend/library_registry.cpp
   lib/frontend/workspace.cpp
   lib/types/hott_types.cpp
+  lib/types/hott_forms.cpp
+  lib/types/cubical/interval.cpp
+  lib/types/cubical/eval.cpp
+  lib/types/cubical/conv.cpp
+  lib/types/cubical/elab.cpp
+  lib/types/cubical/decl.cpp
   lib/types/type_relation.cpp
+  lib/types/quantum_index.cpp
+  lib/types/type_term.cpp
   lib/core/ast.cpp
 )
 target_include_directories(eshkol-workspace PUBLIC
@@ -2862,10 +3344,24 @@ endif()
 if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
+if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
+    # This test target is declared before LLVM's library search directories are
+    # normalized from llvm-config; attach them here after that discovery.
+    target_link_directories(pjrt_runtime_control_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_runtime_output_mismatch_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_typed_buffers_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_typed_buffers_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_reusable_program_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_reusable_program_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
 
-# Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
-# CoreFoundation for image_io.c, Windows Gdiplus/Advapi32/Ntdll, libpng/jpeg/webp,
-# clang builtins) to the static/runtime libraries' PUBLIC interface. Previously
+# Propagate the runtime's transitive system link deps (Apple CoreFoundation/
+# Security, Windows Advapi32/Ntdll, clang builtins) to the static/runtime
+# libraries' PUBLIC interface. Image I/O adds none: its codecs are built in. Previously
 # these lived only on the eshkol-run/eshkol-repl executables, so a downstream
 # consumer linking libeshkol-static.a directly (e.g. libnoesis-core) hit
 # "Undefined symbols: _CGImageDestinationCreateWithURL ..." and had to re-declare
@@ -2931,6 +3427,8 @@ endif()
 # exe/eshkol-run.cpp) is covered separately — see append_host_runtime_link_args()
 # there for non-Apple, and the hardcoded Apple framework list for Apple.
 if(APPLE)
+    target_link_libraries(eshkol-runtime PUBLIC "-framework CoreFoundation")
+    target_link_libraries(eshkol-static PUBLIC "-framework CoreFoundation")
     target_link_libraries(eshkol-runtime PUBLIC "-framework Security")
     target_link_libraries(eshkol-static PUBLIC "-framework Security")
 elseif(WIN32)
@@ -2940,6 +3438,10 @@ elseif(WIN32)
 elseif(OpenSSL_FOUND)
     target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
     target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)
+endif()
+if(ESHKOL_TLS_OPENSSL_FOUND)
+    target_link_libraries(eshkol-runtime PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(eshkol-static PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
@@ -2974,6 +3476,89 @@ foreach (exe ${EXE_SRC})
   endif()
 endforeach ()
 
+# ===== Reproducible Eshkol compiler-pass bootstrap =====
+option(ESHKOL_SELF_HOSTED_INCREMENTAL "Use the Eshkol-written incremental planner in native tools" ON)
+option(ESHKOL_SELF_HOSTED_SCALAR_LOWERING "Use Eshkol-written scalar arithmetic lowering in native tools" ON)
+if(CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "The compiler-pass bootstrap requires a native host build; cross-compiling the compiler is not supported")
+endif()
+add_executable(eshkol-bootstrap EXCLUDE_FROM_ALL exe/eshkol-run.cpp)
+set_property(TARGET eshkol-bootstrap PROPERTY ESHKOL_COMPILER_SEED_HOST TRUE)
+target_compile_options(eshkol-bootstrap PRIVATE ${LLVM_CXXFLAGS_LIST} ${ESHKOL_EXE_COMPILE_FLAGS})
+target_compile_definitions(eshkol-bootstrap PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+target_include_directories(eshkol-bootstrap PRIVATE inc/)
+eshkol_target_llvm_includes(eshkol-bootstrap)
+if(LLVM_LIBRARY_DIRS)
+    target_link_directories(eshkol-bootstrap PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+target_link_libraries(eshkol-bootstrap PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+add_executable(eshkol-bootstrap-object EXCLUDE_FROM_ALL tools/compiler/bootstrap_object.cpp)
+target_compile_features(eshkol-bootstrap-object PRIVATE cxx_std_20)
+eshkol_target_llvm_includes(eshkol-bootstrap-object)
+if(LLVM_LIBRARY_DIRS)
+    target_link_directories(eshkol-bootstrap-object PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+target_link_libraries(eshkol-bootstrap-object PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+set(_incremental_bootstrap_dir "${CMAKE_CURRENT_BINARY_DIR}/compiler-bootstrap")
+set(_incremental_plan_object "${_incremental_bootstrap_dir}/incremental-plan.o")
+set(_incremental_runtime_object "${_incremental_bootstrap_dir}/incremental-runtime.o")
+set(_scalar_lower_object "${_incremental_bootstrap_dir}/incremental-scalar.o")
+foreach(_part IN ITEMS plan runtime scalar)
+    set(_seed "${_incremental_bootstrap_dir}/incremental-${_part}-seed")
+    set(_object "${_incremental_bootstrap_dir}/incremental-${_part}.o")
+    if(_part STREQUAL "plan")
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tools/compiler/incremental_plan_entry.esk")
+        set(_entry eshkol_incremental_plan_entry)
+        set(_thunk eshkol_incremental_plan_call)
+    elseif(_part STREQUAL "scalar")
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tools/compiler/scalar_lower_entry.esk")
+        set(_entry eshkol_scalar_lower_entry)
+        set(_thunk eshkol_scalar_lower_call)
+    else()
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/incremental_runtime.esk")
+        set(_entry -)
+        set(_thunk eshkol_incremental_plan_call)
+    endif()
+    add_custom_command(OUTPUT "${_object}"
+        BYPRODUCTS "${_seed}.o" "${_seed}.bc"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_incremental_bootstrap_dir}"
+        COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            "ESHKOL_TARGET_CPU=generic" "ESHKOL_TARGET_FEATURES="
+            $<TARGET_FILE:eshkol-bootstrap> --no-stdlib --strict-types --shared-lib -c -O1 -o "${_seed}" "${_source}"
+        COMMAND $<TARGET_FILE:eshkol-bootstrap-object> "${_seed}.bc" "${_object}"
+            "__eshkol_incremental_${_part}" "${_entry}" "${_thunk}"
+        DEPENDS eshkol-bootstrap eshkol-bootstrap-object "${_source}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/incremental_plan.esk"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/scalar_lower.esk"
+        VERBATIM)
+    set_source_files_properties("${_object}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+endforeach()
+add_custom_target(eshkol-incremental-bootstrap DEPENDS "${_incremental_plan_object}" "${_incremental_runtime_object}" "${_scalar_lower_object}")
+target_sources(eshkol-runtime PRIVATE "${_incremental_runtime_object}")
+# Several targets take these objects as sources. Each one depends on the single
+# target that produces them, so every generator runs the three commands once
+# and the consumers wait for that one run instead of each starting its own.
+add_dependencies(eshkol-runtime eshkol-incremental-bootstrap)
+
+# Final native tools register the packaged pass at startup; the seed remains
+# the explicit reference backend and no final-tool build retries after refusal.
+foreach(_native_tool IN LISTS EXES)
+    target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
+    add_dependencies(${_native_tool} eshkol-incremental-bootstrap)
+    if(ESHKOL_SELF_HOSTED_INCREMENTAL)
+        target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
+        target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+        target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_INCREMENTAL)
+    endif()
+    if(ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+        target_sources(${_native_tool} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+        target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+        target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+    endif()
+endforeach()
+
 # ===== Pre-compiled Standard Library =====
 # Compile stdlib.esk to stdlib.o/stdlib.bc for faster loading of user programs
 set(ESHKOL_STDLIB_TARGET_CPU "" CACHE STRING
@@ -3004,15 +3589,76 @@ endif()
 # so newly-added .esk modules are picked up without needing a manual
 # `cmake ..` re-run.
 file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/signal/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/random/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/web/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/tensor/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/quantum/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/ml/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math.esk")
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/*.esk")
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(_module_generator "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_stdlib_modules.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_module_generator}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_language_surface.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -B "${_module_generator}"
+    OUTPUT_VARIABLE ESHKOL_STDLIB_MODULES RESULT_VARIABLE _modules_status)
+if(NOT _modules_status EQUAL 0)
+    message(FATAL_ERROR "Could not generate the installed stdlib module manifest")
+endif()
+configure_file(cmake/stdlib_modules.inc.in
+    "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/stdlib_modules.inc" @ONLY)
+
+# The stdlib's identity travels inside stdlib.o and stdlib.bc, so every
+# package path carries it automatically with the artifacts. Fingerprint the
+# complete source closure (including relative paths) and effective object ABI;
+# reconfigure when any input changes so the compiler and generated artifacts
+# agree about the expected identity.
+set(_stdlib_identity_inputs "${STDLIB_SOURCE};${STDLIB_TRANSITIVE_SOURCES}")
+# The source digest describes compatibility of emitted and consumed stdlib
+# artifacts, not just the Scheme-level library text. Include the compiler,
+# runtime ABI, JIT consumer, and their CMake/configuration inputs so same-release
+# codegen or layout changes cannot retain an old identity. Use filesystem globs
+# rather than git metadata so source archives configure identically.
+file(GLOB_RECURSE _stdlib_identity_native_inputs CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/inc/eshkol/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/repl/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*")
+file(GLOB _stdlib_identity_config_inputs CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+list(APPEND _stdlib_identity_inputs
+     ${_stdlib_identity_native_inputs}
+     ${_stdlib_identity_config_inputs}
+     "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-run.cpp")
+list(REMOVE_DUPLICATES _stdlib_identity_inputs)
+list(SORT _stdlib_identity_inputs)
+set(_stdlib_identity_source_material "")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+     ${_stdlib_identity_inputs})
+foreach(_stdlib_input IN LISTS _stdlib_identity_inputs)
+  file(SHA256 "${_stdlib_input}" _stdlib_input_sha256)
+  file(RELATIVE_PATH _stdlib_input_relative
+       "${CMAKE_CURRENT_SOURCE_DIR}" "${_stdlib_input}")
+  string(APPEND _stdlib_identity_source_material
+         "${_stdlib_input_relative}:${_stdlib_input_sha256}\n")
+endforeach()
+string(APPEND _stdlib_identity_source_material
+       "${ESHKOL_STDLIB_MODULES}"
+       "toolchain:c=${CMAKE_C_COMPILER_ID}-${CMAKE_C_COMPILER_VERSION};"
+       "cxx=${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION};"
+       "llvm=${LLVM_PACKAGE_VERSION}\n")
+string(SHA256 ESHKOL_STDLIB_SOURCE_FINGERPRINT
+       "${_stdlib_identity_source_material}")
+if(ESHKOL_MEMORY_ABI_V2)
+  set(ESHKOL_STDLIB_IDENTITY_ABI "object-abi-v2")
+else()
+  set(ESHKOL_STDLIB_IDENTITY_ABI "object-abi-v1")
+endif()
+set(ESHKOL_STDLIB_RELEASE_STRING "${ESHKOL_RELEASE_VERSION}")
+string(REGEX REPLACE "[^A-Za-z0-9_]" "_" ESHKOL_STDLIB_IDENTITY_RELEASE
+       "${ESHKOL_STDLIB_RELEASE_STRING}")
+string(REGEX REPLACE "[^A-Za-z0-9_]" "_" ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL
+       "${ESHKOL_STDLIB_IDENTITY_ABI}")
+set(ESHKOL_STDLIB_IDENTITY_SYMBOL
+    "eshkol_stdlib_identity_release_${ESHKOL_STDLIB_IDENTITY_RELEASE}_abi_${ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL}_source_${ESHKOL_STDLIB_SOURCE_FINGERPRINT}")
+configure_file(cmake/stdlib_identity.h.in
+    "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/stdlib_identity_config.h" @ONLY)
 
 if(WIN32)
   set(STDLIB_CODEGEN_LAUNCHER)
@@ -3034,7 +3680,8 @@ add_custom_command(
   # thread stack at link time).
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
           ${STDLIB_CODEGEN_LAUNCHER}
-          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib"
+          --embed-stdlib-identity=${ESHKOL_STDLIB_IDENTITY_SYMBOL} "${STDLIB_SOURCE}"
           # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
           # linked into every user binary and loaded by the REPL JIT, so this
           # edge wants a relocatable object, not the loadable shared library
@@ -3047,10 +3694,45 @@ add_custom_command(
 
 add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+  find_program(ESHKOL_STDLIB_IDENTITY_LLVM_AS
+      NAMES llvm-as-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-as
+      HINTS ${LLVM_TOOLS_BINARY_DIR} "${ESHKOL_LLVM_ROOT}/bin")
+  find_program(ESHKOL_STDLIB_IDENTITY_LLC
+      NAMES llc-${ESHKOL_REQUIRED_LLVM_MAJOR} llc
+      HINTS ${LLVM_TOOLS_BINARY_DIR} "${ESHKOL_LLVM_ROOT}/bin")
+  if(NOT ESHKOL_STDLIB_IDENTITY_LLVM_AS)
+    set(ESHKOL_STDLIB_IDENTITY_LLVM_AS "")
+  endif()
+  if(NOT ESHKOL_STDLIB_IDENTITY_LLC)
+    set(ESHKOL_STDLIB_IDENTITY_LLC "")
+  endif()
+  add_test(NAME stdlib_identity_compatibility
+      COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/stdlib_identity_test.sh"
+          "$<TARGET_FILE:eshkol-run>"
+          "${ESHKOL_STDLIB_IDENTITY_SYMBOL}"
+          "${ESHKOL_STDLIB_IDENTITY_RELEASE}"
+          "${ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL}"
+          "${ESHKOL_STDLIB_SOURCE_FINGERPRINT}"
+          "${CMAKE_CURRENT_BINARY_DIR}"
+          "${ESHKOL_STDLIB_IDENTITY_LLVM_AS}"
+          "${ESHKOL_STDLIB_IDENTITY_LLC}")
+  set_tests_properties(stdlib_identity_compatibility PROPERTIES TIMEOUT 180)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+  add_test(NAME memory_compile_refusal_contract
+      COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_compile_refusal_contract_test.sh")
+  set_tests_properties(memory_compile_refusal_contract PROPERTIES TIMEOUT 20)
+endif()
+
 # Install stdlib artifacts to lib directory.  The REPL prefers stdlib.bc so
 # stdlib and later REPL batches share the same ORC IR compilation pipeline;
 # stdlib.o remains available for legacy/load-time fallback paths.
 install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/release-tag" DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol)
 install(FILES lib/tensorcore.esk DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib)
 install(FILES inc/eshkol/tensorcore_adapter.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
 install(FILES inc/eshkol/agent_platform.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
@@ -3073,6 +3755,9 @@ install(FILES inc/eshkol/backend/tensorcore_codegen.h
 if(TARGET eshkol-runtime)
   install(TARGETS eshkol-runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 endif()
+if(TARGET eshkol-repl-lib)
+  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+endif()
 install(FILES cmake/FindEshkol.cmake cmake/EshkolCompile.cmake
         DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/cmake)
 # The full (require ...)/(import ...) module-source tree, preserving lib/'s
@@ -3090,7 +3775,7 @@ install(DIRECTORY lib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib
 set(ESHKOL_PC_EXTRA_LIBS "")
 if(APPLE)
   set(ESHKOL_PC_EXTRA_LIBS
-      "-framework Accelerate -framework Metal -framework MetalPerformanceShaders -framework Foundation -framework Security -framework CoreFoundation -framework ImageIO -framework CoreGraphics -lobjc")
+      "-framework Accelerate -framework Metal -framework MetalPerformanceShaders -framework Foundation -framework Security -framework CoreFoundation -lobjc")
 elseif(WIN32)
   set(ESHKOL_PC_EXTRA_LIBS "-lbcrypt -lws2_32")
 endif()
@@ -3194,6 +3879,7 @@ if(REPL_SRC)
       # PE/COFF: export only the bounded Eshkol runtime namespace via a
       # generated .def (--export-all-symbols overflows the 65535 PE export
       # limit because the exe statically links all of LLVM).
+      # The unified runtime export table is attached after optional agent FFI.
     else()
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
@@ -3206,7 +3892,8 @@ if(REPL_SRC)
 
   # ===== Link eshkol-run with REPL library for -e/--eval JIT support =====
   # This must come after eshkol-repl-lib is defined
-  target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
+  foreach(_jit_host IN ITEMS eshkol-run eshkol-bootstrap)
+  target_link_libraries(${_jit_host} PRIVATE eshkol-repl-lib)
 
   # Agent FFI linkage is applied AFTER the eshkol-agent-ffi target is
   # defined (see the block at the end of the agent-FFI section further
@@ -3227,7 +3914,7 @@ if(REPL_SRC)
     # eshkol-static, but with only `eshkol_eval_bridge_linked` as an
     # external symbol the archive gets dead-stripped without
     # force_load.
-    target_link_options(eshkol-run PRIVATE
+    target_link_options(${_jit_host} PRIVATE
       "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
       "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>")
     # NOTE: agent-ffi force_load is applied separately AFTER the
@@ -3236,10 +3923,10 @@ if(REPL_SRC)
     # FFI section. This split is because `if(TARGET eshkol-agent-ffi)`
     # here evaluates at configure time and the target doesn't exist
     # yet.
-    target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-export_dynamic")
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
-    target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
-    target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-stack_size,0x20000000")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-bind_at_load")
   elseif(WIN32 AND ESHKOL_USING_MSVC)
     # The bounded /DEF table attached after the agent target exists performs
     # both precise archive retention and PE export.  Do not /WHOLEARCHIVE the
@@ -3252,30 +3939,34 @@ if(REPL_SRC)
     # overrides + JIT-only helpers); the generated .def exports exactly the
     # Eshkol runtime namespace so GetForCurrentProcess resolves them. PE does
     # not export symbols by default — see cmake/gen_runtime_def.cmake.
-    target_link_options(eshkol-run PRIVATE
+    target_link_options(${_jit_host} PRIVATE
       "-Wl,--whole-archive"
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
+    # The unified runtime export table is attached after optional agent FFI.
   else()
-    target_link_options(eshkol-run PRIVATE
+    target_link_options(${_jit_host} PRIVATE
       "-Wl,--whole-archive"
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
-    target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
+    target_link_options(${_jit_host} PRIVATE "-Wl,--export-dynamic")
     # 512MB stack for deep recursion
-    target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-z,stack-size=536870912")
     # Linker hardening: full RELRO + immediate binding
-    target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
   endif()
 
-  # Linux binary releases stage libpng/libjpeg/libwebp and their codec-side
-  # closure under lib/eshkol/runtime-deps.  Keep the tools relocatable: the
-  # same binaries continue to use distro libraries in the build tree, then
-  # resolve the packaged SONAMEs through this relative RUNPATH after archive
-  # extraction.  Generated AOT/cache executables receive an absolute path to
-  # the relocated directory at link time via platform_runtime.cpp.
+  endforeach()
+
+  # Linux binary releases may stage runtime dependencies under
+  # lib/eshkol/runtime-deps (none today: the image codecs are built into the
+  # runtime).  Keep the tools relocatable: the same binaries use distro
+  # libraries in the build tree, then resolve any packaged SONAMEs through
+  # this relative RUNPATH after archive extraction.  Generated AOT/cache
+  # executables receive an absolute path to the relocated directory at link
+  # time via platform_runtime.cpp.
   if(UNIX AND NOT APPLE)
     set(_eshkol_packaged_runtime_rpath
         "\$ORIGIN/../lib/eshkol/runtime-deps")
@@ -3357,6 +4048,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/content_
     add_test(NAME content_length_parse_test COMMAND content_length_parse_test)
 endif()
 
+# Shared C/C++ contract tests for the native and VM binary64 formatter.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/dtoa_shortest_test.c")
+    add_executable(dtoa_shortest_c_test tests/core/dtoa_shortest_test.c)
+    target_include_directories(dtoa_shortest_c_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME dtoa_shortest_c_test COMMAND dtoa_shortest_c_test)
+endif()
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/dtoa_shortest_test.cpp")
+    add_executable(dtoa_shortest_cpp_test tests/core/dtoa_shortest_test.cpp)
+    target_compile_features(dtoa_shortest_cpp_test PRIVATE cxx_std_17)
+    target_include_directories(dtoa_shortest_cpp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME dtoa_shortest_cpp_test COMMAND dtoa_shortest_cpp_test)
+endif()
+
 # ===== ADR-0000 Stage 1: frontend node-identity substrate =====
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/node_identity_test.cpp")
     add_executable(node_identity_test tests/frontend/node_identity_test.cpp)
@@ -3370,6 +4074,33 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
     add_test(NAME node_identity_test COMMAND node_identity_test)
     set_tests_properties(node_identity_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
+endif()
+
+# ADR-0042: the core term language of dependent types.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/type_term_test.cpp")
+    add_executable(type_term_test tests/types/type_term_test.cpp)
+    target_compile_features(type_term_test PRIVATE cxx_std_20)
+    target_include_directories(type_term_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(type_term_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(type_term_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(type_term_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME type_term_test COMMAND type_term_test)
+    set_tests_properties(type_term_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: dependent type terms")
+endif()
+
+# ADR-0042: the dependent-type and bidirectional-checking corpus of the type
+# system suite -- every positive fixture compiles and every negative fixture
+# is refused with its diagnostic.
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME typesystem_dependent_corpus
+             COMMAND ${CMAKE_COMMAND} -E env BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+                     ESHKOL_TYPESYSTEM_GLOB=tests/typesystem/dep_*.esk:tests/typesystem/bidir_*.esk
+                     bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_typesystem_tests.sh
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(typesystem_dependent_corpus PROPERTIES TIMEOUT 900)
 endif()
 
 # ADR-0021: the one owner of AST string payloads.
@@ -3454,6 +4185,17 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     add_test(NAME model_io_test COMMAND model_io_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND APPLE)
+    add_executable(keychain_native_mock_test
+        lib/core/keychain_native.c
+        tests/core/keychain_native_mock_test.c)
+    target_include_directories(keychain_native_mock_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/core")
+    target_link_libraries(keychain_native_mock_test PRIVATE
+        "-framework CoreFoundation")
+    add_test(NAME keychain_native_mock_test COMMAND keychain_native_mock_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/vm_model_io_fail_closed_test.c")
     add_executable(vm_model_io_fail_closed_test
@@ -3507,12 +4249,42 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
             FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+if(ESHKOL_BUILD_TESTS)
+    add_executable(eval_datum_graph tests/core/eval_datum_graph.cpp)
+    target_compile_features(eval_datum_graph PRIVATE cxx_std_17)
+    target_include_directories(eval_datum_graph PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eval_datum_graph PRIVATE eshkol-runtime)
+    add_test(NAME eval_datum_graph COMMAND eval_datum_graph)
+
+    add_executable(ffi_tensor_shape_roundtrip_test tests/ffi/tensor_shape_roundtrip.cpp)
+    target_compile_features(ffi_tensor_shape_roundtrip_test PRIVATE cxx_std_20)
+    target_include_directories(ffi_tensor_shape_roundtrip_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ffi_tensor_shape_roundtrip_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ffi_tensor_shape_roundtrip_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ffi_tensor_shape_roundtrip_test COMMAND ffi_tensor_shape_roundtrip_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
     add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
     target_compile_features(tensor_validation_test PRIVATE cxx_std_17)
     target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(tensor_validation_test PRIVATE eshkol-runtime)
     add_test(NAME tensor_validation_test COMMAND tensor_validation_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/string_to_list_runtime_test.cpp")
+    add_executable(string_to_list_runtime_test
+        tests/core/string_to_list_runtime_test.cpp)
+    target_compile_features(string_to_list_runtime_test PRIVATE cxx_std_17)
+    target_include_directories(string_to_list_runtime_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(string_to_list_runtime_test PRIVATE eshkol-runtime)
+    add_test(NAME string_to_list_runtime_test COMMAND string_to_list_runtime_test)
+    set_tests_properties(string_to_list_runtime_test PROPERTIES TIMEOUT 30)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
@@ -3586,6 +4358,24 @@ if(ESHKOL_BUILD_TESTS)
     endif()
     target_link_libraries(ir_builder_continuation_test PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME ir_builder_continuation COMMAND ir_builder_continuation_test)
+endif()
+
+# The block boundary after a no-return emission: continueAfterNoReturn() seats
+# the builder on a fresh predecessor-less block, and blocksPastUnreachable()
+# names every block an emitter left with instructions behind `unreachable`.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(noreturn_blocks_test tests/backend/noreturn_blocks_test.cpp)
+    target_compile_features(noreturn_blocks_test PRIVATE cxx_std_20)
+    target_include_directories(noreturn_blocks_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    eshkol_target_llvm_includes(noreturn_blocks_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(noreturn_blocks_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(noreturn_blocks_test PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME noreturn_blocks COMMAND noreturn_blocks_test)
+    set_tests_properties(noreturn_blocks PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: no-return block continuation"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND ESHKOL_TENSORCORE_ENABLED AND
@@ -3668,6 +4458,63 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Shape-bound regressions use public language calls through both native front doors.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/tensor_shape_bounds_test.esk")
+    set(_tensor_shape_bounds_source
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/tensor_shape_bounds_test.esk")
+    add_test(NAME tensor_shape_bounds_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${_tensor_shape_bounds_source}")
+    set_tests_properties(tensor_shape_bounds_jit PROPERTIES
+        TIMEOUT 180
+        ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/tensor-shape-bounds-jit-cache"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    add_test(NAME tensor_shape_bounds_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${_tensor_shape_bounds_source}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/tensor_shape_bounds_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(tensor_shape_bounds_aot PROPERTIES
+        TIMEOUT 240
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Independent exact closed-form oracle and strict-boundary example coverage.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(_certified_linear_example "${CMAKE_CURRENT_SOURCE_DIR}/examples/mathematics_certified_linear_solve.esk")
+    add_test(NAME certified_linear_solve_example_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${_certified_linear_example}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_linear_solve_example_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${_certified_linear_example}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_linear_solve_example_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set(_certified_linear_example_tests certified_linear_solve_example_jit certified_linear_solve_example_aot)
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME vm_mathematics_certified_linear_solve COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            "-DESHKOL_SOURCE=${_certified_linear_example}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/mathematics_certified_linear_solve.eskb"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        list(APPEND _certified_linear_example_tests vm_mathematics_certified_linear_solve)
+    endif()
+    set_tests_properties(${_certified_linear_example_tests} PROPERTIES TIMEOUT 900
+        LABELS "examples;certified;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Scoped sblc-cost-sensitivities consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sblc-cost-sensitivities/CTest.cmake")
+
 # Shared exact cyclotomic arithmetic; the two consumers remain gated below.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME cyclotomic_jit
@@ -3680,6 +4527,583 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "PASS: cyclotomic_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
+# Scoped hawkes-forecast consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-forecast/CTest.cmake")
+
+# core.sheaf: finite sites, sieves, presheaves, gluing, sheafification and
+# cohomology (ADR-0033), with core.integer_linalg. The suite cross-checks
+# against core.exact_linalg and between independent cohomology paths; the
+# finite-site and finite-space sheaf examples below consume the library.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME sheaf_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/sheaf_test.esk")
+    add_test(NAME sheaf_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/sheaf_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/sheaf_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(sheaf_jit sheaf_aot PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: sheaf_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
+# core.effective (ADR-0038): reductions and the perturbation lemma, discrete
+# vector fields, Eilenberg-Zilber, twisted products, classifying spaces and
+# K(pi, n) with effective homology (effective_test); homotopy groups of
+# spheres through the Whitehead tower (effective_homotopy_test). Hypercovers
+# and descent for 2-types and 3-types, stage S6.3 (effective_hypercover_test),
+# run about 30 GB and are not CTest entries: scripts/run_effective_gate.sh
+# invokes effective_hypercover_jit/aot directly, the same way it already runs
+# the long-run effective_pi6_s3_test and effective_hypercover_3type_test.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_eff_suite effective_test effective_homotopy_test)
+        string(REPLACE "_test" "" _eff_name ${_eff_suite})
+        add_test(NAME ${_eff_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk")
+        add_test(NAME ${_eff_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_eff_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=1500"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_eff_name}_jit ${_eff_name}_aot PROPERTIES
+            TIMEOUT 3000
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_eff_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.simplicial and core.homological (ADR-0037): simplicial sets, nerves,
+# Kan complexes, mapping spaces; complexes over ring carriers, homology with
+# torsion, cones, Ext/Tor, spectral sequences, cup and cup-i products,
+# Steenrod squares, group cohomology. Each suite cross-checks against closed
+# forms and independent computations.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_sh_suite simplicial_test homological_test)
+        string(REPLACE "_test" "" _sh_name ${_sh_suite})
+        add_test(NAME ${_sh_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sh_suite}.esk")
+        add_test(NAME ${_sh_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sh_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sh_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=900"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_sh_name}_jit ${_sh_name}_aot PROPERTIES
+            TIMEOUT 2400
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_sh_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.topos: the internal language of the topos of a finite site, with
+# Kripke-Joyal forcing cross-checked against the Omega-valued interpretation,
+# the Kripke and Beth reductions, soundness of intuitionistic higher-order
+# logic, and the internally local structure sheaf of Spec(Z/n) (ADR-0035).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_topos_suite topos_test topos_corpus_test topos_corpus_sheaf_test topos_reductions_test topos_jtranslation_test topos_local_ring_test)
+        add_test(NAME ${_topos_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk")
+        add_test(NAME ${_topos_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_topos_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=540"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_topos_suite}_jit ${_topos_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_topos_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.theory (ADR-0039): algebraic theories as data. The suite checks the
+# laws exhaustively on finite models (every group of order <= 8, Z/n through
+# core.ring, matrix rings, modules, lattices, Heyting and Boolean algebras),
+# on seeded samples on infinite ones, the word problem of every catalogue
+# theory against evaluation in finite models, and the Lawvere theory; the
+# topos suite checks Omega_J(c) of core.topos toposes as Heyting algebras.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_theory_suite theory theory_topos)
+        add_test(NAME ${_theory_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_theory_suite}_test.esk")
+        add_test(NAME ${_theory_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_theory_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_theory_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_theory_suite}_jit ${_theory_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_theory_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.ring and core.multimodular (ADR-0034, library rung): the ring-law gate
+# (exhaustive on small lawful carriers, seeded on infinite ones, refusals,
+# coercion lattice, ring maps), the IEEE tier against its per-operation
+# specification with a pinned digest of the binary64 results, and the
+# multimodular determinant, solve and polynomial gcd against the exact paths.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_ring_suite ring ring_ieee multimodular)
+        add_test(NAME ${_ring_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_ring_suite}_test.esk")
+        add_test(NAME ${_ring_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_ring_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_ring_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_ring_suite}_jit ${_ring_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_ring_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# nLab conformance: claims quoted from nLab pages, each decided exactly on the
+# libraries (core.sheaf, core.topos, core.ring, core.multimodular, core.category,
+# core.simplicial, core.homological, core.integer_linalg). One PASS/FAIL line
+# per claim; the page-by-page coverage is
+# docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
+# counts the claims.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial)
+        add_test(NAME ${_nlab_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk")
+        add_test(NAME ${_nlab_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_nlab_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=540"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_nlab_suite}_jit ${_nlab_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_nlab_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.category: finite category theory on core.sheaf.site's representation
+# (ADR-0036): functors, natural transformations, (co)limits, ends, coends,
+# Yoneda, Kan extensions, adjunctions, monads, derived limits, and descent and
+# sheafification as category theory. category_s62_test is the S6.2 acceptance
+# suite (descent as a Kan extension, sheafification as a reflector).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_category_suite category_test category_s62_test)
+        add_test(NAME ${_category_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk")
+        add_test(NAME ${_category_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_category_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1500"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_category_suite}_jit ${_category_suite}_aot PROPERTIES
+            TIMEOUT 1800
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_category_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.transcript: content-addressed transcripts of certified mathematical
+# quantities (determinant, Smith normal form, rank mod p, polynomial gcd),
+# fnv1a-64-hashed (core.merkle) and independently cross-checked by
+# scripts/math_crosscheck/replay_check.py. transcript_replay_check needs only
+# python3 (pure stdlib; no Eshkol build) against the committed fixtures.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME transcript_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/transcript_test.esk")
+    add_test(NAME transcript_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/transcript_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/transcript_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(transcript_jit transcript_aot PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: transcript_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME transcript_replay_check
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/math_crosscheck/replay_check.py"
+                --dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/math_crosscheck/fixtures")
+        set_tests_properties(transcript_replay_check PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+            FAIL_REGULAR_EXPRESSION "RESULT: FAILURES DETECTED|Traceback")
+    endif()
+endif()
+
+# core.monoidal: monoidal, braided, symmetric, compact closed and dagger
+# structure with every coherence law a check, FinVect over exact carriers,
+# string diagrams with a normal form, and the ZX-calculus with exact rule
+# soundness over Q(zeta_8) and Clifford+T circuits (ADR-0041).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_monoidal_suite monoidal_test zx_test)
+        add_test(NAME ${_monoidal_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_monoidal_suite}.esk")
+        add_test(NAME ${_monoidal_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_monoidal_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_monoidal_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1200"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_monoidal_suite}_jit ${_monoidal_suite}_aot PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_monoidal_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+    # ZX evaluation against Moonlab's state-vector simulator: only in builds
+    # that link Moonlab (agent.quantum).
+    if(ESHKOL_QUANTUM_ENABLED)
+        add_test(NAME zx_moonlab_crosscheck
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/quantum/zx_moonlab_crosscheck_test.esk"
+                    "-L${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(zx_moonlab_crosscheck PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "zx_moonlab_crosscheck_test: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL|error:|Unhandled exception|fatal signal")
+    endif()
+endif()
+
+# core.quantum (ADR-0048): quantum register types qreg<n> with compile-time
+# dimensions, quantum regions, the circuit IR with its optimiser (soundness
+# checked exactly over Q(zeta_m) and by ZX-calculus certificates), SABRE
+# routing, and QAOA with exact AD gradients, in native JIT and AOT; the
+# compile-time corpus (tests/typesystem/qreg_*.esk) on the native and the
+# bytecode engines; and, in Moonlab builds, QAOA expectations and gradients
+# through Moonlab's exact adjoint against the exact state vector.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_quantum_suite quantum_circuit_test quantum_optimize_test quantum_route_test qaoa_test quantum_register_test)
+        add_test(NAME ${_quantum_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_quantum_suite}.esk")
+        add_test(NAME ${_quantum_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_quantum_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_quantum_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1200"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_quantum_suite}_jit ${_quantum_suite}_aot PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_quantum_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+    if(NOT WIN32)
+        set(ESHKOL_QREG_CORPUS_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_QREG_CORPUS_VM "none")
+    endif()
+    add_test(NAME quantum_types_corpus
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qreg_corpus_gate.sh"
+            "$<TARGET_FILE:eshkol-run>" "${ESHKOL_QREG_CORPUS_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/qreg-corpus")
+    set_tests_properties(quantum_types_corpus PROPERTIES
+        TIMEOUT 1800
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: quantum types corpus"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+    if(ESHKOL_QUANTUM_ENABLED)
+        add_test(NAME qaoa_moonlab_crosscheck
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/quantum/qaoa_moonlab_crosscheck_test.esk"
+                    "-L${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(qaoa_moonlab_crosscheck PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "qaoa_moonlab_crosscheck_test: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL|error:|Unhandled exception|fatal signal")
+    endif()
+endif()
+
+# core.groebner (ADR-0040): K[x1..xn] carriers of core.ring, Buchberger with the
+# Gebauer-Moeller criteria, the multimodular method over Q, ideal operations,
+# Hilbert polynomials and zero-dimensional solving (groebner_jit/aot), and the
+# SymPy cross-check: 180 reduced bases against the bases SymPy recorded in
+# tests/sympy_oracle/groebner_expected.json, on JIT and AOT (SymPy itself is
+# not needed to run it).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME groebner_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/groebner_test.esk")
+    add_test(NAME groebner_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/groebner_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/groebner_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(groebner_jit groebner_aot PROPERTIES
+        TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: groebner_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME groebner_sympy_crosscheck
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/groebner_sympy_crosscheck.py" compare
+                --eshkol-run $<TARGET_FILE:eshkol-run> --engines jit,aot
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/test-work/groebner-crosscheck"
+                --receipt "${CMAKE_CURRENT_BINARY_DIR}/test-work/groebner-crosscheck/receipt.json")
+        set_tests_properties(groebner_sympy_crosscheck PROPERTIES
+            TIMEOUT 1800
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "receipt: PASS")
+    endif()
+endif()
+
+# Effective and finitely presented categories (ADR-0054): Knuth-Bendix
+# completion, Delta, FinOrd, FinSet, Mat_R, Kan extensions with finite comma
+# categories, skeleta and coskeleta; and the nLab claims about infinite
+# categories (listed in tests/nlab/claims.tsv and checked by
+# scripts/run_nlab_conformance.sh). The AOT compile of the four modules and
+# core.ring takes about ten minutes on the build node, so these entries get
+# the compile allowance of the simplicial suites.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_ce_entry "category_effective|stdlib|category_effective_test" "nlab_category_effective|nlab|nlab_category_effective_test")
+        string(REPLACE "|" ";" _ce_parts "${_ce_entry}")
+        list(GET _ce_parts 0 _ce_name)
+        list(GET _ce_parts 1 _ce_dir)
+        list(GET _ce_parts 2 _ce_file)
+        add_test(NAME ${_ce_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_ce_dir}/${_ce_file}.esk")
+        add_test(NAME ${_ce_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_ce_dir}/${_ce_file}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_ce_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=900"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_ce_name}_jit ${_ce_name}_aot PROPERTIES
+            TIMEOUT 2400
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_ce_file}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# v1.7.0 synthesis (ADR-0052): example-based synthesis (core.synthesis), graph
+# neural networks with exact reverse-mode gradients (ml.autograd, ml.gnn), and
+# compiler completion of `??` synthesis holes, each under JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_syn_suite stdlib/synthesis_test ml/gnn_test types/synthesis_holes_test)
+        get_filename_component(_syn_name "${_syn_suite}" NAME)
+        add_test(NAME ${_syn_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_syn_suite}.esk")
+        add_test(NAME ${_syn_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_syn_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_syn_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=600"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_syn_name}_jit ${_syn_name}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_syn_name}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+    # The compiler names each hole with its expected type, completion and the
+    # other candidates.
+    add_test(NAME synthesis_hole_diagnostics
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_holes_test.esk")
+    set_tests_properties(synthesis_hole_diagnostics PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? in 'add2' : [A-Za-z0-9]+ filled with \\(\\+ x y\\); other candidates: ")
+    # Soundness: every completion is well typed, so the completed program
+    # passes the checker with type errors fatal.
+    add_test(NAME synthesis_holes_strict_types
+        COMMAND $<TARGET_FILE:eshkol-run> --strict-types -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_holes_test.esk")
+    set_tests_properties(synthesis_holes_strict_types PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: synthesis_holes_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Type error|type errors detected|fatal signal")
+    # A hole with no well-typed completion stops compilation (JIT and AOT).
+    add_test(NAME synthesis_hole_refusal_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk")
+    set_tests_properties(synthesis_hole_refusal_jit PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? in 'f': no well-typed completion of type"
+        FAIL_REGULAR_EXPRESSION "fatal signal")
+    # The bytecode compiler has no type checker; it names an unbound hole.
+    add_test(NAME synthesis_hole_vm_named
+        COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm --emit-eskb
+                "${CMAKE_CURRENT_BINARY_DIR}/synthesis_hole_unfillable.eskb"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk")
+    set_tests_properties(synthesis_hole_vm_named PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? is completed by the native compiler"
+        FAIL_REGULAR_EXPRESSION "fatal signal")
+    add_test(NAME synthesis_hole_refusal_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/synthesis_hole_unfillable${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_synthesis_hole_refusal.cmake")
+    set_tests_properties(synthesis_hole_refusal_aot PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: synthesis_hole_refusal")
+endif()
+
+# core.certificate (ADR-0047): certificates for certified steps, an
+# independent checker outside the compiler (tools/certcheck, Python standard
+# library only), a tamper suite and a Lean 4 export of the decidable facts.
+# certificate_roundtrip_* run the suite with certificate emission on, check
+# every emitted claim with eshkol_certcheck.py, require every altered claim to
+# be rejected and export the Lean theorems. The fixture and Lean-currency
+# tests need only python3. Lean itself is not a build dependency: the
+# exported files are checked with `lean` where it is installed
+# (scripts/run_certificate_gate.sh, docs/reports/CERTIFICATE_LEAN_CHECK.md).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certificate_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certificate_test.esk")
+    add_test(NAME certificate_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certificate_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certificate_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certificate_jit certificate_aot PROPERTIES
+        TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: certificate_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    add_test(NAME certify_form_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certify_form_test.esk")
+    add_test(NAME certify_form_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certify_form_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certify_form_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certify_form_jit certify_form_aot PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: certify_form_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME certificate_roundtrip_jit
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/run_certificate_roundtrip.py"
+                $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}/test-work/certificate-roundtrip-jit")
+        add_test(NAME certificate_roundtrip_aot
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/run_certificate_roundtrip.py"
+                $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}/test-work/certificate-roundtrip-aot"
+                --aot "${CMAKE_CURRENT_BINARY_DIR}/test-work/certificate-roundtrip-aot/certificate_test${CMAKE_EXECUTABLE_SUFFIX}"
+                "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(certificate_roundtrip_jit certificate_roundtrip_aot PROPERTIES
+            TIMEOUT 1500
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+            FAIL_REGULAR_EXPRESSION "RESULT: FAIL|Traceback")
+        add_test(NAME certificate_check_fixtures
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/certcheck/eshkol_certcheck.py"
+                --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/fixtures")
+        add_test(NAME certificate_tamper_fixtures
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/certcheck/tamper_suite.py"
+                --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/fixtures")
+        add_test(NAME certificate_lean_export_current
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/certcheck/lean_export.py"
+                --check --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/fixtures"
+                --out-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/lean")
+        set_tests_properties(certificate_check_fixtures PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: ALL ACCEPTED" FAIL_REGULAR_EXPRESSION "RESULT: REJECTED|Traceback")
+        set_tests_properties(certificate_tamper_fixtures PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: ALL REJECTED" FAIL_REGULAR_EXPRESSION "RESULT: TAMPER ACCEPTED|Traceback")
+        set_tests_properties(certificate_lean_export_current PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: LEAN EXPORT CURRENT" FAIL_REGULAR_EXPRESSION "OUT OF DATE|Traceback")
+    endif()
+endif()
+
+# Static admission never executes submitted lambda programs.
+if(ESHKOL_BUILD_TESTS)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME blc_corpus_review
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/examples/blc-corpus/review.py" check)
+        add_test(NAME blc_corpus_review_controls
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/examples/blc-corpus/review_self_test.py")
+        set_tests_properties(blc_corpus_review blc_corpus_review_controls PROPERTIES
+            TIMEOUT 30 LABELS "blc;admission;security")
+    endif()
+endif()
+
+# Classical BLC finite byte observation, with explicit collector/resource gates.
+option(ESHKOL_BLC_CORPUS_TESTS "Register the slow seven-program BLC transfer gate" OFF)
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME blc_bytes_gate
+        COMMAND ${CMAKE_COMMAND} -E env "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_blc_bytes_gate.sh")
+    set_tests_properties(blc_bytes_gate PROPERTIES TIMEOUT 600
+        LABELS "stdlib;blc;parity" PASS_REGULAR_EXPRESSION "BLC-BYTES GATE: PASS")
+    if(ESHKOL_BLC_CORPUS_TESTS)
+        add_test(NAME blc_bytes_corpus_gate
+            COMMAND ${CMAKE_COMMAND} -E env "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_blc_bytes_gate.sh" --corpus)
+        set_tests_properties(blc_bytes_corpus_gate PROPERTIES TIMEOUT 7200
+            LABELS "stdlib;blc;parity;slow" PASS_REGULAR_EXPRESSION "BLC-BYTES CORPUS: PASS")
+    endif()
+endif()
+
+# Stochastic Binary Lambda Calculus (ADR-0017): the gate runs the core.sblc
+# suite on JIT and AOT, requires every oracle on both engines and
+# byte-identical output (fixed-seed parity), and writes its ICC trace into
+# the build tree.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME sblc_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "TRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/sblc-gate-traces"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_gate.sh")
+    set_tests_properties(sblc_gate PROPERTIES
+        TIMEOUT 600
+        LABELS "stdlib;sblc;parity"
+        PASS_REGULAR_EXPRESSION "SBLC GATE: PASS"
+        FAIL_REGULAR_EXPRESSION "SBLC GATE: FAIL|LLVM module verification failed|fatal signal")
+    if(UNIX)
+        add_test(NAME sblc_resume_gate
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_resume_gate.sh")
+        set_tests_properties(sblc_resume_gate PROPERTIES
+            TIMEOUT 600 LABELS "stdlib;sblc;parity")
+        add_test(NAME sblc_checkpoint_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_checkpoint_gate.sh")
+        set_tests_properties(sblc_checkpoint_gate PROPERTIES
+            TIMEOUT 1800 LABELS "stdlib;sblc;parity")
+        add_test(NAME sblc_update_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_update_gate.sh")
+        set_tests_properties(sblc_update_gate PROPERTIES
+            TIMEOUT 1800 LABELS "stdlib;sblc;dbsp;parity")
+    endif()
 endif()
 
 # Mathematics examples with exact verdicts: the incompressible porous media
@@ -3719,7 +5143,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         cat_sheafification_descent_kan   mathematics_sheafification_descent_kan
         cat_abelian_sheaves_finite_site  mathematics_abelian_sheaves_finite_site
         hodge_aoki_cycles_fermat_sextic  mathematics_aoki_cycles_fermat_sextic
-        hodge_aoki_surface_sweep_default mathematics_aoki_cycles_fermat_surfaces_sweep)
+        hodge_aoki_surface_sweep_default mathematics_aoki_cycles_fermat_surfaces_sweep
+        rings_functor_of_points          mathematics_functor_of_points)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -3747,7 +5172,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
     # These consumers now require the shared field module from this checkout.
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
+                      sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
+                      cat_presheaf_topos_internal_logic_jit cat_finite_categories_kan_jit
+                      cat_sheafification_descent_kan_jit hocolim_grothendieck_borel_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    # The functor-of-points example runs on core.ring and core.multimodular.
+    set_property(TEST rings_functor_of_points_jit
+        APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    # The finite-categories, sheafification and homotopy-colimit programs load
+    # core.category; compiling the library is most of their time.
+    foreach(_category_example cat_finite_categories_kan cat_sheafification_descent_kan hocolim_grothendieck_borel)
+        if(TEST ${_category_example}_jit)
+            set_tests_properties(${_category_example}_jit ${_category_example}_aot PROPERTIES TIMEOUT 600)
+        endif()
+    endforeach()
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.
     if(TEST dw_group_cohomology_order_eight_jit)
@@ -3778,6 +5216,82 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(yetter_three_torus_finite_model_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
     endif()
+    # The algebraic-topology examples written on core.simplicial and
+    # core.homological (ADR-0037) compile those libraries with the program,
+    # so each gets the budget of a library suite.
+    set(ESHKOL_SIMPLICIAL_EXAMPLES hocolim_kan_complexes_horns hocolim_two_groups_postnikov
+        dw_cohomology_rings_cup_products dw_cohomology_rings_nonabelian dw_group_cohomology_order_eight
+        postnikov_four_manifolds_second_k sheaf_descent_hypercohomology)
+    foreach(_sx ${ESHKOL_SIMPLICIAL_EXAMPLES})
+        if(TEST ${_sx}_jit)
+            set_property(TEST ${_sx}_jit APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+            set_tests_properties(${_sx}_jit ${_sx}_aot PROPERTIES TIMEOUT 1200)
+        endif()
+    endforeach()
+endif()
+
+# Scoped hawkes-live consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-live/CTest.cmake")
+
+# Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_DBSP_EXAMPLES
+        dbsp_tensor_circuit_example mathematics_dbsp_tensor_circuit
+        dbsp_checkpoint_restart_example dbsp_checkpoint_restart)
+    list(LENGTH ESHKOL_DBSP_EXAMPLES _dbsp_len)
+    math(EXPR _dbsp_last "${_dbsp_len} - 1")
+    foreach(_dbsp_i RANGE 0 ${_dbsp_last} 2)
+        math(EXPR _dbsp_j "${_dbsp_i} + 1")
+        list(GET ESHKOL_DBSP_EXAMPLES ${_dbsp_i} _dbsp_name)
+        list(GET ESHKOL_DBSP_EXAMPLES ${_dbsp_j} _dbsp_file)
+        set(_dbsp_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_dbsp_file}.esk")
+        if(EXISTS "${_dbsp_src}")
+            add_test(NAME ${_dbsp_name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_dbsp_src}"
+                "-L${CMAKE_CURRENT_BINARY_DIR}")
+            set_tests_properties(${_dbsp_name}_jit PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/dbsp-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR:|JIT session error:|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_dbsp_name}_aot
+                COMMAND ${CMAKE_COMMAND}
+                    "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                    "-DESHKOL_SOURCE=${_dbsp_src}"
+                    "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+                    "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-DESHKOL_VERDICT=ALL PASS"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            set_tests_properties(${_dbsp_name}_aot PROPERTIES
+                TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR:|JIT session error:|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
+endif()
+
+# core.reasoning (ADR-0051): goal-directed proof search with tabling, stratified
+# Datalog on DBSP circuits, finite-domain constraints, CDCL SAT with DRAT
+# proofs, the triple store, knowledge-graph embeddings, incremental ansatz
+# search, and the cross-engine soundness suite; JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_reasoning_suite reasoning_prolog_test reasoning_datalog_test reasoning_fd_test
+            reasoning_sat_test reasoning_kg_test reasoning_kge_test reasoning_ansatz_test
+            reasoning_soundness_test)
+        add_test(NAME ${_reasoning_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_reasoning_suite}.esk")
+        add_test(NAME ${_reasoning_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_reasoning_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_reasoning_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_reasoning_suite}_jit ${_reasoning_suite}_aot PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_reasoning_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
 endif()
 
 # AI-discovered-algorithm witness examples: each program is a compile-and-run
@@ -3875,18 +5389,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    # `(tensor ...)` builds an f64 tensor from integer literals: each element is
+    # converted once at construction and prints as the inexact number it is,
+    # with its decimal point.
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"
     )
     set_tests_properties(tensor_integer_vector_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1 2 3\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1\\.0 2\\.0 3\\.0\\)")
     add_test(
         NAME tensor_integer_shaped_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 2 2 1 2 3 4))"
     )
     set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1\\.0 2\\.0\\) \\(3\\.0 4\\.0\\)\\)")
     # #309 regression guard: a matmul result read via tensor-ref/tensor-data
     # from INSIDE a defined function (captured global, argument, in-function
     # matmul, nested define, closure, with-region escape, and a large
@@ -4213,6 +5730,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: GUW multivariate"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_guw_order8_jit_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/guw_order8_analytic_test.esk"
+                -L${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(ad_guw_order8_jit_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: GUW order-8 analytic oracle: 2/2 checks, D\\^\\(3,3,2\\)=72"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_guw_order8_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_guw_order8_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/guw_order8_analytic_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_guw_order8_aot'"
+    )
+    set_tests_properties(ad_guw_order8_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: GUW order-8 analytic oracle: 2/2 checks, D\\^\\(3,3,2\\)=72"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_exact_taylor_gate_selftest
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_ad_exact_taylor_gate.sh"
+    )
+    set_tests_properties(ad_exact_taylor_gate_selftest PROPERTIES
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "PASS: AD exact Taylor gate rejects zero-match, bad reports, timeout, and trace-write failures"
+        FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
     # Task #114: AD capture reconstruction must resolve free variables with the
     # same local-then-global scope rule codegenLambda used, so an enclosing
     # function's parameter is never replaced by a same-named top-level global.
@@ -4596,8 +6144,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: exact division by zero raises"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+    if(APPLE)
+        add_test(NAME keychain_native_denial_jit
+            COMMAND $<TARGET_FILE:eshkol-run> --run
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/keychain_native_denial_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME keychain_native_denial_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/keychain_native_denial_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/keychain_native_denial_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/keychain_native_denial_aot'")
+        set_tests_properties(keychain_native_denial_jit keychain_native_denial_aot
+            PROPERTIES TIMEOUT 120 ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: production keychain raw helpers deny before OS access"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+    endif()
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        if(APPLE AND TARGET eshkol-run)
+            add_test(NAME keychain_scheme_boundary_test
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/keychain_scheme_boundary_test.py
+                        --eshkol-run $<TARGET_FILE:eshkol-run>
+                        --source-root ${CMAKE_CURRENT_SOURCE_DIR})
+            set_tests_properties(keychain_scheme_boundary_test PROPERTIES TIMEOUT 120)
+        endif()
         # Every builtin the math dispatch lowers has a Taylor recurrence, and
         # every complex kernel a carrier formula; the selftest proves the gate
         # goes red on each shape it guards.
@@ -4697,6 +6266,81 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: named_closure_static_call_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Procedures the runtime enters on the program's behalf follow the same
+    # closure-call protocol as an ordinary call. The fixtures (generated by
+    # tests/control_flow/generate_capture_count_fixtures.py) call each such
+    # site with closures capturing 0, 1, 4, 5, 8, 17, 64, 65 and 66 variables:
+    # dynamic-wind thunks on normal return, continuation escape, raise and
+    # re-entry; handlers, converters, value producers and consumers, list and
+    # vector traversals, comparators and promises; thread, coroutine, parallel
+    # and string-traversal entry procedures; and the arity check of the call
+    # protocol for fixed-arity and variadic procedures.
+    if(Python3_EXECUTABLE)
+        add_test(
+            NAME capture_count_fixtures_current
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/control_flow/generate_capture_count_fixtures.py" --check)
+        set_tests_properties(capture_count_fixtures_current PROPERTIES TIMEOUT 60)
+    endif()
+    foreach(_capture_case
+            "dynamic_wind_capture_counts|tests/control_flow/dynamic_wind_capture_counts.esk|dynamic-wind capture counts: ALL PASS|vm"
+            "runtime_called_capture_counts|tests/closures/runtime_called_capture_counts.esk|runtime-called procedure capture counts: ALL PASS|vm"
+            "native_entry_capture_counts|tests/parallel/native_entry_capture_counts.esk|native entry capture counts: ALL PASS|native"
+            "call_protocol_capture_counts|tests/closures/call_protocol_capture_counts.esk|closure call protocol capture counts: ALL PASS|vm"
+            # (move name) resolves the binding the name denotes in its scope.
+            # Ownership forms are native-only.
+            "typed_move_binding_resolution|tests/memory/typed_move_binding_resolution.esk|typed move binding resolution: ALL PASS|native")
+        string(REPLACE "|" ";" _capture_fields "${_capture_case}")
+        list(GET _capture_fields 0 _capture_name)
+        list(GET _capture_fields 1 _capture_source)
+        list(GET _capture_fields 2 _capture_pass)
+        list(GET _capture_fields 3 _capture_engines)
+        set(_capture_path "${CMAKE_CURRENT_SOURCE_DIR}/${_capture_source}")
+        if(EXISTS "${_capture_path}")
+            add_test(
+                NAME ${_capture_name}_jit
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_capture_path}" -L"${CMAKE_CURRENT_BINARY_DIR}")
+            set_tests_properties(${_capture_name}_jit PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+                PASS_REGULAR_EXPRESSION "${_capture_pass}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+            add_test(
+                NAME ${_capture_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_capture_name}_aot' '${_capture_path}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_capture_name}_aot'")
+            set_tests_properties(${_capture_name}_aot PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "${_capture_pass}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+            if(_capture_engines STREQUAL "vm" AND TARGET eshkol-vm-standalone-test)
+                add_test(
+                    NAME ${_capture_name}_vm
+                    COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_capture_path}")
+                set_tests_properties(${_capture_name}_vm PROPERTIES
+                    TIMEOUT 600
+                    ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                    PASS_REGULAR_EXPRESSION "${_capture_pass}"
+                    FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+            endif()
+        endif()
+    endforeach()
+    # (move name) with a name bound in no scope is reported as an unbound
+    # variable at the operand; the case is graded by the diagnostic corpus
+    # checker, which the connection gate also runs over the whole corpus.
+    if(Python3_EXECUTABLE AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/diagnostics/move_unbound_operand/expected.json")
+        add_test(
+            NAME diagnostic_move_unbound_operand
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_diagnostic_corpus.py"
+                    --corpus-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/diagnostics"
+                    --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                    --case move_unbound_operand)
+        set_tests_properties(diagnostic_move_unbound_operand PROPERTIES
+            TIMEOUT 300
+            FAIL_REGULAR_EXPRESSION "FAIL")
+    endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk")
         add_test(
             NAME reassigned_callee_ad_subset_jit
@@ -5037,8 +6681,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # enclosing pass's tape nodes and evaluates the inner gradient FORWARD (the
     # forward-over-reverse composition the direct `hessian` performs), so the
     # curried route answers the Hessian exactly. This asserts every entry
-    # against the direct `hessian` on the same build, and pins the one residual
-    # shape (a point COMPUTED from the outer variables) as LOUD.
+    # against the direct `hessian` on the same build, and checks a point
+    # COMPUTED from the outer variables and a point mixing a variable with a
+    # value computed from it (ADR-0057).
     add_test(
         NAME ad_curried_gradient_nested_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -5563,6 +7208,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ADR-0050 rigorous numerics: directed rounding as the core.ad.interval
+    # default, interval Taylor jets / gradients, certified sup/inf over
+    # parameter boxes, torus fields with exact Haar means, interval and
+    # Taylor-model element tensors, all against exact rational ground truth.
+    # JIT and AOT here; tests/vm_parity/corpus/102_rigorous_numerics.esk
+    # carries the VM-parity leg (run_vm_parity.sh).
+    add_test(
+        NAME rigorous_numerics_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/rigorous_numerics_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(rigorous_numerics_runtime_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rigorous_numerics_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME rigorous_numerics_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/rigorous_numerics_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/rigorous_numerics_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/rigorous_numerics_aot'"
+    )
+    set_tests_properties(rigorous_numerics_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rigorous_numerics_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Sparse signed rows -> tensor changes -> finite matrix-product updates.
     # Both legs import the module from this checkout, never the installed lib/.
     add_test(
@@ -5651,6 +7323,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # core.ml.diffopt (ADR-0031): blackbox solver, perturbed-optimizer,
+    # Fenchel-Young, implicit-differentiation and sparsemax/softmax pullbacks,
+    # each checked against an exact closed form, exact rationals or a central
+    # difference. Seeded noise makes the Monte Carlo checks deterministic, so
+    # the JIT and AOT legs see the same draws.
+    add_test(
+        NAME diffopt_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/diffopt_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME diffopt_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/diffopt_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/diffopt_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/diffopt_aot'"
+    )
+    set_tests_properties(diffopt_runtime_smoke diffopt_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # A libm math symbol must not bind to an unrelated symbol of the same name.
     # Measured on the v1.3.5 candidate: `(elu t 2)` followed by `(exp -2.0)` in
     # one program killed the COMPILER with SIGSEGV at address 0x10 -- a null
@@ -5710,6 +7404,40 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # v1.5.0 (ADR-0049): LSTM/GRU cells, stop-gradient and the gradient
+    # estimators, reverse mode through loops that keep AD nodes only inside a
+    # list, and the Noesis substrate modules (HNSW index, BPE tokenizer, CSR
+    # sparse matrices). Each program checks reverse mode against forward
+    # mode or a closed form, trains a small model, and asserts that no finite
+    # differences ran. JIT and AOT.
+    foreach(_ns_case
+            "recurrent_cells|tests/ml/recurrent_test.esk"
+            "gradient_estimators_native|tests/ml/gradient_estimators_native_test.esk"
+            "loop_list_reverse_mode|tests/autodiff/loop_list_reverse_mode_test.esk"
+            "hnsw_index|tests/ml/hnsw_test.esk"
+            "bpe_tokenizer|tests/ml/bpe_test.esk"
+            "sparse_csr|tests/ml/sparse_test.esk")
+        string(REPLACE "|" ";" _ns_parts "${_ns_case}")
+        list(GET _ns_parts 0 _ns_name)
+        list(GET _ns_parts 1 _ns_file)
+        add_test(
+            NAME ${_ns_name}_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/${_ns_file}"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        add_test(
+            NAME ${_ns_name}_aot_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_name}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/${_ns_file}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_name}_aot'"
+        )
+        set_tests_properties(${_ns_name}_runtime_smoke ${_ns_name}_aot_smoke
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endforeach()
     # tensor.utils' public surface. Eleven documented helpers were defined but
     # absent from the module's `provide` ("Unknown function: tensor-ndim" after
     # a successful require), the module warned "Unbound variable: unsqueeze" on
@@ -5987,44 +7715,38 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "Passed: 4"
             FAIL_REGULAR_EXPRESSION "FAIL:|Failed: [1-9][0-9]*|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
-    # The three reverse-over-reverse shapes below are intentionally unsupported.
-    # Their harness requires both a nonzero execution and the precise refusal;
-    # a silent zero or an unrelated startup failure cannot satisfy the test.
-    foreach(_nested_refusal IN ITEMS tensor_tensor svec_tensor derivative_tensor)
-        if(_nested_refusal STREQUAL "tensor_tensor")
-            set(_nested_refusal_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_tensor_tensor_refusal_test.esk")
-            set(_nested_refusal_diagnostic "reverse arithmetic: a nested reverse-mode derivative cannot consume an outer reverse-mode value; differentiate the outer level with forward mode or restructure the computation")
-        elseif(_nested_refusal STREQUAL "svec_tensor")
-            set(_nested_refusal_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_svec_tensor_refusal_test.esk")
-            set(_nested_refusal_diagnostic "gradient: a nested reverse-mode derivative cannot consume an outer reverse-mode value; differentiate the outer level with forward mode or restructure the computation")
-        else()
-            set(_nested_refusal_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_derivative_tensor_refusal_test.esk")
-            set(_nested_refusal_diagnostic "gradient: a nested reverse-mode derivative cannot consume an outer reverse-mode value; differentiate the outer level with forward mode or restructure the computation")
-        endif()
-        foreach(_nested_refusal_engine IN ITEMS jit aot)
-            set(_nested_refusal_test "nested_reverse_${_nested_refusal}_refusal_${_nested_refusal_engine}")
-            add_test(
-                NAME ${_nested_refusal_test}
-                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_refusal_test.sh"
-                        "$<TARGET_FILE:eshkol-run>"
-                        "${_nested_refusal_source}"
-                        "${CMAKE_CURRENT_BINARY_DIR}"
-                        "${_nested_refusal_engine}"
-                        "${_nested_refusal_diagnostic}"
-            )
-            set_tests_properties(${_nested_refusal_test}
-                PROPERTIES
-                    TIMEOUT 600
-                    ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
-                    PASS_REGULAR_EXPRESSION "PASS: nested reverse refusal"
-                    FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error")
-        endforeach()
+    # ADR-0057: the three reverse-inside-reverse and forward-around-reverse
+    # shapes at tensor points answer exactly on the native engine. The
+    # outermost reverse pass retries its first primal as forward columns when
+    # an inner pass defers, and a gradient inside a live pass is forward
+    # columns itself. The VM's tensor carrier holds first-order tangents only
+    # and refuses a higher-order level inside a tensor operation by name, so
+    # these run on JIT and AOT.
+    foreach(_nested_reverse IN ITEMS tensor_tensor svec_tensor derivative_tensor)
+        string(REPLACE "_" "-" _nested_reverse_label "${_nested_reverse}")
+        set(_nested_reverse_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_${_nested_reverse}_test.esk")
+        add_test(
+            NAME nested_reverse_${_nested_reverse}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${_nested_reverse_source}"
+                    -L${CMAKE_CURRENT_BINARY_DIR}
+        )
+        add_test(
+            NAME nested_reverse_${_nested_reverse}_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_reverse_${_nested_reverse}_aot' '${_nested_reverse_source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_reverse_${_nested_reverse}_aot'"
+        )
+        set_tests_properties(nested_reverse_${_nested_reverse}_jit nested_reverse_${_nested_reverse}_aot
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+                PASS_REGULAR_EXPRESSION "PASS: nested reverse ${_nested_reverse_label}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
     endforeach()
     add_test(
         NAME nested_reverse_refusal_harness_selftest
         COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_refusal_harness_test.sh"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_refusal_test.sh"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_tensor_tensor_refusal_test.esk"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_tensor_tensor_test.esk"
                 "${CMAKE_CURRENT_BINARY_DIR}"
     )
     set_tests_properties(nested_reverse_refusal_harness_selftest
@@ -6042,7 +7764,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         NAME exact_taylor_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
-                -L"${CMAKE_CURRENT_BINARY_DIR}"
+                -L${CMAKE_CURRENT_BINARY_DIR}
     )
     set_tests_properties(exact_taylor_runtime_smoke
         PROPERTIES
@@ -6661,6 +8383,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: parameter evacuation deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 
+    if(UNIX AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
+        add_test(NAME llvm_codegen_definition COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/codegen_definition_test.py" "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+    if(ESHKOL_XLA_ENABLED)
+        foreach(_engine jit aot)
+            add_test(NAME xla_dispatch_switches_${_engine} COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/dispatch_switches.py"
+                $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}" "${_engine}")
+            set_tests_properties(xla_dispatch_switches_${_engine} PROPERTIES
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV}" TIMEOUT 360)
+        endforeach()
+    endif()
+    foreach(_fixture vm_parity/corpus/58_rationalize_r7rs stdlib/matrix_dimension_test signal/butterworth_response_test stdlib/test_condition_counts)
+        get_filename_component(_name "${_fixture}" NAME)
+        set(_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_fixture}.esk")
+        add_test(NAME ${_name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_src}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_name}_aot COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_name}' '${_src}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_name}'")
+        set(_engines ${_name}_jit ${_name}_aot)
+        if(NOT WIN32)
+            add_test(NAME ${_name}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_src}")
+            list(APPEND _engines ${_name}_vm)
+        endif()
+        set_tests_properties(${_engines} PROPERTIES PASS_REGULAR_EXPRESSION "PASS: (rational intervals|matrix dimensions|Butterworth response|condition counts)" TIMEOUT 300 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1")
+    endforeach()
     # VM-semantics fixtures also run through the native JIT and AOT so the
     # shared contracts are checked in every execution lane, not only by the
     # VM differential harness.
@@ -6720,6 +8469,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     if(NOT WIN32)
+        add_test(NAME vm_hyperdual_dispatch_reference COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hyperdual_dispatch_reference.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
         add_test(NAME site_scalar_hessian_jit
             COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
                 $<TARGET_FILE:eshkol-run> -r
@@ -6734,6 +8486,57 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES TIMEOUT 120
                 PASS_REGULAR_EXPRESSION "site scalar Hessian PASS"
                 FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
+        function(eshkol_add_numeric_test name source)
+            foreach(engine IN LISTS ARGN)
+                if(engine STREQUAL "vm")
+                    add_test(NAME ${name}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+                elseif(engine STREQUAL "jit")
+                    add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${source}" -L${CMAKE_CURRENT_BINARY_DIR})
+                elseif(engine STREQUAL "aot")
+                    add_test(NAME ${name}_aot COMMAND sh -c
+                        "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${name}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/${source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${name}_aot'")
+                endif()
+                set_tests_properties(${name}_${engine} PROPERTIES
+                    ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+                    PASS_REGULAR_EXPRESSION "PASS ${name}"
+                    FAIL_REGULAR_EXPRESSION "FAIL|LLVM module verification failed|fatal signal")
+            endforeach()
+        endfunction()
+        eshkol_add_numeric_test(reverse_tape_operands tests/ad/reverse_tape_operands.esk vm)
+        eshkol_add_numeric_test(bce_probability_bounds tests/ml/bce_probability_bounds.esk jit aot)
+        eshkol_add_numeric_test(rigid_motion_maps tests/vm/rigid_motion_maps.esk vm)
+        eshkol_add_numeric_test(rotation_log_cover tests/vm/rotation_log_cover.esk vm)
+        eshkol_add_numeric_test(reduction_empty_axis tests/tensor/reduction_empty_axis.esk jit aot vm)
+        eshkol_add_numeric_test(padding_mask_attention tests/ml/padding_mask_attention.esk jit aot)
+        eshkol_add_numeric_test(seeded_tensor_reductions tests/xla/seeded_tensor_reductions.esk jit aot)
+        eshkol_add_numeric_test(factor_graph_capacity tests/vm/factor_graph_capacity.esk jit aot vm)
+        eshkol_add_numeric_test(exact_integer_boundaries tests/ad/exact_integer_boundaries.esk jit aot vm)
+        eshkol_add_numeric_test(exact_zero_quotients tests/ad/exact_zero_quotients.esk jit aot vm)
+        eshkol_add_numeric_test(variable_power_slope tests/ad/variable_power_slope.esk jit aot vm)
+        eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot vm)
+        eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
+
+        # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every
+        # mode (forward, reverse and mixed), confusion controls, exact Taylor
+        # coefficients and more than 2^16 passes in one process, on the native
+        # JIT, AOT and the bytecode VM.
+        add_test(NAME nested_depth_matrix_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_depth_matrix_test.esk"
+                -L${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME nested_depth_matrix_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_depth_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_depth_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_depth_matrix_aot'")
+        add_test(NAME nested_depth_matrix_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_depth_matrix_test.esk")
+        set_tests_properties(nested_depth_matrix_jit PROPERTIES ENVIRONMENT "ESHKOL_JIT_CACHE=0")
+        set_tests_properties(nested_depth_matrix_jit nested_depth_matrix_aot nested_depth_matrix_vm
+            PROPERTIES TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: nested depth matrix [0-9]+/[0-9]+ checks"
+                FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
         add_test(
             NAME hessian_capture_scalar_vm_smoke
             COMMAND sh -c
@@ -6753,7 +8556,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203, SW-218, SW-219, SW-220,
         # SW-222, SW-224, SW-225.
         find_program(ESHKOL_VM_CARRIER_NODE node)
+        if(ESHKOL_VM_CARRIER_NODE)
+            add_test(NAME wasm_repl_source_contract COMMAND ${ESHKOL_VM_CARRIER_NODE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/wasm_repl_source_contract.js"
+                "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js")
+        endif()
+        add_test(NAME gensym_sequence_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence' '${CMAKE_CURRENT_SOURCE_DIR}/tests/control_flow/gensym_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence'")
+        set_tests_properties(gensym_sequence_aot PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
         set(_esh_vm_carrier_tests
+            "gensym_sequence|tests/control_flow/gensym_test.esk|RESULT: ALL PASS|all"
             "nested_towers_matrix|tests/ad/nested_towers_matrix_test.esk|PASS: nested towers matrix|vm"
             "nested_operator_matrix|tests/ad/nested_operator_matrix_test.esk|PASS: nested operator matrix|vm"
             "vm_nested_holomorphic|tests/ad/vm_nested_holomorphic_test.esk|PASS: VM nested holomorphic derivatives|all"
@@ -6946,6 +8760,66 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: noreturn_terminator_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|Terminator found|fatal signal")
     endif()
+    # `and` / `or` answer the same value for every operand kind (empty list,
+    # empty vector, #f, calls, zero operands) and every position in a body, on
+    # the native JIT, the native AOT build and the bytecode VM. The program
+    # states each expected value, so the three engines are held to one answer.
+    set(ESHKOL_AND_OR_OPERAND_KINDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/103_and_or_operand_kinds.esk")
+    if(EXISTS "${ESHKOL_AND_OR_OPERAND_KINDS}")
+        add_test(
+            NAME and_or_operand_kinds_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${ESHKOL_AND_OR_OPERAND_KINDS}"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set(_and_or_tests and_or_operand_kinds_jit)
+        if(NOT WIN32)
+            add_test(
+                NAME and_or_operand_kinds_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds_aot' '${ESHKOL_AND_OR_OPERAND_KINDS}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds_aot'"
+            )
+            list(APPEND _and_or_tests and_or_operand_kinds_aot)
+            # The standalone VM binary is defined further down, under the
+            # same NOT WIN32 condition; the generator expression resolves it.
+            add_test(
+                NAME and_or_operand_kinds_vm
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds.eskb' '${ESHKOL_AND_OR_OPERAND_KINDS}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds.eskb'"
+            )
+            list(APPEND _and_or_tests and_or_operand_kinds_vm)
+        endif()
+        set_tests_properties(${_and_or_tests}
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: and_or_operand_kinds"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|ERROR:")
+    endif()
+    # A form that never returns (raise, error, exit, an operand whose static
+    # type can never satisfy its operation) builds and behaves the same in
+    # every position: each row of cases.tsv is run on the JIT, the AOT build,
+    # the bytecode VM and the REPL against one expected transcript and status.
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/noreturn_position/noreturn_position_engine_test.sh")
+        set(_noreturn_vm "$<TARGET_FILE:eshkol-vm-standalone-test>")
+        set(_noreturn_repl "")
+        if(TARGET eshkol-repl)
+            set(_noreturn_repl "$<TARGET_FILE:eshkol-repl>")
+        endif()
+        add_test(
+            NAME noreturn_position_engine_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/noreturn_position/noreturn_position_engine_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${_noreturn_vm}"
+                    "${_noreturn_repl}"
+                    "${CMAKE_CURRENT_BINARY_DIR}/noreturn_position_engine_test"
+        )
+        set_tests_properties(noreturn_position_engine_test
+            PROPERTIES
+                TIMEOUT 1800
+                PASS_REGULAR_EXPRESSION "PASS: noreturn_position_engine_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     # SW-80: the RUNTIME reader (lib/core/runtime_reader_hosted.cpp,
     # `eshkol_read_sexpr` — backs `(read)` for native JIT, AOT, and the REPL)
     # had no dispatch case for `` ` ``, `,`, or `,@`. They fell through to the
@@ -7015,6 +8889,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: event_loop_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # Stackful coroutines and core.fibers: JIT and O1 AOT behaviour, the
+    # 10,000-fiber stress program and the flat-memory comparison, all in one
+    # gate (scripts/run_fibers_gate.py). Registered wherever coroutines run;
+    # the browser build has none.
+    if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_fibers_gate.py")
+        add_test(
+            NAME v14_fibers_gate
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_fibers_gate.py"
+                    --runner $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(v14_fibers_gate
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: fibers gate"
+                FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")
         add_test(
             NAME v1_3_jit_cache_runtime_smoke
@@ -7027,6 +8917,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 TIMEOUT 120
                 PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh")
+        add_test(
+            NAME aot_owned_temp_cleanup
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${STDLIB_OUTPUT}"
+        )
+        set_tests_properties(aot_owned_temp_cleanup PROPERTIES TIMEOUT 300)
+    endif()
+    if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/build_fingerprint_source_root_test.sh")
+        add_test(
+            NAME build_fingerprint_source_root_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/build_fingerprint_source_root_test.sh"
+        )
+        set_tests_properties(build_fingerprint_source_root_test PROPERTIES
+            TIMEOUT 30
+            PASS_REGULAR_EXPRESSION "PASS: build fingerprint uses CMAKE_HOME_DIRECTORY"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh")
         # Generated-program native-dependency discovery must walk the SAME
@@ -7281,6 +9192,215 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_shutdown_hooks_test COMMAND runtime_shutdown_hooks_test)
 endif()
 
+# The managed-resource registry has no LLVM or arena dependency. Exercise its
+# lifecycle and concurrency contract without linking the compiler aggregate.
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Threads REQUIRED)
+    add_executable(eshkol-subprocess-stream-test
+        tests/agent/subprocess_stream_test.c
+        lib/agent/c/agent_subprocess.c
+        lib/core/resource_lease.c
+        lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC}
+        lib/core/runtime_handle.cpp)
+    target_compile_features(eshkol-subprocess-stream-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-subprocess-stream-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-subprocess-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-subprocess-stream-test PRIVATE Threads::Threads)
+    if(APPLE)
+        target_link_options(eshkol-subprocess-stream-test PRIVATE "-Wl,-U,_eshkol_capability_enforce")
+    endif()
+    add_test(NAME agent-subprocess-stream COMMAND eshkol-subprocess-stream-test)
+    set_tests_properties(agent-subprocess-stream PROPERTIES
+        TIMEOUT 60 LABELS "resource;subprocess;stream")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(eshkol-subprocess-stream-watch-failure-test
+            tests/agent/subprocess_stream_watch_failure_test.c
+            lib/agent/c/agent_subprocess.c lib/core/resource_lease.c
+            lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC} lib/core/runtime_handle.cpp)
+        target_compile_features(eshkol-subprocess-stream-watch-failure-test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(eshkol-subprocess-stream-watch-failure-test PRIVATE _GNU_SOURCE)
+        target_include_directories(eshkol-subprocess-stream-watch-failure-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-subprocess-stream-watch-failure-test PRIVATE Threads::Threads)
+        target_link_options(eshkol-subprocess-stream-watch-failure-test PRIVATE "-Wl,--wrap=eshkol_event_loop_remove")
+        add_test(NAME agent-subprocess-stream-watch-failure COMMAND eshkol-subprocess-stream-watch-failure-test)
+        set_tests_properties(agent-subprocess-stream-watch-failure PROPERTIES
+            TIMEOUT 15 LABELS "resource;subprocess;stream;cleanup")
+    endif()
+endif()
+
+# Shared explicit-loop ownership, cancellation and cleanup-completion contract.
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    add_executable(resource_explicit_loop_test
+        tests/core/resource_explicit_loop_test.c lib/core/resource_lease.c
+        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC} lib/core/runtime_handle.cpp)
+    target_compile_features(resource_explicit_loop_test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(resource_explicit_loop_test PRIVATE _GNU_SOURCE ESHKOL_RESOURCE_TESTING)
+    target_include_directories(resource_explicit_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(resource_explicit_loop_test PRIVATE Threads::Threads)
+    add_test(NAME resource_explicit_loop_test COMMAND resource_explicit_loop_test)
+    set_tests_properties(resource_explicit_loop_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc")
+endif()
+
+# Unix-domain stream socket implementation acceptance. Native and public
+# compiler cases run in the default suite against the production implementation.
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Threads REQUIRED)
+    add_executable(eshkol-unix-stream-socket-stream-test
+        tests/agent/unix_socket_stream_test.c
+        lib/agent/c/agent_unix_socket_stream.c
+        lib/core/resource_lease.c lib/core/runtime_handle.cpp
+        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-unix-stream-socket-stream-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-unix-stream-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE Threads::Threads)
+
+    # Observation DSO never interposes connect. Darwin's private-path pending
+    # control is a separate DSO, loaded only by the three pending cases.
+    add_library(eshkol-unix-socket-fixture SHARED tests/agent/unix_socket_stream_fixture_support.c)
+    target_compile_features(eshkol-unix-socket-fixture PRIVATE c_std_11)
+    target_link_libraries(eshkol-unix-socket-fixture PRIVATE ${CMAKE_DL_LIBS})
+    if(APPLE)
+        add_library(eshkol-unix-socket-pending-control SHARED
+            tests/agent/unix_socket_stream_pending_control.c)
+        target_compile_features(eshkol-unix-socket-pending-control PRIVATE c_std_11)
+        set(ESHKOL_SOCKET_PENDING_CONTROL_ARGS --control-library
+            $<TARGET_FILE:eshkol-unix-socket-pending-control>)
+    endif()
+    target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE eshkol-unix-socket-fixture)
+    find_program(ESHKOL_SOCKET_CHIBI_SCHEME NAMES chibi-scheme)
+    if(ESHKOL_SOCKET_CHIBI_SCHEME)
+        add_test(NAME agent-unix-stream-socket-wrapper-unit
+            COMMAND ${ESHKOL_SOCKET_CHIBI_SCHEME} -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_wrapper_contract_test.scm
+                ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(agent-unix-stream-socket-wrapper-unit PROPERTIES
+            TIMEOUT 20 LABELS "resource;socket;wrapper-unit")
+    endif()
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME agent-unix-stream-socket-host-refusal
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/test_unix_socket_unsupported.py
+                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+                --cc ${CMAKE_C_COMPILER}
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/qualification/socket-host-refusal)
+        set_tests_properties(agent-unix-stream-socket-host-refusal PROPERTIES
+            TIMEOUT 120 LABELS "resource;socket;source-contract")
+        add_test(NAME agent-unix-stream-socket-runner-oracle
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_runner_contract_test.py
+                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/qualification/socket-runner-oracle)
+        set_tests_properties(agent-unix-stream-socket-runner-oracle PROPERTIES
+            TIMEOUT 30 LABELS "resource;socket;metadata")
+    endif()
+    add_test(NAME agent-unix-stream-socket-peer-fixture
+        COMMAND eshkol-unix-stream-socket-stream-test --peer-fixture-selftest)
+    set_tests_properties(agent-unix-stream-socket-peer-fixture PROPERTIES
+        TIMEOUT 10 LABELS "resource;socket;fixture")
+    if(APPLE)
+        set_tests_properties(agent-unix-stream-socket-peer-fixture PROPERTIES ENVIRONMENT
+            "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:eshkol-unix-socket-pending-control>")
+    endif()
+    set(ESHKOL_IPC_UNIX_CASES
+        connect_accept partial_slow_peer peer_close_epipe deadline_accept
+        deadline_connect cancellation nul_and_large_payload descriptor_count_check
+        capability_denial path_lifecycle destination_errors connect_cancellation
+        capability_revocation loop_lifetime zero_budget)
+    foreach(case_name ${ESHKOL_IPC_UNIX_CASES})
+        add_test(NAME ipc-unix-${case_name}
+            COMMAND eshkol-unix-stream-socket-stream-test ${case_name}
+                ${CMAKE_BINARY_DIR}/ipc-unix-scratch)
+        set_tests_properties(ipc-unix-${case_name} PROPERTIES
+            LABELS "resource;socket;native" TIMEOUT 150)
+    endforeach()
+
+    if(APPLE)
+        foreach(case_name deadline_connect connect_cancellation zero_budget)
+            set_tests_properties(ipc-unix-${case_name} PROPERTIES ENVIRONMENT
+                "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:eshkol-unix-socket-pending-control>")
+        endforeach()
+    endif()
+    add_test(NAME ipc-unix-borrowed_close
+        COMMAND eshkol-unix-stream-socket-stream-test borrowed_close)
+    set_tests_properties(ipc-unix-borrowed_close PROPERTIES
+        LABELS "resource;socket;native" TIMEOUT 150)
+
+    add_executable(eshkol-unix-socket-cleanup-test
+        tests/agent/unix_socket_cleanup_test.c lib/agent/c/agent_unix_socket_stream.c
+        lib/core/resource_lease.c lib/core/runtime_handle.cpp
+        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_compile_features(eshkol-unix-socket-cleanup-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-unix-socket-cleanup-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-unix-socket-cleanup-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-unix-socket-cleanup-test PRIVATE Threads::Threads)
+    add_test(NAME agent-unix-socket-cleanup COMMAND eshkol-unix-socket-cleanup-test)
+    set_tests_properties(agent-unix-socket-cleanup PROPERTIES TIMEOUT 30 LABELS "resource;socket;cleanup")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(eshkol-unix-socket-regression-test
+            tests/agent/unix_socket_stream_regression_test.c
+            lib/agent/c/agent_unix_socket_stream.c lib/core/resource_lease.c
+            lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+        target_compile_features(eshkol-unix-socket-regression-test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(eshkol-unix-socket-regression-test PRIVATE _GNU_SOURCE)
+        target_include_directories(eshkol-unix-socket-regression-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-unix-socket-regression-test PRIVATE Threads::Threads)
+        target_link_options(eshkol-unix-socket-regression-test PRIVATE
+            -Wl,--wrap=socket -Wl,--wrap=accept4 -Wl,--wrap=recv -Wl,--wrap=send
+            -Wl,--wrap=fchmodat -Wl,--wrap=unlinkat -Wl,--wrap=connect -Wl,--wrap=close)
+        add_test(NAME agent-unix-socket-regressions COMMAND eshkol-unix-socket-regression-test)
+        set_tests_properties(agent-unix-socket-regressions PROPERTIES
+            TIMEOUT 30 LABELS "resource;socket;regression")
+    endif()
+
+    add_executable(eshkol-unix-stream-socket-contract-test
+        tests/agent/unix_socket_stream_contract_test.c
+        lib/agent/c/agent_unix_socket_stream.c
+        lib/core/resource_lease.c lib/core/runtime_handle.cpp
+        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_compile_features(eshkol-unix-stream-socket-contract-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-unix-stream-socket-contract-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-unix-stream-socket-contract-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-unix-stream-socket-contract-test PRIVATE Threads::Threads)
+    add_test(NAME agent-unix-stream-socket-contract COMMAND eshkol-unix-stream-socket-contract-test)
+    set_tests_properties(agent-unix-stream-socket-contract PROPERTIES
+        TIMEOUT 30 LABELS "resource;socket;contract")
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+    add_executable(handle_lifecycle_test
+        tests/core/handle_lifecycle_test.cpp
+        lib/core/runtime_handle.cpp)
+    target_compile_features(handle_lifecycle_test PRIVATE cxx_std_17)
+    target_include_directories(handle_lifecycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(handle_lifecycle_test PRIVATE Threads::Threads)
+    add_test(NAME handle_lifecycle_test COMMAND handle_lifecycle_test)
+    set_tests_properties(handle_lifecycle_test PROPERTIES
+        TIMEOUT 30 LABELS "resource;ownership;concurrency")
+    # A C caller must link against the C++ hosted implementation unchanged.
+    add_executable(handle_c_api_test
+        tests/core/handle_c_api_test.c
+        lib/core/runtime_handle.cpp)
+    target_compile_features(handle_c_api_test PRIVATE c_std_11 cxx_std_17)
+    target_include_directories(handle_c_api_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(handle_c_api_test PRIVATE Threads::Threads)
+    add_test(NAME handle_c_api_test COMMAND handle_c_api_test)
+    set_tests_properties(handle_c_api_test PROPERTIES
+        TIMEOUT 30 LABELS "resource;ffi")
+    # The shared protobuf wire primitives (ONNX export, PJRT compile options)
+    # against hand-derived golden vectors from the encoding specification.
+    add_executable(protobuf_wire_test tests/core/protobuf_wire_test.c)
+    target_compile_features(protobuf_wire_test PRIVATE c_std_11)
+    target_include_directories(protobuf_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME protobuf_wire_test COMMAND protobuf_wire_test)
+    set_tests_properties(protobuf_wire_test PROPERTIES
+        TIMEOUT 30 LABELS "protobuf;wire"
+        PASS_REGULAR_EXPRESSION "PASS: protobuf wire golden vectors")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resource_limits_test.cpp")
     add_executable(resource_limits_test tests/core/resource_limits_test.cpp)
     target_compile_features(resource_limits_test PRIVATE cxx_std_17)
@@ -7324,6 +9444,34 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# Reader nesting gate: nesting depth is bounded by memory, not by a number.
+# A quoted datum nested 10^4, 10^5 and 10^6 levels deep reads, compares and
+# prints in full on the JIT, ahead-of-time and the bytecode VM; the same
+# nesting written as a code form is either compiled or refused in words; the
+# documented input-size cap is honoured from both the environment variable and
+# the command-line option; and reading a datum too big for the process's
+# address space is a diagnostic. A signal, in any of those, fails this gate.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/reader_nesting_depth_gate.sh")
+    # See resource_limits_enforcement_gate above for why this mirrors the VM
+    # target's own gating condition rather than probing `if(TARGET ...)`.
+    if(NOT WIN32)
+        set(ESHKOL_READER_NESTING_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_READER_NESTING_GATE_VM "none")
+    endif()
+    add_test(NAME reader_nesting_depth_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/reader_nesting_depth_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_READER_NESTING_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/reader-nesting-gate")
+    set_tests_properties(reader_nesting_depth_gate PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: nesting depth is bounded by memory"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 # SW-45 gate: bytecode VM closure storage is sized to the procedure's actual
 # capture count, so the former 32-entry boundary and the following top-level
 # definition both execute without silent stack corruption.
@@ -7348,6 +9496,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS: closure upvalue capacity enforced"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    function(add_vm_transcript_test name source)
+        add_test(NAME ${name}
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/check_program.py"
+                "$<TARGET_FILE:eshkol-run>" "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 600)
+    endfunction()
+    add_vm_transcript_test(vm_tensor_dot_shapes tests/vm_parity/corpus/tensor_dot_shapes.esk)
+    add_vm_transcript_test(vm_match_bytecode_parity tests/vm_parity/corpus/match_patterns.esk)
+    add_vm_transcript_test(vm_linear_type_spelling tests/typesystem/linear_type_spelling_test.esk)
+    add_vm_transcript_test(vm_linear_type_spelling_valid tests/typesystem/linear_type_spelling_valid_test.esk)
 endif()
 
 # BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The
@@ -7380,6 +9542,102 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# Refinement types (ADR-0044). refinement_smt_test is the decision
+# procedure's known-answer corpus (brute force, engine cross-checks, unbounded
+# families); refinement_types_gate runs the language-level programs on the
+# native and VM engines. With ESHKOL_REFINEMENT_Z3 and a z3 on this host the
+# corpus is also compared query by query with z3.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/refinement_smt_test.cpp")
+    add_executable(refinement_smt_test tests/types/refinement_smt_test.cpp)
+    target_compile_features(refinement_smt_test PRIVATE cxx_std_20)
+    target_include_directories(refinement_smt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(refinement_smt_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(refinement_smt_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(refinement_smt_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME refinement_smt_test COMMAND refinement_smt_test)
+    set_tests_properties(refinement_smt_test PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: refinement decision procedure")
+    if(ESHKOL_REFINEMENT_Z3 AND ESHKOL_Z3_EXECUTABLE)
+        add_test(NAME refinement_smt_z3_agreement COMMAND refinement_smt_test --z3)
+        set_tests_properties(refinement_smt_z3_agreement PROPERTIES
+            TIMEOUT 1800
+            PASS_REGULAR_EXPRESSION "z3 agreement: [0-9]+ queries"
+            FAIL_REGULAR_EXPRESSION "FAIL")
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/refinement/refinement_gate.sh")
+    if(NOT WIN32)
+        set(ESHKOL_REFINEMENT_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_REFINEMENT_GATE_VM "none")
+    endif()
+    add_test(NAME refinement_types_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/refinement/refinement_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_REFINEMENT_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/refinement-types-gate")
+    set_tests_properties(refinement_types_gate PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: refinement types on"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# ADR-0046: structural types (row polymorphism, arbitrary rank, session types).
+# The solver contract runs standalone; the gate runs every fixture under
+# tests/types_ext on JIT, AOT and the bytecode VM.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/structural_types_test.cpp")
+    add_executable(structural_types_test tests/types/structural_types_test.cpp
+                   lib/types/structural_types.cpp)
+    target_compile_features(structural_types_test PRIVATE cxx_std_20)
+    target_include_directories(structural_types_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME structural_types_test COMMAND structural_types_test)
+    set_tests_properties(structural_types_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: structural type solver"
+        FAIL_REGULAR_EXPRESSION "FAIL ")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types_ext/types_ext_gate.sh")
+    if(NOT WIN32)
+        set(ESHKOL_TYPES_EXT_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_TYPES_EXT_VM "none")
+    endif()
+    add_test(NAME types_ext_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/types_ext/types_ext_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_TYPES_EXT_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/types-ext-gate"
+            "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(types_ext_gate PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: structural types gate"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh")
+    # ADR-0042: the VM refuses and runs the same dependent-typed programs as
+    # the native engine. Same VM gating as the linearity parity gate above.
+    add_test(NAME dependent_type_engine_parity_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LINEAR_PARITY_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/dependent-type-engine-parity")
+    set_tests_properties(dependent_type_engine_parity_gate PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: dependent type engine parity"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)
@@ -7402,6 +9660,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_
         ENVIRONMENT "ESHKOL_LINSOLVE_FORCE_DGESV=0")
     set_tests_properties(linear_solve_hosted_control_one PROPERTIES
         ENVIRONMENT "ESHKOL_LINSOLVE_FORCE_DGESV=1")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_portable_test.c")
+    add_executable(linear_solve_portable_test
+        tests/core/linear_solve_portable_test.c
+        lib/core/linear_solve_portable.c)
+    set_target_properties(linear_solve_portable_test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_include_directories(linear_solve_portable_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(NOT WIN32)
+        target_link_libraries(linear_solve_portable_test PRIVATE m)
+    endif()
+    add_test(NAME linear_solve_portable_test COMMAND linear_solve_portable_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_signal_handlers_test.cpp")
@@ -7434,6 +9705,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_shutdown_teardown_race_test COMMAND runtime_shutdown_teardown_race_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    set(_shared_ffi "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/shared_ownership.esk")
+    add_test(NAME shared_ownership_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${_shared_ffi}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME shared_ownership_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/shared_ownership' '${_shared_ffi}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/shared_ownership'")
+    set_tests_properties(shared_ownership_jit shared_ownership_aot PROPERTIES
+        TIMEOUT 120 PASS_REGULAR_EXPRESSION "PASS: shared ownership")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shared_memory_test.cpp")
     add_executable(runtime_shared_memory_test tests/core/runtime_shared_memory_test.cpp)
     target_compile_features(runtime_shared_memory_test PRIVATE cxx_std_17)
@@ -7443,6 +9724,10 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
         target_link_directories(runtime_shared_memory_test PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
     target_link_libraries(runtime_shared_memory_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(runtime_shared_memory_test PRIVATE ESHKOL_TEST_MALLOC_WRAP)
+        target_link_options(runtime_shared_memory_test PRIVATE "-Wl,--wrap=malloc")
+    endif()
     add_test(NAME runtime_shared_memory_test COMMAND runtime_shared_memory_test)
 endif()
 
@@ -7554,6 +9839,22 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/continu
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# A dynamic-wind entry enters its thunks through the caller stored in it, and
+# an entry holding a procedure cannot be created without one.
+if(ESHKOL_BUILD_TESTS AND UNIX AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/dynamic_wind_thunk_caller_test.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(dynamic_wind_thunk_caller_test tests/core/dynamic_wind_thunk_caller_test.cpp)
+    target_compile_features(dynamic_wind_thunk_caller_test PRIVATE cxx_std_17)
+    target_include_directories(dynamic_wind_thunk_caller_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(dynamic_wind_thunk_caller_test PRIVATE eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME dynamic_wind_thunk_caller_test COMMAND dynamic_wind_thunk_caller_test)
+    set_tests_properties(dynamic_wind_thunk_caller_test PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: dynamic-wind entries enter their thunks"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_regions_test.cpp")
     add_executable(runtime_regions_test tests/core/runtime_regions_test.cpp)
     target_compile_features(runtime_regions_test PRIVATE cxx_std_17)
@@ -7564,6 +9865,62 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     endif()
     target_link_libraries(runtime_regions_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME runtime_regions_test COMMAND runtime_regions_test)
+endif()
+
+# Doc-truth ratchet. Phase 1 (v1.4.0) recomputes the ranking of docs/ claims
+# by verification status into ${CMAKE_BINARY_DIR}/doc_truth and reports how
+# each document compares with docs/reports/doc_truth/quota.json without
+# failing. Phase 2 sets ESHKOL_DOC_TRUTH_ENFORCE=ON (release builds), which
+# fails on any document above its quota or a host that cannot recompute.
+option(ESHKOL_DOC_TRUTH_ENFORCE "Fail the doc-truth ratchet on quota excess (phase 2)" OFF)
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_truth_ratchet.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        set(_eshkol_doc_truth_args
+            check --source "${CMAKE_CURRENT_SOURCE_DIR}"
+                  --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                  --quota "${CMAKE_CURRENT_SOURCE_DIR}/docs/reports/doc_truth/quota.json")
+        if(ESHKOL_DOC_TRUTH_ENFORCE)
+            list(APPEND _eshkol_doc_truth_args --enforce)
+        endif()
+        add_test(NAME doc_truth_ratchet_phase1
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_truth_ratchet.py"
+                         ${_eshkol_doc_truth_args})
+        set_tests_properties(doc_truth_ratchet_phase1 PROPERTIES
+            TIMEOUT 3600
+            LABELS "doc-truth"
+            PASS_REGULAR_EXPRESSION "DOC-TRUTH (REPORT|NOT RECOMPUTED)"
+            FAIL_REGULAR_EXPRESSION "FAIL: ")
+        add_test(NAME doc_truth_ratchet_unit
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_doc_truth_ratchet.py"
+                 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(doc_truth_ratchet_unit PROPERTIES LABELS "doc-truth" TIMEOUT 300)
+    endif()
+endif()
+
+# Built-in image codecs: decode/encode goldens recorded from the platform
+# codec libraries image I/O used before, round trips for every format and
+# channel count, the zlib pair and a mutation pass.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/image_codecs_test.cpp")
+    add_executable(image_codecs_test tests/core/image_codecs_test.cpp)
+    target_compile_features(image_codecs_test PRIVATE cxx_std_17)
+    target_include_directories(image_codecs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(image_codecs_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(image_codecs_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(image_codecs_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/image_codecs_scratch")
+    add_test(NAME image_codecs_test
+             COMMAND image_codecs_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/image_fixtures"
+                     "${CMAKE_CURRENT_BINARY_DIR}/image_codecs_scratch")
+    set_tests_properties(image_codecs_test PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: image codecs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/parameter_region_barrier_test.cpp")
@@ -7703,7 +10060,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
     add_test(NAME ast_routing_compile_mutations
         COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/ast_routing_compile_mutations.py"
-                --cxx "${CMAKE_CXX_COMPILER}")
+                --generated-include "${ESHKOL_GENERATED_INCLUDE_DIR}" --cxx "${CMAKE_CXX_COMPILER}")
     add_test(NAME compiler_architecture_gate_selftest
         COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_compiler_architecture.py" --self-test)
@@ -7892,10 +10249,6 @@ endif()
 # that depends on the current object header, baselined at .icc/abi-header-baseline.json;
 # fails when a commit introduces a new one outside the accessor.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py")
-    # The semantic ABI ratchet consumes the compile database.  Keep its input
-    # present in every test configuration instead of requiring a manual cache
-    # flag.
-    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
     add_test(NAME abi_header_inventory_ratchet
@@ -7917,6 +10270,13 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header
     # The negative control temporarily injects a source site. Quiesce other
     # tests so concurrent source readers cannot observe that deliberate edit.
     set_tests_properties(abi_header_inventory_selftest PROPERTIES RUN_SERIAL TRUE)
+    # The inventory resolves the compile database and the compiler under
+    # BUILD_DIR; name this build tree so the ratchet reads the database CMake
+    # just wrote, wherever it was configured.
+    set_tests_properties(abi_header_inventory_ratchet
+                         abi_header_inventory_semantic_ratchet
+                         abi_header_inventory_selftest
+                         PROPERTIES ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 endif()
 
@@ -7928,13 +10288,34 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_test.py)
 endif()
 
+# The AOT harness's own controls: scripts/run_stdlib_aot.cmake must reject a
+# zero-exit run with no verdict, a FAIL line beside a PASS verdict, a failed
+# compile and a compiler diagnostic. docs/TESTING.md describes these controls,
+# so CTest runs them.
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_stdlib_aot_runner.py")
+    add_test(NAME stdlib_aot_runner_controls
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_stdlib_aot_runner.py)
+    set_tests_properties(stdlib_aot_runner_controls PROPERTIES TIMEOUT 300)
+endif()
+
 # Release-invariant contracts are source-level checks for the architecture
 # model and the typed receipts emitted before the release architecture grade.
 # Keep them in CTest so normal developer and CI test selections exercise the
 # same contracts as the release workflow.
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    add_test(NAME release_build_identity
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/release_build_identity.py"
+                "$<TARGET_FILE:eshkol-run>" "${CMAKE_CURRENT_BINARY_DIR}")
+    if(UNIX)
+        add_test(NAME release_qubit_compile_contract
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_no_cloning_gate.sh"
+                    "$<TARGET_FILE:eshkol-run>" "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     foreach(_release_invariant_test IN ITEMS
             test_release_invariant_contracts
+            test_release_gate_inputs
             test_example_catalogue
             test_cuda_benchmark_metadata
             test_release_publication_contract
@@ -7943,6 +10324,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
             test_release_autopilot
             test_v1_3_release_evidence_recipe
             test_release_probe_receipts
+            test_icc_smoke_scope
             test_release_harness_paths
             test_repl_smoke
             test_native_image_io_contract)
@@ -7983,6 +10365,18 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
         set_tests_properties(wasm_tensor_jet_runtime_test PROPERTIES
             LABELS "toolchain;wasm;imports;autodiff"
             TIMEOUT 120 SKIP_RETURN_CODE 77)
+        add_test(NAME wasm_string_split_runtime_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_string_split_runtime_test.py
+                --compiler $<TARGET_FILE:eshkol-run> ${_wasm_flat_ad_node_args})
+        set_tests_properties(wasm_string_split_runtime_test PROPERTIES
+            LABELS "toolchain;wasm;imports;string" TIMEOUT 120 SKIP_RETURN_CODE 77)
+        add_test(NAME wasm_closure_runtime_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_closure_runtime_test.py
+                --compiler $<TARGET_FILE:eshkol-run> ${_wasm_flat_ad_node_args})
+        set_tests_properties(wasm_closure_runtime_test PROPERTIES
+            LABELS "toolchain;wasm;imports;closure" TIMEOUT 120 SKIP_RETURN_CODE 77)
     endif()
 endif()
 
@@ -8085,6 +10479,15 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/es
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/compiler_input_extension_test.py")
+    add_test(
+        NAME compiler_input_extension_cli
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/compiler_input_extension_test.py"
+                "$<TARGET_FILE:eshkol-run>")
+    set_tests_properties(compiler_input_extension_cli PROPERTIES TIMEOUT 180)
+endif()
+
 if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_object_smoke_test.cpp")
     get_filename_component(ESHKOL_LLVM_BIN_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
     find_program(ESHKOL_LLVM_DIS_EXECUTABLE
@@ -8148,6 +10551,56 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
     endif()
 endif()
 
+# ─────────────────────────────────────────────────────────────────────
+# Embedded (bare-metal) targets: freestanding runtime subset + target matrix.
+#
+# lib/platform/embedded holds the freestanding runtime subset (memory
+# primitives, C startup) and one board-support directory per reference
+# board.  It is cross-compiled with the LLVM toolchain's clang for every
+# reference target by tests/embedded/embedded_targets.sh: the
+# `eshkol-embedded-runtime` target writes
+# build/embedded/<target>/libeshkol_embedded.a plus the board link script.
+# The CTests compile tests/embedded/fib_checksum.esk for thumbv7em (soft and
+# hard float), aarch64, rv32imac and rv64gc, link and inspect each image
+# (embedded_targets_objects), and boot each image under QEMU where a
+# qemu-system-* emulator is installed (embedded_targets_qemu).  Both exit 77
+# (skip) when the cross tools are absent.  See docs/platform/EMBEDDED_TARGETS.md.
+# ─────────────────────────────────────────────────────────────────────
+option(ESHKOL_BUILD_EMBEDDED_RUNTIME
+    "Cross-compile the freestanding runtime subset for the reference bare-metal targets" ON)
+if(NOT WIN32 AND ESHKOL_BUILD_EMBEDDED_RUNTIME)
+    find_program(ESHKOL_EMBEDDED_CLANG NAMES clang
+        HINTS "${ESHKOL_LLVM_ROOT}/bin" "${LLVM_TOOLS_BINARY_DIR}" NO_DEFAULT_PATH)
+    find_program(ESHKOL_EMBEDDED_BASH NAMES bash)
+    if(ESHKOL_EMBEDDED_CLANG AND ESHKOL_EMBEDDED_BASH)
+        get_filename_component(ESHKOL_EMBEDDED_LLVM_BIN "${ESHKOL_EMBEDDED_CLANG}" DIRECTORY)
+        add_custom_target(eshkol-embedded-runtime
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_EMBEDDED_LLVM_BIN=${ESHKOL_EMBEDDED_LLVM_BIN}"
+                "${ESHKOL_EMBEDDED_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/embedded/embedded_targets.sh"
+                runtime "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/embedded"
+            COMMENT "Cross-compiling the freestanding runtime subset for the reference bare-metal targets"
+            VERBATIM)
+        if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+            add_test(NAME embedded_targets_objects
+                COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_EMBEDDED_LLVM_BIN=${ESHKOL_EMBEDDED_LLVM_BIN}"
+                    "${ESHKOL_EMBEDDED_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/embedded/embedded_targets.sh"
+                    check $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${CMAKE_CURRENT_BINARY_DIR}/embedded-check")
+            add_test(NAME embedded_targets_qemu
+                COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_EMBEDDED_LLVM_BIN=${ESHKOL_EMBEDDED_LLVM_BIN}"
+                    "${ESHKOL_EMBEDDED_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/embedded/embedded_targets.sh"
+                    check $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${CMAKE_CURRENT_BINARY_DIR}/embedded-qemu" qemu)
+            set_tests_properties(embedded_targets_objects embedded_targets_qemu PROPERTIES
+                LABELS "toolchain;embedded"
+                SKIP_RETURN_CODE 77
+                TIMEOUT 600)
+        endif()
+    else()
+        message(STATUS "Embedded runtime: clang from the LLVM toolchain not found; bare-metal target tests skipped")
+    endif()
+endif()
+
 if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh")
     find_program(ESHKOL_BASH_EXECUTABLE NAMES bash)
@@ -8157,7 +10610,11 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             COMMAND "${ESHKOL_BASH_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh"
         )
-        set_tests_properties(stack_overflow_diagnostic_gate PROPERTIES TIMEOUT 900)
+        # The harness resolves the compiler and VM under BUILD_DIR; name this
+        # build tree so the gate runs from whatever directory CMake configured.
+        set_tests_properties(stack_overflow_diagnostic_gate PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
     endif()
 endif()
 
@@ -8188,6 +10645,20 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(generated_artifact_validator_test PROPERTIES TIMEOUT 120)
     endif()
+    foreach(_license_staging_test IN ITEMS
+            stage_macos_openssl_runtime_test
+            stage_third_party_licenses_test)
+        set(_license_staging_test_path
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_license_staging_test}.py")
+        if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${_license_staging_test_path}")
+            add_test(
+                NAME "${_license_staging_test}"
+                COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                        "${_license_staging_test_path}"
+            )
+            set_tests_properties("${_license_staging_test}" PROPERTIES TIMEOUT 120)
+        endif()
+    endforeach()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py")
         add_test(
             NAME windows_runtime_exports_validator_test
@@ -8451,6 +10922,12 @@ if(ESHKOL_BUILD_TESTS)
     # scripts/run_ctest_gate.sh, which re-runs ctest with --output-junit and
     # feeds the result to this same script.
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_self_verdicts.py")
+        add_test(NAME event_loop_receipt_contract
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_event_loop_gate.py")
+        add_test(NAME documentation_front_matter_controls
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_doc_front_matter.py" --self-test)
+        add_test(NAME nonlinear_observability_certificate_corpus
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/repro/nonlinear-observability/self_test.py" --certificates)
         add_test(
             NAME self_verdict_gate
             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
@@ -8688,6 +11165,61 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
         COMMAND jit_aarch64_coff_target_config_test)
 endif()
 
+# ── Vulkan compute backend tests (ADR-0053) ─────────────────────────────
+# gpu_vulkan_compute_crosscheck: every kernel on every reachable Vulkan f64
+#   device against the CPU reference (bitwise), straight through gpu_vulkan.c.
+# gpu_vulkan_dispatch: the ordinary eshkol_gpu_* API with
+#   ESHKOL_GPU_BACKEND=vulkan, through the production backend objects.
+# gpu_vulkan_abi_layout / gpu_vulkan_spirv_current: the self-declared Vulkan
+#   ABI against the Khronos headers, and the embedded SPIR-V against the GLSL
+#   sources; each needs a tool that is optional on build hosts.
+# All four exit 77 (skipped) where the device or tool is absent.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_VULKAN_COMPUTE_ENABLED)
+    find_package(Threads REQUIRED)
+    add_executable(vulkan_compute_test
+        tests/gpu/vulkan_compute_test.c
+        lib/backend/gpu/gpu_vulkan.c
+        # The loader consults the capability policy before it opens a library.
+        lib/core/capability_policy.cpp)
+    target_include_directories(vulkan_compute_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(vulkan_compute_test PRIVATE -ffp-contract=off)
+    endif()
+    target_link_libraries(vulkan_compute_test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+    add_test(NAME gpu_vulkan_compute_crosscheck COMMAND vulkan_compute_test)
+    set_tests_properties(gpu_vulkan_compute_crosscheck PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 600)
+
+    add_executable(vulkan_dispatch_test tests/gpu/vulkan_dispatch_test.cpp)
+    target_compile_features(vulkan_dispatch_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_dispatch_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(vulkan_dispatch_test PRIVATE -ffp-contract=off)
+    endif()
+    target_link_libraries(vulkan_dispatch_test PRIVATE
+        eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME gpu_vulkan_dispatch COMMAND vulkan_dispatch_test)
+    set_tests_properties(gpu_vulkan_dispatch PROPERTIES
+        ENVIRONMENT "ESHKOL_GPU_BACKEND=vulkan"
+        SKIP_RETURN_CODE 77 TIMEOUT 300)
+
+    add_test(NAME gpu_vulkan_abi_layout
+        COMMAND ${CMAKE_COMMAND} -E env
+            "CC=${CMAKE_C_COMPILER}"
+            "ESHKOL_VK_ABI_WORKDIR=${CMAKE_CURRENT_BINARY_DIR}/vulkan-abi-check"
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vulkan_abi.sh)
+    add_test(NAME gpu_vulkan_spirv_current
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_VK_SPIRV_WORKDIR=${CMAKE_CURRENT_BINARY_DIR}/vulkan-spirv-check"
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_vulkan_spirv.sh --check)
+    set_tests_properties(gpu_vulkan_abi_layout gpu_vulkan_spirv_current PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 120)
+endif()
+
 if(ESHKOL_BUILD_TESTS)
     add_executable(jit_parallel_init_test tests/toolchain/jit_parallel_init_test.cpp)
     target_compile_features(jit_parallel_init_test PRIVATE cxx_std_17)
@@ -8731,11 +11263,19 @@ if(ESHKOL_BUILD_TESTS AND WIN32 AND
     set_tests_properties(windows_x64_continuation_restore_test PROPERTIES TIMEOUT 30)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/cuda_matmul_budget_test.cpp")
+    add_executable(cuda_matmul_budget_test tests/backend/cuda_matmul_budget_test.cpp)
+    target_compile_features(cuda_matmul_budget_test PRIVATE cxx_std_17)
+    target_include_directories(cuda_matmul_budget_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    add_test(NAME cuda_matmul_budget_test COMMAND cuda_matmul_budget_test)
+endif()
+
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
     add_executable(cuda_runtime_link_args_test
         tests/toolchain/cuda_runtime_link_args_test.cpp
-        lib/core/platform_runtime.cpp)
+        lib/core/platform_runtime.cpp
+        lib/core/capability_policy.cpp)
     target_compile_features(cuda_runtime_link_args_test PRIVATE cxx_std_17)
     target_include_directories(cuda_runtime_link_args_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -8750,7 +11290,9 @@ if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
     # when the numerical GPU gates correctly report that hardware is absent.
     add_executable(cublas_lazy_loader_test
         tests/toolchain/cublas_lazy_loader_test.cpp
-        lib/backend/gpu/cublas_loader.cpp)
+        lib/backend/gpu/cublas_loader.cpp
+        # The loader consults the capability policy before it opens a library.
+        lib/core/capability_policy.cpp)
     target_compile_features(cublas_lazy_loader_test PRIVATE cxx_std_17)
     target_compile_definitions(cublas_lazy_loader_test PRIVATE
         ESHKOL_CUBLAS_LOADER_TESTING=1)
@@ -8874,16 +11416,26 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm
     )
 endif()
 
-if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_compiler_vector_limit_surface_test.cpp")
-    add_executable(eshkol_compiler_vector_limit_surface_test
-        tests/toolchain/eshkol_compiler_vector_limit_surface_test.cpp)
-    target_compile_features(eshkol_compiler_vector_limit_surface_test PRIVATE cxx_std_17)
-    target_include_directories(eshkol_compiler_vector_limit_surface_test PRIVATE
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm_vector_limit_surface_test.cpp")
+    add_executable(vm_vector_limit_surface_test
+        tests/toolchain/vm_vector_limit_surface_test.cpp)
+    target_compile_features(vm_vector_limit_surface_test PRIVATE cxx_std_17)
+    target_include_directories(vm_vector_limit_surface_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     add_test(
-        NAME eshkol_compiler_vector_limit_surface_test
-        COMMAND eshkol_compiler_vector_limit_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+        NAME vm_vector_limit_surface_test
+        COMMAND vm_vector_limit_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
     )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_language_surface_production_sources.py")
+    add_test(
+        NAME language_surface_production_sources
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_language_surface_production_sources.py"
+    )
+    set_tests_properties(language_surface_production_sources PROPERTIES TIMEOUT 60)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/forward_ref_scan_boundary_test.cpp")
@@ -8937,6 +11489,163 @@ if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+endif()
+
+# Algebraic effects and handlers (ADR-0045): the semantics corpus on the
+# native JIT, native AOT and the bytecode VM, and the effect-typing corpus
+# under --strict-types, in one gate (scripts/run_effects_gate.py).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT EMSCRIPTEN AND
+   TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py")
+    add_test(
+        NAME v19_effects_gate
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py"
+                --runner $<TARGET_FILE:eshkol-run>
+                --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+                --work "${CMAKE_CURRENT_BINARY_DIR}/test-work/effects-gate"
+    )
+    set_tests_properties(v19_effects_gate
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: effects gate"
+            FAIL_REGULAR_EXPRESSION "FAIL: effects gate|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
+    # Keep the switch interpreter available beside the compiler's threaded
+    # dispatch so malformed-bytecode regressions exercise both implementations.
+    add_executable(eshkol-vm-switch-dispatch-test lib/backend/eshkol_vm.c)
+    target_include_directories(eshkol-vm-switch-dispatch-test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_compile_definitions(eshkol-vm-switch-dispatch-test PRIVATE
+        ESHKOL_VM_FORCE_SWITCH_DISPATCH=1)
+    eshkol_apply_vm_limit_definitions(eshkol-vm-switch-dispatch-test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(eshkol-vm-switch-dispatch-test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(eshkol-vm-switch-dispatch-test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_executable(vm_numeric_context_test tests/backend/vm_numeric_context_test.c)
+    target_include_directories(vm_numeric_context_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(vm_numeric_context_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(vm_numeric_context_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(vm_numeric_context_test PRIVATE eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    foreach(case IN ITEMS rational_limits bignum_zero_condition diagnostic_contexts symbolic_variable_power)
+        add_test(NAME vm_${case} COMMAND vm_numeric_context_test ${case})
+    endforeach()
+    function(add_vm_runtime_test name)
+        add_executable(${name} tests/vm/${name}.c)
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        eshkol_apply_vm_limit_definitions(${name})
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${name} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${name} PRIVATE eshkol-static
+            ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+    add_executable(table_hash_vectors tests/core/table_hash_vectors.cpp lib/core/table_hash.cpp)
+    target_include_directories(table_hash_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME table_hash_vectors COMMAND table_hash_vectors)
+    add_vm_runtime_test(vm_numeric_key_hash)
+    add_test(NAME vm_process_hash_key COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/process_hash_key.py $<TARGET_FILE:vm_numeric_key_hash>)
+    add_vm_runtime_test(vm_standard_port_roots)
+    add_vm_runtime_test(gensym_shared_sequence)
+    foreach(_dispatch IN ITEMS threaded switch)
+        set(_dispatch_target vm_invalid_opcode_${_dispatch}_test)
+        add_executable(${_dispatch_target} tests/vm/vm_invalid_opcode_dispatch_test.c)
+        target_include_directories(${_dispatch_target} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        eshkol_apply_vm_limit_definitions(${_dispatch_target})
+        if(_dispatch STREQUAL "switch")
+            target_compile_definitions(${_dispatch_target} PRIVATE ESHKOL_VM_FORCE_SWITCH_DISPATCH=1)
+        endif()
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${_dispatch_target} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${_dispatch_target} PRIVATE eshkol-static
+            ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        add_test(NAME vm_invalid_opcode_${_dispatch} COMMAND ${_dispatch_target})
+        set_tests_properties(vm_invalid_opcode_${_dispatch} PROPERTIES TIMEOUT 30
+            PASS_REGULAR_EXPRESSION "PASS: rejected" FAIL_REGULAR_EXPRESSION "FAIL:")
+        foreach(_behavior IN ITEMS
+                local_get_oob local_set_oob local_get_negative local_get_int32_max
+                wind_overflow callcc_bad_state local_get_valid local_set_valid
+                wind_valid callcc_valid)
+            add_test(NAME vm_dispatch_${_behavior}_${_dispatch}
+                COMMAND ${_dispatch_target} ${_behavior})
+            set_tests_properties(vm_dispatch_${_behavior}_${_dispatch} PROPERTIES TIMEOUT 30
+                PASS_REGULAR_EXPRESSION "PASS: ${_behavior}"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        endforeach()
+    endforeach()
+    add_test(NAME standalone_eskb_admission COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/standalone_eskb_admission_test.py
+        $<TARGET_FILE:eshkol-vm-standalone-test>
+        $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
+    set_tests_properties(standalone_eskb_admission PROPERTIES TIMEOUT 20)
+    if(TARGET eshkol-run)
+        add_test(NAME eskb_compiler_tensor_literal_admission
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/eskb_compiler_admission_test.py
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+                $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
+        set_tests_properties(eskb_compiler_tensor_literal_admission PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: compiler-produced tensor-literal ESKB admission and invalid-opcode rejection"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+    endif()
+    if(TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       TARGET eshkol-vm-switch-dispatch-test)
+        add_test(NAME vm_coverage_guarded_self_tail
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/coverage_guarded_self_tail_test.py
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+                $<TARGET_FILE:eshkol-vm-switch-dispatch-test>
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/coverage_guarded_self_tail_regression.esk)
+        set_tests_properties(vm_coverage_guarded_self_tail PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: guarded self-tail marker admission and runtime coverage"
+            FAIL_REGULAR_EXPRESSION "Traceback|FAIL:|invalid ESKB VM bytecode profile|fatal signal")
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    add_executable(eskb_reader_allocation_spy_test
+        tests/vm/eskb_reader_allocation_spy_test.c)
+    target_compile_features(eskb_reader_allocation_spy_test PRIVATE c_std_11)
+    target_include_directories(eskb_reader_allocation_spy_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
+    eshkol_apply_vm_limit_definitions(eskb_reader_allocation_spy_test)
+    add_test(NAME eskb_reader_allocation_spy
+        COMMAND eskb_reader_allocation_spy_test --expect-green)
+    set_tests_properties(eskb_reader_allocation_spy PROPERTIES TIMEOUT 15)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/linear_solve_portable_surface_regression.esk")
+    add_test(
+        NAME linear_solve_portable_vm_regression
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/linear_solve_portable_surface_regression.esk")
+    set_tests_properties(linear_solve_portable_vm_regression PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: portable VM linear-solve"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32)
@@ -9353,6 +12062,44 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
     endif()
 
+    # Finite inexact real external forms must retain their exactness on readback.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/inexact_roundtrip_test.esk")
+        add_test(
+            NAME inexact_roundtrip_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/inexact_roundtrip_test.esk")
+        set_tests_properties(inexact_roundtrip_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: positive zero retains inexactness"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|fatal signal")
+        set_tests_properties(inexact_roundtrip_jit_smoke PROPERTIES
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            PASS_REGULAR_EXPRESSION "PASS: inexact_roundtrip_test 10/10")
+        add_test(NAME inexact_roundtrip_aot
+            COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/inexact_roundtrip_test.esk"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/inexact_roundtrip_aot${CMAKE_EXECUTABLE_SUFFIX}"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(inexact_roundtrip_aot PROPERTIES
+            TIMEOUT 180 FIXTURES_REQUIRED exact_foundations_local_stdlib
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: inexact_roundtrip_test 10/10"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        if(TARGET eshkol-vm-standalone-test)
+            add_test(
+                NAME inexact_roundtrip_vm_src_smoke
+                COMMAND sh -c
+                    "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/numeric/inexact_roundtrip_test.esk")
+            set_tests_properties(inexact_roundtrip_vm_src_smoke PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: inexact_roundtrip_test 10/10"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
+        endif()
+    endif()
+
     # A caught condition writes nothing to stderr (native JIT, AOT and VM):
     # each wrapper fails when the program's stderr, less the tools' own
     # banner lines, is not empty.
@@ -9396,6 +12143,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         )
         set_tests_properties(continuation_pin_budget_boundary PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             PASS_REGULAR_EXPRESSION "continuation_pin_budget_boundary_test.sh: PASS"
             FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
     endif()
@@ -9423,6 +12171,11 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     # filed reproducer in tests/vm_parity/corpus/58_rng_seed_parity.esk.
     if(TARGET eshkol-run AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh")
+        add_test(NAME rng_automatic_seed_cross_engine
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/automatic_stream.py"
+                $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/automatic_stream.esk")
+        set_tests_properties(rng_automatic_seed_cross_engine PROPERTIES TIMEOUT 300)
         add_test(
             NAME rng_seed_parity_cross_engine
             COMMAND bash
@@ -9715,6 +12468,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(vm_first_class_builtin_arity_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity enforcement"
             FAIL_REGULAR_EXPRESSION "FAIL:")
 
@@ -10318,6 +13072,133 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         endif()
     endif()
 
+    # ── The capability policy at the non-file sinks ──────────────────────
+    #
+    # A program that installs no policy behaves exactly as it always has. Once
+    # a policy is active, the shell, process-creation, socket and
+    # shared-library sinks are refused unless the policy names the capability.
+    # The matrix below runs each sink class with no policy, under a policy that
+    # withholds the capability, and under one that grants it, on every engine
+    # that carries the sink.
+    if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/capability_sink_coverage_test.sh")
+        add_test(
+            NAME capability_sink_coverage_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/capability_sink_coverage_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(capability_sink_coverage_test
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: capability_sink_coverage_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # (process-spawn-pty cmd) hands the program the pseudo-terminal master
+    # descriptor along with the pid, on every engine, and repeated spawns stay
+    # within the process's descriptor budget.
+    if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_bookkeeping_test.sh")
+        add_test(
+            NAME process_child_bookkeeping_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_bookkeeping_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(process_child_bookkeeping_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: process_child_bookkeeping_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # The ffi exemption belongs to Eshkol's own module tree and to nothing that
+    # merely looks like it: a project's own library directory does not confer it.
+    if(NOT WIN32 AND TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/stdlib_exemption_test.sh")
+        add_test(
+            NAME stdlib_exemption_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/stdlib_exemption_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(stdlib_exemption_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: stdlib_exemption_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # Every (extern ...) a module in the tree declares is exempt from the ffi
+    # capability, so none of them may name a host sink symbol directly without
+    # checking the capability for its class.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_stdlib_extern_sinks.py")
+        add_test(
+            NAME stdlib_extern_sink_audit
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_stdlib_extern_sinks.py"
+                    --check
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(stdlib_extern_sink_audit
+            PROPERTIES
+                TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "PASS: every host sink a module names"
+                FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
+
+    # With no policy in sight: a child started before the program ends keeps
+    # running, and a child that ignores SIGTERM does not hold the program open.
+    if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_exit_child_test.sh")
+        add_test(
+            NAME process_exit_child_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_exit_child_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(process_exit_child_test
+            PROPERTIES
+                TIMEOUT 600
+                # It measures how long an exit takes, so it needs the machine to
+                # itself: sharing one makes the measurement, not the behaviour,
+                # decide the verdict.
+                RUN_SERIAL TRUE
+                PASS_REGULAR_EXPRESSION "PASS: process_exit_child_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # A child environment overlay belongs to the child: the child sees it and
+    # the spawning program's own environment is unchanged. Registered on every
+    # platform with a bash, because the Windows path builds an environment
+    # block for CreateProcess while the POSIX path assigns inside the forked
+    # child, and both must come out the same way.
+    find_program(ESHKOL_BASH_EXECUTABLE NAMES bash)
+    if(ESHKOL_BASH_EXECUTABLE AND TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_env_test.sh")
+        add_test(
+            NAME process_child_env_test
+            COMMAND "${ESHKOL_BASH_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_env_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(process_child_env_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: process_child_env_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
     # make-string checks its length and fill and repeats a non-ASCII fill
     # whole, with the same catchable errors on every engine.
     add_test(
@@ -10822,6 +13703,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND ESHKOL_PYTHON3_EXECUTABLE AND
         FAIL_REGULAR_EXPRESSION "^FAIL:")
 endif()
 
+# Naming, liveness, claim and publication rules for the files the driver keeps
+# beside a native output. Header-only subject, no compiler: every platform.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/driver_output_ownership_test.cpp")
+    add_executable(driver_output_ownership_test tests/toolchain/driver_output_ownership_test.cpp)
+    target_compile_features(driver_output_ownership_test PRIVATE cxx_std_17)
+    target_include_directories(driver_output_ownership_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(
+        NAME driver_output_ownership_test
+        COMMAND driver_output_ownership_test "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(driver_output_ownership_test PROPERTIES
+        TIMEOUT 60 PASS_REGULAR_EXPRESSION "PASS: driver output ownership")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
     add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
     target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)
@@ -10881,6 +13776,67 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/es
     )
 endif()
 
+# ── Protocol validation: the request grammar, the WebSocket handshake and the
+# server's request handling. Each is a self-contained binary over the headers
+# that carry the rules, so the rules are exercised on every platform that
+# builds the tests, with no compiler or network dependency beyond loopback.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/http_protocol_syntax_test.cpp")
+    add_executable(http_protocol_syntax_test
+        tests/toolchain/http_protocol_syntax_test.cpp)
+    target_compile_features(http_protocol_syntax_test PRIVATE cxx_std_17)
+    target_include_directories(http_protocol_syntax_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    add_test(NAME http_protocol_syntax_test COMMAND http_protocol_syntax_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/websocket_handshake_test.cpp")
+    add_executable(websocket_handshake_test
+        tests/toolchain/websocket_handshake_test.cpp)
+    target_compile_features(websocket_handshake_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_include_directories(websocket_handshake_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    # eshkol_random_bytes: the platform cryptographic source.
+    target_link_libraries(websocket_handshake_test PRIVATE
+        eshkol-runtime Threads::Threads)
+    add_test(NAME websocket_handshake_test COMMAND websocket_handshake_test)
+    set_tests_properties(websocket_handshake_test PROPERTIES TIMEOUT 120)
+endif()
+
+# The shipped server binary answering real connections, so handle_client's
+# own read loop, refusal branches and budgets are what answer rather than a
+# reimplementation of them.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-server AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_handle_client_test.cpp")
+    add_test(NAME eshkol_server_compile_worker COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/server_compile_worker.py
+        $<TARGET_FILE:eshkol-server>)
+    set_tests_properties(eshkol_server_compile_worker PROPERTIES TIMEOUT 120)
+    add_executable(eshkol_server_handle_client_test
+        tests/toolchain/eshkol_server_handle_client_test.cpp)
+    target_compile_features(eshkol_server_handle_client_test PRIVATE cxx_std_17)
+    add_test(
+        NAME eshkol_server_handle_client_test
+        COMMAND eshkol_server_handle_client_test "$<TARGET_FILE:eshkol-server>")
+    set_tests_properties(eshkol_server_handle_client_test PROPERTIES TIMEOUT 300)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_request_handling_test.cpp")
+    add_executable(eshkol_server_request_handling_test
+        tests/toolchain/eshkol_server_request_handling_test.cpp)
+    target_compile_features(eshkol_server_request_handling_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_include_directories(eshkol_server_request_handling_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    target_link_libraries(eshkol_server_request_handling_test PRIVATE
+        Threads::Threads)
+    add_test(NAME eshkol_server_request_handling_test
+             COMMAND eshkol_server_request_handling_test)
+    set_tests_properties(eshkol_server_request_handling_test PROPERTIES TIMEOUT 180)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/macos_build_surface_test.cpp")
     add_executable(macos_build_surface_test
         tests/toolchain/macos_build_surface_test.cpp)
@@ -10913,6 +13869,9 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/too
     endif()
 endif()
 
+# Scoped sdnc-holes consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sdnc-holes/CTest.cmake")
+
 # ===== SDNC Paper Artifact: weight_matrices ============================# The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
 # transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
@@ -10930,6 +13889,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     target_include_directories(weight_matrices PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core
     )
     # The standalone interpreter includes VM units directly, while its arena
     # hooks come from the normal runtime archive. Permit the intentional
@@ -10955,8 +13915,69 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
         set_tests_properties(sdnc_paper_weight_tests PROPERTIES
             PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
         )
+
+        # Exact-forward control fine-tuning (ADR 0032): record every
+        # transition of the verifier battery, switch off the ADD dispatch,
+        # show that the exact control derivative is identically zero, repair
+        # with smoothed-backward-ranked / exact-forward-accepted threshold
+        # moves, then require the full battery and every recorded transition
+        # byte for byte. Writes the weights and transitions the core.sdnc
+        # surface test loads. The 11 checks are pinned so a check that stops
+        # running cannot stay green.
+        set(ESHKOL_SDNC_FINETUNE_ARTIFACTS ${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune)
+        file(MAKE_DIRECTORY ${ESHKOL_SDNC_FINETUNE_ARTIFACTS})
+        add_test(
+            NAME sdnc_control_finetune
+            COMMAND $<TARGET_FILE:weight_matrices> --control-finetune
+                    --artifacts ${ESHKOL_SDNC_FINETUNE_ARTIFACTS}
+        )
+        set_tests_properties(sdnc_control_finetune PROPERTIES
+            PASS_REGULAR_EXPRESSION "Control fine-tune: 11 passed, 0 failed"
+            FIXTURES_SETUP sdnc_finetune_artifacts
+            TIMEOUT 1800
+        )
     endif()
 endif()
+
+# Unit checks of the fine-tuning facility: shared logistic/softmax VJP rule
+# against central differences, beta = 1 bit-identity, saturation, tied gates,
+# SDTR/QLMW round trips and a synthetic repair.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_unit_test.c")
+    add_executable(sdnc_finetune_unit_test
+        tests/sdnc/sdnc_finetune_unit_test.c
+        lib/core/sdnc_finetune.c)
+    target_include_directories(sdnc_finetune_unit_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(sdnc_finetune_unit_test PRIVATE m)
+    endif()
+    set(ESHKOL_SDNC_FINETUNE_UNIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune_unit)
+    file(MAKE_DIRECTORY ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
+    add_test(NAME sdnc_finetune_unit
+             COMMAND sdnc_finetune_unit_test ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
+    set_tests_properties(sdnc_finetune_unit PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 21 passed, 0 failed")
+endif()
+
+# core.sdnc surface of the same repair (sdnc-load-weights!, sdnc-mismatches,
+# sdnc-repair!, smoothed sdnc-weight-grad) on the artifacts written above.
+if(ESHKOL_BUILD_TESTS AND TARGET weight_matrices AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_test.esk")
+    add_test(NAME sdnc_finetune_surface_jit
+             COMMAND $<TARGET_FILE:eshkol-run> -r
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_test.esk"
+                     "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(sdnc_finetune_surface_jit PROPERTIES
+        ENVIRONMENT "ESHKOL_SDNC_ARTIFACTS=${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune"
+        FIXTURES_REQUIRED sdnc_finetune_artifacts
+        PASS_REGULAR_EXPRESSION "Results: 16 passed, 0 failed"
+        TIMEOUT 1200)
+endif()
+
+# Scoped hawkes-staging consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-staging/CTest.cmake")
 
 # ===== SDNC training-mode module: weight-matrix backward pass ==========# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
 # analytical forward constructor in weight_matrices.c: it differentiates the
@@ -10981,6 +14002,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
     # library above stays float).
     if(ESHKOL_BUILD_TESTS AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/qllm_backward_gradcheck_test.c")
+        add_executable(qllm_attention_weights_test tests/backend/qllm_attention_weights_test.c)
+        target_include_directories(qllm_attention_weights_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+        target_link_libraries(qllm_attention_weights_test PRIVATE eshkol-qllm-backward eshkol-static m)
+        if(UNIX AND NOT APPLE)
+            target_link_options(qllm_attention_weights_test PRIVATE "-Wl,--allow-multiple-definition")
+        elseif(APPLE)
+            target_link_options(qllm_attention_weights_test PRIVATE "-Wl,-multiply_defined,suppress")
+        endif()
+        add_test(NAME qllm_attention_weights COMMAND qllm_attention_weights_test)
         add_executable(qllm_backward_gradcheck_test
             tests/backend/qllm_backward_gradcheck_test.c
             lib/backend/qllm_backward.c)
@@ -11322,11 +14354,10 @@ endif()
 # ===== PJRT Smoke Test =====
 # Mirrors the xla_codegen_test target above exactly (same library, same
 # LLVM/MLIR/StableHLO linkage, same platform-specific options): it links
-# against eshkol-static to reach the PJRT client (PjrtPlugin/PjrtClient), a
-# lib/backend/xla/ source the LIB_SRC glob compiles in whenever XLA is ON, and
-# needs libdl for the plugin loader's dlopen/dlsym. It is configured only when
-# tests/xla/pjrt_smoke_test.cpp exists; neither that test nor the PJRT client
-# source is in this tree yet, so here the block is inert.
+# against eshkol-static to reach the PJRT client and needs libdl for the
+# plugin loader's dlopen/dlsym. It is configured only when
+# tests/xla/pjrt_smoke_test.cpp exists; that device smoke test is not present
+# in this source tree.
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_smoke_test.cpp")
     message(STATUS "Building PJRT smoke test")
 
@@ -11515,7 +14546,10 @@ if(ESHKOL_BUILD_AGENT_FFI)
         set(AGENT_FFI_SOURCES
             ${AGENT_FFI_DIR}/agent_terminal.c
             ${AGENT_FFI_DIR}/agent_subprocess.c
+            ${AGENT_FFI_DIR}/agent_subprocess_stream_binding.c
             ${AGENT_FFI_DIR}/agent_sse.c
+            ${AGENT_FFI_DIR}/agent_unix_socket_binding.c
+            ${AGENT_FFI_DIR}/agent_unix_socket_stream.c
         )
 
         # HTTP server / WebSocket / local-socket primitives.  The C source
@@ -11929,6 +14963,14 @@ if(ESHKOL_BUILD_AGENT_FFI)
 
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
 
+        # `repl_jit.cpp` records optional agent FFI symbols in the JIT
+        # namespace only when this archive is part of the configured host.
+        # With FFI disabled, omit those optional weak-import references so
+        # small embedded builds do not require the production agent archive.
+        if(TARGET eshkol-repl-lib)
+            target_compile_definitions(eshkol-repl-lib PRIVATE ESHKOL_AGENT_FFI_LINKED=1)
+        endif()
+
         # A program that requires an agent module links this archive alongside
         # libeshkol-runtime.a, including when the output is a `--shared-lib`
         # shared object — so it needs the same position independence, for the
@@ -11974,14 +15016,10 @@ if(ESHKOL_BUILD_AGENT_FFI)
             eshkol-agent-tree-sitter-grammars
             tree-sitter
             yogacore
-            # Agent capability implementations call core allocation/string
-            # helpers (for example eshkol_make_bytevector and
-            # eshkol_string_byte_length).  Declare that archive dependency at
-            # its owner so CMake emits eshkol-runtime after the force-loaded
-            # agent archive.  ELF linkers scan static archives left-to-right;
-            # relying on an earlier eshkol-static occurrence works on Apple
-            # and MSVC but leaves these references unresolved on Linux.
-            eshkol-runtime)
+            # Core helpers follow the force-loaded agent archive for ELF linkers.
+            # The base reuses runtime objects and excludes compiler-generated
+            # incremental runtime output, keeping the seed dependency acyclic.
+            eshkol-runtime-base)
 
         if(WIN32)
             target_compile_definitions(eshkol-agent-ffi PRIVATE
@@ -12208,7 +15246,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # otherwise compression, Tree-sitter, and Yoga silently disappear
         # from VM execution even though LLVM/JIT and AOT have them.
         foreach(_eshkol_vm_host_target IN ITEMS
-                eshkol-vm-standalone-test test_vm_c_api)
+                eshkol-vm-standalone-test test_vm_c_api eshkol-bootstrap)
             if(TARGET ${_eshkol_vm_host_target})
                 if(APPLE)
                     target_link_libraries(${_eshkol_vm_host_target} PRIVATE eshkol-agent-ffi)
@@ -12225,7 +15263,9 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     target_link_libraries(${_eshkol_vm_host_target} PRIVATE
                         "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
                 endif()
-                eshkol_export_host_agent_api(${_eshkol_vm_host_target})
+                if(NOT _eshkol_vm_host_target STREQUAL "eshkol-bootstrap")
+                    eshkol_export_host_agent_api(${_eshkol_vm_host_target})
+                endif()
             endif()
         endforeach()
 
@@ -12250,6 +15290,88 @@ if(ESHKOL_BUILD_AGENT_FFI)
         if(BUILD_TESTING)
             add_test(NAME agent-http-contract COMMAND eshkol-agent-http-test)
             set_tests_properties(agent-http-contract PROPERTIES TIMEOUT 90)
+        endif()
+
+        if(UNIX AND TARGET eshkol-subprocess-stream-test)
+            find_package(Python3 COMPONENTS Interpreter REQUIRED)
+            add_test(NAME agent-subprocess-stream-public
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/scripts/test_subprocess_stream_public.py
+                    --runner $<TARGET_FILE:eshkol-run>
+                    --child $<TARGET_FILE:eshkol-subprocess-stream-test>
+                    --source ${CMAKE_SOURCE_DIR}
+                    --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(agent-subprocess-stream-public PROPERTIES
+                TIMEOUT 300 LABELS "resource;subprocess;jit;aot")
+        endif()
+
+        # Public Unix-socket JIT/AOT acceptance and explicit VM refusal.
+        # These use the production agent archive and run in the default suite.
+        if(UNIX AND TARGET eshkol-run AND DEFINED ESHKOL_IPC_UNIX_CASES)
+            foreach(case_name ${ESHKOL_IPC_UNIX_CASES})
+                foreach(mode jit aot)
+                    add_test(NAME ipc-unix-${case_name}-${mode}
+                        COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
+                            --runner $<TARGET_FILE:eshkol-run> --mode ${mode} --scenario ${case_name}
+                            --work-root ${CMAKE_BINARY_DIR}/ipc-unix-scratch
+                            --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk
+                            --peer $<TARGET_FILE:eshkol-unix-stream-socket-stream-test>
+                            --fixture-library $<TARGET_FILE:eshkol-unix-socket-fixture>
+                            ${ESHKOL_SOCKET_PENDING_CONTROL_ARGS}
+                            --build-dir ${CMAKE_BINARY_DIR})
+                    set_tests_properties(ipc-unix-${case_name}-${mode} PROPERTIES
+                        LABELS "resource;socket;${mode}" TIMEOUT 300)
+                endforeach()
+            endforeach()
+            foreach(mode jit aot)
+                add_test(NAME ipc-unix-lifecycle-${mode}
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
+                        --runner $<TARGET_FILE:eshkol-run> --mode ${mode} --scenario lifecycle
+                        --work-root ${CMAKE_BINARY_DIR}/ipc-unix-scratch
+                        --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_lifecycle.esk
+                        --peer $<TARGET_FILE:eshkol-unix-stream-socket-stream-test>
+                        --fixture-library $<TARGET_FILE:eshkol-unix-socket-fixture>
+                        ${ESHKOL_SOCKET_PENDING_CONTROL_ARGS}
+                        --build-dir ${CMAKE_BINARY_DIR})
+                set_tests_properties(ipc-unix-lifecycle-${mode} PROPERTIES
+                    LABELS "resource;socket;${mode}" TIMEOUT 300)
+            endforeach()
+            add_test(NAME ipc-unix-vm-unsupported
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
+                    --runner $<TARGET_FILE:eshkol-run> --mode vm --scenario vm-unsupported
+                    --work-root ${CMAKE_BINARY_DIR}/ipc-unix-scratch
+                    --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_vm_unsupported.esk)
+            set_tests_properties(ipc-unix-vm-unsupported PROPERTIES
+                LABELS "resource;socket;vm" TIMEOUT 30)
+        endif()
+
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            add_executable(eshkol-agent-websocket-server-test
+                tests/agent/websocket_server_contract_test.c)
+            target_link_libraries(eshkol-agent-websocket-server-test PRIVATE
+                eshkol-agent-ffi Threads::Threads)
+            if(BUILD_TESTING)
+                add_test(NAME agent-websocket-server-contract
+                    COMMAND eshkol-agent-websocket-server-test)
+                set_tests_properties(agent-websocket-server-contract PROPERTIES
+                    TIMEOUT 30)
+            endif()
+        endif()
+
+        if(UNIX AND TARGET eshkol-run)
+            find_package(Python3 COMPONENTS Interpreter REQUIRED)
+            add_test(NAME agent-websocket-server-public-roundtrip
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/scripts/test_websocket_server_public.py
+                    --eshkol-run $<TARGET_FILE:eshkol-run>
+                    --source ${CMAKE_SOURCE_DIR}
+                    --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(agent-websocket-server-public-roundtrip
+                PROPERTIES TIMEOUT 90)
         endif()
 
         add_executable(eshkol-agent-terminal-status-test
@@ -12310,16 +15432,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
     endif()
 endif()
 
-# Export core JIT symbols even when the optional agent FFI is disabled. Register
-# each table once, after the optional archive is known, for both Windows driver
-# families. Previously the MSVC/ClangCL call lived inside the agent-only block.
+# One bounded export table per native JIT host, with or without optional FFI,
+# for both Windows driver families. Registered once, after the optional agent
+# archive is known; the seed omits generated runtime output.
 if(WIN32)
-    if(TARGET eshkol-run)
-        eshkol_windows_export_runtime(eshkol-run)
-    endif()
-    if(TARGET eshkol-repl)
-        eshkol_windows_export_runtime(eshkol-repl)
-    endif()
+    foreach(_eshkol_export_host IN ITEMS eshkol-run eshkol-repl eshkol-bootstrap)
+        if(TARGET ${_eshkol_export_host})
+            eshkol_windows_export_runtime(${_eshkol_export_host})
+        endif()
+    endforeach()
 endif()
 
 # SQLite's byte-preserving column contract is tested against the same agent
@@ -12482,6 +15603,148 @@ endif()
 # axes.  The VM parity corpus carries the corresponding hash reduction through
 # vm-src and emitted ESKB; these native tests keep the JIT and AOT paths from
 # drifting independently.
+# image-read/image-write/image-to-grayscale through compiled Eshkol code.
+# Merkle leaf/interior domain separation: a node cannot be presented as a
+# leaf. Run on the JIT and on the AOT path. There is no bytecode-VM lane:
+# core.merkle reaches the VM through an extern the VM does not admit today,
+# so the VM lane would measure that gap rather than the domain separation.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME merkle_domain_separation_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/merkle_domain_separation_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(merkle_domain_separation_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME merkle_domain_separation_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/merkle_domain_separation_aot' tests/core/merkle_domain_separation_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/merkle_domain_separation_aot'"
+    )
+    set_tests_properties(merkle_domain_separation_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_executable(http_response_framing_test tests/protocol/http_response_framing_test.c)
+    target_include_directories(http_response_framing_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    add_test(NAME http_response_framing_test COMMAND http_response_framing_test)
+    set_tests_properties(http_response_framing_test PROPERTIES
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "PASS: http_response_framing_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    add_test(
+        NAME security_hardening_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/features/security_hardening_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(security_hardening_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: security_hardening_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME security_hardening_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/security_hardening_aot' tests/features/security_hardening_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/security_hardening_aot'"
+    )
+    set_tests_properties(security_hardening_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: security_hardening_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME security_hardening_vm
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/features/security_hardening_vm_test.esk"
+        )
+        set_tests_properties(security_hardening_vm PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: security_hardening_vm_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|VM ERROR|fatal signal")
+    endif()
+endif()
+
+# The request grammar as a program sees it: hostile methods, URLs, header
+# lines and reserved framing fields driven through (http-request ...) and
+# (websocket-connect ...), asserting the refusal is a catchable Eshkol error.
+# The C++ grammar tests link the header; these run the engines, so the
+# JIT/AOT/VM parity claim rests on execution rather than on inspection.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME http_hostile_input_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/agent/http_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(http_hostile_input_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME http_hostile_input_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/http_hostile_input_aot' tests/agent/http_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/http_hostile_input_aot'"
+    )
+    set_tests_properties(http_hostile_input_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+# The same hostile inputs through agent.http, so the module's own URL and
+# reserved-name checks and the native clients' per-line check are exercised
+# too. JIT and AOT only: the bytecode VM does not admit this module's externs.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME http_wrapper_hostile_input_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/agent/http_wrapper_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(http_wrapper_hostile_input_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-WRAPPER-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME http_wrapper_hostile_input_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/http_wrapper_hostile_input_aot' tests/agent/http_wrapper_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/http_wrapper_hostile_input_aot'"
+    )
+    set_tests_properties(http_wrapper_hostile_input_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-WRAPPER-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME http_hostile_input_vm
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/http_hostile_input_test.esk")
+    set_tests_properties(http_hostile_input_vm PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|ERROR: VM terminated|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME image_io_language_test
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/v1_2_edge_cases/image_io_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(image_io_language_test PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME hash_constructor_or_jit_smoke
@@ -12617,8 +15880,146 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
         TIMEOUT 90 LABELS "ownership;memory;regression")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_lexical_scope_test.py")
+    add_test(NAME ownership_lexical_scope
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_lexical_scope_test.py
+            $<TARGET_FILE:eshkol-run>
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory)
+    set_tests_properties(ownership_lexical_scope PROPERTIES
+        TIMEOUT 900 LABELS "ownership;memory;regression")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-repl)
+    add_test(NAME ascription_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/ascription_runtime.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>)
+    foreach(case IN ITEMS move borrow joined_borrow borrow_result alias_data alias_closure
+                          closure_let_alias borrow_closure escape_set escape_call escape_hof
+                          escape_unknown captured_move loop_move unfollowed accepted loaded_alias)
+        add_test(NAME ownership_default_${case}
+            COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_default_modes.py
+                $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                $<TARGET_FILE:eshkol-repl> ${case})
+        set_tests_properties(ownership_default_${case} PROPERTIES TIMEOUT 900 LABELS "ownership;memory")
+    endforeach()
+endif()
+
+# Opt-in native resource checking has its own compiled falsifier corpus and
+# JIT/AOT loopback test. Runtime tests bind fresh ephemeral ports in Python;
+# no generated endpoint or executable is checked into the source tree.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_compiled.py")
+    add_executable(strict_source_identity_helper_test
+        tests/v1_4_resource_ownership/source_identity_helper_test.cpp)
+    target_include_directories(strict_source_identity_helper_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME strict_source_identity_helper COMMAND strict_source_identity_helper_test)
+    set_tests_properties(strict_source_identity_helper PROPERTIES
+        LABELS "ownership;strict-resources;regression")
+    add_test(NAME strict_resource_profile_compiled
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_compiled.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(strict_resource_profile_compiled PROPERTIES
+        TIMEOUT 300 LABELS "ownership;strict-resources;regression")
+    # The corpus is about 115 independent compiles at 10-13 s each on a loaded
+    # build host; four parallel workers measured 516 s there.
+    set_tests_properties(strict_resource_profile_compiled PROPERTIES TIMEOUT 1800)
+    add_test(NAME strict_resource_profile_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR}
+            --case loopback --case borrow --case both-branches --case scalar-shadow)
+    set_tests_properties(strict_resource_profile_runtime PROPERTIES
+        TIMEOUT 600 LABELS "ownership;strict-resources;runtime;network")
+    # Every other handle family (file ports, threads, the event loop) on JIT
+    # and AOT, plus the borrow scopes' close-on-raise and close-on-escape.
+    set(_strict_handle_cases
+        file-borrow-scopes file-call-with-port file-loop-drain file-do-loop
+        file-for-each function-handles tail-recursive-drain dynamic-wind-close
+        guard-handle callcc-escape thread-join event-loop
+        lend-closes-on-raise lend-closes-on-escape)
+    set(_strict_handle_case_args)
+    foreach(_case IN LISTS _strict_handle_cases)
+        list(APPEND _strict_handle_case_args --case ${_case})
+    endforeach()
+    add_test(NAME strict_resource_handles_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR}
+            ${_strict_handle_case_args})
+    set_tests_properties(strict_resource_handles_runtime PROPERTIES
+        TIMEOUT 900 LABELS "ownership;strict-resources;runtime")
+    add_test(NAME strict_resource_contract_pins
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/strict_resource_pins.py --check)
+    set_tests_properties(strict_resource_contract_pins PROPERTIES
+        TIMEOUT 60 LABELS "ownership;strict-resources")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk")
+    add_test(NAME ownership_single_evaluation
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+            --source ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk
+            --evidence-dir ${CMAKE_CURRENT_BINARY_DIR}/ownership-single-eval-evidence)
+    set_tests_properties(ownership_single_evaluation PROPERTIES
+        TIMEOUT 1200 LABELS "ownership;memory;regression")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
    AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    foreach(_case IN ITEMS interpolation_ranges character_scalars character_hex
+                           desugar_temporaries)
+        foreach(_engine IN ITEMS jit aot vm)
+            add_test(NAME ${_case}_${_engine}
+                COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+                    $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                    ${_case} ${_engine})
+        endforeach()
+    endforeach()
+    foreach(_case IN ITEMS reserved_identifiers character_encoding character_hex_range)
+        foreach(_engine IN ITEMS jit aot vm)
+            add_test(NAME ${_case}_${_engine}
+                COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_rejections.py
+                    $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                    ${_case} ${_engine})
+        endforeach()
+    endforeach()
+    add_test(NAME eval_pattern_syntax_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_pattern_syntax jit)
+    # Hosted eval: conditions a guard catches, a million-level datum, and the
+    # macro scope shared by the body and an environment's values.
+    add_test(NAME eval_conditions_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_conditions jit)
+    set_tests_properties(eval_conditions_jit PROPERTIES TIMEOUT 900)
+    add_test(NAME eval_input_cap_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_input_cap jit)
+    set_tests_properties(eval_input_cap_jit PROPERTIES
+        ENVIRONMENT "ESHKOL_MAX_SOURCE_BYTES=65536")
     add_test(NAME macro_definition_scope
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_definition_scope_test.py
@@ -12798,7 +16199,30 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-s
         FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|Unhandled exception|fatal signal|verification failed")
 endif()
 
+# HoTT kernel (ADR-0043): the kernel-level driver and the four-route gate
+# (kernel, JIT, AOT, bytecode VM) over tests/hott, positive and negative.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    add_executable(hott_kernel_driver
+        tests/hott/hott_kernel_driver.cpp
+        lib/types/cubical/interval.cpp
+        lib/types/cubical/eval.cpp
+        lib/types/cubical/conv.cpp
+        lib/types/cubical/elab.cpp
+        lib/types/cubical/decl.cpp)
+    target_include_directories(hott_kernel_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(hott_kernel_driver PRIVATE cxx_std_20)
+    add_test(NAME hott_gate
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_hott_gate.sh"
+                "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(hott_gate PROPERTIES TIMEOUT 1800
+        LABELS "hott;types;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+endif()
+
 include(cmake/AllocationHardeningTests.cmake)
+include(cmake/QuantumCircuitTests.cmake)
 include(cmake/NativeJitRegressionTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
@@ -12852,6 +16276,13 @@ endif()
 
 # Focused library acceptance: source-tree imports and both native modes.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME exact_foundations_local_stdlib
+        COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/require_local_stdlib.cmake")
+    set_tests_properties(exact_foundations_local_stdlib PROPERTIES
+        FIXTURES_SETUP exact_foundations_local_stdlib)
+
     add_test(NAME exact_affine_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_affine_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME exact_affine_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
@@ -12860,22 +16291,1733 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
     set_tests_properties(exact_affine_jit exact_affine_aot PROPERTIES TIMEOUT 900
-        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: exact_affine_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
 # Source-tree native acceptance for the signed-curvature module.
     # core.curvature (ADR-0018) on both native modes, through the shared core.
     add_test(NAME signed_curvature_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME signed_curvature_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
         "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk"
-        "-DESHKOL_EXPECTED_VERDICT=ALL PASS"
+        "-DESHKOL_VERDICT=ALL PASS"
         "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/signed_curvature_aot${CMAKE_EXECUTABLE_SUFFIX}"
         "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
     set_tests_properties(signed_curvature_jit signed_curvature_aot PROPERTIES TIMEOUT 900
         ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: signed_curvature_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
+    # core.manifold.atlas: atlases as gluing data (ADR-0018 amendment, charts
+    # as gluing data) on core.sheaf; cross-checks the sphere and space-form
+    # atlases against core.manifold and core.curvature, so it runs beside them.
+    add_test(NAME manifold_atlas_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/manifold/manifold_atlas_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME manifold_atlas_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/manifold/manifold_atlas_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/manifold_atlas_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(manifold_atlas_jit manifold_atlas_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: manifold_atlas_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+
+    add_test(NAME exact_psd_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME exact_psd_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/exact_psd_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(exact_psd_jit exact_psd_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: exact_psd_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # ADR-0058: the exact tensor element type (construction, exact kernels,
+    # contagion, refusals, lib/math.esk exact seeds, NS mechanization steps),
+    # cross-checked against core.exact_linalg under JIT and AOT.
+    add_test(NAME exact_tensor_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_tensor_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME exact_tensor_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_tensor_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/exact_tensor_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(exact_tensor_jit exact_tensor_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: exact_tensor_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    add_test(NAME tensor_snapshot_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_snapshot_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME tensor_snapshot_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_snapshot_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/tensor_snapshot_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(tensor_snapshot_jit tensor_snapshot_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: tensor_snapshot_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    add_test(NAME polynomial_exact_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/polynomial_exact_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME polynomial_exact_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/polynomial_exact_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/polynomial_exact_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    add_test(NAME algebraic_field_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_field_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME algebraic_field_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_field_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/algebraic_field_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(polynomial_exact_jit polynomial_exact_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: polynomial_exact_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    set_tests_properties(algebraic_field_jit algebraic_field_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: algebraic_field_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # core.symbolic: the Q suite and the coefficient-field / norm /
+    # polynomial-valued-dual suite, each under JIT and AOT.
+    foreach(_sym_suite symbolic symbolic_fields)
+        add_test(NAME ${_sym_suite}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_sym_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sym_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set(_sym_suite_tests ${_sym_suite}_jit ${_sym_suite}_aot)
+        if(TARGET eshkol-vm-standalone-test)
+            add_test(NAME ${_sym_suite}_vm COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sym_suite}_vm.eskb"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            list(APPEND _sym_suite_tests ${_sym_suite}_vm)
+        endif()
+        set_tests_properties(${_sym_suite_tests} PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endforeach()
+
+    # SymPy differential oracle on the exact-AD surface (JIT + AOT). SKIPs
+    # (77) with the reason when no interpreter can import SymPy; point
+    # ESHKOL_SYMPY_PYTHON at one that can.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME sympy_exact_ad_oracle
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sympy_exact_ad_oracle.py"
+                --eshkol-run $<TARGET_FILE:eshkol-run>
+                --lib-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                --trace-dir "${CMAKE_CURRENT_BINARY_DIR}/icc_traces"
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/sympy-oracle-work")
+        set_tests_properties(sympy_exact_ad_oracle PROPERTIES TIMEOUT 1800
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            SKIP_RETURN_CODE 77
+            LABELS "oracle;ad;sympy")
+    endif()
+
+    add_test(NAME dbsp_circuit_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_circuit_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_circuit_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_circuit_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_circuit_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_circuit_jit dbsp_circuit_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: dbsp_circuit_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # Wave 3 weighted ordered index: exact batch oracle in native JIT and AOT.
+    add_test(NAME dbsp_ordered_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_ordered_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_ordered_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_ordered_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_ordered_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_ordered_jit dbsp_ordered_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # Event-time admission and direct-filter oracle in native JIT and AOT.
+    add_test(NAME dbsp_window_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_window_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_window_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_window_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_window_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_window_jit dbsp_window_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    add_test(NAME dbsp_checkpoint_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_checkpoint_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_checkpoint_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_checkpoint_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_checkpoint_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_checkpoint_jit dbsp_checkpoint_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: dbsp_checkpoint_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    if(Python3_Interpreter_FOUND AND NOT WIN32)
+        add_test(NAME dbsp_checkpoint_process COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_checkpoint_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_checkpoint_process${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_PYTHON=${Python3_EXECUTABLE}"
+            "-DESHKOL_HARNESS=${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_dbsp_checkpoint_process.py"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dbsp_checkpoint_process.cmake")
+        set_tests_properties(dbsp_checkpoint_process PROPERTIES TIMEOUT 2400
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "\"process_runs\": 28"
+            FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
+    endif()
+endif()
+
+# Event-time window acceptance also executes on the direct VM backend.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME dbsp_window_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_window_test.esk")
+    set_tests_properties(dbsp_window_vm PROPERTIES TIMEOUT 900 LABELS "dbsp;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# The ordered-index acceptance also executes on the direct VM backend.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME dbsp_ordered_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_ordered_test.esk")
+    set_tests_properties(dbsp_ordered_vm PROPERTIES TIMEOUT 900 LABELS "dbsp;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND Python3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/iterator_end_comparison_test.py")
+    add_test(
+        NAME iterator_end_comparison
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/iterator_end_comparison_test.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(iterator_end_comparison PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: every iterator"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/v14_connection_gate_status_test.sh")
+    add_test(NAME v14_connection_gate_status_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/v14_connection_gate_status_test.sh")
+    set_tests_properties(v14_connection_gate_status_test PROPERTIES TIMEOUT 30)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND UNIX AND Python3_Interpreter_FOUND AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/test_timeout_cancellation_test.sh")
+    add_test(NAME test_timeout_cancellation_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/test_timeout_cancellation_test.sh")
+    set_tests_properties(test_timeout_cancellation_test PROPERTIES TIMEOUT 30)
+endif()
+
+# Certified native solve pullback acceptance (primal and transpose are checked independently).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_solve_pullback_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_pullback_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_solve_pullback_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_pullback_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_solve_pullback_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_solve_pullback_jit certified_solve_pullback_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME certified_solve_pullback_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_pullback_test.esk")
+    set_tests_properties(certified_solve_pullback_vm PROPERTIES TIMEOUT 900 LABELS "math;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Keyed aggregates and fixed-parameter AD consumers use the same strict driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    function(eshkol_add_dbsp_acceptance name source verdict)
+        add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_VERDICT=${verdict}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${name}_jit ${name}_aot PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: ${verdict}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endfunction()
+    eshkol_add_dbsp_acceptance(dbsp_aggregate "tests/stdlib/dbsp_aggregate_test.esk" "PASS")
+    eshkol_add_dbsp_acceptance(dbsp_ad "tests/stdlib/dbsp_ad_test.esk" "PASS")
+    eshkol_add_dbsp_acceptance(tensor_circuit "tests/stdlib/tensor_circuit_test.esk" "PASS")
+    add_test(NAME tensor_circuit_planner_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_circuit_planner_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME tensor_circuit_planner_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_circuit_planner_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/tensor_circuit_planner_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(tensor_circuit_planner_jit tensor_circuit_planner_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    add_test(NAME tensor_circuit_reverse_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_circuit_reverse_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME tensor_circuit_reverse_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_circuit_reverse_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/tensor_circuit_reverse_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(tensor_circuit_reverse_jit tensor_circuit_reverse_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    eshkol_add_dbsp_acceptance(streaming_least_squares "examples/streaming_least_squares.esk" "ALL PASS")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME tensor_circuit_reverse_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_circuit_reverse_test.esk")
+    set_tests_properties(tensor_circuit_reverse_vm PROPERTIES TIMEOUT 900 LABELS "dbsp;ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME tensor_circuit_planner_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_circuit_planner_test.esk")
+    set_tests_properties(tensor_circuit_planner_vm PROPERTIES TIMEOUT 900 LABELS "dbsp;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Exact field-valued AD uses the shared strict library AOT driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    function(eshkol_add_algebraic_ad_acceptance name source)
+        add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${name}_jit ${name}_aot PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endfunction()
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad "tests/stdlib/algebraic_ad_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad_example "examples/algebraic_ad.esk")
+endif()
+
+# Composed fields and explicit nested scopes share the exact AD acceptance driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_compositum "tests/stdlib/algebraic_compositum_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad_nested "tests/stdlib/algebraic_ad_nested_test.esk")
+    eshkol_add_algebraic_ad_acceptance(nested_algebraic_fields "examples/nested_algebraic_fields.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_linalg "tests/stdlib/algebraic_linalg_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_spectral "tests/stdlib/algebraic_spectral_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_spectral_example "examples/algebraic_spectral.esk")
+endif()
+
+# Exact invariant-subspace differentiation runs through native JIT, AOT and the actual VM.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_subspace "tests/stdlib/algebraic_subspace_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME algebraic_subspace_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_subspace_test.esk")
+    set_tests_properties(algebraic_subspace_vm PROPERTIES
+        TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Projector construction from certified characteristic-polynomial splits.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_projector "tests/stdlib/algebraic_projector_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME algebraic_projector_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_projector_test.esk")
+    set_tests_properties(algebraic_projector_vm PROPERTIES TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_implicit "tests/stdlib/algebraic_implicit_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_implicit_example "examples/algebraic_implicit.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_batch "tests/stdlib/algebraic_batch_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_batch_example "examples/algebraic_batch.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_batch_bench "bench/algebraic_batch.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_sparse "tests/stdlib/algebraic_sparse_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_sparse_example "examples/algebraic_sparse.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(hessian_sparsity "tests/stdlib/hessian_sparsity_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_incremental "tests/stdlib/algebraic_incremental_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_incremental_bench "bench/algebraic_incremental.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_frontiers "examples/algebraic_frontiers.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_incremental_example "examples/algebraic_incremental.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_reverse "tests/stdlib/algebraic_reverse_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_reverse_example "examples/algebraic_reverse.esk")
+    eshkol_add_algebraic_ad_acceptance(incremental_reverse "tests/stdlib/incremental_reverse_test.esk")
+    eshkol_add_algebraic_ad_acceptance(incremental_reverse_sparse "tests/stdlib/incremental_reverse_sparse_test.esk")
+    eshkol_add_algebraic_ad_acceptance(incremental_reverse_alias_seed "tests/stdlib/incremental_reverse_alias_seed_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_pullback "tests/stdlib/algebraic_pullback_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_pullback_example "examples/algebraic_pullback.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_ridge "tests/stdlib/algebraic_ridge_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ridge_example "examples/algebraic_ridge.esk")
+endif()
+
+# Sparse incremental reverse bookkeeping also executes on the actual VM.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME incremental_reverse_sparse_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/incremental_reverse_sparse_test.esk")
+    set_tests_properties(incremental_reverse_sparse_vm PROPERTIES TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Certified bounded quadratic programs share the exact AD acceptance driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp "tests/stdlib/algebraic_qp_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp_example "examples/algebraic_qp.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_update "tests/stdlib/algebraic_update_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_update_example "examples/algebraic_updates.esk")
+endif()
+# Exact admission of a received linear solve, with cache-disabled JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_solve_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_solve_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_solve_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME certified_solve_direct_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk")
+    endif()
+    # ADR-0047: the (certify ...) rewrite on the bytecode VM (registered here,
+    # after the VM test driver target exists).
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME certify_form_direct_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certify_form_test.esk")
+        set_tests_properties(certify_form_direct_vm PROPERTIES TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: certify_form_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+    endif()
+    set(_certified_solve_tests certified_solve_jit certified_solve_aot)
+    if(TARGET eshkol-vm-standalone-test)
+        list(APPEND _certified_solve_tests certified_solve_direct_vm)
+    endif()
+    set_tests_properties(${_certified_solve_tests} PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+
+# One pure polynomial supplies derivatives and its complete finite change.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(derived_operator "tests/stdlib/derived_operator_test.esk")
+    eshkol_add_algebraic_ad_acceptance(derived_operator_example "examples/mathematics_derived_operator.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME derived_operator_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/derived_operator_test.esk")
+    set_tests_properties(derived_operator_vm PROPERTIES
+        TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Unicode string->list uses the same self-asserting fixture in native modes.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME string_to_list_unicode_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/string_to_list_unicode_test.esk"
+            -L"${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME string_to_list_unicode_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/string_to_list_unicode_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/string_to_list_unicode_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(string_to_list_unicode_jit string_to_list_unicode_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        TIMEOUT 600 PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Wave 2 acceptance: root_branch
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME root_branch_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/root_branch_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME root_branch_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/root_branch_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/root_branch_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(root_branch_jit root_branch_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Wave 3 acceptance: mixed-radical algebraic fields.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME multiquadratic_field_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME multiquadratic_field_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/multiquadratic_field_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(multiquadratic_field_jit multiquadratic_field_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME multiquadratic_field_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_test.esk")
+    set_tests_properties(multiquadratic_field_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(multiquadratic_field_independent
+        "tests/stdlib/multiquadratic_field_independent_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME multiquadratic_field_independent_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_independent_test.esk")
+    set_tests_properties(multiquadratic_field_independent_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# The root-branch fixture must execute on the VM, not a renamed AOT driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME root_branch_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/root_branch_test.esk")
+    set_tests_properties(root_branch_vm PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Standalone networking boundary: independent POSIX peers, no LLVM rebuild.
+# Sockets own their descriptors through the shared resource lease layer and
+# wait on the portable event loop, so every standalone test links that stack.
+set(ESHKOL_NET_LEASE_STACK_SRC
+    lib/core/resource_lease.c lib/core/runtime_handle.cpp
+    lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC}
+    # net.c consults the capability policy before it creates a socket, so every
+    # standalone executable that compiles it links the one policy store.
+    lib/core/capability_policy.cpp)
+if(ESHKOL_BUILD_TESTS)
+    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        find_package(Threads REQUIRED)
+        target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
+    endif()
+    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c lib/core/net.c
+        lib/core/capability_policy.cpp
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_include_directories(net_clock_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        target_link_libraries(net_clock_failure_test PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME net_clock_failure_test COMMAND net_clock_failure_test)
+    set_tests_properties(net_clock_failure_test PROPERTIES TIMEOUT 10
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+    add_test(NAME net_runtime_test COMMAND net_runtime_test)
+    set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
+
+    add_executable(tls_context_test
+        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(ESHKOL_TLS_OPENSSL_FOUND)
+        set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
+            COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+        target_link_libraries(tls_context_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
+            COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    endif()
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        find_package(Threads REQUIRED)
+        target_link_libraries(tls_context_test PRIVATE Threads::Threads)
+    endif()
+endif()
+
+# Local test PKI, generated under the build directory for every TLS lease test;
+# the trust anchors and leaves never leave the build tree and no test uses the
+# network beyond loopback.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_TLS_OPENSSL_FOUND AND UNIX AND NOT EMSCRIPTEN)
+    set(ESHKOL_TLS_TEST_PKI "${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki")
+    add_executable(tls_test_ca tests/network/tls_test_ca.c)
+    target_link_libraries(tls_test_ca PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME tls_test_pki COMMAND $<TARGET_FILE:tls_test_ca> "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_test_pki PROPERTIES FIXTURES_SETUP tls_test_pki
+        PASS_REGULAR_EXPRESSION "PASS: test PKI written")
+    add_executable(tls_lease_test tests/network/tls_lease_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(tls_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    set_source_files_properties(tests/network/tls_lease_test.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    target_link_libraries(tls_lease_test PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    add_test(NAME tls_lease_test COMMAND tls_lease_test "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_lease_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE
+        FIXTURES_REQUIRED tls_test_pki LABELS "network;tls;ownership"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# TLS acceptance is registered only for a build with the verified native
+# OpenSSL implementation. These tests exercise the public C, Scheme JIT, AOT,
+# and Python SSL peer paths on loopback; unsupported builds expose stubs only.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET tls_context_test)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(ESHKOL_TLS_AVAILABLE AND Python3_Interpreter_FOUND)
+        target_compile_definitions(tls_context_test PRIVATE
+            ESHKOL_TEST_PYTHON=\"${Python3_EXECUTABLE}\")
+        add_test(NAME tls_context_native COMMAND $<TARGET_FILE:tls_context_test>)
+        set_tests_properties(tls_context_native PROPERTIES
+            TIMEOUT 90 RUN_SERIAL TRUE
+            PASS_REGULAR_EXPRESSION "PASS: TLS handshake, binary roundtrip, peer verification, and cleanup"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Assertion failed|Unhandled exception|fatal signal")
+
+        add_test(NAME tls_public_scheme_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_api.esk")
+        add_test(NAME tls_public_scheme_aot COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -O 1 -o '${CMAKE_CURRENT_BINARY_DIR}/tls_public_api_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_api.esk' '-L${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tls_public_api_aot'")
+        set_tests_properties(tls_public_scheme_jit tls_public_scheme_aot PROPERTIES
+            TIMEOUT 180 RUN_SERIAL TRUE
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "TLS public API: 20 passed, 0 failed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+
+        foreach(_tls_mode jit aot)
+            foreach(_tls_case python fatal)
+                if(_tls_case STREQUAL "python")
+                    set(_tls_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_client.esk")
+                    set(_tls_scenario normal)
+                    set(_tls_pass "TLS Python public API: 7 passed, 0 failed")
+                else()
+                    set(_tls_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_fatal_client.esk")
+                    set(_tls_scenario fatal)
+                    set(_tls_pass "PASS: fatal TLS errors close without another SSL operation")
+                endif()
+                add_test(NAME tls_public_${_tls_case}_${_tls_mode}
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_harness.py"
+                        --runtime "$<TARGET_FILE:eshkol-run>"
+                        --source "${_tls_source}"
+                        --mode "${_tls_mode}"
+                        --scenario "${_tls_scenario}"
+                        --work-dir "${CMAKE_CURRENT_BINARY_DIR}/tls-public-${_tls_case}-${_tls_mode}"
+                        --lib-dir "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                        --link-dir "${CMAKE_CURRENT_BINARY_DIR}")
+                set_tests_properties(tls_public_${_tls_case}_${_tls_mode} PROPERTIES
+                    TIMEOUT 300 RUN_SERIAL TRUE
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+                    PASS_REGULAR_EXPRESSION "${_tls_pass}"
+                    FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+            endforeach()
+        endforeach()
+    endif()
+endif()
+
+# Explicit resident ownership reuses the core evacuation transaction.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
+    find_package(Threads REQUIRED)
+    add_executable(dbsp_resident_owner_test tests/core/dbsp_resident_owner_test.cpp)
+    target_compile_features(dbsp_resident_owner_test PRIVATE cxx_std_17)
+    target_include_directories(dbsp_resident_owner_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(dbsp_resident_owner_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(dbsp_resident_owner_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(dbsp_resident_owner_test PRIVATE Threads::Threads eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME dbsp_resident_owner_test COMMAND dbsp_resident_owner_test)
+    set_tests_properties(dbsp_resident_owner_test PROPERTIES TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: resident owner movement, sharing and rollback"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Wave 2 acceptance: dbsp_resident
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME dbsp_resident_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_resident_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_resident_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_resident_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_resident_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_resident_jit dbsp_resident_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    set(_resident_tests)
+    if(TARGET dbsp_resident_owner_test)
+        list(APPEND _resident_tests dbsp_resident_owner_test)
+    endif()
+    if(TARGET eshkol-run)
+        list(APPEND _resident_tests dbsp_resident_jit dbsp_resident_aot)
+    endif()
+    if(_resident_tests)
+        set_tests_properties(${_resident_tests}
+            PROPERTIES ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_ARENA_POISON=1")
+    endif()
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND ESHKOL_PYTHON3_EXECUTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME dbsp_resident_memory_family
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dbsp_resident_memory_gate.py"
+            --runner $<TARGET_FILE:eshkol-run>
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/bench/dbsp_resident.esk"
+            --lib-dir "${CMAKE_CURRENT_BINARY_DIR}"
+            --work-dir "${CMAKE_CURRENT_BINARY_DIR}/dbsp-resident-memory")
+    set_tests_properties(dbsp_resident_memory_family PROPERTIES TIMEOUT 1800
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal" SKIP_RETURN_CODE 77)
+endif()
+
+# Native public module path, including capability/error and binary-data checks.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
+    add_test(NAME net_roundtrip_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_2_edge_cases/net_roundtrip_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME net_roundtrip_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_2_edge_cases/net_roundtrip_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/net_roundtrip_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(net_roundtrip_jit net_roundtrip_aot PROPERTIES TIMEOUT 120
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        PASS_REGULAR_EXPRESSION "PASS: UDP roundtrip"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Public core.net/core.tls lease surfaces on both native engines.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
+    set(_net_core_cases net_core net_scope_continuation)
+    if(ESHKOL_TLS_OPENSSL_FOUND AND TARGET tls_test_ca)
+        list(APPEND _net_core_cases tls_net_core)
+    endif()
+    foreach(_case IN LISTS _net_core_cases)
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/${_case}_test.esk")
+        add_test(NAME ${_case}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_source}"
+            "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_case}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_case}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+            LABELS "network;ownership"
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_TLS_TEST_PKI=${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        if(_case STREQUAL "tls_net_core")
+            set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES FIXTURES_REQUIRED tls_test_pki)
+        endif()
+    endforeach()
+endif()
+
+# The bytecode VM has no hosted socket leases: compiling core.net for it is
+# refused with an explicit message rather than producing a partial program.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME net_vm_refusal COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm
+        --emit-eskb "${CMAKE_CURRENT_BINARY_DIR}/net_vm_refusal.eskb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/net_vm_refusal.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(net_vm_refusal PROPERTIES TIMEOUT 120 LABELS "network;vm"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "core.net and core.tls are not supported by the bytecode VM")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_deadline_ready_test tests/network/net_deadline_ready_test.c
+        lib/core/net.c lib/core/capability_policy.cpp
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_include_directories(net_deadline_ready_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_deadline_ready_test PRIVATE Threads::Threads)
+    add_test(NAME net_deadline_ready_test COMMAND net_deadline_ready_test)
+    set_tests_properties(net_deadline_ready_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
+        lib/core/net.c lib/core/capability_policy.cpp
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
+    add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
+    set_tests_properties(net_close_concurrency_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Socket leases: partial writes, reset, deadlines, cancellation, shutdown,
+# truncation and a constant descriptor count across 1,000 cycles.
+if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_lease_test tests/network/net_lease_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(net_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_lease_test PRIVATE Threads::Threads)
+    add_test(NAME net_lease_test COMMAND net_lease_test)
+    set_tests_properties(net_lease_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        LABELS "network;ownership"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed certified_nonlinear certified_nonlinear_independent certified_continuation certified_continuation_independent)
+        add_test(NAME ${reverse_fixture}_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${reverse_fixture}_test.esk")
+        set_tests_properties(${reverse_fixture}_vm PROPERTIES TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+    endforeach()
+endif()
+
+# Wave 3 acceptance: certified_nonlinear
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_nonlinear_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_nonlinear_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_nonlinear_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_nonlinear_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_nonlinear_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_nonlinear_jit certified_nonlinear_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(certified_nonlinear_independent "tests/stdlib/certified_nonlinear_independent_test.esk")
+    eshkol_add_algebraic_ad_acceptance(certified_continuation_independent "tests/stdlib/certified_continuation_independent_test.esk")
+endif()
+
+# Wave 4 acceptance: certified_continuation
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_continuation_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_continuation_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_continuation_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_continuation_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_continuation_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_continuation_jit certified_continuation_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Wave 4 acceptance: certified_native_solve
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_native_solve_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_native_solve_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_native_solve_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_native_solve_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_native_solve_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_native_solve_jit certified_native_solve_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Execute the unchanged numerical acceptance suite on both VM routes.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME certified_native_solve_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_native_solve_test.esk")
+    set_tests_properties(certified_native_solve_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME certified_native_solve_eskb_vm COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_native_solve_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_native_solve_vm.eskb"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_native_solve_eskb_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal")
+endif()
+
+# Shared C kernel is used by native, VM, and WebAssembly callers.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(tensor_inverse_checked_test tests/tensor_inverse_checked_test.c)
+    target_include_directories(tensor_inverse_checked_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    set_target_properties(tensor_inverse_checked_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    if(UNIX)
+        target_link_libraries(tensor_inverse_checked_test PRIVATE m)
+    endif()
+    add_test(NAME tensor_inverse_checked_test COMMAND tensor_inverse_checked_test)
+    set_tests_properties(tensor_inverse_checked_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
+
+# Independent rational VJP oracle, including an asymmetric seed.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_subspace_independent "tests/stdlib/algebraic_subspace_independent_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME algebraic_subspace_independent_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_subspace_independent_test.esk")
+    set_tests_properties(algebraic_subspace_independent_vm PROPERTIES TIMEOUT 300
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+endif()
+
+# Exact infeasibility witnesses for bounded rational/algebraic systems.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME algebraic_farkas_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_farkas_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME algebraic_farkas_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_farkas_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/algebraic_farkas_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(algebraic_farkas_jit algebraic_farkas_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME algebraic_farkas_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_farkas_test.esk")
+    set_tests_properties(algebraic_farkas_vm PROPERTIES TIMEOUT 900 LABELS "math;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Standalone VM acceptance for DBSP recursive and SQLite state contracts.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    foreach(feature recursive sqlite_changefeed)
+        if(feature STREQUAL "recursive")
+            set(_dbsp_vm_source tests/stdlib/dbsp_recursive_test.esk)
+        else()
+            set(_dbsp_vm_source tests/stdlib/dbsp_sqlite_changefeed_test.esk)
+        endif()
+        add_test(NAME dbsp_${feature}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/${_dbsp_vm_source}")
+        set_tests_properties(dbsp_${feature}_vm PROPERTIES TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+    endforeach()
+endif()
+
+# Preserve the same 28-assertion SQLite contract through serialized hosted-VM
+# bytecode as well as direct source compilation. The external SQLite symbols
+# stay late-resolved; ESKB contains only the stable VM native IDs.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
+   TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+    add_test(NAME dbsp_sqlite_changefeed_eskb_vm COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_sqlite_changefeed_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_sqlite_changefeed_vm.eskb"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_sqlite_changefeed_eskb_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+endif()
+
+# Exercise the standalone VM's actual typed SQLite ABI with a successful
+# open/bind/query round-trip. The existing changefeed VM suite remains the
+# 28-assertion compatibility gate; this smaller fixture pins UTF-8 buffer
+# marshalling and must not pass when the agent SQLite symbols are unavailable.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-agent-ffi)
+    add_test(NAME sqlite_typed_ffi_vm_regression
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/sqlite_typed_ffi_regression.esk")
+    set_tests_properties(sqlite_typed_ffi_vm_regression PROPERTIES TIMEOUT 120
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|SQLite extern is unavailable|ERROR|fatal signal")
+endif()
+
+# Wave 2 acceptance: dbsp_recursive
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME dbsp_recursive_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_recursive_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_recursive_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_recursive_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_recursive_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_recursive_jit dbsp_recursive_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Wave 5 acceptance: dbsp_sqlite_changefeed
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+    add_test(NAME dbsp_sqlite_changefeed_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_sqlite_changefeed_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_sqlite_changefeed_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_sqlite_changefeed_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_sqlite_changefeed_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_sqlite_changefeed_jit dbsp_sqlite_changefeed_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND AND UNIX)
+        foreach(mode jit aot)
+            add_test(NAME dbsp_sqlite_crash_${mode} COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/dbsp_sqlite_crash.py"
+                --runner $<TARGET_FILE:eshkol-run> --link-dir "${CMAKE_CURRENT_BINARY_DIR}" --mode ${mode})
+            set_tests_properties(dbsp_sqlite_crash_${mode} PROPERTIES TIMEOUT 900
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+                PASS_REGULAR_EXPRESSION "RESULT: PASS"
+                FAIL_REGULAR_EXPRESSION "Traceback|FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        endforeach()
+    endif()
+endif()
+
+# Shared differentiation graph: this unit has no LLVM or runtime dependency.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(differentiation_graph_test tests/frontend/differentiation_graph_test.cpp
+        lib/frontend/differentiation_graph.cpp lib/frontend/scalar_lowering.cpp)
+    target_include_directories(differentiation_graph_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(differentiation_graph_test PRIVATE cxx_std_20)
+    add_test(NAME differentiation_graph_test COMMAND differentiation_graph_test)
+    set_tests_properties(differentiation_graph_test PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_differentiation_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/compiler_differentiation_test.esk")
+    add_test(NAME compiler_differentiation_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_differentiation_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME compiler_differentiation_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot' '${_differentiation_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot'")
+    set_tests_properties(compiler_differentiation_jit compiler_differentiation_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        TIMEOUT 180 LABELS "compiler;ad;regression"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
+    if(Python3_Interpreter_FOUND)
+        set(_differentiation_vm_args)
+        if(TARGET eshkol-vm-standalone-test)
+            list(APPEND _differentiation_vm_args --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>)
+        endif()
+        add_test(NAME compiler_differentiation_diagnostics
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/differentiation_diagnostics.py
+                --runner $<TARGET_FILE:eshkol-run> --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_differentiation_vm_args})
+        set_tests_properties(compiler_differentiation_diagnostics PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            TIMEOUT 300 LABELS "compiler;ad;regression")
+    endif()
+endif()
+
+# Both compiler-pass bootstrap tests must exercise the staged REPL when built.
+set(_selfhost_repl_args)
+if(TARGET eshkol-repl)
+    list(APPEND _selfhost_repl_args --repl-runner $<TARGET_FILE:eshkol-repl>)
+endif()
+
+# Scalar DAG-to-core lowering: seed, compiled Eshkol pass, and native integration.
+if(ESHKOL_BUILD_TESTS)
+    foreach(_lower_test IN ITEMS seed_scalar_lowering_test selfhost_scalar_lowering_test)
+        add_executable(${_lower_test} tests/frontend/selfhost_scalar_test.cpp)
+        target_include_directories(${_lower_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_compile_features(${_lower_test} PRIVATE cxx_std_20)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${_lower_test} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${_lower_test} PRIVATE eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        if(_lower_test STREQUAL "selfhost_scalar_lowering_test")
+            target_sources(${_lower_test} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+            add_dependencies(${_lower_test} eshkol-incremental-bootstrap)
+            target_compile_definitions(${_lower_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
+        endif()
+        add_test(NAME ${_lower_test} COMMAND ${_lower_test})
+        set_tests_properties(${_lower_test} PROPERTIES TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endforeach()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_scalar_test_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/compiler/scalar_lower_test.esk")
+    add_test(NAME scalar_lower_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+        $<TARGET_FILE:eshkol-run> --strict-types -r "${_scalar_test_source}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME scalar_lower_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/scalar_lower_aot' '${_scalar_test_source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/scalar_lower_aot'")
+    set_tests_properties(scalar_lower_jit scalar_lower_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 180
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME scalar_lower_vm COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test> "${_scalar_test_source}")
+        set_tests_properties(scalar_lower_vm PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME selfhost_scalar_bootstrap COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/selfhost_scalar_bootstrap.py
+            --runner $<TARGET_FILE:eshkol-run> --seed $<TARGET_FILE:eshkol-bootstrap>
+            --packager $<TARGET_FILE:eshkol-bootstrap-object>
+            --lower-test $<TARGET_FILE:selfhost_scalar_lowering_test> --seed-test $<TARGET_FILE:seed_scalar_lowering_test>
+            --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_selfhost_repl_args})
+        set_tests_properties(selfhost_scalar_bootstrap PROPERTIES TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+endif()
+
+foreach(_native_tool IN ITEMS eshkol-repl)
+    if(TARGET ${_native_tool})
+        target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
+        add_dependencies(${_native_tool} eshkol-incremental-bootstrap)
+        if(ESHKOL_SELF_HOSTED_INCREMENTAL)
+            target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
+            target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+            target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_INCREMENTAL)
+        endif()
+        if(ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+            target_sources(${_native_tool} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+            target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+            target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+        endif()
+    endif()
+endforeach()
+
+# Finite incremental interpretation of the same admitted compiler graph.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(incrementalize_test tests/frontend/incrementalize_test.cpp
+        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp
+        lib/frontend/incremental_plan_seed.cpp lib/frontend/scalar_lowering.cpp)
+    target_include_directories(incrementalize_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(incrementalize_test PRIVATE cxx_std_20)
+    add_test(NAME incrementalize_test COMMAND incrementalize_test)
+    set_tests_properties(incrementalize_test PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_incremental_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/incremental/compiler_incremental_test.esk")
+    add_test(NAME compiler_incremental_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_incremental_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME compiler_incremental_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot' '${_incremental_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot'")
+    set_tests_properties(compiler_incremental_jit compiler_incremental_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        TIMEOUT 900 LABELS "compiler;incremental;regression"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME compiler_incremental_locality
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/incrementalize_locality.py
+                --runner $<TARGET_FILE:eshkol-run> --link-dir ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(compiler_incremental_locality PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            TIMEOUT 1200 LABELS "compiler;incremental;regression")
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    foreach(_planner_test IN ITEMS seed_incremental_plan_test selfhost_incremental_test)
+        add_executable(${_planner_test} tests/frontend/selfhost_incremental_test.cpp)
+        target_include_directories(${_planner_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_compile_features(${_planner_test} PRIVATE cxx_std_20)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${_planner_test} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${_planner_test} PRIVATE eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        if(_planner_test STREQUAL "selfhost_incremental_test")
+            target_sources(${_planner_test} PRIVATE lib/frontend/incremental_plan_host.cpp
+                "${_incremental_plan_object}" "${_incremental_runtime_object}")
+            add_dependencies(${_planner_test} eshkol-incremental-bootstrap)
+            eshkol_target_llvm_includes(${_planner_test})
+            target_compile_definitions(${_planner_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
+        endif()
+        add_test(NAME ${_planner_test} COMMAND ${_planner_test})
+        set_tests_properties(${_planner_test} PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endforeach()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_plan_test_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/compiler/incremental_plan_test.esk")
+    add_test(NAME incremental_plan_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+        $<TARGET_FILE:eshkol-run> --strict-types -r "${_plan_test_source}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME incremental_plan_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/incremental_plan_aot' '${_plan_test_source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/incremental_plan_aot'")
+    set_tests_properties(incremental_plan_jit incremental_plan_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 180
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME incremental_plan_vm COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test> "${_plan_test_source}")
+        set_tests_properties(incremental_plan_vm PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME selfhost_incremental_bootstrap COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/selfhost_incremental_bootstrap.py
+            --runner $<TARGET_FILE:eshkol-run> --seed $<TARGET_FILE:eshkol-bootstrap>
+            --packager $<TARGET_FILE:eshkol-bootstrap-object>
+            --plan-test $<TARGET_FILE:selfhost_incremental_test> --seed-test $<TARGET_FILE:seed_incremental_plan_test>
+            --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_selfhost_repl_args})
+        set_tests_properties(selfhost_incremental_bootstrap PROPERTIES TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_fixture IN ITEMS native_match_corpus native_match_grammar)
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/${_fixture}.esk")
+        add_test(NAME ${_fixture}_jit COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_EXE=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_MODE=jit"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_direct.cmake")
+        add_test(NAME ${_fixture}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_fixture}_jit ${_fixture}_aot PROPERTIES TIMEOUT 360
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0")
+    endforeach()
+endif()
+
+# Content hashes are required by DBSP checkpoint identity on every execution route.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    set(_content_hash_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/content_hash_test.esk")
+    add_test(NAME content_hash_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_content_hash_source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME content_hash_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_content_hash_source}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/content_hash_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    add_test(NAME content_hash_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_content_hash_source}")
+    add_test(NAME content_hash_eskb_vm COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+        "-DESHKOL_SOURCE=${_content_hash_source}" "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/content_hash.eskb"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    add_test(NAME content_hash_typed_ffi_vm_regression COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/content_hash_typed_ffi_regression.esk")
+    set_tests_properties(content_hash_jit content_hash_aot content_hash_vm content_hash_eskb_vm content_hash_typed_ffi_vm_regression
+        PROPERTIES TIMEOUT 180 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|fatal signal")
+endif()
+
+# Keep the focused contracts on each available execution route. The CMake
+# runners check exit status and the explicit verdict; a printed pass marker
+# must never override a failing child process through CTest's PASS regex.
+if(ESHKOL_BUILD_TESTS)
+    foreach(_fixture IN ITEMS coverage_conversion_probes hosted_vm_char_order
+            hash_ref_optional_contract string_split_byte_contract
+            coverage_pure_helpers coverage_interval_dataframe native_char_comparison_chains
+            coverage_remaining_pure_calls named_let_initializer_slots)
+        set(_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_fixture}_test.esk")
+        set(_fixture_tests)
+        if(TARGET eshkol-run)
+            add_test(NAME ${_fixture}_jit COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_EXE=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_fixture_source}"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_MODE=jit"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_direct.cmake")
+            add_test(NAME ${_fixture}_aot COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_fixture_source}"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            list(APPEND _fixture_tests ${_fixture}_jit ${_fixture}_aot)
+        endif()
+        foreach(_vm_target IN ITEMS eshkol-vm-standalone-test eshkol-vm-switch-dispatch-test)
+            if(TARGET ${_vm_target} AND NOT _fixture STREQUAL "native_char_comparison_chains")
+                if(_vm_target STREQUAL "eshkol-vm-standalone-test")
+                    set(_vm_route vm)
+                else()
+                    set(_vm_route vm_switch)
+                endif()
+                add_test(NAME ${_fixture}_${_vm_route}_source COMMAND ${CMAKE_COMMAND}
+                    "-DESHKOL_EXE=$<TARGET_FILE:${_vm_target}>" "-DESHKOL_SOURCE=${_fixture_source}"
+                    "-DESHKOL_MODE=vm"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_direct.cmake")
+                list(APPEND _fixture_tests ${_fixture}_${_vm_route}_source)
+                if(TARGET eshkol-run)
+                    add_test(NAME ${_fixture}_${_vm_route}_eskb COMMAND ${CMAKE_COMMAND}
+                        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:${_vm_target}>"
+                        "-DESHKOL_SOURCE=${_fixture_source}"
+                        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_${_vm_route}.eskb"
+                        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+                    list(APPEND _fixture_tests ${_fixture}_${_vm_route}_eskb)
+                endif()
+            endif()
+        endforeach()
+        if(_fixture_tests)
+            set_tests_properties(${_fixture_tests} PROPERTIES TIMEOUT 900
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal|LLVM module verification failed")
+        endif()
+    endforeach()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME bytevector_constructor_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_bytevector_constructor_gate.py"
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(bytevector_constructor_all_routes PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "PASS: bytevector constructor four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
+    add_test(NAME msgpack_wire_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_msgpack_gate.py"
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
+        --all-routes)
+    set_tests_properties(msgpack_wire_all_routes PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: MessagePack four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
+    add_test(NAME protobuf_wire_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_wire_format_gate.py" --suite protobuf
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
+        --native-test $<TARGET_FILE:protobuf_wire_test>
+        --all-routes)
+    set_tests_properties(protobuf_wire_all_routes PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: Protocol Buffers four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
+    set(_metadata_name_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/metadata_name_collision.esk")
+    add_test(NAME metadata_name_collision_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_metadata_name_source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME metadata_name_collision_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_metadata_name_source}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/metadata_name_collision${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_COMPILE_TIMEOUT=120"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(metadata_name_collision_jit metadata_name_collision_aot PROPERTIES TIMEOUT 300
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(NAME metadata_name_collision_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_metadata_name_source}")
+    set_tests_properties(metadata_name_collision_vm PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    add_test(NAME procedure_metadata_aot_ir
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/procedure_metadata_ir.py"
+            $<TARGET_FILE:eshkol-run> "${_metadata_name_source}" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(procedure_metadata_aot_ir PROPERTIES TIMEOUT 120
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+
+    foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset utf8_case_capacity reverse_gradient_real_tape_surface)
+        set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/${_vm_case}_regression.esk")
+        if(_vm_case STREQUAL "logic_registry_reset")
+            set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/logic_registry_reset_vm_regression.esk")
+        endif()
+        add_test(NAME ${_vm_case}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_vm_case_source}")
+        add_test(NAME ${_vm_case}_eskb_vm COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            "-DESHKOL_SOURCE=${_vm_case_source}" "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_vm_case}.eskb"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_COMPILE_TIMEOUT=120"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_vm_case}_vm ${_vm_case}_eskb_vm PROPERTIES TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
+    endforeach()
+
+    add_test(NAME vm_parser_prefix_refusal COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/parser_prefix_refusal.py"
+        --runner $<TARGET_FILE:eshkol-run> --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+        --link-dir "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(vm_parser_prefix_refusal PROPERTIES TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
+endif()
+
+# Invalid UTF-8 can expand when decoded to replacement characters. Verify
+# actual output allocation extents, including in Release/NDEBUG builds.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(vm_string_case_capacity_test
+        tests/vm/vm_string_case_capacity_test.c)
+    target_include_directories(vm_string_case_capacity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME vm_string_case_capacity COMMAND vm_string_case_capacity_test)
+    set_tests_properties(vm_string_case_capacity PROPERTIES
+        TIMEOUT 30 LABELS "vm;utf8;memory;regression")
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    add_executable(vm_arena_checked_allocation_test
+        tests/vm/vm_arena_checked_allocation_test.c)
+    target_include_directories(vm_arena_checked_allocation_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME vm_arena_checked_allocation COMMAND vm_arena_checked_allocation_test)
+    set_tests_properties(vm_arena_checked_allocation PROPERTIES
+        TIMEOUT 30 LABELS "vm;memory;regression")
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    add_executable(vm_integer_arithmetic_test tests/vm/vm_integer_arithmetic_test.c)
+    target_include_directories(vm_integer_arithmetic_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
+    add_test(NAME vm_integer_remainder_boundaries COMMAND vm_integer_arithmetic_test)
+    set_tests_properties(vm_integer_remainder_boundaries PROPERTIES
+        TIMEOUT 30 LABELS "vm;numeric;regression"
+        PASS_REGULAR_EXPRESSION "PASS: VM integer remainder boundaries")
+endif()
+
+
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
+    add_test(NAME named_let_tco_control_flow COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/named_let_tco_control_flow_test.py
+        $<TARGET_FILE:eshkol-run> ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(named_let_tco_control_flow PROPERTIES TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: named-let control flow 11 cases across JIT and AOT"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|LLVM module verification failed")
+
+    add_test(NAME jit_batch_lookup_failure_exit_status COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/jit_batch_exit_status_test.py
+        --runner $<TARGET_FILE:eshkol-run>
+        --repo-root ${CMAKE_CURRENT_SOURCE_DIR}
+        --link-dir ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(jit_batch_lookup_failure_exit_status PROPERTIES TIMEOUT 300
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: JIT batch lookup failure affects file exit status"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
+    add_executable(function_cache_type_contract_test tests/toolchain/function_cache_type_contract_test.cpp)
+    target_include_directories(function_cache_type_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(function_cache_type_contract_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED=1)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(function_cache_type_contract_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(function_cache_type_contract_test PRIVATE eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME function_cache_type_contract COMMAND function_cache_type_contract_test)
+    set_tests_properties(function_cache_type_contract PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "PASS: function-cache declaration contracts 10 checks"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Keep exported-origin read evidence separate from procedure invocation.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
+    add_test(NAME vm_binding_origins_current
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_vm_binding_origins.py" --check)
+    add_test(NAME binding_read_evidence_policy
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_binding_read_evidence.py")
+    if(TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-vm-switch-dispatch-test)
+        add_test(NAME vm_binding_read_runtime
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/binding_read_runtime_test.py"
+                --compiler $<TARGET_FILE:eshkol-run>
+                --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+                --switch $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
+        set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND UNIX)
+    add_test(NAME sblc_rng_parity_gate
+        COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            "VM_BIN=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_rng_parity_gate.sh")
+    set_tests_properties(sblc_rng_parity_gate PROPERTIES TIMEOUT 1800 LABELS "stdlib;sblc;vm;parity")
+endif()
+
+# Source-specific stochastic resource laws and independent native replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME sblc_resource_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_resource_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(sblc_resource_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME sblc_resource_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sblc_resource_gate_self_test.py")
+    set_tests_properties(sblc_resource_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Complete finite-class Busy Beaver proof replay (follow-up source donation).
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME bb_maximality_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/run_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>
+                --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(bb_maximality_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME bb_maximality_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/self_test.py")
+    set_tests_properties(bb_maximality_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Standalone source-bound cost proof: require clean JIT/AOT exits and a red control.
+if(UNIX AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND Python3_Interpreter_FOUND)
+    add_test(NAME busy_beaver_certificates
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/run_gate.py"
+            --eshkol-bin "$<TARGET_FILE:eshkol-run>"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME busy_beaver_certificates_self_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/self_test.py")
+    set_tests_properties(busy_beaver_certificates busy_beaver_certificates_self_test
+        PROPERTIES TIMEOUT 480 LABELS "stdlib;exact")
+endif()
+
+# Selected finite-field source donation: exact independent native oracle.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME extension_field_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_extension_field_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(extension_field_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME extension_field_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extension_field_gate_self_test.py")
+    set_tests_properties(extension_field_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Exact observable-space compiler and independent source replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME observable_closure_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_observable_closure_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(observable_closure_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME observable_closure_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/observable_closure_gate_self_test.py")
+    set_tests_properties(observable_closure_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Platform layer tests (ADR-0053).
+set(ESHKOL_PLATFORM_STAGE tests)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
+
+# Every harness that resolves the compiler, the VM or the compile database by
+# itself reads BUILD_DIR and falls back to a directory literally named "build".
+# Name this build tree for all of them at once, so the suite runs from any
+# configured build directory. APPEND leaves a test's own ENVIRONMENT entries in
+# place.
+get_property(ESHKOL_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
+foreach(ESHKOL_REGISTERED_TEST IN LISTS ESHKOL_REGISTERED_TESTS)
+    set_property(TEST "${ESHKOL_REGISTERED_TEST}" APPEND PROPERTY
+                 ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
+endforeach()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    add_test(NAME mix_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_gate.sh")
+    set_tests_properties(mix_gate PROPERTIES TIMEOUT 3600 LABELS "stdlib;compiler;parity")
+    add_test(NAME mix_verify_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_verify_gate.sh")
+    set_tests_properties(mix_verify_gate PROPERTIES TIMEOUT 600 LABELS "stdlib;compiler;parity")
+endif()
+include(repro/quantum-qec/CTest.cmake)
+include(repro/nonlinear-observability/CTest.cmake)
+include(repro/sparse-solves/CTest.cmake)
+include(repro/sat-proof-admission/CTest.cmake)
+
+if(ESHKOL_BUILD_TESTS)
+    if(UNIX)
+        add_test(NAME module_resolution_browser_registry
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_wasm_embedded_module_generator.py")
+    endif()
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME module_resolution_browser_bundle
+            COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/product_wasm_embedded_modules_test.cjs"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js")
+    endif()
+    foreach(_engine IN ITEMS jit aot vm repl)
+        if(_engine STREQUAL "vm")
+            set(_module_runner eshkol-vm-standalone-test)
+        elseif(_engine STREQUAL "repl")
+            set(_module_runner eshkol-repl)
+        else()
+            set(_module_runner eshkol-run)
+        endif()
+        if(TARGET ${_module_runner})
+            foreach(_case IN ITEMS namespace conditions roots)
+                add_test(NAME module_resolution_${_case}_${_engine}
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/module_resolution_test.py"
+                            ${_case} ${_engine} $<TARGET_FILE:${_module_runner}>)
+                set_tests_properties(module_resolution_${_case}_${_engine} PROPERTIES TIMEOUT 320)
+            endforeach()
+        endif()
+    endforeach()
 endif()

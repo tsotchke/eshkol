@@ -1,0 +1,2 @@
+;; expect-error: unbound name
+(display (hott-eval (winding loop)))

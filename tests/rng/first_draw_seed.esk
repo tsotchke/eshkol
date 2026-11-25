@@ -1,0 +1,4 @@
+(srand48 17)
+(define first (random))
+(set-random-seed! 17)
+(display (= first (random)))

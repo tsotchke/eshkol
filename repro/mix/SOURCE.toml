@@ -1,0 +1,97 @@
+format = "eshkol-mix-contribution-v1"
+verification_parent_revision = "5c9f15eca7126d55c19c5bf6de267b8744673248"
+target_repository = "https://github.com/tsotchke/eshkol"
+target_revision = "341ac812ed600fd9d27c28e9509d66ab71363947"
+reference_mix_revision = "5bc97a539d8911442fd48238513a56841746a08c"
+combined_source_snapshot_date = "2026-10-24"
+selected_contribution_license = "MIT"
+reference_execution_required_at_runtime = false
+source_note = "Object source was mechanically rendered from the selected reference values. Combined cleanup sources were frozen separately by these SHA-256 identities."
+
+[[reference_input]]
+path = "mix-ir/core.lisp"
+sha256 = "7568b0f53953a6638897b5cd27d8809461b80a5e038c5a6a1fc049af31cb4dfd"
+
+[[reference_input]]
+path = "mix-ir/object-lower-cleanup.lisp"
+sha256 = "22ae675dac46a59a78b3ed565558b1d587b41d959a04cc3444d4367c0ee7bb95"
+
+[[reference_input]]
+path = "mix-ir/object-lower-expr.lisp"
+sha256 = "c305cc73d1ae7c455dba9ed3cc375b6acc9c0b1dadf0f1bb33a41952b1695e7b"
+
+[[reference_input]]
+path = "mix-ir/object-lower-values.lisp"
+sha256 = "37101f8ec7e17e256e64fdf857ed7279ab84a01b5114731215bb59ca369c9167"
+
+[[reference_input]]
+path = "mix-ir/self-hosted-jones.lisp"
+sha256 = "66ce4278f0ab47c2fa33d9db02cd9f14f7a59fd8fb2b8abe1461bcd8429f281e"
+
+[[reference_input]]
+path = "mix-ir/self-interpreter.lisp"
+sha256 = "ad519db1ed33ad70dad1f2b7f3fb1d6b55e7eecd7fc215cbfe181f4a812f9e65"
+
+[[reference_input]]
+path = "mix-ir/staged-source.lisp"
+sha256 = "80c1b0f3ae19a2e87f79f57f06e71b7fc495ba4a876ca25e464137f91ace0a9c"
+
+[[file]]
+path = "CMakeLists.txt"
+sha256 = "25f28487624783d8f2aacd4333d6ed668fbae3de5352f21f7c62403a710d8984"
+
+[[file]]
+path = "lib/core/compiler/mix.esk"
+sha256 = "662f63c06d663fea7d3f52c8bbf996119feb71f2dc43b1c2e2de22fd7cbe3e13"
+
+[[file]]
+path = "lib/core/compiler/mix/runtime.esk"
+sha256 = "7637137d5792701c684ec01b742c4e4c3a9816316998a768739fb3236189495c"
+
+[[file]]
+path = "lib/core/compiler/mix/source.esk"
+sha256 = "868e342cba99a2fa64bba198a88b4625eebbab5553dde88a832914ab95ff56f9"
+
+[[file]]
+path = "lib/core/compiler/mix/emit.esk"
+sha256 = "dbfcd8e3b58b4e7ac6ff68a34990dfbe31de9c92fff4cdc686468e4fe01b0e00"
+
+[[file]]
+path = "tests/stdlib/mix_test.esk"
+sha256 = "82baa04fca3f75af2e101218cdf49f8cb69439a8b85d72684e5f53fbd7e801f9"
+
+[[file]]
+path = "tests/stdlib/mix_fixtures.esk"
+sha256 = "94d44d2aa8c0519575ee31d915bd334d1b1d220a4c9c973a6aa6bcf710153cdf"
+
+[[file]]
+path = "scripts/run_mix_gate.sh"
+sha256 = "97ff8c3365a4916d5b5b0c89bf9c7b385a71585072fa47347c91e5882f7f0712"
+
+[[file]]
+path = "examples/mix/generate.esk"
+sha256 = "8c5f7369e3872a9ae588d9a17971ffc32a52fa6160757e1de28c3f08aa4d58af"
+
+[[file]]
+path = "examples/mix/README.md"
+sha256 = "245ff4cb5fb9909de425b7d041449fb9d2135a30e46038128db8999e0f0a4b62"
+
+[[file]]
+path = "docs/reference/stdlib/mix.md"
+sha256 = "b911eb2b61ce7ebd6990a587ba19a35330243c0fbc0de4e3055732d18659db3b"
+
+[[file]]
+path = "docs/reference/stdlib/INDEX.md"
+sha256 = "289031d258fc2abbc3f71f318bc74826fd79acbf01b1ad1edf3b4d0d04aa1032"
+
+[[file]]
+path = "lib/core/compiler/mix/verify.esk"
+sha256 = "4a78f6d39c04a91dfb70c46cf725a1538909e061b73d8964286e9d8a9a412dd6"
+
+[[file]]
+path = "tests/stdlib/mix_verify_test.esk"
+sha256 = "3527c2c091949d29d7df664a5436f3c3dd615df0e257d01ff5b84cff1ced3b76"
+
+[[file]]
+path = "scripts/run_mix_verify_gate.sh"
+sha256 = "b9c31666bce1d675288c12f968ddbe48d5257c8a08dfa9aa316126ffebae78b7"

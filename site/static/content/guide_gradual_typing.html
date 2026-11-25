@@ -61,8 +61,12 @@
 </thead>
 <tbody>
 <tr>
-<td><code>--strict-types</code></td>
+<td><code>--types=strict</code> (or <code>--strict-types</code>)</td>
 <td>Every type diagnostic is an error. No code is generated and the exit status is nonzero.</td>
+</tr>
+<tr>
+<td><code>--types=gradual</code></td>
+<td>The default, as above.</td>
 </tr>
 <tr>
 <td><code>--unsafe</code></td>
@@ -74,7 +78,14 @@
 <pre class="console"><code>[ERROR] Type error: argument 1 of &#39;area&#39;: expected Number, got String (line 5:11)
      ERROR: HoTT: 1 type errors detected (strict mode)
      ERROR: Refusing to generate code for a program with type errors (--strict-types)</code></pre>
-<p>One family of diagnostics is an error in every mode: <strong>linearity</strong>. Using a linear value such as a <code>Qubit</code> twice, or dropping it, is a compile-time error even without <code>--strict-types</code>, because no run-time check could recover from it. See <a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">the language guide</a> for the linear types.</p>
+<p>Two families of diagnostics are errors in every mode. <strong>Linearity</strong>: using a linear value such as a <code>Qubit</code> twice, or dropping it, is a compile-time error even without <code>--strict-types</code>, because no run-time check could recover from it. See <a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">the language guide</a> for the linear types. <strong>Dependent types</strong> (ADR 0042): a program that writes a dependent type – a length-indexed <code>(vector real n)</code>, a <code>Pi</code> or <code>Sigma</code>, a universe, a <code>define-type</code> family with declared parameter sorts – states an obligation, and one that provably fails is a compile-time error:</p>
+<pre class="console"><code>[ERROR] Type error: argument 2 of &#39;dot&#39;: expected (vector Float64 3), got (vector Value 2) (line 15:37)
+     ERROR: HoTT: 1 dependent type obligation(s) not met</code></pre>
+<p>A value whose index is not known statically (a vector built by <code>list-&gt;vector</code>) is accepted where a length-indexed vector is expected, in both modes.</p>
+<h3 id="the-checking-direction">The checking direction</h3>
+<p>An expected type is checked tail by tail: each branch of an <code>if</code>, <code>cond</code>, <code>case</code>, <code>when</code> or <code>unless</code>, and the last expression of a body, must fit it on its own. The join of two branches can be <code>Value</code>, which fits anything; the branch that does not fit is reported where it is:</p>
+<pre class="console"><code>[WARN] Type warning: result of &#39;f&#39;: expected Int64, got String (line 12:7)</code></pre>
+<p>Expected types come from parameters (<code>argument i of 'f'</code>), a parameter’s function type checked against a lambda argument’s body (<code>result of the lambda in argument i of 'f'</code>), return annotations (<code>result of 'f'</code>), annotated <code>let</code> bindings (<code>binding 'x'</code>), <code>(: name type)</code> declarations (<code>definition of 'name'</code>) and <code>(the T e)</code>.</p>
 <h2 id="3-what-is-checked-and-where">3. What is checked, and where</h2>
 <p>A call is checked against the callee’s annotations <strong>wherever the call is written</strong>. The checker descends into the body of every control form, so a call inside a <code>cond</code> clause, a <code>do</code> step or a <code>guard</code> handler is examined exactly as it would be at top level. The warning above came from inside a <code>when</code>.</p>
 <pre class="scheme"><code>(define (area (w : number) (h : number)) (* w h))
@@ -335,7 +346,7 @@
 </tr>
 <tr>
 <td><code>(define (f ...) : T ...)</code></td>
-<td>checks the body’s type against <code>T</code></td>
+<td>checks each tail of the body against <code>T</code></td>
 </tr>
 <tr>
 <td>no annotation</td>
@@ -362,7 +373,19 @@
 <td>takes <code>expr</code> as <code>T</code>; free at run time; reported only if impossible</td>
 </tr>
 <tr>
-<td><code>--strict-types</code></td>
+<td><code>(: f T)</code></td>
+<td>checks the definition of <code>f</code> against <code>T</code>; callers see <code>T</code></td>
+</tr>
+<tr>
+<td><code>(let ((x : T init)) ...)</code></td>
+<td>checks <code>init</code> against <code>T</code></td>
+</tr>
+<tr>
+<td><code>(vector real n)</code>, <code>(Pi ...)</code>, <code>(Sigma ...)</code>, families</td>
+<td>dependent obligations, errors in every mode</td>
+</tr>
+<tr>
+<td><code>--types=strict</code>, <code>--strict-types</code></td>
 <td>diagnostics are errors; no code is generated</td>
 </tr>
 <tr>

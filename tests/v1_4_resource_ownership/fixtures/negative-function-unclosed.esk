@@ -1,0 +1,5 @@
+;; The helper opens a port and returns without closing or returning it.
+(define (peek-first path)
+  (let ((in (open-input-file path)))
+    (read-line in)))
+(display (peek-first "strict-fn-open.txt"))

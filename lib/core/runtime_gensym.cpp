@@ -26,14 +26,11 @@
 
 #include "arena_memory.h"
 
-#include <atomic>
+#include <eshkol/core/gensym_sequence.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
-namespace {
-std::atomic<uint64_t> g_gensym_counter{1};
-}
 
 /**
  * @brief Generate a unique (uninterned) symbol with the default "G" prefix.
@@ -67,20 +64,14 @@ eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
         return null_val;
     }
 
-    uint64_t counter = g_gensym_counter.fetch_add(1, std::memory_order_relaxed);
-
-    // Format: <prefix><counter>
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer), "%s%llu",
-             prefix ? prefix : "G",
-             (unsigned long long)counter);
-
-    // Allocate symbol string with a proper object header so ESHKOL_GET_HEADER
-    // can identify the subtype. A headerless allocation would make
-    // ESHKOL_GET_HEADER read arena bookkeeping bytes as the header, producing
-    // garbage subtype values and occasional crashes in introspection code.
+    char suffix[21];
+    eshkol_gensym_suffix(suffix);
+    if (!prefix) prefix = "G";
+    size_t prefix_len = strlen(prefix);
+    size_t suffix_len = strlen(suffix);
+    if (prefix_len >= SIZE_MAX - suffix_len) return {};
+    size_t len = prefix_len + suffix_len;
     arena_t* a = static_cast<arena_t*>(arena);
-    size_t len = strlen(buffer);
     char* sym_str = static_cast<char*>(
         arena_allocate_symbol_with_header(a, len)
     );
@@ -94,7 +85,8 @@ eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
         return result;
     }
 
-    memcpy(sym_str, buffer, len + 1);
+    memcpy(sym_str, prefix, prefix_len);
+    memcpy(sym_str + prefix_len, suffix, suffix_len + 1);
 
     // Gensym produces fresh (uninterned) symbols in the consolidated encoding
     // so header.subtype == HEAP_SUBTYPE_SYMBOL is authoritative for readers.

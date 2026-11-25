@@ -18,17 +18,11 @@ goals:
     reason: sync HTTP shipped 2026-05-06; streaming is still stubbed. Without it the agent must batch-poll, which breaks the conversational UX
     tags: [http, streaming, agent]
 
-  - id: or-null-miscompile-root-cause
-    priority: high
-    goal: Find and fix the codegen path that replaces a function body containing `(or X null-literal)` with "return null"
-    reason: real agent code (services/mcp-client.esk, services/mcp-transport.esk) hit this; the workaround `(if X X '())` is everywhere and needs cleanup. Repro and notes in memory/project_229_or_null_repro.md
-    tags: [codegen, agent, regression]
-
-  - id: repl-no-return-verifier
-    priority: high
-    goal: Fix REPL/JIT %entry getting setup IR appended after `(raise …)` emits unreachable
-    reason: AOT path is fixed (#244 partial). REPL still trips "Terminator found in middle of basic block %entry" which forces agent tests onto the slower compile-link-run harness. Trace plan in memory/project_244_partial_fix.md
-    tags: [codegen, repl, jit]
+  - id: or-null-workaround-cleanup-agent
+    priority: low
+    goal: Replace the remaining `(if X X '())` spellings in the eshkol-agent sources with `(or X '())`
+    reason: "`(or X '())` answers the R7RS value on JIT, AOT and VM (and_or_operand_kinds_{jit,aot,vm}). This tree's lib/ and stdlib carry no Eshkol-level instance; the 20 textual matches in lib/core/compiler/mix/source.esk are quoted Mix-language program data whose `if` is that language's own and stay as they are. The instances left are in the agent repository: lib/services/mcp-client.esk (2), lib/services/messages.esk (2), lib/services/mcp-transport.esk (1); they change there once it builds against a compiler carrying these tests."
+    tags: [agent, cleanup]
 
   - id: parallel-test-fork-exhaustion
     priority: medium

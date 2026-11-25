@@ -32,7 +32,7 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 
 | Flag | Alias | Meaning |
 |------|-------|---------|
-| `--output FILE` | `-o` | Output path (executable, object, `.so`, `.wasm`, per mode) |
+| `--output FILE` | `-o` | Output path (executable, object, `.so`, `.wasm`, per mode). A native executable or shared library is linked beside `FILE` and moved onto it in one step, so `FILE` is always a whole artifact; if `FILE` is a symbolic link, the link is replaced and its target is left as it was. Two compiles of the same `FILE` take turns: the second waits up to 30 s (`ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS`) |
 | `--compile-only` | `-c` | Compile to an intermediate object file (no link) |
 | `--emit-object` | | Alias for `--compile-only` |
 | `--shared-lib` | `-s` | Compile to a shared library |
@@ -59,19 +59,35 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 | `--dump-ast` | `-a` | Dump the AST to a `.ast` file |
 | `--dump-ir` | `-i` | Dump LLVM IR to a `.ll` file |
 
+On macOS, linked `-g` executables and shared libraries include an adjacent
+`<output>.dSYM` bundle. Keep it with the matching binary for LLDB; intermediate
+linker objects are removed. The compiler runs `dsymutil` from the selected C++
+toolchain or `PATH`; `ESHKOL_DSYMUTIL` selects an explicit tool. A missing or
+failing tool, or a bundle whose UUID differs from the binary, fails the build.
+Object-only `-g -c` output keeps DWARF in the requested object file.
+
 ### Type checking
 
 | Flag | Meaning |
 |------|---------|
-| `--strict-types` | Type errors become fatal (default: gradual — warnings only) |
-| `--unsafe` | Skip all type checks |
+| `--types=gradual` | The default: nominal type mismatches are warnings and compilation continues |
+| `--types=strict` | Every type error is fatal |
+| `--strict-types` | Same as `--types=strict` |
+| `--max-source-bytes=N` | Largest source text accepted (default `64M`; `0` removes the cap). Also `ESHKOL_MAX_SOURCE_BYTES`. Nesting **depth** has no limit. |
+| `--max-pass-depth=N` | Levels of **code** nesting the compiler descends (default `1000`; `0` removes the count). Also `ESHKOL_MAX_PASS_DEPTH`. Quoted data is unaffected. |
+| `--unsafe` | Skip static type and ownership checks for a legacy program. Runtime ascription checks still apply. |
 
 "Fatal" is enforced, not advisory: under `--strict-types` a program with type
 errors stops before code generation, the command exits **nonzero**, and **no
 output binary is written**. In the default gradual mode the same programs report
 `[WARN] Type warning: …` and compile as before.
 
-**Linearity violations are the exception, and are fatal in both modes.** Gradual
+**Failed dependent-type obligations are fatal in both modes** (ADR 0042): an
+index that is not definitionally equal to the one a type requires, a universe
+inconsistency, an ill-formed Pi, Sigma or family type. Only a program that writes a dependent type can incur one. The bytecode
+VM refuses the same programs.
+
+**Linearity violations are likewise fatal in both modes.** Gradual
 typing governs how much the checker is required to INFER; it is not a licence to
 compile a program the checker has PROVEN ill-formed. Cloning or dropping a value
 of a linear type (`Qubit`) stops code generation, exits nonzero and writes no
@@ -108,6 +124,28 @@ shapes are enforced and which are not yet.
 `embedded-vm`. See [`eshkol-vm-standalone`](eshkol-vm-standalone.md) for the ESKB
 format and the VM profiles, and the [platform target matrix](../../platform/TARGET_SUPPORT_MATRIX.md)
 for what each profile guarantees.
+
+**Bare-metal targets.** With a freestanding profile, `--target` also accepts
+the bare-metal spellings below. Each resolves to one machine description (CPU,
+feature set, ABI, float ABI, code model) that the data layout, instruction
+selection, ELF flags and ARM build attributes all follow; the object is
+emitted with static relocations and per-function sections for a link script.
+
+| `--target` | Machine | ABI |
+|---|---|---|
+| `thumbv7em-none-eabi` | Cortex-M4, ARMv7E-M Thumb-2, no FPU | AAPCS, soft float |
+| `thumbv7em-none-eabihf` | Cortex-M4F, FPv4-SP-D16 | AAPCS-VFP, hard float |
+| `aarch64-unknown-none` (also `-none-elf`, `aarch64-none-elf`) | ARMv8-A | AAPCS64 |
+| `riscv32imac-unknown-none-elf` (also `riscv32-unknown-none-elf`) | RV32IMAC | ilp32 |
+| `riscv64gc-unknown-none-elf` (also `riscv64-unknown-none-elf`) | RV64GC, medany | lp64d |
+| `riscv64imac-unknown-none-elf` | RV64IMAC, medany | lp64 |
+
+In freestanding profiles integer operators (`+ - * quotient remainder modulo`,
+comparisons, `bitwise-*`, shifts) compile to native modular machine arithmetic
+at the width of their machine-typed operands, and an `:export-symbol` function
+whose parameters and return are machine-typed is exported with the platform C
+ABI. The [embedded targets guide](../../platform/EMBEDDED_TARGETS.md) covers the
+freestanding runtime subset, the reference boards and running images under QEMU.
 
 ### Info
 

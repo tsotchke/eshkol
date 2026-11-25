@@ -1,0 +1,5 @@
+;; The helper closes its parameter; the caller closes it again.
+(define (finish out) (close-port out))
+(define out (open-output-file "strict-fn-double.txt"))
+(finish out)
+(close-port out)

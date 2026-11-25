@@ -1,0 +1,15 @@
+{
+  "completed_utc": "2026-10-30T22:34:10.322025+00:00",
+  "container_image": "sha256:549e945a2634f548c2fcb31035cb0a055974a45f9ea70db5b7cf5e62919f184c",
+  "native_returncode": 0,
+  "sources_unchanged": true,
+  "receipt_sha256": "93feff66273eed1161005873f73b4efa9fe0a4ce1dd95f8d7a111f6f43ffed85",
+  "tested_source_sha256": {
+    "lib/core/ml/sparse_solve.esk": "156a7acec86b968c587bcab2a4ff6a80b2370e8893abed64dcf76aa2723022af",
+    "tests/stdlib/sparse_solve_test.esk": "e60640ef91a7a52b0a52705264bb712b44e77fe6c57269b1e1c96c253c877095",
+    "repro/sparse-solves/gate.py": "33424b9c432bcc9338a2412af53c303ab94ed69ebbc8ed01ea9bac429f7805b2",
+    "repro/sparse-solves/oracle.py": "d60056dbdd41626011840273e307b777e8fbf9aa38678d84df7277c0b08bf0be",
+    "repro/sparse-solves/gate_support.py": "8d15b80d4cdd379d6ade724427f5316dec049c1afc2c615cf1d054aac5ca5c43"
+  },
+  "qualification_scope": "Published Linux x64 runtime, feature-branch library sources, independent replay; no compiler rebuild or full upstream CI"
+}

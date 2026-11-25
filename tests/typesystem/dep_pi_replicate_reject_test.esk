@@ -1,0 +1,12 @@
+;; Dependent function types (ADR-0042): (replicate 3 1.5) has type
+;; (vector real 3), so declaring it a (vector real 4) is refused.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: [ERROR] Type error: definition of 'w': expected (vector Float64 4), got (vector Float64 3)
+
+(define (replicate (n : integer) (x : real)) : (vector real n)
+  (make-vector n x))
+
+(: w (vector real 4))
+(define w (replicate 3 1.5))
+(display w)

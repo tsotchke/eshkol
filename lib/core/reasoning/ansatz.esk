@@ -1,0 +1,154 @@
+;;; core.reasoning.ansatz -- incremental search over ansatz families on the
+;;; DBSP spine.
+;;;
+;;; Usage: (require core.reasoning.ansatz)
+;;;
+;;;   ;; power-law ansatz y = x^a for x^2 y'' - 2 y = 0
+;;;   (define s (make-ansatz-search))
+;;;   (ansatz-add-candidates! s (ansatz-grid '((-3 -2 -1 0 1 2 3))))
+;;;   (ansatz-add-constraint! s 'ode
+;;;     (lambda (row) (let ((a (car row))) (= (- (* a (- a 1)) 2) 0))))
+;;;   (ansatz-survivors s)                  ;; => ((-1) (2))
+;;;
+;;; An ansatz family is a finite set of candidate rows (parameter tuples).
+;;; A search is a standing query: the survivors are the candidates that no
+;;; active constraint rejects. The answer is maintained by one DBSP circuit
+;;; (core.dbsp.circuit): candidates and recorded rejections are its two
+;;; input relations, and survivors = distinct(candidates) - distinct(rejected
+;;; rows). Every operation is a signed change to those inputs, and the
+;;; circuit reports the change of the survivor set.
+;;;
+;;; The work saved is in constraint evaluation, the expensive step when a
+;;; constraint is an exact residual check:
+;;;   * adding a constraint evaluates it on the current survivors only;
+;;;   * adding candidates evaluates the active constraints on the new rows
+;;;     only, stopping at the first rejection;
+;;;   * retracting a constraint withdraws its rejections and evaluates the
+;;;     remaining constraints only on the rows that lost their last
+;;;     recorded rejection, reusing every verdict already computed.
+;;; `ansatz-work` reports the number of constraint evaluations next to the
+;;; circuit's own work counters.
+;;;
+;;; Survivors can be published into a consciousness-engine knowledge base
+;;; (`ansatz->kb!`) so rules over them run in core.reasoning.prolog or
+;;; core.reasoning.datalog.
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051.
+
+(require stdlib)
+(require core.dbsp)
+(require core.dbsp.circuit)
+
+(provide make-ansatz-search ansatz-search? ansatz-grid ansatz-add-candidates!
+         ansatz-add-constraint! ansatz-retract-constraint! ansatz-constraints
+         ansatz-survivors ansatz-candidates ansatz-rejections ansatz-work ansatz->kb!)
+
+;; search: #(ansatz circuit candidates constraints verdicts rejections counters next-id)
+;;   candidates: hash row -> #t      constraints: list of #(id name pred) in order
+;;   verdicts:   hash (id . row) -> #t (accepts) / 'reject
+;;   rejections: hash row -> list of constraint ids recorded as rejecting it
+;;   counters:   #(evaluations)
+(define (make-ansatz-search)
+  (vector 'ansatz
+          (make-dbsp-circuit '(cand rej)
+                             (list (list 'distinct 'cand-set 'cand)
+                                   (list 'map 'rej-rows 'rej (lambda (x) (cdr x)))
+                                   (list 'distinct 'rej-set 'rej-rows)
+                                   (list 'difference 'survivors 'cand-set 'rej-set))
+                             'survivors)
+          (make-hash-table) '() (make-hash-table) (make-hash-table) (vector 0) 0))
+(define (ansatz-search? s) (and (vector? s) (= (vector-length s) 8) (eq? (vector-ref s 0) 'ansatz)))
+(define (an-check s) (if (not (ansatz-search? s)) (error "ansatz: expected a search made by make-ansatz-search")))
+
+;; Cartesian product of parameter value lists, as rows.
+(define (ansatz-grid domains)
+  (if (null? domains) (list '())
+      (let ((rest (ansatz-grid (cdr domains))))
+        (apply append (map (lambda (x) (map (lambda (r) (cons x r)) rest)) (car domains))))))
+
+;; Evaluate constraint C on ROW, reusing a recorded verdict.
+(define (an-verdict s c row)
+  (let* ((key (cons (vector-ref c 0) row)) (v (hash-ref (vector-ref s 4) key #f)))
+    (if v (eq? v #t)
+        (let ((ok (if ((vector-ref c 2) row) #t #f)))
+          (vector-set! (vector-ref s 6) 0 (+ 1 (vector-ref (vector-ref s 6) 0)))
+          (hash-set! (vector-ref s 4) key (if ok #t 'reject))
+          ok))))
+
+;; First active constraint (in order) rejecting ROW, or #f.
+(define (an-first-rejecting s row)
+  (let loop ((cs (vector-ref s 3)))
+    (cond ((null? cs) #f) ((an-verdict s (car cs) row) (loop (cdr cs))) (else (car cs)))))
+
+(define (an-record-rejection! s c row)
+  (let ((rj (vector-ref s 5)))
+    (hash-set! rj row (cons (vector-ref c 0) (hash-ref rj row '())))
+    (list 1 (cons (vector-ref c 0) row))))
+
+(define (an-step! s cand-pairs rej-pairs)
+  (let ((r (dbsp-circuit-step (vector-ref s 1) (list (list 'cand (zset-from-weighted cand-pairs))
+                                                     (list 'rej (zset-from-weighted rej-pairs))))))
+    (vector-set! s 1 (car r))
+    (cdr r)))
+
+(define (ansatz-add-candidates! s rows)
+  (an-check s)
+  (let loop ((rows rows) (cand '()) (rej '()))
+    (if (null? rows) (an-step! s (reverse cand) (reverse rej))
+        (let ((row (car rows)))
+          (if (hash-ref (vector-ref s 2) row #f) (loop (cdr rows) cand rej)
+              (begin
+                (hash-set! (vector-ref s 2) row #t)
+                (let ((c (an-first-rejecting s row)))
+                  (loop (cdr rows) (cons (list 1 row) cand)
+                        (if c (cons (an-record-rejection! s c row) rej) rej)))))))))
+
+;; Returns (constraint-id . survivor-delta).
+(define (ansatz-add-constraint! s name pred)
+  (an-check s)
+  (if (not (procedure? pred)) (error "ansatz-add-constraint!: a constraint is a predicate on a row"))
+  (let* ((id (vector-ref s 7)) (c (vector id name pred)))
+    (vector-set! s 7 (+ id 1))
+    (vector-set! s 3 (append (vector-ref s 3) (list c)))
+    (let ((rej (let loop ((rows (ansatz-survivors s)) (out '()))
+                 (if (null? rows) (reverse out)
+                     (loop (cdr rows) (if (an-verdict s c (car rows)) out (cons (an-record-rejection! s c (car rows)) out)))))))
+      (cons id (an-step! s '() rej)))))
+
+(define (ansatz-retract-constraint! s id)
+  (an-check s)
+  (let ((c (let find ((cs (vector-ref s 3))) (cond ((null? cs) #f) ((= (vector-ref (car cs) 0) id) (car cs)) (else (find (cdr cs)))))))
+    (if (not c) (error "ansatz-retract-constraint!: no active constraint with this id" id))
+    (vector-set! s 3 (filter (lambda (x) (not (eq? x c))) (vector-ref s 3)))
+    (let* ((rj (vector-ref s 5))
+           (withdrawn '()) (added '()))
+      (for-each (lambda (row)
+                  (let ((ids (hash-ref rj row '())))
+                    (if (memv id ids)
+                        (let ((rest (filter (lambda (x) (not (= x id))) ids)))
+                          (set! withdrawn (cons (list -1 (cons id row)) withdrawn))
+                          (if (null? rest) (hash-remove! rj row) (hash-set! rj row rest))
+                          ;; the row lost its last recorded rejection: consult the others
+                          (if (null? rest)
+                              (let ((c2 (an-first-rejecting s row)))
+                                (if c2 (set! added (cons (an-record-rejection! s c2 row) added)))))))))
+                (hash-keys rj))
+      (an-step! s '() (append withdrawn added)))))
+
+(define (ansatz-constraints s) (an-check s) (map (lambda (c) (cons (vector-ref c 0) (vector-ref c 1))) (vector-ref s 3)))
+(define (an-sorted rows) (sort rows (lambda (a b) (string<? (zset-row-key a) (zset-row-key b)))))
+(define (ansatz-survivors s) (an-check s) (an-sorted (zset-rows (dbsp-circuit-output (vector-ref s 1)))))
+(define (ansatz-candidates s) (an-check s) (an-sorted (hash-keys (vector-ref s 2))))
+(define (ansatz-rejections s) (an-check s) (hash-count (vector-ref s 5)))
+;; ((evaluations . n) (circuit . #(visited probes trace-updates index-writes)))
+(define (ansatz-work s)
+  (an-check s)
+  (list (cons 'evaluations (vector-ref (vector-ref s 6) 0)) (cons 'circuit (dbsp-circuit-work (vector-ref s 1)))))
+
+;; Assert every survivor as the fact (pred value ...) in a make-kb base.
+(define (ansatz->kb! s kb pred)
+  (an-check s)
+  (if (not (kb? kb)) (error "ansatz->kb!: expected a knowledge base made by make-kb"))
+  (let ((rows (ansatz-survivors s)))
+    (for-each (lambda (row) (kb-assert! kb (cons pred row))) rows)
+    (length rows)))

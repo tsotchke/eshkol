@@ -1,0 +1,11 @@
+;; Every branch closes the port: if, cond, when/unless joins.
+(define in (open-input-file "strict-branches.txt"))
+(define c (peek-char in))
+(cond
+  ((eof-object? c) (close-port in) (display "empty"))
+  ((eqv? c #\#) (read-line in) (close-input-port in))
+  (else (close-port in)))
+(define out (open-output-file "strict-branches.out"))
+(when (> 2 1) (write-string "x" out))
+(unless (> 2 1) (write-string "y" out))
+(close-output-port out)

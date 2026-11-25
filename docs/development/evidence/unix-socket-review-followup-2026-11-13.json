@@ -1,0 +1,1412 @@
+{
+  "schema": 1,
+  "publication_state": "COMPLETE_REVIEWED_QUALIFICATION",
+  "ready_to_publish": true,
+  "record_created_utc": "2026-11-13T20:21:46.825140+00:00",
+  "sources": {
+    "canonical_integration": "53220efc1638c77d108ab009d4a5e6939c488c7b",
+    "control": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+    "control_definition": "Canonical integration plus only the four reviewed #925 integration changes (five files); not an unmodified base.",
+    "foundation": "b682c40c4fbb4bb0944226ff2d49b0928c1fa785",
+    "process_adapter": "d1814038877bc4fc416f588041382a34c59a83ba",
+    "socket_core": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+    "adapter_differences": {
+      "lifecycle_bytes_equal_across_foundation_process_core": [
+        "lib/core/resource_lease.c",
+        "lib/core/event_loop.c",
+        "inc/eshkol/core/resource_lease.h",
+        "lib/core/event_loop_internal.h"
+      ],
+      "runtime_handle_cpp": "Shared foundation and combined core already accept PROCESS once and have exact shared bytes e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e. The pre-dedup bceb snapshot contains only a redundant second PROCESS disjunct. Qualified d181 adopts the exact shared/core file; all other528 recorded native source hashes remain unchanged.",
+      "process_adapter_module": "PROCESS adapter source/module bytes match PROCESS/core.",
+      "strict_contracts": "Combined core adds socket contract rows to the PROCESS contract set."
+    },
+    "process_adapter_before_registry_dedup": "bceb97b2f35d7ee1711f0d0f237d74abe22583a7"
+  },
+  "builds": {
+    "control": {
+      "status": "PASS",
+      "generator": "Ninja",
+      "scope": "all configured targets"
+    },
+    "patched": {
+      "status": "PASS",
+      "generator": "Unix Makefiles",
+      "scope": "compiler/stdlib prerequisites, then all configured targets"
+    },
+    "configuration": {
+      "build_type": "Release",
+      "compiler": "Clang 22.1.8",
+      "llvm": "21.1.8",
+      "agent_ffi": true,
+      "tests": true,
+      "gpu": false,
+      "blas": false,
+      "examples": false,
+      "python_bindings": false
+    }
+  },
+  "completed": {
+    "runner_oracles": {
+      "passed": 25,
+      "scope": "Synthetic compiler/child controls; not product JIT/AOT execution. Includes ordinary JIT/AOT measured 2s->45s and 20s->110s actual timeout-argument controls."
+    },
+    "wrapper_controls": {
+      "passed": 33,
+      "scope": "Guile controlled-native wrapper checks; not Eshkol JIT/AOT qualification."
+    },
+    "foundation": {
+      "platform": "Linux x86_64 epoll",
+      "compiler": "Clang 22.1.8; LLVM21 for CMake configuration",
+      "build_type": "Release",
+      "explicit_loop_fixture_assertions_active": true,
+      "ctest": {
+        "passed": 10,
+        "failed": 0,
+        "tests": [
+          "handle_lifecycle_test",
+          "handle_c_api_test",
+          "net_clock_failure_test",
+          "net_runtime_test",
+          "tls_test_pki",
+          "tls_lease_test",
+          "net_deadline_ready_test",
+          "net_close_concurrency_test",
+          "net_lease_test",
+          "resource_explicit_loop_test"
+        ]
+      },
+      "standalone": {
+        "normal": "PASS",
+        "ASan_UBSan_leak": "PASS"
+      },
+      "regression_controls": [
+        "expired ready deadline causes zero watch additions and zero loop polls",
+        "foreign existing watch unchanged on expired wait",
+        "sticky cancellation takes precedence over expired budget",
+        "empty unbounded poll returns after last managed owner completes while terminal ticket remains held",
+        "new adoption on previously emptied loop still wakes for foreign close",
+        "legacy readiness deadline rule from current base passes unchanged"
+      ],
+      "source_sha256": {
+        "inc/eshkol/core/resource_lease.h": "2615325bc66d6d66d11f67eaba7cf264409d09994617f7547e180f677123f688",
+        "inc/eshkol/core/event_loop.h": "bbda399b29e6212d2c4d09504b0a8ad8179c798df01f5cddfa4eb7fcbad75c2b",
+        "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+        "lib/core/resource_handle_internal.h": "654931e32df93f4b151bd70e3eefd2369625884f195c9b4db4852825ce2045ce",
+        "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+        "lib/core/event_loop_internal.h": "eaa4cd34fb51d55ad3006cf14a77454db4f19c934350b765ac553f98b87845e6",
+        "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+        "lib/core/event_loop_epoll.c": "c2225a34d7d1c7b8ea1526e1d8a675d07a303c9b481bd5bcddd7e7f4209a6602",
+        "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+        "tests/network/net_deadline_ready_test.c": "54895d58ff74ef18e13554ff5020490fda7d44b628fea1fbe392940096acf607"
+      },
+      "original_result_sha256": "e7595988d49894b1cabf58e2e6259de9bb341ef6aca39e64b766a8edffb689e3",
+      "original_log_sha256": {
+        "normal.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69",
+        "sanitized.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69",
+        "driver.log": "5b1d01f07b130c0ef908c9c384be8f8e942a7ca1f2585c79976c0dde19d449c4",
+        "cmake-build.log": "1c0585e4744ac9e77a1403a2ba89f43a6073df4bf3d55b00f1ba1bc4f07ef1f9",
+        "ctest.log": "f88c54e2816897bc2cca9646e61c842bbc2c4acb4fb51aae1ce881d2df733e60",
+        "junit.xml": "0bbb7d174f8b31b9e8cc5c171bea6feb8328e7cf5e07d94e7c75009dd0765490"
+      }
+    },
+    "combined_native": [
+      {
+        "mode": "native",
+        "status": "PASS",
+        "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+        "commands_passed": 39,
+        "original_receipt_sha256": "2a9c07aa0d155bfeeee863c9933ebc80a45faa29e9f3452f94b2d6d64bb1da39"
+      },
+      {
+        "mode": "sanitized",
+        "status": "PASS",
+        "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+        "commands_passed": 39,
+        "original_receipt_sha256": "3d9f52405dc187d1e520e753c97174aa800f58b534a59e5612b21a65a0dac357"
+      }
+    ],
+    "hosted_native": {
+      "run_url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710",
+      "head_sha": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+      "jobs": [
+        {
+          "name": "Linux epoll",
+          "conclusion": "success",
+          "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121490796"
+        },
+        {
+          "name": "Linux ASan and UBSan",
+          "conclusion": "success",
+          "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121491203"
+        },
+        {
+          "name": "macOS kqueue",
+          "conclusion": "success",
+          "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121491287"
+        }
+      ],
+      "receipts": [
+        {
+          "platform": "Darwin arm64",
+          "backend": "kqueue",
+          "sanitizers": [],
+          "leak_detection": false,
+          "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+          "source_sha256": {
+            "tests/agent/run_unix_socket_stream_native.sh": "088313da14f442bea9874313bf9406564d74db0b04726282e96019d3fab7dfe8",
+            ".github/workflows/unix-socket-native.yml": "b9332b9c03160e3316e3ca7cfe9da1ac4f83314fe060018590db6e15909d2920",
+            "tests/agent/unix_socket_stream_test.c": "e46b43ff6c1c014c26ab5470b776febcae90d02d137731ecd4e621444b399676",
+            "tests/agent/unix_socket_cleanup_test.c": "ccef8950d349b70dd8e7e3eb5df47d9383f022e120730926a35f136391389c30",
+            "tests/agent/unix_socket_test_directory.h": "8d0d0fd0197f228a9d79176f16b590e0941083b8ccf44e77336df964858e7010",
+            "tests/agent/unix_socket_stream_fixture_support.c": "8de74c74ccf922dcf56a012e19efd3e41bcb43ff54cd1ab821a47dc7c5b19326",
+            "tests/agent/unix_socket_stream_pending_control.c": "c271fc5a36851c39046adb4a6f1b08d2508a1a271a3eba11f52f3b11d04a3c81",
+            "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+            "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961",
+            "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+            "tests/agent/subprocess_stream_clock_test.c": "395aa0a3ae51a4f1c416966b9a4fb4a13f19cfd83f4caa7f4f51862051dd1ef2",
+            "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+            "lib/agent/c/agent_unix_socket_stream.c": "40fbd7aeb13e9687e51c5f830ae641fb5fea010a456a7849680423c8c2c1cf29",
+            "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+            "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+            "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+            "lib/core/resource_handle_internal.h": "654931e32df93f4b151bd70e3eefd2369625884f195c9b4db4852825ce2045ce",
+            "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+            "lib/core/event_loop_kqueue.c": "283b994b992f798137d3b68409d87e08e2f9df245ec0aca355e41c176eae89b8",
+            "lib/core/event_loop_internal.h": "eaa4cd34fb51d55ad3006cf14a77454db4f19c934350b765ac553f98b87845e6",
+            "inc/eshkol/core/unix_socket_stream.h": "20c74b7d2e157374ebca74cff24aa04f2b0e344652b6c30084534e3833eeaed8",
+            "inc/eshkol/core/resource_lease.h": "2615325bc66d6d66d11f67eaba7cf264409d09994617f7547e180f677123f688",
+            "inc/eshkol/core/event_loop.h": "bbda399b29e6212d2c4d09504b0a8ad8179c798df01f5cddfa4eb7fcbad75c2b",
+            "inc/eshkol/core/handle.h": "ca0defedb1988c480382f1951211df556a34a2b7b6b641039185027aabf7e9ed",
+            "inc/eshkol/core/subprocess_stream.h": "2a89d31e2ef05d809362bbe1d48f78aa4746a01cd1484d6952f915e17eab2c31"
+          },
+          "artifacts_sha256": {
+            "cleanup.o": "1198785d7f74ab742200512eaae550b35be33d27d6e22d176a0a7e61bad9dfae",
+            "common-0.o": "b238d5ea59dc012057d62f410483134095ec84484716c6d96955415f69d118f1",
+            "common-1.o": "4c02b9411c1b117d7cc74720b60f5637c885f1eb690a43b86d37c10f3a886c1b",
+            "common-2.o": "29215e3cb111aa69182e148fd49d31eec155206708776eaacdec502b7ae9e94a",
+            "common-explicit-loop": "b1af8cc42a86df152cbd9f5e7710f63e895022794b9aa8b70bfe662957d108f6",
+            "handle.o": "78c5d0bd6c651c02f5faba6d3aa90dad18ec08d1a43078339905aa81c875b861",
+            "libeshkol-socket-observation.dylib": "82948d9cd8ad1ab75a045c202d8dff865ac33d6b24aa856322a5b20cd6ff08a1",
+            "libeshkol-socket-pending-control.dylib": "77651e1a0ff95ade74acd3dcda6b7af73f6529fcacaa1823daa59c37482a12f8",
+            "runtime-0.o": "9053440f7e5336f96d969bb2c1343ef03325879d78fa74973034f4ff7fc636fc",
+            "runtime-1.o": "87a863b3c7b7173247add4091e51380c4e4e25f84f80e2eba95f36c9eed94657",
+            "runtime-2.o": "092e7d44c82d0e471ac843fa381eed9143a8727963bb3d389ca0df14c296b8f8",
+            "runtime-3.o": "ea67a34d4467b8c11295b3df93c4b9aab1744fbd94bb486f89cbc132d76a3ac5",
+            "socket-cleanup": "b327a089b305c2aa956e51198dba1cfd61b46b68f576bd4f0b1286933761ecda",
+            "socket-native": "609fd2579e5479234f6d07115234d548adc0dfe8f5010a3d5705e5a5b1a954ea",
+            "socket-native.o": "37ef315ab7b8deba17ef660ab6694860af6e5d12739da7c4e715c15aeb0f7f65"
+          },
+          "commands_passed": 37,
+          "original_receipt_sha256": "91b78bd760b0a46e4861ce9a777368b07e9a5f26c68cf273c671191bb649c850"
+        },
+        {
+          "platform": "Linux x86_64",
+          "backend": "epoll",
+          "sanitizers": [],
+          "leak_detection": false,
+          "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+          "source_sha256": {
+            "tests/agent/run_unix_socket_stream_native.sh": "088313da14f442bea9874313bf9406564d74db0b04726282e96019d3fab7dfe8",
+            ".github/workflows/unix-socket-native.yml": "b9332b9c03160e3316e3ca7cfe9da1ac4f83314fe060018590db6e15909d2920",
+            "tests/agent/unix_socket_stream_test.c": "e46b43ff6c1c014c26ab5470b776febcae90d02d137731ecd4e621444b399676",
+            "tests/agent/unix_socket_cleanup_test.c": "ccef8950d349b70dd8e7e3eb5df47d9383f022e120730926a35f136391389c30",
+            "tests/agent/unix_socket_test_directory.h": "8d0d0fd0197f228a9d79176f16b590e0941083b8ccf44e77336df964858e7010",
+            "tests/agent/unix_socket_stream_fixture_support.c": "8de74c74ccf922dcf56a012e19efd3e41bcb43ff54cd1ab821a47dc7c5b19326",
+            "tests/agent/unix_socket_stream_pending_control.c": "c271fc5a36851c39046adb4a6f1b08d2508a1a271a3eba11f52f3b11d04a3c81",
+            "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+            "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961",
+            "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+            "tests/agent/subprocess_stream_clock_test.c": "395aa0a3ae51a4f1c416966b9a4fb4a13f19cfd83f4caa7f4f51862051dd1ef2",
+            "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+            "lib/agent/c/agent_unix_socket_stream.c": "40fbd7aeb13e9687e51c5f830ae641fb5fea010a456a7849680423c8c2c1cf29",
+            "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+            "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+            "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+            "lib/core/resource_handle_internal.h": "654931e32df93f4b151bd70e3eefd2369625884f195c9b4db4852825ce2045ce",
+            "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+            "lib/core/event_loop_epoll.c": "c2225a34d7d1c7b8ea1526e1d8a675d07a303c9b481bd5bcddd7e7f4209a6602",
+            "lib/core/event_loop_internal.h": "eaa4cd34fb51d55ad3006cf14a77454db4f19c934350b765ac553f98b87845e6",
+            "inc/eshkol/core/unix_socket_stream.h": "20c74b7d2e157374ebca74cff24aa04f2b0e344652b6c30084534e3833eeaed8",
+            "inc/eshkol/core/resource_lease.h": "2615325bc66d6d66d11f67eaba7cf264409d09994617f7547e180f677123f688",
+            "inc/eshkol/core/event_loop.h": "bbda399b29e6212d2c4d09504b0a8ad8179c798df01f5cddfa4eb7fcbad75c2b",
+            "inc/eshkol/core/handle.h": "ca0defedb1988c480382f1951211df556a34a2b7b6b641039185027aabf7e9ed",
+            "inc/eshkol/core/subprocess_stream.h": "2a89d31e2ef05d809362bbe1d48f78aa4746a01cd1484d6952f915e17eab2c31",
+            "tests/agent/unix_socket_stream_regression_test.c": "2f8686f487c35bc4929955dda7827bcdd657d8db196bd9863f4b6b015cd82f40"
+          },
+          "artifacts_sha256": {
+            "cleanup.o": "55bf74a0bfa1479d09e0b013056d996f2d475336cc2aaa479cc5c27daab8e813",
+            "common-0.o": "059bd6e8b0b0b26479bf5b61b41bab09e4af67a762d5e3e2d183962a17959fec",
+            "common-1.o": "db4ecbb87cb826308b33d31f97f5ea7fbcc666042fc37bda3db8977ab18f78bf",
+            "common-2.o": "cc1a6cd15a9169be263669dd933ef4c9127b7ef8e809946a6540982af35c5784",
+            "common-explicit-loop": "e754f6feb2f26fde5e22e3f54c100653182216bcf5ea147056c0abbbeccc7c77",
+            "handle.o": "bcaf912b208abd180b5e99f11d7c01b19846d1866fd14ad3814dd9bcf74c7de4",
+            "libeshkol-socket-observation.so": "47a91d05a65c62aa74036db4091d1d9bc3259721659faf7f75ea6fb21a0a3ffa",
+            "regression.o": "e9a023b83a14651869ff826a606df1f4df65b29bf1d87c621406e9bf359f0497",
+            "runtime-0.o": "974bfd68e3d28d0efcc75e432a7ab1cf3981f8ead9d87d02d05b7e39c620cc3f",
+            "runtime-1.o": "cfc016b6a6602a7479f4ba66b4adccaf0cd967933cec42370a745b09adaa0814",
+            "runtime-2.o": "45379b83cb11986dec7d8debd119bfaf5e87671d32ac36324f3f27b9305e5f16",
+            "runtime-3.o": "b59ce90a64d538c5afaaeb1b1c3f6941a9e7bf1383f135312e96fcd9e1a74072",
+            "socket-cleanup": "fefebfda72778747387070a1f00c5f1944578cd24a2a7d5ce0fdaefd331afb08",
+            "socket-native": "2f72db15f1e3e8f3a5a73f8bb55d35c95ef48ea8a58f789f6729a11e8a84e851",
+            "socket-native.o": "19655340a5632ce22bd91bc41c610d8187a21d2d4818c7dd4de3a38d7fc39198",
+            "socket-regressions": "1060d922b5a65c1d140a2eec90872d6998daf25bb0d9386b52b1ce749fd99aa6"
+          },
+          "commands_passed": 39,
+          "original_receipt_sha256": "260bc8e30532e71b6a742003a5571761e9418a9690c9cf95c1ba3b3bc071bf7a"
+        },
+        {
+          "platform": "Linux x86_64",
+          "backend": "epoll",
+          "sanitizers": [
+            "address",
+            "undefined"
+          ],
+          "leak_detection": true,
+          "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+          "source_sha256": {
+            "tests/agent/run_unix_socket_stream_native.sh": "088313da14f442bea9874313bf9406564d74db0b04726282e96019d3fab7dfe8",
+            ".github/workflows/unix-socket-native.yml": "b9332b9c03160e3316e3ca7cfe9da1ac4f83314fe060018590db6e15909d2920",
+            "tests/agent/unix_socket_stream_test.c": "e46b43ff6c1c014c26ab5470b776febcae90d02d137731ecd4e621444b399676",
+            "tests/agent/unix_socket_cleanup_test.c": "ccef8950d349b70dd8e7e3eb5df47d9383f022e120730926a35f136391389c30",
+            "tests/agent/unix_socket_test_directory.h": "8d0d0fd0197f228a9d79176f16b590e0941083b8ccf44e77336df964858e7010",
+            "tests/agent/unix_socket_stream_fixture_support.c": "8de74c74ccf922dcf56a012e19efd3e41bcb43ff54cd1ab821a47dc7c5b19326",
+            "tests/agent/unix_socket_stream_pending_control.c": "c271fc5a36851c39046adb4a6f1b08d2508a1a271a3eba11f52f3b11d04a3c81",
+            "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+            "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961",
+            "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+            "tests/agent/subprocess_stream_clock_test.c": "395aa0a3ae51a4f1c416966b9a4fb4a13f19cfd83f4caa7f4f51862051dd1ef2",
+            "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+            "lib/agent/c/agent_unix_socket_stream.c": "40fbd7aeb13e9687e51c5f830ae641fb5fea010a456a7849680423c8c2c1cf29",
+            "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+            "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+            "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+            "lib/core/resource_handle_internal.h": "654931e32df93f4b151bd70e3eefd2369625884f195c9b4db4852825ce2045ce",
+            "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+            "lib/core/event_loop_epoll.c": "c2225a34d7d1c7b8ea1526e1d8a675d07a303c9b481bd5bcddd7e7f4209a6602",
+            "lib/core/event_loop_internal.h": "eaa4cd34fb51d55ad3006cf14a77454db4f19c934350b765ac553f98b87845e6",
+            "inc/eshkol/core/unix_socket_stream.h": "20c74b7d2e157374ebca74cff24aa04f2b0e344652b6c30084534e3833eeaed8",
+            "inc/eshkol/core/resource_lease.h": "2615325bc66d6d66d11f67eaba7cf264409d09994617f7547e180f677123f688",
+            "inc/eshkol/core/event_loop.h": "bbda399b29e6212d2c4d09504b0a8ad8179c798df01f5cddfa4eb7fcbad75c2b",
+            "inc/eshkol/core/handle.h": "ca0defedb1988c480382f1951211df556a34a2b7b6b641039185027aabf7e9ed",
+            "inc/eshkol/core/subprocess_stream.h": "2a89d31e2ef05d809362bbe1d48f78aa4746a01cd1484d6952f915e17eab2c31",
+            "tests/agent/unix_socket_stream_regression_test.c": "2f8686f487c35bc4929955dda7827bcdd657d8db196bd9863f4b6b015cd82f40"
+          },
+          "artifacts_sha256": {
+            "cleanup.o": "f8619e35e64d71430d18b4c915e9dbbfa2b65a77582f91d1d991a2454e75fc63",
+            "common-0.o": "d6981f7d3e8575ab9246fe2237eb426af286c8790e5ee1e7ba0196e94f34fd23",
+            "common-1.o": "900d39e972148984d437ba773ace884d10733b13898f9f8c2c2b8729788c1791",
+            "common-2.o": "883fed5be8d7544b8c7da3ba6cc50e86df4a209fa109d7ca884859970b9938df",
+            "common-explicit-loop": "052a14be2e96305ac222ce4a3bde9235c230adc363940e567aa3f11642ab2459",
+            "handle.o": "fa3d62236e11b1161b238d59f0ffd872f3246de8b8c263a858da3c5db0c4a0a6",
+            "libeshkol-socket-observation.so": "29f051af1dfa81cd983f366370b8150ed6f2ae3860afa385f91bedb10a12ecaa",
+            "regression.o": "fb68d91d97d6dca3d97c786e5543a17daac8acf139cb98ca3cdd215aadd7a2ac",
+            "runtime-0.o": "e7abfeac22a1aee1f208cfc5415a137173cfd8cf1a26de5b69dd1aa0116a7ec8",
+            "runtime-1.o": "27983a00e720ab03704c0529f018df4f95404f08fbc39591c55b30c534734558",
+            "runtime-2.o": "65eb50698c02c81f789162c40433d69ed00220d3093af17605edc5d23d93a9bc",
+            "runtime-3.o": "a7dae374f868b51866f86e8f4bde59f7a34c9b7f6cc384c790268932451a5292",
+            "socket-cleanup": "c5372f4ab4a4b8046d83437b9af1a13cfabec9fdd4ed6add580fb2095783ed77",
+            "socket-native": "35bdc0d16695a9629f243ab8f0707f997739cd245fe6354960ce347022b738fa",
+            "socket-native.o": "3f21316e48b27462a998a91fb3fe321934df80ae55b5c11c85f0aa8125f3c502",
+            "socket-regressions": "9ae0d2986e350198fabc14c28081d3fceb0e56db3858ee26e05ac1416d2f37ba"
+          },
+          "commands_passed": 39,
+          "original_receipt_sha256": "13f07e1bb68e657f07b589f5dbb8fd6390cc8146a5305867c54cc1672a10130e"
+        }
+      ]
+    },
+    "process_adapter": {
+      "platform": "Linux x86_64 epoll",
+      "compiler": "Clang 22.1.8",
+      "build_type": "Release",
+      "agent_ffi": false,
+      "completed_utc": "2026-11-14T02:17:31.180602+00:00",
+      "ctest": {
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "tests": [
+          "agent-subprocess-stream",
+          "agent-subprocess-stream-watch-failure",
+          "resource_explicit_loop_test",
+          "strict_resource_contract_pins"
+        ]
+      },
+      "native": {
+        "normal": "PASS",
+        "ASan_UBSan_leak": "PASS",
+        "controls": [
+          "byte preservation and bounded backpressure with more than 16 MiB on each output stream",
+          "owner-thread confinement, deadlines, immutable cancellation grace and direct-child reaping",
+          "missing capability checker denies acquisition",
+          "clock failure retains discoverable cleanup ownership",
+          "watch-removal failure retains descriptors, loop and lease until repair/retry",
+          "PROCESS/SOCKET kind/tag checks and PROCESS-only shutdown"
+        ]
+      },
+      "source_sha256": {
+        "inc/eshkol/core/subprocess_stream.h": "5d122f008cd56ba619f3d6f120a0c16269e731082cdba910bbe7ade11de4611b",
+        "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+        "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+        "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+        "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+        "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+        "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+        "tests/agent/subprocess_stream_clock_test.c": "395aa0a3ae51a4f1c416966b9a4fb4a13f19cfd83f4caa7f4f51862051dd1ef2",
+        "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+        "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961"
+      },
+      "original_result_sha256": "35f6924c6314c0994b556243ec505d9f45d143fbb25aac21cd60d9ed63018b4c",
+      "original_log_sha256": {
+        "build-scoped-targets.log": "a25ab578d0241cb4356fcdc95cb2edbcfecf3bcf5e3b11af9f2ca35755c0f6ae",
+        "ctest-four.log": "d669b1476c544cf10d8f8cd94065f794c116e662a3ee1f6a96425213687829ac",
+        "native-normal.log": "ed124ec883de128ece9372c8351bc22517a4301bee103fccc3383f7a2b471828",
+        "native-sanitized.log": "71ccdd25c0f0b600fdbab632e86ca7ef31a6e3a4ee08517e533cbeaba9b30ea2",
+        "ctest-four.xml": "d8cfc3f730fc623550eeffc28fc43cdcf30a239fd18719365270da951497013c"
+      }
+    },
+    "public_process_cli": {
+      "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+      "status": "PASS",
+      "agent_ffi": true,
+      "command": [
+        "python3.14",
+        "<source>/scripts/test_subprocess_stream_public.py",
+        "--runner",
+        "<build>/eshkol-run",
+        "--child",
+        "<build>/eshkol-subprocess-stream-test",
+        "--source",
+        "<source>",
+        "--build-dir",
+        "<build>"
+      ],
+      "support_library_argument": false,
+      "production_archive": "libeshkol-agent-ffi.a (whole-archive linked into runner)",
+      "public_checks": {
+        "jit": 23,
+        "aot": 23
+      },
+      "large_stream_bytes": {
+        "stdout": 17825829,
+        "stderr": 17825829
+      },
+      "reentry": {
+        "jit": "PASS",
+        "aot": "PASS"
+      },
+      "standalone_vm_bridge": "Explicit unsupported rejection passed",
+      "original_captured_public_stdout_sha256": "2ed50d3d6cfaa25a5f2ce266a2dc005e57179c1e7d9bf7bad770e000db5c09b2",
+      "original_captured_evidence_sha256": "ace41d45d30dab88850d4d6c455b3c31a4099ce18f830d4adfb5404593fa834b",
+      "scope": "Combined frozen core production CLI, not a fresh own-PROCESS compiler qualification and not a staged installation."
+    },
+    "strict_resources": {
+      "compiled_profile": {
+        "pass_lines": 148,
+        "breakdown": {
+          "positive": 40,
+          "negative": 105,
+          "reject": 3
+        }
+      },
+      "profile_runtime": {
+        "pass_lines": 8,
+        "fixtures": 4,
+        "modes": [
+          "jit",
+          "aot"
+        ]
+      },
+      "handles_runtime": {
+        "pass_lines": 28,
+        "fixtures": 14,
+        "modes": [
+          "jit",
+          "aot"
+        ]
+      },
+      "public_unix_lifecycle_checks": {
+        "jit": 44,
+        "aot": 44
+      }
+    },
+    "net_tls_current_source": {
+      "passed": 23,
+      "failed": 0,
+      "tests": [
+        "net_clock_failure_test",
+        "net_close_concurrency_test",
+        "net_core_aot",
+        "net_core_jit",
+        "net_deadline_ready_test",
+        "net_lease_test",
+        "net_roundtrip_aot",
+        "net_roundtrip_jit",
+        "net_runtime_test",
+        "net_scope_continuation_aot",
+        "net_scope_continuation_jit",
+        "net_vm_refusal",
+        "tls_context_native",
+        "tls_lease_test",
+        "tls_net_core_aot",
+        "tls_net_core_jit",
+        "tls_public_fatal_aot",
+        "tls_public_fatal_jit",
+        "tls_public_python_aot",
+        "tls_public_python_jit",
+        "tls_public_scheme_aot",
+        "tls_public_scheme_jit",
+        "tls_test_pki"
+      ],
+      "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907"
+    },
+    "paired_abi_inventory": {
+      "status": "COMPLETE_SCANS_AND_SCOPED_PROPOSAL_CONTROLS",
+      "compiler_frontend": "Clang22 matched libclang/Python bindings",
+      "source_commits": {
+        "control": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+        "core": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+        "process": "bceb97b2f35d7ee1711f0d0f237d74abe22583a7"
+      },
+      "scanner_manifest_sha256": "7bb72ca2bdd60579d2ef5cfe824644923a85a9feb9cce6024a4da6698556c00d",
+      "steps": [
+        {
+          "name": "clang22-preflight",
+          "exit_code": 0,
+          "seconds": 0.114,
+          "stdout_sha256": "52740b5430a1eeea1b8269efdde39a957edbc2c55c543509e394159c10bc1d23",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "control-scan",
+          "exit_code": 0,
+          "seconds": 173.874,
+          "stdout_sha256": "46d90e71d925cdf53446fcafca61859dcf163f7b26a3132ccaab30f98ecd9724",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "core-scan",
+          "exit_code": 0,
+          "seconds": 172.577,
+          "stdout_sha256": "894f7a1d982c82ddfbe7f7b222c20a73573d4d73f50ba4e19d06315c51ecd395",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "process-proposal",
+          "exit_code": 0,
+          "seconds": 0.063,
+          "stdout_sha256": "799b5e3bec6289d19a43df2827c4ec83b37d6cd3fa3a6cb8110add00ef0ae11e",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "combined-proposal",
+          "exit_code": 0,
+          "seconds": 0.063,
+          "stdout_sha256": "a876e72ca1624deb79962c63e013b6b2eb6a3b7aabcb3df309d12bd1eabb1f5d",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ],
+      "original_result_sha256": "2e60fb4cb17f7900309cf67c717ffb56f229fd91c3caf8d676b2cbb6e88cc9dd",
+      "proposal_only": true,
+      "controls": {
+        "passed": 28,
+        "checker_sha256": "2342f09e3c42c5ac7bf8979a5e2d8c89d257a6290a68dec5efd87ad6a2203cfa",
+        "original_result_sha256": "601c0a78d2514a8e3e5c48adf1c9ce87a57eb0b7bf261df1970990b1315451cb",
+        "scope": "Constructed report-level controls with surrounding counts set to proposed baseline and own counts copied from authoritative complete core scan; plus unchanged actual full scan reports. No source mutation, scanner/compiler invocation, tracked worktree changes, commit or post. Checker import bytecode writes are disabled; a disposable cache from the initial import was removed.",
+        "minimality_review": {
+          "process": {
+            "count_additions": 4,
+            "new_conditional_entries": 3,
+            "original_values_and_metadata_preserved": true,
+            "historical_provenance_preserved": true,
+            "prior_allowlist_prefix_preserved": true,
+            "binding_hashes": {
+              "lib/agent/c/agent_subprocess_stream_binding.c": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041"
+            }
+          },
+          "core": {
+            "count_additions": 8,
+            "new_conditional_entries": 6,
+            "original_values_and_metadata_preserved": true,
+            "historical_provenance_preserved": true,
+            "prior_allowlist_prefix_preserved": true,
+            "binding_hashes": {
+              "lib/agent/c/agent_subprocess_stream_binding.c": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+              "lib/agent/c/agent_unix_socket_binding.c": "85e22a23caf8d40cfd6c57b17f95f5bff8cecedc3a09e7a52e285490c0facb08"
+            }
+          }
+        },
+        "layered_process_provenance_preserved": true,
+        "same_unrelated_violations_after_own_registration": 157,
+        "whole_report_unrelated_violations_identical": true,
+        "limit": "The existing checker matches decrease exceptions by exact class/path/from/to and nonblank reason. It does not itself prove ESHKOL_BUILD_AGENT_FFI is OFF; build/configuration provenance must support that explanation. These controls are not a full-source green result; both actual complete reports remain red for the same unrelated violations."
+      },
+      "scope_note": "The original control and proposed core COMPLETE lexical+semantic reports retain exactly the same157 unrelated violations. The18 lexical-only baseline failures are a smaller earlier view, not the complete semantic total. Registration accepts only this work's4 PROCESS or8 cumulative core class/path count additions with precise conditional semantic decreases; it is not a blanket rebaseline or full inventory pass."
+    },
+    "source_sdk_targeted_confirmation": {
+      "status": "COMPLETE",
+      "original_result_sha256": "19f166377c0d6b0a974bb3aa1886dec96aad6f7f29858212cf9cb9ff52edc4ba",
+      "raw_full_results_unchanged": true,
+      "selection_count": 103,
+      "phases": {
+        "control": {
+          "source_commit": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+          "selected": 103,
+          "selected_statuses": {
+            "passed": 101,
+            "failed": 2
+          },
+          "registered_with_fixture_prerequisites": 104,
+          "automatic_fixture_tests": [
+            {
+              "name": "sdnc_control_finetune",
+              "fixtures_setup": [
+                "sdnc_finetune_artifacts"
+              ],
+              "fixtures_cleanup": [],
+              "required_by_selected": {
+                "sdnc_finetune_artifacts": [
+                  "sdnc_finetune_surface_jit"
+                ]
+              }
+            }
+          ],
+          "total_passed": 102,
+          "total_failed": 2,
+          "skipped": 0,
+          "failed_selected_names": [
+            "types_ext_gate",
+            "ad_vm_exactness_gate"
+          ],
+          "residual_sdk_candidates": [],
+          "environment": {
+            "ESHKOL_PATH": "<phase-source>/lib",
+            "ESHKOL_LIB_DIR": "UNSET",
+            "LD_LIBRARY_PATH": "<llvm-root>/lib[:existing]",
+            "OMP_NUM_THREADS": "2"
+          },
+          "log_sha256": "b41979f9a4c35935bef4bfd75f3beb4b6ae16c6b6cc11afe5903993378c8357d",
+          "junit_sha256": "400b03c8e9827fb8106223c66e93be03f6d4f7aa14349e2746d5458fd620a4d2",
+          "ctest_exit_code": null,
+          "ctest_exit_code_note": "Reused completed control XML/log from the interrupted accounting controller; the process return code was not persisted. Outcome counts are read from its unchanged104-case JUnit, not an invented return status."
+        },
+        "patched": {
+          "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+          "selected": 103,
+          "selected_statuses": {
+            "passed": 101,
+            "failed": 2
+          },
+          "registered_with_fixture_prerequisites": 104,
+          "automatic_fixture_tests": [
+            {
+              "name": "sdnc_control_finetune",
+              "fixtures_setup": [
+                "sdnc_finetune_artifacts"
+              ],
+              "fixtures_cleanup": [],
+              "required_by_selected": {
+                "sdnc_finetune_artifacts": [
+                  "sdnc_finetune_surface_jit"
+                ]
+              }
+            }
+          ],
+          "total_passed": 102,
+          "total_failed": 2,
+          "skipped": 0,
+          "failed_selected_names": [
+            "types_ext_gate",
+            "ad_vm_exactness_gate"
+          ],
+          "residual_sdk_candidates": [],
+          "environment": {
+            "ESHKOL_PATH": "<phase-source>/lib",
+            "ESHKOL_LIB_DIR": "UNSET",
+            "LD_LIBRARY_PATH": "<llvm-root>/lib[:existing]",
+            "OMP_NUM_THREADS": "2"
+          },
+          "log_sha256": "0a42b725f183f2c404e60483d8092e6889d10cc29dde67e92dfc10ad65e3ee25",
+          "junit_sha256": "2e1ea89423cb047511da9a728abc40200b817263ec710fe3ff75013c7ba117af",
+          "ctest_exit_code": 8
+        }
+      },
+      "residual_actual_failure_causes": {
+        "types_ext_gate": "Record type-number/symbol mismatch and session pred arity errors remain after SDK resolution.",
+        "ad_vm_exactness_gate": "VM divergence/curl outputs are inexact floating values where exact integer output is required."
+      }
+    },
+    "pyyaml_targeted_confirmation": {
+      "status": "COMPLETE",
+      "selected": [
+        "test_release_invariant_contracts",
+        "test_release_automation_workflow",
+        "test_v1_3_release_evidence_recipe",
+        "no_silent_wrong_gate",
+        "no_silent_wrong_gate_selftest",
+        "ledger_integrity_gate",
+        "ledger_integrity_gate_selftest",
+        "oracle_schema_gate",
+        "oracle_schema_gate_selftest",
+        "required_context_consistency_gate",
+        "required_context_consistency_gate_selftest"
+      ],
+      "dependency": "private PyYAML6.0.3; no SDK-root override",
+      "original_result_sha256": "767908dc32e735c79edbbbf6575927c12358f7a5b8d158116c835f6b9331244d",
+      "phases": {
+        "control": {
+          "source_commit": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+          "exit_code": 8,
+          "seconds": 6.72,
+          "statuses": {
+            "test_release_invariant_contracts": "passed",
+            "test_release_automation_workflow": "passed",
+            "test_v1_3_release_evidence_recipe": "failed",
+            "no_silent_wrong_gate": "passed",
+            "no_silent_wrong_gate_selftest": "passed",
+            "ledger_integrity_gate": "passed",
+            "ledger_integrity_gate_selftest": "passed",
+            "oracle_schema_gate": "passed",
+            "oracle_schema_gate_selftest": "passed",
+            "required_context_consistency_gate": "passed",
+            "required_context_consistency_gate_selftest": "passed"
+          },
+          "log_sha256": "3b3f7803dc928a984692de1e682ed7e83a7310534b612540173c1a3e01518cba",
+          "xml_sha256": "5557f27c227aad9dff4d11c33b5c92f0b0e664bdabc533c1e5e3e3c750f017e9"
+        },
+        "patched": {
+          "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+          "exit_code": 8,
+          "seconds": 6.72,
+          "statuses": {
+            "test_release_invariant_contracts": "passed",
+            "test_release_automation_workflow": "passed",
+            "test_v1_3_release_evidence_recipe": "failed",
+            "no_silent_wrong_gate": "passed",
+            "no_silent_wrong_gate_selftest": "passed",
+            "ledger_integrity_gate": "passed",
+            "ledger_integrity_gate_selftest": "passed",
+            "oracle_schema_gate": "passed",
+            "oracle_schema_gate_selftest": "passed",
+            "required_context_consistency_gate": "passed",
+            "required_context_consistency_gate_selftest": "passed"
+          },
+          "log_sha256": "232c6a86745aa31d2f8fad06f9e2f5d591a5947f3cda0c9db3c76afa867b60fc",
+          "xml_sha256": "4717c63da051a2561a084fba130a67002786146dd82ca4ef1a71bf1634154ddf"
+        }
+      },
+      "scope": "Private pinned PyYAML6.0.3 only; no source SDK-root override or system package installation. Raw full-suite YAML failures are retained.",
+      "retained_initial_failure_cause": "test_v1_3_release_evidence_recipe overwrites PYTHONPATH with source/scripts in its child, masking the parent-only private PyYAML dependency. Both initial CTest reruns remain10PASS/1FAIL.",
+      "additional_child_dependency_confirmation": {
+        "status": "PASS",
+        "original_result_sha256": "c3ad10af565d1f25714a3e5717cf137d73461c3d4b0880fca4dbf249865b2e09",
+        "interpreter": "Private venv of configured Python 3.14.6, verified PyYAML 6.0.3 in its site-packages",
+        "scope": "Exact remaining registered Python test script executed directly with the private interpreter; not a CTest rerun. All19 unit cases passed in each phase. No source/test edits or system installation.",
+        "phases": {
+          "control": {
+            "source_commit": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+            "exit_code": 0,
+            "seconds": 4.466,
+            "log_sha256": "5ea545ea6f8d674d6bf4f1fba2ec64cbf4e1bee83334f1cea6f32f5a883014de",
+            "all19_ran": true,
+            "unittest_ok": true
+          },
+          "patched": {
+            "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+            "exit_code": 0,
+            "seconds": 4.466,
+            "log_sha256": "24aeb96dadaac2d2b1a97d8d600bc4339e844ae9171f314618cd70ebbd51485a",
+            "all19_ran": true,
+            "unittest_ok": true
+          }
+        }
+      }
+    },
+    "final_amendment_checks": {
+      "status": "PASS_SCOPED_AMENDMENT_REVIEW",
+      "qualified_runtime_source": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+      "production_source_difference": "Only the exact stale JIT comment replacement; all other runtime/build/test source bytes unchanged.",
+      "strict_resource_contract_pins": "PASS",
+      "lexical_inventory_gate": "FAIL: exactly the same18 unrelated file/class violation headings as the original control, no binding violations.",
+      "retained_lexical_violation_headings": [
+        "A_macro_api: lib/core/runtime_list_helpers.cpp  baseline 3, now 4  (count above baseline)",
+        "A_macro_api: lib/core/runtime_regions_evacuation.cpp  baseline 1, now 2  (count above baseline)",
+        "B_header_type: lib/frontend/compiler_pass_values.h  baseline 0, now 1  (file not in baseline)",
+        "B_header_type: tests/core/dbsp_resident_owner_test.cpp  baseline 0, now 1  (file not in baseline)",
+        "E_alloc_with_header: lib/core/runtime_autodiff.cpp  baseline 6, now 11  (count above baseline)",
+        "E_alloc_with_header: lib/core/runtime_list_helpers.cpp  baseline 7, now 8  (count above baseline)",
+        "E_alloc_with_header: lib/core/runtime_taylor.c  baseline 8, now 9  (count above baseline)",
+        "E_alloc_with_header: lib/frontend/compiler_pass_values.h  baseline 0, now 1  (file not in baseline)",
+        "E_alloc_with_header: tests/core/dbsp_resident_owner_test.cpp  baseline 0, now 4  (file not in baseline)",
+        "E_alloc_with_header: tests/core/string_to_list_runtime_test.cpp  baseline 0, now 1  (file not in baseline)",
+        "F_parallel_header_decl: lib/backend/vm_native.c  baseline 0, now 1  (file not in baseline)",
+        "G_header_field_write: lib/core/runtime_regions_evacuation.cpp  baseline 4, now 5  (count above baseline)",
+        "G_header_field_write: lib/frontend/compiler_pass_values.h  baseline 0, now 2  (file not in baseline)",
+        "H_wasm_glue: scripts/wasm_exact_runtime.fragment.js  baseline 22, now 28  (count above baseline)",
+        "H_wasm_glue: site/static/eshkol-runtime.js  baseline 39, now 45  (count above baseline)",
+        "H_wasm_glue: tests/toolchain/wasm_closure_runtime_test.js  baseline 0, now 2  (file not in baseline)",
+        "H_wasm_glue: tests/toolchain/wasm_exact_runtime_test.js  baseline 7, now 15  (count above baseline)",
+        "H_wasm_glue: web/eshkol-repl.js  baseline 39, now 45  (count above baseline)"
+      ],
+      "baseline_metadata_sha256": {
+        "abi-header-baseline.json": "1182565c25c977154f80d1f35a8363dbb6d1805ea6e1b942267642236991780d",
+        "abi-header-ratchet-allowlist.json": "3f4c1b38b7c34af266bb427a4e64cca6c599d562e6985b302005fb0643c3c2d4"
+      },
+      "actual_files_equal_reviewed_proposal": true,
+      "log_sha256": "fe2ae7a58800bbf9d640e501b9ebd47d7780870fd6888e1a631d81f889e65f85",
+      "junit_sha256": "e15afe6488eca66c137adf2aee68197aa720bc8e587c32b862556c9ccfe6a51a",
+      "limit": "A passing pin check and unchanged baseline inventory failures are not a full-source inventory or repository pass.",
+      "original_receipt_sha256": "19e02b794ed1438bd59320a00335692965b6e4b8466cfa48d788625584df45bb"
+    }
+  },
+  "full_comparison": {
+    "status": "COMPLETE_RAW_RESULTS_RETAINED",
+    "logical_cpus": 16,
+    "parallelism": 3,
+    "sequential_phases": true,
+    "environment": {
+      "OMP_NUM_THREADS": "2",
+      "LD_LIBRARY_PATH": "<llvm-root>/lib"
+    },
+    "control": {
+      "registered_inventory": 1373,
+      "total": 1373,
+      "passed": 1239,
+      "failed": 133,
+      "skipped": 1,
+      "failures": [
+        "abi_header_inventory_ratchet",
+        "abi_header_inventory_selftest",
+        "abi_header_inventory_semantic_ratchet",
+        "ad_capture_global_shadow_cached",
+        "ad_capture_global_shadow_uncached",
+        "ad_jacobian_counterexample_vm_eskb_smoke",
+        "ad_jacobian_counterexample_vm_source_smoke",
+        "ad_vm_exactness_gate",
+        "aot_owned_temp_cleanup",
+        "builtin_min_arity_surface_agreement",
+        "caught_condition_silent_vm",
+        "certified_enclosures_aot_smoke",
+        "checkpoint_resume_training_aot_smoke",
+        "closure_chain_enumerator_in_loop_aot_smoke",
+        "closure_chain_enumerator_in_loop_vm_smoke",
+        "closure_upvalue_capacity_overflow_gate",
+        "codegen_guard_raise_smoke",
+        "complex_carrier_math_vm",
+        "complex_exact_parts_vm",
+        "complex_negate_abs_vm",
+        "complex_nested_carrier_aot_smoke",
+        "complex_value_derivative_aot_smoke",
+        "complex_value_derivative_cached",
+        "complex_value_derivative_uncached",
+        "conditional_differentiand_aot_smoke",
+        "container_slot_store_aot_smoke",
+        "dd10_surface_test",
+        "dense_tensor_operand_boundary_aot_smoke",
+        "differentiated_values_in_list_cells_aot_smoke",
+        "division_pole_vm",
+        "embedding_operand_matrix_aot_smoke",
+        "eshkol_vm_standalone_smoke",
+        "eskm_v1_model_load_engine_parity",
+        "eskm_v1_model_load_engine_parity_selftest",
+        "exact_collection_intermediates_aot_smoke",
+        "exactness_runtime_property_aot_smoke",
+        "exit_status_regression_test",
+        "ffi_boundary_fail_open_test",
+        "fft_complex_input_aot_smoke",
+        "fft_complex_input_jit_smoke",
+        "fft_complex_input_runtime_smoke",
+        "higher_order_shadowing_aot_smoke",
+        "hodge_fermat_sweep_default_jit",
+        "inline_differentiand_loop_capture_aot_smoke",
+        "issue_551_tensor_transformer_dual_vm_smoke",
+        "kb_query_substitutions_aot_smoke",
+        "ledger_integrity_gate",
+        "ledger_integrity_gate_selftest",
+        "linear_solve_portable_vm_regression",
+        "local_recursion_through_higher_order_aot",
+        "local_recursion_through_higher_order_vm_source_smoke",
+        "logic_var_kb_query_aot_smoke",
+        "macro_definition_scope",
+        "malformed_shape_matrix_vm",
+        "named_differentiand_closure_capture_aot_smoke",
+        "named_let_shadowed_parameter_scope_vm_source_smoke",
+        "native_map_arity_protocol_aot",
+        "native_variadic_builtin_values_aot",
+        "nested_depth_matrix_aot",
+        "nested_depth_matrix_vm",
+        "nested_operator_levels_vm",
+        "nested_operator_matrix_aot_smoke",
+        "nested_operator_matrix_vm",
+        "nested_shorthand_function_vm_native_parity",
+        "nested_towers_matrix_aot_smoke",
+        "nested_towers_matrix_vm",
+        "no_silent_wrong_gate",
+        "no_silent_wrong_gate_selftest",
+        "oracle_schema_gate",
+        "oracle_schema_gate_selftest",
+        "qubit_linearity_engine_parity_gate",
+        "reassigned_callee_ad_subset_aot",
+        "reassigned_callee_hof_aot",
+        "reassigned_callee_identity_aot",
+        "refinement_types_gate",
+        "required_context_consistency_gate",
+        "required_context_consistency_gate_selftest",
+        "resource_limits_enforcement_gate",
+        "rigorous_numerics_aot_smoke",
+        "rigorous_numerics_runtime_smoke",
+        "runtime_multilist_iteration_aot_smoke",
+        "sdnc_finetune_surface_jit",
+        "site_scalar_hessian_vm",
+        "stack_overflow_diagnostic_gate",
+        "stress_time_portability",
+        "subnormal_tensor_element_aot_smoke",
+        "taylor_integral_family_aot",
+        "taylor_integral_family_vm",
+        "tensor_full_reduction_vm",
+        "tensor_integer_shaped_literal_runtime_smoke",
+        "tensor_integer_vector_literal_runtime_smoke",
+        "tensor_shape_boundaries_vm",
+        "test_release_automation_workflow",
+        "test_release_invariant_contracts",
+        "test_v1_3_release_evidence_recipe",
+        "toplevel_begin_define_vm",
+        "toplevel_begin_splice_vm",
+        "transitive_ffi_link_test",
+        "types_ext_gate",
+        "unary_numeric_builtin_carriers_vm",
+        "unspecified_value_aot_smoke",
+        "variadic_gradient_matrix_vm",
+        "vm_closure_arity_catchable_regression",
+        "vm_complex_intermediate_taylor_vm",
+        "vm_error_irritants_lifetime",
+        "vm_exact_ad_runtime_smoke",
+        "vm_exact_division_by_zero_vm",
+        "vm_frame_ceiling_exit_status",
+        "vm_frame_growth",
+        "vm_inverse_trig_orders_vm",
+        "vm_map_arity_protocol",
+        "vm_math_first_class_vm",
+        "vm_nested_holomorphic_vm",
+        "vm_no_leaked_carrier_vm",
+        "vm_parallel_ad_carrier_lifetime",
+        "vm_parallel_callback_raise",
+        "vm_parallel_callbacks_repeat50",
+        "vm_parallel_continuation_escape",
+        "vm_parallel_worker_settle_regression",
+        "vm_region_evac_level_carrier_vm",
+        "vm_variadic_builtin_values",
+        "wasm_closure_runtime_test",
+        "wasm_string_split_runtime_test",
+        "wasm_tensor_jet_runtime_test",
+        "webgpu_diff_gate",
+        "webgpu_division_parity_test",
+        "webgpu_live_test",
+        "webgpu_shared_backend_race_test",
+        "webgpu_vm_test",
+        "windows_suite_surface_test",
+        "with_region_internal_define_vm",
+        "with_region_toplevel_define_vm",
+        "workspace_resolver_test"
+      ],
+      "log_sha256": "bb038d73a509370ed7c3acbc735411d2daf8a24537f6d1e5f8ca3a7fa5ae0e53",
+      "xml_sha256": "991c8ce6bb976651b9703a5dc14d50a730fd445e178637e5d992fe8fdfeb372d",
+      "duration_seconds": 11190.45,
+      "observed_load": {
+        "logical_cpus": 16,
+        "start": [
+          3.80322265625,
+          4.1357421875,
+          3.890625
+        ],
+        "end": [
+          5.29736328125,
+          5.67138671875,
+          6.15625
+        ],
+        "sampled_min_1m": 3.80322265625,
+        "sampled_max_1m": 16.00146484375
+      },
+      "skipped_names": [
+        "sympy_exact_ad_oracle"
+      ],
+      "source_commit": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+      "ctest_exit_code": 8
+    },
+    "patched": {
+      "registered_inventory": 1432,
+      "total": 1432,
+      "passed": 1298,
+      "failed": 133,
+      "skipped": 1,
+      "failures": [
+        "abi_header_inventory_ratchet",
+        "abi_header_inventory_selftest",
+        "abi_header_inventory_semantic_ratchet",
+        "ad_capture_global_shadow_cached",
+        "ad_capture_global_shadow_uncached",
+        "ad_jacobian_counterexample_vm_eskb_smoke",
+        "ad_jacobian_counterexample_vm_source_smoke",
+        "ad_vm_exactness_gate",
+        "aot_owned_temp_cleanup",
+        "builtin_min_arity_surface_agreement",
+        "caught_condition_silent_vm",
+        "certified_enclosures_aot_smoke",
+        "checkpoint_resume_training_aot_smoke",
+        "closure_chain_enumerator_in_loop_aot_smoke",
+        "closure_chain_enumerator_in_loop_vm_smoke",
+        "closure_upvalue_capacity_overflow_gate",
+        "codegen_guard_raise_smoke",
+        "complex_carrier_math_vm",
+        "complex_exact_parts_vm",
+        "complex_negate_abs_vm",
+        "complex_nested_carrier_aot_smoke",
+        "complex_value_derivative_aot_smoke",
+        "complex_value_derivative_cached",
+        "complex_value_derivative_uncached",
+        "conditional_differentiand_aot_smoke",
+        "container_slot_store_aot_smoke",
+        "dd10_surface_test",
+        "dense_tensor_operand_boundary_aot_smoke",
+        "differentiated_values_in_list_cells_aot_smoke",
+        "division_pole_vm",
+        "embedding_operand_matrix_aot_smoke",
+        "eshkol_vm_standalone_smoke",
+        "eskm_v1_model_load_engine_parity",
+        "eskm_v1_model_load_engine_parity_selftest",
+        "exact_collection_intermediates_aot_smoke",
+        "exactness_runtime_property_aot_smoke",
+        "exit_status_regression_test",
+        "ffi_boundary_fail_open_test",
+        "fft_complex_input_aot_smoke",
+        "fft_complex_input_jit_smoke",
+        "fft_complex_input_runtime_smoke",
+        "higher_order_shadowing_aot_smoke",
+        "hodge_fermat_sweep_default_jit",
+        "inline_differentiand_loop_capture_aot_smoke",
+        "issue_551_tensor_transformer_dual_vm_smoke",
+        "kb_query_substitutions_aot_smoke",
+        "ledger_integrity_gate",
+        "ledger_integrity_gate_selftest",
+        "linear_solve_portable_vm_regression",
+        "local_recursion_through_higher_order_aot",
+        "local_recursion_through_higher_order_vm_source_smoke",
+        "logic_var_kb_query_aot_smoke",
+        "macro_definition_scope",
+        "malformed_shape_matrix_vm",
+        "named_differentiand_closure_capture_aot_smoke",
+        "named_let_shadowed_parameter_scope_vm_source_smoke",
+        "native_map_arity_protocol_aot",
+        "native_variadic_builtin_values_aot",
+        "nested_depth_matrix_aot",
+        "nested_depth_matrix_vm",
+        "nested_operator_levels_vm",
+        "nested_operator_matrix_aot_smoke",
+        "nested_operator_matrix_vm",
+        "nested_shorthand_function_vm_native_parity",
+        "nested_towers_matrix_aot_smoke",
+        "nested_towers_matrix_vm",
+        "no_silent_wrong_gate",
+        "no_silent_wrong_gate_selftest",
+        "oracle_schema_gate",
+        "oracle_schema_gate_selftest",
+        "qubit_linearity_engine_parity_gate",
+        "reassigned_callee_ad_subset_aot",
+        "reassigned_callee_hof_aot",
+        "reassigned_callee_identity_aot",
+        "refinement_types_gate",
+        "required_context_consistency_gate",
+        "required_context_consistency_gate_selftest",
+        "resource_limits_enforcement_gate",
+        "rigorous_numerics_aot_smoke",
+        "rigorous_numerics_runtime_smoke",
+        "runtime_multilist_iteration_aot_smoke",
+        "sdnc_finetune_surface_jit",
+        "site_scalar_hessian_vm",
+        "stack_overflow_diagnostic_gate",
+        "stress_time_portability",
+        "subnormal_tensor_element_aot_smoke",
+        "taylor_integral_family_aot",
+        "taylor_integral_family_vm",
+        "tensor_full_reduction_vm",
+        "tensor_integer_shaped_literal_runtime_smoke",
+        "tensor_integer_vector_literal_runtime_smoke",
+        "tensor_shape_boundaries_vm",
+        "test_release_automation_workflow",
+        "test_release_invariant_contracts",
+        "test_v1_3_release_evidence_recipe",
+        "toplevel_begin_define_vm",
+        "toplevel_begin_splice_vm",
+        "transitive_ffi_link_test",
+        "types_ext_gate",
+        "unary_numeric_builtin_carriers_vm",
+        "unspecified_value_aot_smoke",
+        "variadic_gradient_matrix_vm",
+        "vm_closure_arity_catchable_regression",
+        "vm_complex_intermediate_taylor_vm",
+        "vm_error_irritants_lifetime",
+        "vm_exact_ad_runtime_smoke",
+        "vm_exact_division_by_zero_vm",
+        "vm_frame_ceiling_exit_status",
+        "vm_frame_growth",
+        "vm_inverse_trig_orders_vm",
+        "vm_map_arity_protocol",
+        "vm_math_first_class_vm",
+        "vm_nested_holomorphic_vm",
+        "vm_no_leaked_carrier_vm",
+        "vm_parallel_ad_carrier_lifetime",
+        "vm_parallel_callback_raise",
+        "vm_parallel_callbacks_repeat50",
+        "vm_parallel_continuation_escape",
+        "vm_parallel_worker_settle_regression",
+        "vm_region_evac_level_carrier_vm",
+        "vm_variadic_builtin_values",
+        "wasm_closure_runtime_test",
+        "wasm_string_split_runtime_test",
+        "wasm_tensor_jet_runtime_test",
+        "webgpu_diff_gate",
+        "webgpu_division_parity_test",
+        "webgpu_live_test",
+        "webgpu_shared_backend_race_test",
+        "webgpu_vm_test",
+        "windows_suite_surface_test",
+        "with_region_internal_define_vm",
+        "with_region_toplevel_define_vm",
+        "workspace_resolver_test"
+      ],
+      "log_sha256": "76acabe8b560e15a7fa4620d22f2da5dd166de61ea0bc739d186a830199e3252",
+      "xml_sha256": "8f08fffb9d33d98720727ae90e79e8f166af24f858117c99bd87c3ad0ee0413b",
+      "duration_seconds": 11313.47,
+      "observed_load": {
+        "logical_cpus": 16,
+        "start": [
+          5.29736328125,
+          5.67138671875,
+          6.15625
+        ],
+        "end": [
+          3.6796875,
+          5.04541015625,
+          5.91796875
+        ],
+        "sampled_min_1m": 3.8037109375,
+        "sampled_max_1m": 24.22119140625
+      },
+      "skipped_names": [
+        "sympy_exact_ad_oracle"
+      ],
+      "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+      "ctest_exit_code": 8
+    },
+    "common_test_comparison": {
+      "new_failures": [],
+      "matched_failures": [
+        "abi_header_inventory_ratchet",
+        "abi_header_inventory_selftest",
+        "abi_header_inventory_semantic_ratchet",
+        "ad_capture_global_shadow_cached",
+        "ad_capture_global_shadow_uncached",
+        "ad_jacobian_counterexample_vm_eskb_smoke",
+        "ad_jacobian_counterexample_vm_source_smoke",
+        "ad_vm_exactness_gate",
+        "aot_owned_temp_cleanup",
+        "builtin_min_arity_surface_agreement",
+        "caught_condition_silent_vm",
+        "certified_enclosures_aot_smoke",
+        "checkpoint_resume_training_aot_smoke",
+        "closure_chain_enumerator_in_loop_aot_smoke",
+        "closure_chain_enumerator_in_loop_vm_smoke",
+        "closure_upvalue_capacity_overflow_gate",
+        "codegen_guard_raise_smoke",
+        "complex_carrier_math_vm",
+        "complex_exact_parts_vm",
+        "complex_negate_abs_vm",
+        "complex_nested_carrier_aot_smoke",
+        "complex_value_derivative_aot_smoke",
+        "complex_value_derivative_cached",
+        "complex_value_derivative_uncached",
+        "conditional_differentiand_aot_smoke",
+        "container_slot_store_aot_smoke",
+        "dd10_surface_test",
+        "dense_tensor_operand_boundary_aot_smoke",
+        "differentiated_values_in_list_cells_aot_smoke",
+        "division_pole_vm",
+        "embedding_operand_matrix_aot_smoke",
+        "eshkol_vm_standalone_smoke",
+        "eskm_v1_model_load_engine_parity",
+        "eskm_v1_model_load_engine_parity_selftest",
+        "exact_collection_intermediates_aot_smoke",
+        "exactness_runtime_property_aot_smoke",
+        "exit_status_regression_test",
+        "ffi_boundary_fail_open_test",
+        "fft_complex_input_aot_smoke",
+        "fft_complex_input_jit_smoke",
+        "fft_complex_input_runtime_smoke",
+        "higher_order_shadowing_aot_smoke",
+        "hodge_fermat_sweep_default_jit",
+        "inline_differentiand_loop_capture_aot_smoke",
+        "issue_551_tensor_transformer_dual_vm_smoke",
+        "kb_query_substitutions_aot_smoke",
+        "ledger_integrity_gate",
+        "ledger_integrity_gate_selftest",
+        "linear_solve_portable_vm_regression",
+        "local_recursion_through_higher_order_aot",
+        "local_recursion_through_higher_order_vm_source_smoke",
+        "logic_var_kb_query_aot_smoke",
+        "macro_definition_scope",
+        "malformed_shape_matrix_vm",
+        "named_differentiand_closure_capture_aot_smoke",
+        "named_let_shadowed_parameter_scope_vm_source_smoke",
+        "native_map_arity_protocol_aot",
+        "native_variadic_builtin_values_aot",
+        "nested_depth_matrix_aot",
+        "nested_depth_matrix_vm",
+        "nested_operator_levels_vm",
+        "nested_operator_matrix_aot_smoke",
+        "nested_operator_matrix_vm",
+        "nested_shorthand_function_vm_native_parity",
+        "nested_towers_matrix_aot_smoke",
+        "nested_towers_matrix_vm",
+        "no_silent_wrong_gate",
+        "no_silent_wrong_gate_selftest",
+        "oracle_schema_gate",
+        "oracle_schema_gate_selftest",
+        "qubit_linearity_engine_parity_gate",
+        "reassigned_callee_ad_subset_aot",
+        "reassigned_callee_hof_aot",
+        "reassigned_callee_identity_aot",
+        "refinement_types_gate",
+        "required_context_consistency_gate",
+        "required_context_consistency_gate_selftest",
+        "resource_limits_enforcement_gate",
+        "rigorous_numerics_aot_smoke",
+        "rigorous_numerics_runtime_smoke",
+        "runtime_multilist_iteration_aot_smoke",
+        "sdnc_finetune_surface_jit",
+        "site_scalar_hessian_vm",
+        "stack_overflow_diagnostic_gate",
+        "stress_time_portability",
+        "subnormal_tensor_element_aot_smoke",
+        "taylor_integral_family_aot",
+        "taylor_integral_family_vm",
+        "tensor_full_reduction_vm",
+        "tensor_integer_shaped_literal_runtime_smoke",
+        "tensor_integer_vector_literal_runtime_smoke",
+        "tensor_shape_boundaries_vm",
+        "test_release_automation_workflow",
+        "test_release_invariant_contracts",
+        "test_v1_3_release_evidence_recipe",
+        "toplevel_begin_define_vm",
+        "toplevel_begin_splice_vm",
+        "transitive_ffi_link_test",
+        "types_ext_gate",
+        "unary_numeric_builtin_carriers_vm",
+        "unspecified_value_aot_smoke",
+        "variadic_gradient_matrix_vm",
+        "vm_closure_arity_catchable_regression",
+        "vm_complex_intermediate_taylor_vm",
+        "vm_error_irritants_lifetime",
+        "vm_exact_ad_runtime_smoke",
+        "vm_exact_division_by_zero_vm",
+        "vm_frame_ceiling_exit_status",
+        "vm_frame_growth",
+        "vm_inverse_trig_orders_vm",
+        "vm_map_arity_protocol",
+        "vm_math_first_class_vm",
+        "vm_nested_holomorphic_vm",
+        "vm_no_leaked_carrier_vm",
+        "vm_parallel_ad_carrier_lifetime",
+        "vm_parallel_callback_raise",
+        "vm_parallel_callbacks_repeat50",
+        "vm_parallel_continuation_escape",
+        "vm_parallel_worker_settle_regression",
+        "vm_region_evac_level_carrier_vm",
+        "vm_variadic_builtin_values",
+        "wasm_closure_runtime_test",
+        "wasm_string_split_runtime_test",
+        "wasm_tensor_jet_runtime_test",
+        "webgpu_diff_gate",
+        "webgpu_division_parity_test",
+        "webgpu_live_test",
+        "webgpu_shared_backend_race_test",
+        "webgpu_vm_test",
+        "windows_suite_surface_test",
+        "with_region_internal_define_vm",
+        "with_region_toplevel_define_vm",
+        "workspace_resolver_test"
+      ],
+      "control_only_failures": [],
+      "new_test_failures": [],
+      "added_test_names": [
+        "agent-subprocess-stream",
+        "agent-subprocess-stream-public",
+        "agent-subprocess-stream-watch-failure",
+        "agent-unix-socket-cleanup",
+        "agent-unix-socket-regressions",
+        "agent-unix-stream-socket-contract",
+        "agent-unix-stream-socket-host-refusal",
+        "agent-unix-stream-socket-peer-fixture",
+        "agent-unix-stream-socket-runner-oracle",
+        "ipc-unix-borrowed_close",
+        "ipc-unix-cancellation",
+        "ipc-unix-cancellation-aot",
+        "ipc-unix-cancellation-jit",
+        "ipc-unix-capability_denial",
+        "ipc-unix-capability_denial-aot",
+        "ipc-unix-capability_denial-jit",
+        "ipc-unix-capability_revocation",
+        "ipc-unix-capability_revocation-aot",
+        "ipc-unix-capability_revocation-jit",
+        "ipc-unix-connect_accept",
+        "ipc-unix-connect_accept-aot",
+        "ipc-unix-connect_accept-jit",
+        "ipc-unix-connect_cancellation",
+        "ipc-unix-connect_cancellation-aot",
+        "ipc-unix-connect_cancellation-jit",
+        "ipc-unix-deadline_accept",
+        "ipc-unix-deadline_accept-aot",
+        "ipc-unix-deadline_accept-jit",
+        "ipc-unix-deadline_connect",
+        "ipc-unix-deadline_connect-aot",
+        "ipc-unix-deadline_connect-jit",
+        "ipc-unix-descriptor_count_check",
+        "ipc-unix-descriptor_count_check-aot",
+        "ipc-unix-descriptor_count_check-jit",
+        "ipc-unix-destination_errors",
+        "ipc-unix-destination_errors-aot",
+        "ipc-unix-destination_errors-jit",
+        "ipc-unix-lifecycle-aot",
+        "ipc-unix-lifecycle-jit",
+        "ipc-unix-loop_lifetime",
+        "ipc-unix-loop_lifetime-aot",
+        "ipc-unix-loop_lifetime-jit",
+        "ipc-unix-nul_and_large_payload",
+        "ipc-unix-nul_and_large_payload-aot",
+        "ipc-unix-nul_and_large_payload-jit",
+        "ipc-unix-partial_slow_peer",
+        "ipc-unix-partial_slow_peer-aot",
+        "ipc-unix-partial_slow_peer-jit",
+        "ipc-unix-path_lifecycle",
+        "ipc-unix-path_lifecycle-aot",
+        "ipc-unix-path_lifecycle-jit",
+        "ipc-unix-peer_close_epipe",
+        "ipc-unix-peer_close_epipe-aot",
+        "ipc-unix-peer_close_epipe-jit",
+        "ipc-unix-vm-unsupported",
+        "ipc-unix-zero_budget",
+        "ipc-unix-zero_budget-aot",
+        "ipc-unix-zero_budget-jit",
+        "resource_explicit_loop_test"
+      ],
+      "removed_test_names": [],
+      "control_skipped_to_patched_failed": []
+    },
+    "setup_confirmation": {
+      "original_failures_retained": [
+        "workspace_resolver_test",
+        "stress_time_portability"
+      ],
+      "control_narrow_rerun": {
+        "passed": 2,
+        "failed": 0
+      },
+      "patched_narrow_rerun": {
+        "passed": 2,
+        "failed": 0
+      },
+      "workspace": "Out-of-tree CTest registration has no SDK source root; narrow rerun supplies that phase source lib via ESHKOL_PATH. Whole-suite environment is not changed.",
+      "time": "Host /usr/bin/time is absent. Narrow rerun supplies privately built real GNU time 1.9 in a mount namespace; no system install or Eshkol source change.",
+      "gnu_time_source": "https://ftp.gnu.org/gnu/time/time-1.9.tar.gz",
+      "gnu_time_tar_sha256": "fbacf0c81e62429df3e33bda4cee38756604f18e01d977338e23306a3e3b521e",
+      "classification": "Separate narrow infrastructure confirmations do not rewrite the original completed full-suite outcomes.",
+      "completed_narrow_rerun_wrapper_sha256": "ebaa17fcd152a5d8542f6fb4c90234ad394a3fedc257ac95457f8b301d56c2d9",
+      "current_available_time_wrapper_sha256": "dfc9975f0c8871d7daa6edaf1c3d519c71756589c807b1a17985cb18496238cd",
+      "time_wrapper_note": "Completed 2/2 narrow reruns used the limited wrapper; the later general read-only symlink-directory wrapper has a separate hash and is not substituted into those historical results.",
+      "yaml_dependency": {
+        "dependency": "PyYAML==6.0.3",
+        "status": "COMPLETED_SEPARATE_DEPENDENCY_CONFIRMATIONS",
+        "scope": "Both Python3.14 interpreters originally lacked PyYAML. The private6.0.3 target produced10/11 CTest passes per tree; the remaining test overwrites child PYTHONPATH. A separate same-version private venv then passed all19 unit cases of that exact script per tree. Original full and initial targeted failures remain unchanged; detailed outcomes and hashes are recorded under completed.",
+        "install_report_sha256": "6342653231ae4f169781a40adeb91f9dedc54bde9b67c6796a68983f77e9b02c",
+        "distribution": [
+          {
+            "name": "PyYAML",
+            "version": "6.0.3",
+            "archive_hashes": {
+              "sha256": "c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5"
+            }
+          }
+        ],
+        "setup_log_sha256": "863d2993b181512d4904e289a5ac95e8671e6079f4c1f4075ccdb8ce5f7c108c"
+      }
+    },
+    "completed_utc": "2026-11-14T01:56:30.978942+00:00",
+    "classification_note": "All1373 common statuses match; all59 added tests pass. Matching failure names do not imply identical causes:131/133 failure outputs normalize identically, while2 lexical inventory failures additionally report the3 newly introduced bytevector macro sites. Raw failure outcomes remain unchanged by later setup confirmations and metadata registration.",
+    "observed_raw_failure_diagnostic_categories": {
+      "ABI inventory baseline drift": 2,
+      "missing libclang Python bindings": 1,
+      "source resolver cannot find requested module": 14,
+      "other shared baseline output/contract failure": 9,
+      "source resolver cannot find stdlib": 55,
+      "fixture precompiled stdlib object lacks embedded identity": 1,
+      "compiler reports unknown stdlib function": 30,
+      "missing PyYAML": 11,
+      "VM source lane cannot resolve stdlib (confirmed in captured lane log)": 1,
+      "missing usable GNU/BSD time": 1,
+      "Wasm missing callable tensor policy import": 3,
+      "missing Playwright": 5
+    },
+    "failure_output_review": {
+      "pairs": 133,
+      "normalized_identical": 131,
+      "different": [
+        "abi_header_inventory_ratchet",
+        "abi_header_inventory_selftest"
+      ],
+      "difference": "PROCESS binding1 and Unix binding2 added bytevector macro sites; pre-existing diagnostics otherwise match.",
+      "nested_shorthand_textual_lane_logs_compared": 9,
+      "nested_shorthand_lane_logs_normalized_equal": true,
+      "original_review_sha256": "81b75d1c17f993b002c0b7e2fb357fa47645f46153445f64dd8a4e33252e98d8",
+      "normalization": [
+        "Exact source/build path substitution",
+        "ANSI escapes",
+        "stdlib JIT cache/source-identity fingerprints",
+        "mktemp/frame-ceiling/nested-shorthand directory suffixes",
+        "truncated shape-boundary stderr path prefixes, preserving fixture basename and actual diagnostics",
+        "diff-file timestamps",
+        "generated ledger-selftest commit hashes"
+      ]
+    }
+  },
+  "original_local_log_sha256": {
+    "eshkol-nov13-runner-oracle.log": "43b73c234446848aebbd92027debdc5dac083f985a1d55372f9ed4aeb5634197",
+    "eshkol-nov13-wrapper.log": "354ae4d76d948490d1338f2da2a0b7b8c30b546f6f563820bb981f2c7dd8df6e",
+    "eshkol-nov13-control-configure.log": "afd0c63b947ed2ed520e465db71e70e298e2c66bdc1b91c3dcf0b053dcb44603",
+    "eshkol-nov13-control-build.log": "dec5c6b678f91c8cd93f2bc6b7a8490fdcf1b5548386bdc030416759660a90e8",
+    "eshkol-nov13-core-configure.log": "7a2f1bb561bb6f5a86a6cc2af08d0a94ee5ca3b626df29852f5fc87d68de4881",
+    "eshkol-nov13-core-build.log": "e74dea16e31667cfb9ea12a55f2b4cb9fe498cae9b3313fd43376aab08ec7111",
+    "eshkol-nov13-core-all-build.log": "4c0b8c1780f8c48a856b1a2f43ac4fa1a9aaa23df0ed9b659f42aac428d9d36a",
+    "eshkol-nov13-control-setup-rerun.log": "4051dc13bd4e61b4f366bba4d7dc0a7434fa439fe199604596b4077b826de3d1",
+    "eshkol-nov13-patched-setup-rerun.log": "74d271228a2de561c8454b5a5daebccde90f39d8030a841d036d75b2fd3096f6"
+  },
+  "evidence_policy": "Portable summaries and original-byte hashes only; raw logs/receipts remain local or on the hosted run. No personal machine paths in repository artifacts.",
+  "limits": [
+    "The original full registered suites remain red: control1239PASS/133FAIL/1SKIP, core1298PASS/133FAIL/1SKIP. Targeted environment confirmations never rewrite those outcomes.",
+    "Identical normalized failures can mask later behavior and do not establish that the failed feature works.",
+    "Hosted macOS covers native socket/common/PROCESS only, not macOS net/TLS, public JIT/AOT, installed-package or release acceptance.",
+    "Windows/WASM refusal source controls do not establish execution on those target platforms.",
+    "Historical evidence remains bound to its original source; current strict and lifecycle counts were extracted from this current frozen run.",
+    "Both full runs use the recorded CPU feature configuration, not every optional GPU/BLAS/platform configuration.",
+    "Scoped metadata acceptance leaves157 unrelated lexical+semantic inventory violations visible; no full inventory green is asserted.",
+    "No maintainer approval or merge is claimed; #925 remains maintainer-owned integration work."
+  ],
+  "completion_gates": {
+    "sdk_results_complete": true,
+    "yaml_results_complete": true,
+    "yaml_child_dependency_confirmation_pass": true,
+    "process_final_source_qualified": true,
+    "paired_inventory_controls_pass": true
+  },
+  "original_completed_draft_sha256": "25e16651237173ed9f0fd17b5e82773db82ddd13e2b9799c1e5038e8d2f7d196",
+  "postqualification_amendment_scope": "Runtime qualification remains bound to8d99676. Later branch amendments comprise documentation, scoped inventory baseline/allowlist metadata, and a stale JIT comment correction. These do not claim another runtime execution or literal identity of every production source byte. The separate PROCESS registry duplicate removal was freshly requalified at d1814038877bc4fc416f588041382a34c59a83ba.",
+  "record_finalized_utc": "2026-11-14T02:27:18.596353+00:00"
+}

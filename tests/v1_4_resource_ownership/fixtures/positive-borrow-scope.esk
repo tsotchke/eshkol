@@ -1,0 +1,11 @@
+(require core.net)
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (network-error? socket)
+    (begin (display "LISTEN-ERROR") (exit 2))
+    (begin
+      (define before (net-local-port socket))
+      (if (and (> before 0)
+               (borrow socket (> (net-local-port socket) 0))
+               (> (net-local-port socket) 0))
+          (begin (tcp-close socket) (display "RESULT: PASS") (newline))
+          (begin (tcp-close socket) (display "PORT-CHECK-FAIL") (exit 3)))))

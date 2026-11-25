@@ -795,6 +795,73 @@ void cross_entropy_upstream_check() {
     }
 }
 
+void projected_attention_check() {
+    constexpr int seq = 3, heads = 2, dim = 4;
+    int64_t matrix[] = {seq, dim}, weight[] = {dim, dim}, batch[] = {1, seq, dim};
+    double x[3][seq * dim], w[4][dim * dim], upstream[seq * dim];
+    for (auto& input : x) for (double& v : input) v = urand();
+    for (auto& weights : w) for (double& v : weights) v = urand();
+    for (double& v : upstream) v = urand();
+    double attention[heads * seq * seq];
+    auto loss = [&]() {
+        double projected[3][seq * dim], joined[seq * dim];
+        for (int i = 0; i < 3; ++i)
+            matmul_forward_ref(x[i], w[i], projected[i], seq, dim, dim);
+        attention_forward_ref(projected[0], projected[1], projected[2], attention,
+                              joined, 1, heads, seq, dim / heads, false);
+        return matmul_probe(joined, w[3], upstream, seq, dim, dim);
+    };
+    loss();
+    ad_node_t native{};
+    native.type = AD_NODE_MULTIHEAD_ATTENTION;
+    native.tensor_gradient = upstream;
+    native.params.conv_params = {seq, seq, dim, heads};
+    void* saved[12] = {x[0], x[1], x[2], w[0], w[1], w[2], w[3], attention};
+    native.saved_tensors = saved;
+    native.num_saved = 12;
+    for (int i = 0; i < 4; ++i) saved[8 + i] = var_node(w[i], weight, 2);
+    eshkol_tensor_backward_dispatch(&native);
+
+    // Independent reverse path through the four matmuls and attention.
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 16);
+    ad_node_t* weights[4], *projection[3], *heads_input[3];
+    for (int i = 0; i < 4; ++i) weights[i] = var_node(w[i], weight, 2);
+    for (int i = 0; i < 3; ++i) {
+        projection[i] = ad_tensor_matmul(tape, var_node(x[i], matrix, 2), weights[i]);
+        heads_input[i] = var_node(static_cast<double*>(projection[i]->tensor_value), batch, 3);
+    }
+    auto* joined = ad_tensor_attention(tape, heads_input[0], heads_input[1], heads_input[2],
+                                       heads, false);
+    auto* rows = var_node(static_cast<double*>(joined->tensor_value), matrix, 2);
+    auto* output = ad_tensor_matmul(tape, rows, weights[3]);
+    output->tensor_gradient = upstream;
+    eshkol_tensor_backward_dispatch(output);
+    joined->tensor_gradient = rows->tensor_gradient;
+    eshkol_tensor_backward_dispatch(joined);
+    for (int i = 0; i < 3; ++i) {
+        projection[i]->tensor_gradient = heads_input[i]->tensor_gradient;
+        eshkol_tensor_backward_dispatch(projection[i]);
+    }
+
+    const char* labels[] = {"query projection", "key projection", "value projection", "output projection"};
+    for (int i = 0; i < 4; ++i) {
+        auto* grad = static_cast<double*>(static_cast<ad_node_t*>(saved[8 + i])->tensor_gradient);
+        auto* analytic = static_cast<double*>(weights[i]->tensor_gradient);
+        bool ok = grad && analytic;
+        for (int j = 0; ok && j < dim * dim; ++j) {
+            const double center = w[i][j], h = 1e-6;
+            w[i][j] = center + h;
+            double plus = loss();
+            w[i][j] = center - h;
+            double minus = loss();
+            w[i][j] = center;
+            ok = std::fabs(grad[j] - analytic[j]) < 1e-9 &&
+                 std::fabs(grad[j] - (plus - minus) / (2 * h)) < 1e-7;
+        }
+        report(labels[i], ok);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -805,6 +872,7 @@ int main() {
     transpose_check();
     sum_check();
     attention_check();
+    projected_attention_check();
     cross_entropy_upstream_check();
 
     std::printf("(embedding: bridge-vs-native comparison lives in "

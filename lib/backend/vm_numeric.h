@@ -51,6 +51,7 @@
 #define VAL_SYMBOL      31   /* heap-backed internable Scheme symbol spelling */
 #define VAL_EOF         32   /* distinct end-of-file object                    */
 #define VAL_I128        33   /* heap-allocated native 128-bit integer (opaque) */
+#define VAL_PRNG        34   /* isolated state inline in its heap object */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5
@@ -62,6 +63,12 @@
 #define VM_SUBTYPE_SUBST     11
 #define VM_SUBTYPE_FACT      12
 #define VM_SUBTYPE_KB        13
+#define VM_EXACT_DIV_ZERO "rational division by zero"
+/* Integer division of an exact integer by exact zero names its operation,
+ * with the same text the native runtime raises (lib/core/bignum.cpp). */
+#define VM_QUOTIENT_DIV_ZERO "quotient: division by zero"
+#define VM_REMAINDER_DIV_ZERO "remainder: division by zero"
+#define VM_MODULO_DIV_ZERO "modulo: division by zero"
 #define VM_SUBTYPE_FG        14  /* factor graph */
 #define VM_SUBTYPE_WORKSPACE 15
 #define VM_SUBTYPE_PORT      16
@@ -184,7 +191,7 @@ struct VmDual {
      * existing arithmetic dispatch remains one closed carrier family. */
     uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
     uint32_t order;        /* highest coefficient index for a Taylor tower */
-    uint32_t epoch;        /* perturbation epoch; 0 for scalar duals */
+    uint64_t epoch;        /* perturbation tag, never reused (ADR-0057); 0 for scalar duals */
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
@@ -231,8 +238,8 @@ VmRational* vm_dual_exact_tangent(const VmDual* d);
 VmRational* vm_dual_exact_primal(const VmDual* d);
 VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
                                      double point_value, uint32_t order,
-                                     int exact, uint32_t epoch);
-uint32_t    vm_dual_next_taylor_epoch(void);
+                                     int exact, uint64_t epoch);
+uint64_t    vm_dual_next_taylor_epoch(void);
 int         vm_dual_is_taylor(const VmDual* d);
 
 /* ── Recursive level carrier (ADR-0027) ──
@@ -247,15 +254,14 @@ int         vm_dual_is_taylor(const VmDual* d);
  * vm_dual_level_derivative: k! * that coefficient.
  * vm_dual_is_constant: a scalar with zero tangent (a plain number).
  * vm_dual_exact_value: the recursive exact primal, or NULL. */
-extern const char* vm_dual_error;   /* pending diagnostic (SW-219), or NULL */
 VmDual*     vm_dual_constant(VmRegionStack* rs, double value, VmRational* exact);
 VmDual*     vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
-                               uint32_t order, uint32_t epoch);
-uint32_t    vm_dual_carrier_epoch(const VmDual* d);
+                               uint32_t order, uint64_t epoch);
+uint64_t    vm_dual_carrier_epoch(const VmDual* d);
 VmDual*     vm_dual_level_coefficient(VmRegionStack* rs, const VmDual* r,
-                                      uint32_t epoch, uint32_t k);
+                                      uint64_t epoch, uint32_t k);
 VmDual*     vm_dual_level_derivative(VmRegionStack* rs, const VmDual* r,
-                                     uint32_t epoch, uint32_t k);
+                                     uint64_t epoch, uint32_t k);
 int         vm_dual_is_level(const VmDual* d);
 int         vm_dual_is_series(const VmDual* d);   /* a tower or a level */
 int         vm_dual_is_constant(const VmDual* d);
@@ -320,6 +326,37 @@ VmHyperDual* vm_hd_pow_hd(VmRegionStack* rs, const VmHyperDual* a,
 #define VM_NATIVE_INFERENCE_BASE 520
 #define VM_NATIVE_WORKSPACE_BASE 540
 #define VM_NATIVE_STRING_BASE    550
+/* Reserved VM-native IDs for the closed agent.sqlite extern signature set.
+ * They are serialized as OP_NATIVE_CALL operands in ESKB; keep these stable. */
+#define VM_NATIVE_CHECK_ASCRIPTION 2257
+
+#define VM_NATIVE_SQLITE_BASE    2300
+#define VM_NATIVE_SQLITE_OPEN              (VM_NATIVE_SQLITE_BASE + 0)
+#define VM_NATIVE_SQLITE_CLOSE             (VM_NATIVE_SQLITE_BASE + 1)
+#define VM_NATIVE_SQLITE_EXEC              (VM_NATIVE_SQLITE_BASE + 2)
+#define VM_NATIVE_SQLITE_PREPARE           (VM_NATIVE_SQLITE_BASE + 3)
+#define VM_NATIVE_SQLITE_STEP              (VM_NATIVE_SQLITE_BASE + 4)
+#define VM_NATIVE_SQLITE_RESET             (VM_NATIVE_SQLITE_BASE + 5)
+#define VM_NATIVE_SQLITE_FINALIZE          (VM_NATIVE_SQLITE_BASE + 6)
+#define VM_NATIVE_SQLITE_BIND_TEXT         (VM_NATIVE_SQLITE_BASE + 7)
+#define VM_NATIVE_SQLITE_BIND_INT          (VM_NATIVE_SQLITE_BASE + 8)
+#define VM_NATIVE_SQLITE_BIND_DOUBLE       (VM_NATIVE_SQLITE_BASE + 9)
+#define VM_NATIVE_SQLITE_BIND_NULL         (VM_NATIVE_SQLITE_BASE + 10)
+#define VM_NATIVE_SQLITE_COLUMN_TEXT       (VM_NATIVE_SQLITE_BASE + 11)
+#define VM_NATIVE_SQLITE_COLUMN_BYTES      (VM_NATIVE_SQLITE_BASE + 12)
+#define VM_NATIVE_SQLITE_COLUMN_INT        (VM_NATIVE_SQLITE_BASE + 13)
+#define VM_NATIVE_SQLITE_COLUMN_DOUBLE     (VM_NATIVE_SQLITE_BASE + 14)
+#define VM_NATIVE_SQLITE_COLUMN_COUNT      (VM_NATIVE_SQLITE_BASE + 15)
+#define VM_NATIVE_SQLITE_COLUMN_NAME       (VM_NATIVE_SQLITE_BASE + 16)
+#define VM_NATIVE_SQLITE_COLUMN_TYPE       (VM_NATIVE_SQLITE_BASE + 17)
+#define VM_NATIVE_SQLITE_LAST_ERROR        (VM_NATIVE_SQLITE_BASE + 18)
+#define VM_NATIVE_SQLITE_LAST_INSERT_ROWID (VM_NATIVE_SQLITE_BASE + 19)
+#define VM_NATIVE_SQLITE_CHANGES           (VM_NATIVE_SQLITE_BASE + 20)
+/* Stable typed content-hash/entropy extern IDs; no process pointers in ESKB. */
+#define VM_NATIVE_SHA256_EXTERN       2321
+#define VM_NATIVE_HMAC_SHA256_EXTERN  2322
+#define VM_NATIVE_RANDOM_BYTES_EXTERN 2323
+#define VM_NATIVE_RANDOM_HEX_EXTERN   2324
 #define VM_NATIVE_IO_BASE        580
 #define VM_NATIVE_PARALLEL_BASE  620
 #define VM_NATIVE_MULTIVAL_BASE  650

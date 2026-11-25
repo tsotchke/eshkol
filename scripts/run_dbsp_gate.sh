@@ -19,7 +19,7 @@ cd "$PROJECT_ROOT"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 RUN="$BUILD_DIR/eshkol-run"
-TESTS=("tests/stdlib/dbsp_test.esk" "tests/stdlib/dbsp_tensor_test.esk")
+TESTS=("tests/stdlib/dbsp_test.esk" "tests/stdlib/dbsp_tensor_test.esk" "tests/stdlib/dbsp_checkpoint_test.esk")
 
 # Resolve (require core.dbsp) against THIS checkout's lib/, which matters when
 # the eshkol-run binary lives in a different checkout (e.g. a git worktree).

@@ -1,0 +1,11 @@
+(define-syntax passthrough (syntax-rules () ((_ x) x)))
+(display (passthrough "A\x1e;~{(+ 2 3)}\x1f;B"))
+(newline)
+(define-syntax spelling
+  (syntax-rules ()
+    ((_ "~~{3}") "literal")
+    ((_ x) "expression")))
+(display (spelling "~~{3}"))
+(newline)
+(display (spelling "~{3}"))
+(newline)

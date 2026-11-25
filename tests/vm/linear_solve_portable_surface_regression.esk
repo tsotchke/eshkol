@@ -1,0 +1,70 @@
+;; Primitive-only VM regression for the checked portable linear-solve path.
+;; Keep this file independent of optional libraries and compile it on all
+;; standalone VM builds.
+(define checks 0)
+(define failures 0)
+(define (check name ok)
+  (set! checks (+ checks 1))
+  (if (not ok)
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (near? a b tolerance) (< (abs (- a b)) tolerance))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define (matrix values rows cols) (reshape values (list rows cols)))
+
+;; Nonsymmetric 3x3 matrix with a zero leading pivot and x=[1,2,-1].
+(define A (matrix (vector 0.0 2.0 1.0
+                          1.0 -2.0 -3.0
+                          4.0 -7.0 1.0) 3 3))
+(define b (vector 3.0 0.0 -11.0))
+(define x (linear-solve A b))
+(define residual
+  (sqrt (+ (expt (- (+ (* 0.0 (tensor-ref x 0))
+                         (* 2.0 (tensor-ref x 1))
+                         (* 1.0 (tensor-ref x 2))) 3.0) 2)
+             (expt (- (+ (* 1.0 (tensor-ref x 0))
+                         (* -2.0 (tensor-ref x 1))
+                         (* -3.0 (tensor-ref x 2))) 0.0) 2)
+             (expt (- (+ (* 4.0 (tensor-ref x 0))
+                         (* -7.0 (tensor-ref x 1))
+                         (* 1.0 (tensor-ref x 2))) -11.0) 2))))
+(check "pivoted nonsymmetric known solution and residual"
+  (and (near? (tensor-ref x 0) 1.0 1e-12)
+       (near? (tensor-ref x 1) 2.0 1e-12)
+       (near? (tensor-ref x 2) -1.0 1e-12)
+       (< residual 1e-12)))
+(check "inputs remain unchanged"
+  (and (= (tensor-ref A 0 0) 0.0)
+       (= (tensor-ref A 2 1) -7.0)
+       (= (tensor-ref b 0) 3.0)
+       (= (tensor-ref b 2) -11.0)))
+
+;; Tiny but well-conditioned after scaling: exact-zero pivot policy only.
+(define tiny-A (matrix (vector 0.0 2e-200 1e-200 0.0) 2 2))
+(define tiny-x (linear-solve tiny-A (vector -8e-200 3e-200)))
+(check "tiny nonzero pivots are accepted"
+  (and (near? (tensor-ref tiny-x 0) 3.0 1e-12)
+       (near? (tensor-ref tiny-x 1) -4.0 1e-12)))
+
+(check "scalar coefficient operand raises"
+  (raises? (lambda () (linear-solve 1.0 (vector 1.0)))))
+(check "rank-one coefficient operand raises"
+  (raises? (lambda () (linear-solve (vector 1.0 2.0) (vector 1.0 2.0)))))
+(check "nonsquare coefficient matrix raises"
+  (raises? (lambda () (linear-solve (matrix (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3)
+                                    (vector 1.0 2.0)))))
+(check "mismatched right-hand side raises"
+  (raises? (lambda () (linear-solve (matrix (vector 1.0 0.0 0.0 1.0) 2 2)
+                                    (vector 1.0)))))
+(check "nonfinite coefficient input raises"
+  (raises? (lambda () (linear-solve (matrix (vector +nan.0) 1 1) (vector 1.0)))))
+(check "finite input with nonfinite solution raises"
+  (raises? (lambda () (linear-solve (matrix (vector 1e-309) 1 1) (vector 1.0)))))
+(check "singular matrix raises"
+  (raises? (lambda () (linear-solve (matrix (vector 1.0 2.0 2.0 4.0) 2 2)
+                                    (vector 3.0 6.0)))))
+
+(display "Checks: ") (display checks) (newline)
+(if (> failures 0)
+    (error "portable VM linear-solve regression failed")
+    (display "PASS: portable VM linear-solve\n"))

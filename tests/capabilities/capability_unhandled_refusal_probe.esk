@@ -1,0 +1,13 @@
+;;; A refusal nobody catches ends the program, and the sink does not happen.
+;;; The marker the command would have written must not exist afterwards.
+(require stdlib)
+(require core.capabilities)
+
+(define marker (getenv "ESHKOL_CAP_UNHANDLED_MARKER"))
+
+(capability-install-policy! (list 'file-read))
+(display "before")
+(newline)
+(system (string-append "printf reached > '" marker "'"))
+(display "after")
+(newline)

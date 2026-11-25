@@ -74,7 +74,7 @@ Zero counters and histograms; **gauges retain** their value (a gauge represents 
 ```
 ```
 counter
-(histogram (0.1 0.5 1))
+(histogram (0.1 0.5 1.0))
 # HELP eshkol_requests_total Total requests
 # TYPE eshkol_requests_total counter
 eshkol_requests_total{path="/b"} 1
@@ -86,7 +86,7 @@ eshkol_inflight 10
 # TYPE eshkol_latency histogram
 eshkol_latency_bucket{path="/a",le="0.1"} 1
 eshkol_latency_bucket{path="/a",le="0.5"} 2
-eshkol_latency_bucket{path="/a",le="1"} 2
+eshkol_latency_bucket{path="/a",le="1.0"} 2
 eshkol_latency_bucket{path="/a",le="+Inf"} 3
 eshkol_latency_count{path="/a"} 3
 eshkol_latency_sum{path="/a"} 2.37

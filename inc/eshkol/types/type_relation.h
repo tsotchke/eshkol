@@ -39,6 +39,7 @@
 #include "eshkol/types/hott_types.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -163,6 +164,16 @@ private:
     std::pair<TypeId, TypeId> pairComponents(TypeId t) const;
     TypeId canonicalPair(TypeId car, TypeId cdr) const;
     bool isNumeric(TypeId t) const;
+
+    // Dependent (term-backed) types, ADR-0042. Two term-backed types are
+    // compared structurally on their core terms: index positions by
+    // definitional equality, nominal leaves by @p leaf. A term-backed type
+    // against a nominal one is compared through its erasure, so a
+    // (vector real 3) is a Vector, and a Vector whose length is not known is
+    // consistent with (vector real 3) but not a static subtype of it.
+    bool isTermBacked(TypeId t) const;
+    TermEq termCompare(TypeId a, TypeId b,
+                       const std::function<bool(TypeId, TypeId)>& leaf) const;
 };
 
 }  // namespace eshkol::hott

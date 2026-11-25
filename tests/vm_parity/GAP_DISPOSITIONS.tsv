@@ -24,7 +24,6 @@ blackman-window	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signa
 butterworth-bandpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 butterworth-highpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 butterworth-lowpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
-bytevector	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-input-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-output-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-port	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
@@ -51,8 +50,16 @@ conv1d	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has
 conv2d	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 conv3d	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 convolve	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
+coroutine-raise	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-release!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-resume	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-stats	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-status	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-yield	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
 cosine-annealing-lr	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 cosine-embedding-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
+current-coroutine	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
 current-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval/environment reflection has no VM binding
 current-input-port	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 current-jiffy	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	time surface has no VM binding
@@ -142,11 +149,11 @@ list*	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name bind
 list-copy	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 list-set!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 mae-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
+make-coroutine	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
 make-dataloader	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 make-directory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 make-dnc-memory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
 make-parameter	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-make-prng	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 make-promise	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 make-rational	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 matrix-to-string	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
@@ -175,7 +182,6 @@ op:KB_QUERY_PREFIX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	kb
 op:LAPLACIAN	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:LET_STAR_VALUES	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	same family as op:LET_VALUES silent-wrong divergence
 op:MAKE_PARAMETER	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	make-parameter undefined in VM
-op:MATCH	vm-unsupported-clean-error	generated:scripts/canonicalize_vm_gaps.py	match unsupported in VM (clean undefined-variable error)
 op:PARAMETERIZE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	depends on make-parameter; fids 702/703 exist but surface incomplete
 op:SDNC_IMPROVE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 op:SDNC_PARAMS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
@@ -193,9 +199,6 @@ padding-mask	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml facul
 peek-char	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 peek-u8	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 positional-encoding	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-prng-random	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-prng-random-integer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-prng?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 procedure-arity	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 randint	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 randn	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
@@ -256,7 +259,6 @@ tensor-corrcoef	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tenso
 tensor-cov	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-det	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
-tensor-inverse	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-length	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-lu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-norm	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM

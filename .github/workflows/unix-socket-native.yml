@@ -1,0 +1,66 @@
+name: Unix socket native
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['gabe/**']
+    paths:
+      - '.github/workflows/unix-socket-native.yml'
+      - 'tests/agent/**socket**'
+      - 'tests/agent/**subprocess**'
+      - 'tests/core/resource_explicit_loop_test.c'
+      - 'lib/agent/c/agent_unix_socket_stream.c'
+      - 'lib/agent/c/agent_subprocess.c'
+      - 'lib/core/**'
+      - 'inc/eshkol/core/**'
+  pull_request:
+    paths:
+      - '.github/workflows/unix-socket-native.yml'
+      - 'tests/agent/**socket**'
+      - 'tests/agent/**subprocess**'
+      - 'tests/core/resource_explicit_loop_test.c'
+      - 'lib/agent/c/agent_unix_socket_stream.c'
+      - 'lib/agent/c/agent_subprocess.c'
+      - 'lib/core/**'
+      - 'inc/eshkol/core/**'
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux epoll
+            os: ubuntu-latest
+            sanitize: '0'
+          - name: Linux ASan and UBSan
+            os: ubuntu-latest
+            sanitize: '1'
+          - name: macOS kqueue
+            os: macos-15
+            sanitize: '0'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and execute standalone native contracts
+        env:
+          CC: clang
+          CXX: clang++
+          ESHKOL_SOCKET_SANITIZE: ${{ matrix.sanitize }}
+          ESHKOL_SOCKET_QUALIFICATION_DIR: ${{ runner.temp }}/socket-native-evidence
+        run: tests/agent/run_unix_socket_stream_native.sh
+      - name: Retain native receipt and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: socket-native-${{ matrix.os }}-${{ matrix.sanitize }}
+          path: |
+            ${{ runner.temp }}/socket-native-evidence/RESULT.json
+            ${{ runner.temp }}/socket-native-evidence/*.log
+          if-no-files-found: warn
+          retention-days: 14

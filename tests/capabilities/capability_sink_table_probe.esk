@@ -1,0 +1,48 @@
+;;; Every remaining sink under a policy that withholds its capability.
+;;;
+;;; One program, one policy, many sinks: the policy grants file-read and
+;;; nothing else, so each call below must be refused, and the refusal must name
+;;; the capability the sink needs. A sink the engine does not carry reports
+;;; "absent" rather than passing silently, and the driver decides which names
+;;; it expects to find on which engine.
+(require stdlib)
+(require core.capabilities)
+
+(define failures 0)
+
+(define (refused? name capability thunk)
+  (let ((outcome
+          (guard (e (#t (if (error-object? e)
+                            (error-object-message e)
+                            "non-error-object")))
+            (begin (thunk) "ran"))))
+    (display name)
+    (display ":")
+    (if (string-contains? outcome (string-append "capability denied: " capability))
+        (display "refused")
+        (begin
+          (set! failures (+ failures 1))
+          (display "NOT-REFUSED(")
+          (display outcome)
+          (display ")")))
+    (newline)))
+
+(capability-install-policy! (list 'file-read))
+
+(refused? "fork" "subprocess" (lambda () (fork)))
+(refused? "execv" "subprocess" (lambda () (execv "/bin/true" (list "/bin/true"))))
+(refused? "process-spawn" "subprocess" (lambda () (process-spawn "exit 0" "")))
+(refused? "process-spawn-pty" "subprocess" (lambda () (process-spawn-pty "exit 0")))
+(refused? "process-kill" "subprocess" (lambda () (process-kill 999999 15)))
+(refused? "process-kill-tree" "subprocess" (lambda () (process-kill-tree 999999 15)))
+(refused? "process-setpgid" "subprocess" (lambda () (process-setpgid 999999 999999)))
+(refused? "unix-socket-connect" "network" (lambda () (unix-socket-connect "/nonexistent.sock")))
+(refused? "http-server-create" "network" (lambda () (http-server-create 0)))
+(refused? "http-request" "network"
+          (lambda () (http-request "GET" "http://127.0.0.1:1/" "" "" 100)))
+(refused? "websocket-connect" "network"
+          (lambda () (websocket-connect "ws://127.0.0.1:1/" "")))
+
+(display "failures:")
+(display failures)
+(newline)

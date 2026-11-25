@@ -1,0 +1,3 @@
+(require core.threads)
+(define m (make-mutex))
+(with-mutex m (lambda () #t))

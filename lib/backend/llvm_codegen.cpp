@@ -4,10 +4,15 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/frontend/ownership.h>
+#include "../core/ascription_tags.h"
 #include <functional>
 #include <eshkol/core/ast_routing.h>
-#include <eshkol/util/continuation_task.h>
+#include <eshkol/module_resolver.h>
+#include <eshkol/core/execution_profile.h>
 #include <eshkol/backend/ir_builder.h>
+#include <eshkol/backend/noreturn_blocks.h>
+#include <eshkol/backend/debug_artifact.h>
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
@@ -16,6 +21,8 @@
 #include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
+#include <eshkol/frontend/differentiation_graph.h>
+#include <eshkol/frontend/incrementalize.h>
 #include <eshkol/frontend/diagnostic.h>
 #include <eshkol/frontend/shadowable_ops.h>
 #include <eshkol/frontend/syntax_color.h>
@@ -53,6 +60,10 @@
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
 #include <eshkol/types/type_checker.h>
+#include <eshkol/types/refinement.h>
+#include <eshkol/types/hott_forms.h>
+#include <eshkol/types/hole_synthesis.h>
+#include <eshkol/types/effect_check.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
 #include <eshkol/logger.h>
@@ -63,6 +74,9 @@
 #include <eshkol/core/unicode.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
+static_assert(eshkol::TensorCodegen::TENSOR_DTYPE_EXACT == ESHKOL_TENSOR_DTYPE_EXACT &&
+                  eshkol::TensorCodegen::TENSOR_DTYPE_DUAL == ESHKOL_TENSOR_DTYPE_DUAL,
+              "TensorCodegen dtype mirrors must match lib/core/arena_memory.h");
 #include <sstream>
 #include <cstdlib>
 
@@ -101,6 +115,8 @@ bool eshkol_lld_on_path() {
 }
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
+#include <eshkol/backend/llvm_codegen.h>
+#include <eshkol/util/continuation_task.h>
 
 namespace {
 
@@ -216,7 +232,8 @@ void append_host_agent_ffi_dependency_link_args(
 }
 
 void append_host_llvm_link_args(std::vector<std::string>& link_args) {
-    append_configured_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+    auto configured = eshkol::platform::host_llvm_link_args();
+    link_args.insert(link_args.end(), configured.begin(), configured.end());
 }
 
 void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
@@ -261,6 +278,7 @@ void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -587,14 +605,37 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
     coerceCallArgIntegerTypes(module);
     coerceIntegerBinaryOperandTypes(module);
 
-    auto opt_level = getPassBuilderOptLevel();
+    // Huge generated functions (such as deeply nested quoted-datum builders)
+    // trigger super-linear IR and codegen optimization passes. Mark only
+    // functions above this instruction budget optnone+noinline so backend
+    // compilation stays linear while normal functions keep full optimization.
+    constexpr unsigned kMaxOptimizedFunctionInstructions = 50000;
+    for (llvm::Function& fn : module) {
+        if (fn.isDeclaration() || fn.hasOptNone()) continue;
+        if (fn.getInstructionCount() > kMaxOptimizedFunctionInstructions) {
+            fn.removeFnAttr(llvm::Attribute::AlwaysInline);
+            fn.removeFnAttr(llvm::Attribute::OptimizeForSize);
+            fn.removeFnAttr(llvm::Attribute::MinSize);
+            fn.addFnAttr(llvm::Attribute::NoInline);
+            fn.addFnAttr(llvm::Attribute::OptimizeNone);
+        }
+    }
 
-    llvm::PassBuilder PB(TM);
+    auto opt_level = getPassBuilderOptLevel();
 
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
     llvm::CGSCCAnalysisManager CGAM;
     llvm::ModuleAnalysisManager MAM;
+
+    // Register LLVM's standard pass instrumentations so Attribute::OptimizeNone
+    // is actually honored by function passes (such as MemCpyOptPass/MemorySSA)
+    // in the new pass manager.
+    llvm::PassInstrumentationCallbacks PIC;
+    llvm::StandardInstrumentations SI(module.getContext(), /*DebugLogging=*/false);
+    SI.registerCallbacks(PIC, &MAM);
+
+    llvm::PassBuilder PB(TM, llvm::PipelineTuningOptions(), std::nullopt, &PIC);
 
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
@@ -687,6 +728,8 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <memory>
 #include <map>
 #include <unordered_map>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/core/reader_limits.h>
 #include <unordered_set>
 #include <set>
 #include <string>
@@ -700,6 +743,11 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <cctype>
 #include <stack>
 #include <atomic>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 #include <chrono>
 #include <condition_variable>
 
@@ -1386,85 +1434,56 @@ namespace {
 
         g_target_info_cached = true;
     }
-}
 
-// TypedValue structure to carry both LLVM value and type information
-struct TypedValue {
-    Value* llvm_value;              // LLVM IR value
-    eshkol_value_type_t type;       // Our type tag from eshkol.h
-    bool is_exact;                  // Scheme exactness tracking
-    uint8_t flags;                  // Additional flags (e.g., indirect reference flag)
-    eshkol::hott::TypeId hott_type; // HoTT compile-time type (for gradual typing)
+    // ── Embedded (bare-metal) target descriptions ───────────────────────────
+    //
+    // A freestanding --target that names a microcontroller or bare-metal
+    // application processor resolves to one row of the embedded target table
+    // (eshkol::profile::find_embedded_target).  The module records WHICH row
+    // in this module flag, because the canonical LLVM triple alone does not
+    // identify the machine (rv64gc/lp64d and rv64imac/lp64 share
+    // riscv64-unknown-none-elf).  Every TargetMachine this file creates for
+    // the module -- the data-layout one in the constructor and the object
+    // emitter -- takes its CPU, features, float ABI, ABI name and relocation
+    // model from that row, so instruction selection, the data layout, ELF
+    // e_flags and ARM build attributes always agree.
+    constexpr const char* kEmbeddedTargetModuleFlag = "eshkol.embedded-target";
 
-    // HoTT PARAMETERIZED TYPE: For tracking List<Int64>, Vector<Float64>, etc.
-    // This is optional - only set for collection types with known element types
-    std::optional<eshkol::hott::ParameterizedType> param_type;
-
-    // Flag constants
-    static constexpr uint8_t FLAG_INDIRECT = 0x01;  // Value is address of global to load from
-    static constexpr uint8_t FLAG_LINEAR   = 0x02;  // Must be consumed exactly once (linear type)
-    static constexpr uint8_t FLAG_PROOF    = 0x04;  // Compile-time only, erased at runtime
-
-    TypedValue()
-        : llvm_value(nullptr), type(ESHKOL_VALUE_NULL), is_exact(true), flags(0),
-          hott_type(eshkol::hott::BuiltinTypes::Null), param_type(std::nullopt) {}
-
-    TypedValue(Value* val, eshkol_value_type_t t, bool exact = true, uint8_t f = 0)
-        : llvm_value(val), type(t), is_exact(exact), flags(f),
-          hott_type(eshkol::hott::BuiltinTypes::Value), param_type(std::nullopt) {}
-
-    // Constructor with explicit HoTT type
-    TypedValue(Value* val, eshkol_value_type_t t, eshkol::hott::TypeId hott_t, bool exact = true, uint8_t f = 0)
-        : llvm_value(val), type(t), is_exact(exact), flags(f), hott_type(hott_t), param_type(std::nullopt) {}
-
-    // Constructor with parameterized type (for List<T>, Vector<T>, etc.)
-    TypedValue(Value* val, eshkol_value_type_t t, eshkol::hott::TypeId hott_t,
-               const eshkol::hott::ParameterizedType& ptype, bool exact = true, uint8_t f = 0)
-        : llvm_value(val), type(t), is_exact(exact), flags(f), hott_type(hott_t), param_type(ptype) {}
-
-    // Helper methods
-    bool isInt64() const { return type == ESHKOL_VALUE_INT64; }
-    bool isDouble() const { return type == ESHKOL_VALUE_DOUBLE; }
-    bool isNull() const { return type == ESHKOL_VALUE_NULL; }
-    bool isIndirect() const { return (flags & FLAG_INDIRECT) != 0; }
-
-    // HoTT type helpers
-    bool hasKnownType() const { return hott_type != eshkol::hott::BuiltinTypes::Value; }
-    bool isHottInt64() const { return hott_type == eshkol::hott::BuiltinTypes::Int64; }
-    bool isHottFloat64() const { return hott_type == eshkol::hott::BuiltinTypes::Float64; }
-
-    // HoTT parameterized type helpers
-    bool hasParameterizedType() const { return param_type.has_value(); }
-    eshkol::hott::TypeId elementType() const {
-        if (param_type.has_value()) {
-            return param_type->elementType();
+    const eshkol::profile::EmbeddedTarget* embeddedTargetForModule(const Module& m) {
+        if (auto* name = dyn_cast_or_null<MDString>(m.getModuleFlag(kEmbeddedTargetModuleFlag))) {
+            return eshkol::profile::find_embedded_target(name->getString().str());
         }
-        return eshkol::hott::BuiltinTypes::Value;
+        return nullptr;
     }
-    // M1 Migration: Check both legacy and consolidated formats
-    bool isList() const { return type == ESHKOL_VALUE_HEAP_PTR || type == ESHKOL_VALUE_HEAP_PTR; }
-    bool isVector() const { return type == ESHKOL_VALUE_HEAP_PTR || type == ESHKOL_VALUE_HEAP_PTR; }
 
-    // Linear and proof type helpers (HoTT Phase 4)
-    bool isLinear() const { return (flags & FLAG_LINEAR) != 0; }
-    bool isProof() const { return (flags & FLAG_PROOF) != 0; }
-    bool shouldErase() const { return isProof(); }  // Proofs are erased at runtime
-
-    // Create an erased value with a unit placeholder (for contexts that need a valid LLVM value)
-    static TypedValue makeErasedWithPlaceholder(llvm::Value* unit_value, eshkol::hott::TypeId proof_type) {
-        return TypedValue(unit_value, ESHKOL_VALUE_NULL, proof_type, true, FLAG_PROOF);
+    void applyEmbeddedTargetOptions(const eshkol::profile::EmbeddedTarget& target,
+                                    TargetOptions& options) {
+        switch (target.float_abi) {
+            case eshkol::profile::FloatAbi::Soft:
+                options.FloatABIType = FloatABI::Soft;
+                break;
+            case eshkol::profile::FloatAbi::Hard:
+                options.FloatABIType = FloatABI::Hard;
+                break;
+            case eshkol::profile::FloatAbi::Default:
+                break;
+        }
+        if (target.abi && target.abi[0] != '\0') {
+            options.MCOptions.ABIName = target.abi;
+        }
+        // Per-function / per-object sections let a firmware link script and
+        // `--gc-sections` keep only what the image references.
+        options.FunctionSections = true;
+        options.DataSections = true;
     }
-};
-
-// OPTION 3: Deferred Lambda S-Expression Generation
-// Structure to track lambdas that need S-expression generation
-struct LambdaSExprMetadata {
-    const eshkol_operations_t* lambda_ast;
-    std::string lambda_name;
-};
+}
 
 // Global vector to accumulate lambdas during compilation
 static std::vector<LambdaSExprMetadata> pending_lambda_sexprs;
+
+// Only active while this compiler thread emits eager procedure source data.
+// A scoped override preserves nesting without changing the codegen class ABI.
+static thread_local bool outlining_metadata_cons = false;
 
 // Track the most recently generated lambda name for codegenList
 static std::string last_generated_lambda_name;
@@ -1558,476 +1577,19 @@ static GlobalValue::LinkageTypes sexprGlobalLinkage(
 #endif
 }
 
-// Forward declaration for callback wrappers
-class EshkolLLVMCodeGen;
-
-// Static callback wrappers for ControlFlowCodegen
-// These allow the extracted module to call back into the main codegen
-namespace ControlFlowCallbacks {
-    void finishIterScopeBeforeExitWrapper(void* context);
-    // Wrapper for codegenAST - returns LLVM Value*
-    llvm::Value* codegenASTWrapper(const void* ast, void* context);
-    // Wrapper for codegenTypedAST - returns pointer to TypedValue (caller owns)
-    void* codegenTypedASTWrapper(const void* ast, void* context);
-    // Wrapper for typedValueToTaggedValue
-    llvm::Value* typedToTaggedWrapper(void* typed_value, void* context);
-    // Wrapper for codegenNestedFunctionDefinition
-    void codegenFuncDefineWrapper(const void* op, void* context);
-    // Wrapper for codegenVariableDefinition
-    void codegenVarDefineWrapper(const void* op, void* context);
-    // Wrapper for callBuiltinEqv
-    llvm::Value* eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
-    // Wrapper for detectValueType + typedValueToTaggedValue
-    llvm::Value* detectAndPackWrapper(llvm::Value* val, void* context);
-    // Wrapper for codegenTaggedArenaConsCellFromTaggedValue
-    llvm::Value* consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
-    // Wrapper to get TypedValue type
-    int getTypedValueTypeWrapper(void* typed_value, void* context);
-    // Wrapper to register function binding
-    void registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
-    // Wrapper for extractConsCarAsTaggedValue (for CallApplyCodegen)
-    llvm::Value* extractConsCarWrapper(llvm::Value* cons_ptr, void* context);
-    // Wrapper for getTaggedConsGetPtrFunc (for CallApplyCodegen)
-    llvm::Function* getConsAccessorWrapper(void* context);
-    // Wrapper for codegenAST with typed signature (for CallApplyCodegen)
-    llvm::Value* codegenASTTypedWrapper(const eshkol_ast_t* ast, void* context);
-    // Wrappers for MapCodegen
-    llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
-    llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
-    llvm::Value* closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
-    llvm::Value* closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
-    llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
-    llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
-                                                  llvm::Value* dual_elems, llvm::Value* declared_arity,
-                                                  void* context);
-    llvm::Function* getClosureAllocWrapper(void* context);
-    llvm::Function* getConsSetPtrWrapper(void* context);
-    llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
-    bool variadicLookupWrapper(const char* name, void* context);
-    bool applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context);
-    llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
-    void pushFunctionContextWrapper(void* context);
-    void popFunctionContextWrapper(void* context);
-    // TCO callback for checking self-tail-recursion
-    bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
-    // Binding callback for assignment conversion of lexical locals.
-    bool isVarSetWrapper(const void* ast, const char* name, void* context);
-    bool isReassignedTopLevelNameWrapper(const char* name, void* context);
-    bool isVarObservedWrapper(const void* ast, const char* name, void* context);
-    bool continuationEscapeWrapper(const void* ast, void* context);
-    // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
-    llvm::Function* getBuiltinArithmeticWrapper(const std::string& op, void* context);
-    // Wrapper for resolving comparison/equality/predicate builtins (for apply)
-    llvm::Function* getBuiltinPredicateWrapper(const std::string& name, void* context);
-    // Wrapper for applying tensor/vector builtin functions
-    llvm::Value* applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
-    // Bug P (2026-04-23): wrapper for forward-ref apply (cross-file user defines)
-    llvm::Value* applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
-}
-
-class EshkolLLVMCodeGen {
-    /* The first-class builtin table's row type and its variadic-rest
-     * strategy are DEFINED next to the table itself (see
-     * lookupInlineBuiltin), because the table is the thing a reader
-     * needs them for. The value-position sites that consult the table
-     * appear textually before it, so the names are introduced here. */
-    enum class VariadicRest : uint8_t;
-    struct InlineBuiltinSpec;
-
-    // Friend declarations for ControlFlowCodegen callbacks
-    friend llvm::Value* ControlFlowCallbacks::codegenASTWrapper(const void* ast, void* context);
-    friend void* ControlFlowCallbacks::codegenTypedASTWrapper(const void* ast, void* context);
-    friend llvm::Value* ControlFlowCallbacks::typedToTaggedWrapper(void* typed_value, void* context);
-    friend void ControlFlowCallbacks::codegenFuncDefineWrapper(const void* op, void* context);
-    friend void ControlFlowCallbacks::codegenVarDefineWrapper(const void* op, void* context);
-    friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
-    friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
-    friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
-    friend bool ControlFlowCallbacks::isReassignedTopLevelNameWrapper(const char* name, void* context);
-    friend bool ControlFlowCallbacks::isVarObservedWrapper(const void* ast, const char* name, void* context);
-    friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
-    friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
-    friend int ControlFlowCallbacks::getTypedValueTypeWrapper(void* typed_value, void* context);
-    friend void ControlFlowCallbacks::registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
-    // Friend declarations for CallApplyCodegen callbacks
-    friend llvm::Value* ControlFlowCallbacks::extractConsCarWrapper(llvm::Value* cons_ptr, void* context);
-    friend llvm::Function* ControlFlowCallbacks::getConsAccessorWrapper(void* context);
-    friend llvm::Value* ControlFlowCallbacks::codegenASTTypedWrapper(const eshkol_ast_t* ast, void* context);
-    // Friend declarations for MapCodegen callbacks
-    friend llvm::Value* ControlFlowCallbacks::codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
-    friend llvm::Value* ControlFlowCallbacks::closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
-    friend llvm::Function* ControlFlowCallbacks::getConsSetPtrWrapper(void* context);
-    friend llvm::Value* ControlFlowCallbacks::resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
-    friend bool ControlFlowCallbacks::variadicLookupWrapper(const char* name, void* context);
-    friend bool ControlFlowCallbacks::applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context);
-    friend llvm::Value* ControlFlowCallbacks::indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
-    friend void ControlFlowCallbacks::pushFunctionContextWrapper(void* context);
-    friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
-    friend bool ControlFlowCallbacks::isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
-    friend llvm::Function* ControlFlowCallbacks::getBuiltinArithmeticWrapper(const std::string& op, void* context);
-    friend llvm::Function* ControlFlowCallbacks::getBuiltinPredicateWrapper(const std::string& name, void* context);
-    friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
-    friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
-    friend void ControlFlowCallbacks::finishIterScopeBeforeExitWrapper(void* context);
-    friend llvm::Value* ControlFlowCallbacks::closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
-    friend llvm::Value* ControlFlowCallbacks::closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
-    friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
-    friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
-                                                                        llvm::Value* dual_elems, llvm::Value* declared_arity,
-                                                                        void* context);
-    friend llvm::Function* ControlFlowCallbacks::getClosureAllocWrapper(void* context);
-
-private:
-    std::unique_ptr<LLVMContext> context;
-    std::unique_ptr<Module> module;
-    std::unique_ptr<eshkol::CodegenIRBuilder> builder;
-
-    // Monotonic counter used by codegen sites that need a unique-but-stable
-    // suffix in IR variable names (e.g. pattern-match argument slots). We
-    // previously used `reinterpret_cast<uintptr_t>(some_value)` for this,
-    // which made IR non-deterministic across runs because heap addresses
-    // change. Replacing with a counter restores reproducibility.
-    // Reset at the start of every generateIR() / library compilation so two
-    // compilations of the same source always produce identical IR.
-    uint64_t name_uniquifier_ = 0;
-
-    // Interned plain C strings used only by opt-in runtime language coverage.
-    // Keeping one global per distinct spelling avoids bloating instrumented
-    // modules with a copy of the source path for every AST node.
-    std::unordered_map<std::string, llvm::Value*> coverage_string_cache_;
-    const bool language_coverage_enabled_ = [] {
-        const char* dir = std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
-        return dir && *dir;
-    }();
-
-    // Type system (manages all LLVM types)
-    std::unique_ptr<eshkol::TypeSystem> types;
-
-    // Function cache (lazy-loaded C library functions)
-    std::unique_ptr<eshkol::FunctionCache> funcs;
-
-    // Memory codegen (arena function declarations)
-    std::unique_ptr<eshkol::MemoryCodegen> mem;
-
-    // CodegenContext - Shared state for extracted modules
-    // This provides clean access to LLVM infrastructure, symbol tables, and function caches
-    // for modules like TaggedValueCodegen, ArithmeticCodegen, etc.
-    std::unique_ptr<eshkol::CodegenContext> ctx_;
-
-    // TaggedValueCodegen - Pack/unpack operations for tagged values
-    // This module handles the runtime type system's tagged value representation
-    std::unique_ptr<eshkol::TaggedValueCodegen> tagged_;
-
-    // BuiltinDeclarations - External runtime function declarations
-    // Handles deep_equal, display_value, lambda_registry functions
-    std::unique_ptr<eshkol::BuiltinDeclarations> builtins_;
-
-    // ComplexCodegen - Complex number arithmetic operations
-    std::unique_ptr<eshkol::ComplexCodegen> complex_;
-
-    // ArithmeticCodegen - Polymorphic arithmetic operations
-    // Note: Main polymorphic implementations still in this file; module provides interface
-    std::unique_ptr<eshkol::ArithmeticCodegen> arith_;
-
-    // CallApplyCodegen - Function call and apply operations
-    // Handles Scheme's apply and closure dispatch
-    std::unique_ptr<eshkol::CallApplyCodegen> call_apply_;
-
-    // MapCodegen - Higher-order list mapping operations
-    // Handles (map proc list1 ...) with closure and capture support
-    std::unique_ptr<eshkol::MapCodegen> map_;
-
-    // ControlFlowCodegen - Control flow operations (and, or, if, cond, begin)
-    // Note: Main implementations still in this file; module provides isTruthy helper
-    std::unique_ptr<eshkol::ControlFlowCodegen> flow_;
-
-    // StringIOCodegen - String and I/O operations
-    // Note: Main implementations still in this file; module provides string creation and printf
-    std::unique_ptr<eshkol::StringIOCodegen> strio_;
-
-    // CollectionCodegen - List and vector operations
-    // Note: Main implementations still in this file; module provides allocConsCell helper
-    std::unique_ptr<eshkol::CollectionCodegen> coll_;
-
-    // FunctionCodegen - Lambda and closure operations
-    // Note: Main implementations still in this file; module provides createClosure helper
-    std::unique_ptr<eshkol::FunctionCodegen> func_;
-
-    // TensorCodegen - Tensor operations
-    // Note: Main implementations still in this file; module provides interface
-    std::unique_ptr<eshkol::TensorCodegen> tensor_;
-
-    // AutodiffCodegen - Automatic differentiation operations
-    // Note: Main implementations still in this file; module provides interface
-    std::unique_ptr<eshkol::AutodiffCodegen> autodiff_;
-
-    // BindingCodegen - Variable binding operations (define, let, letrec, set!)
-    std::unique_ptr<eshkol::BindingCodegen> binding_;
-
-    // HomoiconicCodegen - Quote and S-expression operations
-    std::unique_ptr<eshkol::HomoiconicCodegen> homoiconic_;
-
-    // TailCallCodegen - Tail call optimization support
-    std::unique_ptr<eshkol::TailCallCodegen> tailcall_;
-
-    // SystemCodegen - System, environment, and file operations
-    std::unique_ptr<eshkol::SystemCodegen> system_;
-
-    // HashCodegen - Hash table operations
-    std::unique_ptr<eshkol::HashCodegen> hash_;
-
-    // LogicWorkspaceCodegen - Consciousness engine: logic vars, KB, factor
-    // graphs, active inference, global workspace, tensor/model serialization
-    std::unique_ptr<eshkol::LogicWorkspaceCodegen> logic_workspace_;
-
-    // ParallelCodegen - Parallel execution primitives (parallel-map, parallel-fold, etc.)
-    std::unique_ptr<eshkol::ParallelCodegen> parallel_;
-
-    // Local type pointers (initialized from TypeSystem for backward compatibility)
-    StructType* tagged_value_type;
-    StructType* dual_number_type;
-    StructType* ad_node_type;
-    StructType* tensor_type;
-    
-    // PHASE 3: Current tape for reverse-mode AD
-    Value* current_tape_ptr;
-    size_t next_node_id;
-    
-    std::unordered_map<std::string, Value*> symbol_table;
-    std::unordered_map<std::string, Value*> global_symbol_table; // Persistent global symbols
-    std::unordered_map<std::string, Function*> function_table;
-    std::unordered_map<const eshkol_ast_t*, Function*> declared_functions_by_ast;
-    std::unordered_map<std::string, std::vector<std::string>> nested_function_captures; // Free vars for nested defines
-    std::unordered_map<std::string, std::string> functions_returning_lambda; // Maps function name -> lambda name it returns
-
-    // NAMED-LET CAPTURE METADATA (#224 architectural fix):
-    // Per-loop list of captured free-var NAMES, keyed by the loop Function*.
-    // Loop functions take captures as EXTRA pointer args after the regular
-    // params.  codegenCall consults this when emitting a non-tail recursive
-    // call to a loop function and appends the corresponding pointers from
-    // the current symbol_table.  Replaces the old GlobalVariable-shuttle
-    // approach which was not thread-safe (two threads invoking the same
-    // closure raced on the global, both reading the second store).
-    // Storage is per-call: the pointer is either the outer's alloca, the
-    // outer's GlobalVariable, the outer's pointer-typed Argument (already a
-    // capture-slot), or — for raw-value Arguments — a freshly alloca'd cell
-    // seeded with the outer's value at the call site.
-    std::unordered_map<llvm::Function*, std::vector<std::string>> named_let_captures;
-
-    // ESCAPED NAMED-LET LOOP PROCEDURE.  A named-let loop function's LLVM
-    // signature is (params..., one capture POINTER per captured free var), so
-    // it can only be entered by a caller that knows the capture list.  When the
-    // loop procedure is used as a first-class VALUE — `(set! g loop)`,
-    // `(cons loop '())`, `(map loop xs)` — codegenVariable used to fall through
-    // to the generic `function_table` path and hand back the bare Function*,
-    // whose capture parameters the closure dispatcher then filled with whatever
-    // happened to be in the argument registers.  Calling the leaked procedure
-    // dereferenced that garbage as a capture cell (SIGSEGV).  These two maps let
-    // codegenVariable build a REAL closure instead: the env holds one tagged
-    // int64 per capture (the address of the shared cell, exactly the convention
-    // `capturePointerTagFromCurrentFunction` already uses), and a per-loop
-    // trampoline re-derefs those slots back into the pointer arguments the loop
-    // function expects.
-    struct NamedLetEscapeInfo {
-        llvm::Function* loop_func = nullptr;
-        std::vector<std::string> captures;
-        uint64_t arity = 0;
-    };
-    std::unordered_map<std::string, NamedLetEscapeInfo> named_let_escapes;
-    std::unordered_map<llvm::Function*, llvm::Function*> named_let_escape_thunks;
-
-    // HoTT TYPE TRACKING: Maps variable names to their compile-time HoTT types
-    // This enables type-directed optimizations when both operand types are known
-    std::unordered_map<std::string, eshkol::hott::TypeId> symbol_hott_types;
-    std::unordered_map<std::string, eshkol::hott::TypeId> global_symbol_hott_types;
-
-    // HoTT PARAMETERIZED TYPE TRACKING: Maps variable names to parameterized types (List<T>, Vector<T>)
-    // This enables element type propagation through car/cdr, vector-ref, etc.
-    std::unordered_map<std::string, eshkol::hott::ParameterizedType> symbol_param_types;
-    std::unordered_map<std::string, eshkol::hott::ParameterizedType> global_symbol_param_types;
-
-    // HoTT FUNCTION RETURN TYPE TRACKING: Maps function names to their return types
-    // Enables type-directed optimization for function call results
-    std::unordered_map<std::string, eshkol::hott::TypeId> function_return_types;
-
-    // LETREC REFACTOR: Set of names to exclude from free variable capture (letrec-bound names)
-    // This is set by BindingCodegen::letrec before generating lambda bindings and cleared after
-    std::set<std::string> letrec_excluded_capture_names;
-
-    // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Set of free vars that codegenNamedLet
-    // arena-moved because they are set!-mutated inside the loop body. When
-    // codegenLambda later captures one of these (it sees the arena pointer as a
-    // pointer-typed Argument `..._cap`), it must POINTER-PASS rather than
-    // by-value load so the mutation is shared.
-    std::set<std::string> mutable_loop_captures_;
-
-    // VARIADIC FUNCTION TRACKING: Maps function name to (fixed_param_count, is_variadic)
-    // For variadic functions, when calling, extra args beyond fixed_param_count are packaged into a list
-    std::unordered_map<std::string, std::pair<uint64_t, bool>> variadic_function_info;
-
-    // Per-AST mutation summaries. Binding decisions ask the same lexical body
-    // once per binding; retaining the flat set! targets turns the common
-    // generated N-binding case from repeated whole-body walks into one pass.
-    std::unordered_map<const eshkol_ast_t*, std::unordered_set<std::string>>
-        flat_mutation_targets_;
-    std::unordered_set<const eshkol_ast_t*> flat_mutation_ineligible_;
-
-    // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
-    // Used when functions are referenced as values (first-class functions) to wrap them in closures
-    std::unordered_map<std::string, uint64_t> function_arity_table;
-
-    // FFI POINTER-ARG GUARD (ESH-0363): the declared parameter type KEYWORDS of
-    // every `extern`, keyed by both the Eshkol-visible name and the real C
-    // symbol (call sites resolve by either).
-    //
-    // The LLVM signature alone cannot tell an FFI pointer parameter from an
-    // internal one — `ptr`, `string` and `char*` all collapse to the same
-    // opaque pointer type, and internal Eshkol functions also take pointer
-    // parameters (closure environments, named-let capture slots). Recording
-    // the declared keyword at `extern` codegen time is what lets the call site
-    // guard exactly the FFI boundary and nothing else.
-    std::unordered_map<std::string, std::vector<std::string>> extern_param_type_names_;
-
-    // True when the emitted module can raise into the hosted error runtime.
-    // Standalone freestanding and wasm32 objects have no hosted exception path
-    // (eshkol_type_error and friends live in the hosted runtime source set), so
-    // the FFI pointer-argument guard — which raises a catchable type error — is
-    // only emitted for hosted native codegen.
-    bool ffiPointerArgGuardEnabled() const {
+bool EshkolLLVMCodeGen::ffiPointerArgGuardEnabled() const {
         return !freestanding_codegen_ && !wasm_codegen_;
     }
 
-    /* R7RS §5.3.1 TOP-LEVEL REDEFINITION.
-     *
-     * "At the top level of a program, a definition
-     *      (define <variable> <expression>)
-     *  has essentially the same effect as the assignment expression
-     *      (set! <variable> <expression>)
-     *  if <variable> is bound to a non-syntax value.  However, if
-     *  <variable> is not bound [...] the definition will bind <variable>
-     *  to a new location before performing the assignment."
-     *
-     * So a top-level name has exactly ONE location, every definition of it
-     * assigns to that location in program order, and every reference reads
-     * the location when it is evaluated — not when it is compiled.
-     *
-     * Eshkol's fast path deliberately violates that in exchange for direct
-     * calls: a `(define (f ...) ...)` becomes an LLVM Function resolved at
-     * the call site through function_table / `<name>_func`, while a
-     * `(define f <expr>)` becomes a tagged_value GlobalVariable resolved
-     * through symbol_table.  Two definitions of one name therefore produced
-     * two independent bindings, and the call site picked between them by
-     * namespace priority and by codegen order rather than by program order.
-     *
-     * This set holds the names that are defined more than once at the top
-     * level of the current compilation unit.  For exactly those names the
-     * fast path is switched off and the R7RS single-location model is used:
-     * the location is a tagged_value global (created in Step 1.5), every
-     * definition — value or procedure — stores into it at its own position
-     * in program order (Step 3), and every reference loads from it.  Single
-     * definitions, which is every name in practice, keep the direct call.
-     */
-    std::unordered_set<std::string> redefined_toplevel_names;
-    std::unordered_set<std::string> toplevel_callee_names;
-
-    /* Names whose top-level binding is reassigned: defined more than once, or
-     * the target of a set! at top-level scope. Such a binding never gets a
-     * static `<name>_func` alias (static_callee_binding.h). Answered lazily
-     * per name from the unit's top-level forms and memoised, so only names
-     * that are actually bound to lambdas pay for the scan. */
-    const eshkol_ast_t* toplevel_asts_for_reassignment = nullptr;
-    size_t num_toplevel_asts_for_reassignment = 0;
-    std::unordered_map<std::string, bool> reassigned_toplevel_memo;
-
-    // ESH-0078: Maps a defined function name to its source body AST, so an AD
-    // operator applied to a NAMED function (via var) can run the same
-    // source-level tensor-flow analysis (adAstUsesTensorOps) that inline
-    // lambdas get. Populated at define codegen; consumed by AutodiffCodegen.
-    std::unordered_map<std::string, const eshkol_ast_t*> function_body_ast;
-
-    // ESH-0187: full DEFINE node per function name (parameters + body), so a
-    // NAMED single-arg function passed to (derivative-n f x K)/(taylor f x K)
-    // can be resolved to (param, body) for P2 compile-time-K monomorphization.
-    std::unordered_map<std::string, const eshkol_ast_t*> function_def_ast;
-
-    // MIGRATED: String interning moved to CodegenContext::interned_strings_
-    // StringIOCodegen::createString() handles string interning now
-
-    // Current function being generated
-    Function* current_function;
-    BasicBlock* main_entry;
-    
-    // Arena management for list operations - GLOBAL ARENA ARCHITECTURE
-    GlobalVariable* global_arena; // Global arena pointer (shared across all scopes)
-    size_t arena_scope_depth; // Track nested arena scopes
-    
-    // PHASE 1 AUTODIFF FIX: Global AD mode flag for runtime context detection
-    GlobalVariable* ad_mode_active; // Global flag: true when executing in AD context
-
-    // PHASE 1 AUTODIFF FIX: Global tape pointer for runtime graph recording
-    GlobalVariable* current_ad_tape; // Global tape pointer: set by gradient/jacobian/etc operators
-
-    // NESTED GRADIENT FIX: Tape stack for arbitrary-depth nested gradients
-    // Allows inner gradients to save/restore outer gradient context
-    static const size_t MAX_TAPE_DEPTH = 32; // Support up to 32 levels of nesting
-    GlobalVariable* ad_tape_stack;  // Array of tape pointers [MAX_TAPE_DEPTH]
-    GlobalVariable* ad_tape_depth;  // Current stack depth (0 = no active gradient)
-    GlobalVariable* ad_pert_level;  // ESH-0070 forward-mode perturbation level (runtime)
-    GlobalVariable* ad_tower_active; // ESH-0190 P5: Taylor-tower diff depth (>0 while active)
-    GlobalVariable* ad_tower_order;  // ESH-0190 P5: current innermost tower order
-
-    // DOUBLE BACKWARD: Storage for outer AD node when in nested gradient
-    // Used to connect inner gradient's result to outer's computation graph
-    GlobalVariable* outer_ad_node_storage;  // Pointer to outer AD node (or null if not nested)
-    GlobalVariable* outer_ad_node_to_inner; // Maps outer AD node to inner variable node
-    GlobalVariable* outer_grad_accumulator; // AD node accumulating gradient on outer tape
-    GlobalVariable* inner_var_node_ptr;     // Pointer to the inner variable node (for matching)
-    GlobalVariable* gradient_x_degree;      // Polynomial degree of gradient in x (for double backward)
-
-    // N-DIMENSIONAL DERIVATIVES: Stack of outer AD nodes for arbitrary depth nesting
-    GlobalVariable* outer_ad_node_stack;    // Array of outer AD node pointers [MAX_TAPE_DEPTH]
-    GlobalVariable* outer_ad_node_depth;    // Current depth in the outer AD node stack
-
-    // Note: Arena functions are now in MemoryCodegen (mem->)
-    // Forwarding accessors are provided below for backward compatibility
-
-    // Deep equality comparison for nested lists
-    Function* eshkol_deep_equal_func;
-
-    // Unified display system (Phase 4 - homoiconic display)
-    Function* eshkol_display_value_func;
-    Function* eshkol_lambda_registry_init_func;
-    Function* eshkol_lambda_registry_add_func;
-    Function* eshkol_lambda_registry_lookup_func;
-    
-    // Recursive tensor display helper (N-dimensional nested structure)
-    Function* display_tensor_recursive_func;
-
-    // Cached LLVM types (avoid repeated lookups - massive performance win)
-    // Note: C library functions are now in FunctionCache (funcs->)
-    IntegerType* int64_type;
-    IntegerType* int32_type;
-    IntegerType* int16_type;
-    IntegerType* int8_type;
-    IntegerType* int1_type;
-    IntegerType* size_type;    // i32 on wasm32, i64 on native — for size_t params
-    IntegerType* intptr_type;  // i32 on wasm32, i64 on native — for intptr_t (PtrToInt, closure func_ptr)
-    Type* double_type;
-    Type* void_type;
-    Type* ptr_type;
-
-    // Helper: create a size_t constant (target-dependent width)
-    Value* sizeConst(uint64_t n) {
+Value* EshkolLLVMCodeGen::sizeConst(uint64_t n) {
         return ConstantInt::get(size_type, n);
     }
 
-    // Helper: create an intptr_t constant (target-dependent width)
-    Value* intPtrConst(uint64_t n) {
+Value* EshkolLLVMCodeGen::intPtrConst(uint64_t n) {
         return ConstantInt::get(intptr_type, n);
     }
 
-    // Helper: truncate or extend a value to intptr_t width
-    Value* toIntPtr(Value* v) {
+Value* EshkolLLVMCodeGen::toIntPtr(Value* v) {
         if (v->getType() == intptr_type) return v;
         if (v->getType()->isIntegerTy()) {
             return builder->CreateIntCast(v, intptr_type, false);
@@ -2035,14 +1597,14 @@ private:
         return v;
     }
 
-    void markGlobalValueUsed(GlobalValue* value) {
+void EshkolLLVMCodeGen::markGlobalValueUsed(GlobalValue* value) {
         if (!value) return;
         SmallVector<GlobalValue*, 1> used_values;
         used_values.push_back(value);
         appendToUsed(*module, used_values);
     }
 
-    bool applyExportedSymbolName(const char* export_name,
+bool EshkolLLVMCodeGen::applyExportedSymbolName(const char* export_name,
                                  const char* source_name,
                                  GlobalValue* value) {
         if (!value || !export_name || g_repl_mode_enabled) {
@@ -2066,7 +1628,7 @@ private:
         return true;
     }
 
-    void applyDefineObjectAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def,
+void EshkolLLVMCodeGen::applyDefineObjectAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def,
                                      GlobalObject* object) {
         if (!object) return;
 
@@ -2097,7 +1659,7 @@ private:
         }
     }
 
-    void applyDefineVariableAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def) {
+void EshkolLLVMCodeGen::applyDefineVariableAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def) {
         if (!def.name) return;
 
         Value* value = nullptr;
@@ -2116,7 +1678,7 @@ private:
         }
     }
 
-    void applyDefineFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def,
+void EshkolLLVMCodeGen::applyDefineFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->define_op)& def,
                                        Function* function) {
         if (!function) return;
         applyDefineObjectAttributes(def, function);
@@ -2125,7 +1687,7 @@ private:
         }
     }
 
-    void applyExternFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->extern_op)& ext,
+void EshkolLLVMCodeGen::applyExternFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->extern_op)& ext,
                                        Function* function) {
         if (!function) return;
         if (ext.is_weak) {
@@ -2136,68 +1698,21 @@ private:
         }
     }
 
-    // LIBRARY MODE: When true, skip main function creation and export all symbols
-    bool library_mode;
-    bool freestanding_codegen_;
-    // SHARED-LIBRARY EXPORT ABI: true only for the linked --shared-lib
-    // flavour.  See g_shared_library_exports and
-    // emitSharedLibraryExportWrappers().
-    bool shared_library_exports_ = false;
-    // WASM MODE: True when the module targets a standalone
-    // wasm32-unknown-unknown object. Like freestanding native, a standalone
-    // wasm module has no hosted REPL to introspect function sources, so the
-    // homoiconic display registry is skipped. Skipping it is also what lets
-    // the wasm dead-strip (internalize + globalDCE) remove unused stdlib:
-    // the registry would otherwise address-take (ptrtoint) every top-level
-    // function from main(), pinning the entire stdlib against DCE.
-    bool wasm_codegen_ = false;
-    bool fatal_codegen_error_;
-
-    // The homoiconic display registry eagerly registers every top-level
-    // function (name + source S-expression + function pointer) so a hosted
-    // program can `(display <fn>)` and see its source. Standalone freestanding
-    // and wasm objects have no such host, and the eager registration both
-    // bloats the module and pins every function against dead-code elimination.
-    bool homoiconicRegistryEnabled() const {
+bool EshkolLLVMCodeGen::homoiconicRegistryEnabled() const {
         return !freestanding_codegen_ && !wasm_codegen_;
     }
 
-    // SW-10: the cooperative execution-timeout poll on the tail-call back-edge
-    // only exists where something can request an interrupt. The requester is
-    // the hosted watchdog thread in lib/core/resource_limits.cpp, which is not
-    // in the freestanding source set and is not linked into a standalone wasm
-    // module at all — so in those profiles the poll can never observe an
-    // interrupt, and emitting it only creates a dependency on a symbol the
-    // profile does not have. On wasm32 that dependency is an `env` import the
-    // JS glue would have to stub, and the stub would then be called across the
-    // JS boundary on every iteration of every loop in the program.
-    //
-    // Same direction as the VM's limit installer (see
-    // eshkol_vm_install_limits): a build with no hosted runtime to push the
-    // configuration in keeps the compiled-in default and links nothing extra.
-    bool timeoutInterruptPollEnabled() const {
+bool EshkolLLVMCodeGen::timeoutInterruptPollEnabled() const {
         return !freestanding_codegen_ && !wasm_codegen_;
     }
 
-    // Module prefix for unique lambda naming (prevents symbol collision when linking)
-    std::string module_prefix;
-
-    void markFatalCodegenError() __attribute__((noinline, used)) {
+void EshkolLLVMCodeGen::markFatalCodegenError() {
         fatal_codegen_error_ = true;
     }
 
-    // DWARF DEBUG INFO: DIBuilder and metadata for source-level debugging
-    std::unique_ptr<DIBuilder> di_builder_;
-    DICompileUnit* di_cu_ = nullptr;
-    DIFile* di_file_ = nullptr;
-    std::vector<DIScope*> di_scope_stack_;
-    bool emit_debug_info_ = false;
-    std::string source_filename_;
-
-public:
-    EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false,
-                       const char* target_triple = nullptr,
-                       bool is_freestanding_codegen = false) {
+EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mode,
+                       const char* target_triple,
+                       bool is_freestanding_codegen) {
         // Determine target BEFORE any type initialization
         bool is_wasm32 = target_triple &&
                           std::string(target_triple).find("wasm32") != std::string::npos;
@@ -2253,15 +1768,31 @@ public:
         InitializeAllAsmParsers();
         InitializeAllAsmPrinters();
 
-        // Set target triple (use WASM triple if target_triple param is set)
-        std::string target_triple_str = target_triple ? std::string(target_triple)
-                                                       : sys::getDefaultTargetTriple();
+        // Set target triple (use WASM triple if target_triple param is set).
+        // A bare-metal --target resolves through the embedded target table
+        // to its canonical LLVM triple and machine description.
+        const eshkol::profile::EmbeddedTarget* embedded_target =
+            target_triple ? eshkol::profile::find_embedded_target(target_triple) : nullptr;
+        std::string target_triple_str = embedded_target
+            ? std::string(embedded_target->llvm_triple)
+            : (target_triple ? std::string(target_triple) : sys::getDefaultTargetTriple());
 #if LLVM_VERSION_MAJOR >= 21
         Triple target_triple_obj(target_triple_str);
         module->setTargetTriple(target_triple_obj);
 #else
+        Triple target_triple_obj(target_triple_str);
         module->setTargetTriple(target_triple_str);
 #endif
+        if (embedded_target) {
+            module->addModuleFlag(Module::Error, kEmbeddedTargetModuleFlag,
+                                  MDString::get(*context, embedded_target->name));
+            if (target_triple_obj.isRISCV() && embedded_target->abi[0] != '\0') {
+                // The RISC-V backend checks this flag against the
+                // TargetMachine's ABI name, exactly as for clang -mabi=.
+                module->addModuleFlag(Module::Error, "target-abi",
+                                      MDString::get(*context, embedded_target->abi));
+            }
+        }
 
         // CRITICAL: Set DataLayout early so getTypeAllocSize returns correct values
         // This must be done before any allocations that depend on struct sizes
@@ -2277,20 +1808,33 @@ public:
         const Target* target = TargetRegistry::lookupTarget(target_triple_str, error);
 #endif
         if (target && !is_wasm32) {
-            // Only set data layout for native targets — WASM data layout is set in compile step
+            // Only set data layout for native targets — WASM data layout is set in compile step.
+            // Host CPU/features describe only the host triple; any other
+            // triple uses its embedded description or the generic baseline,
+            // the same rule the object emitter applies.
             TargetOptions options;
+            std::string cpu_name = "generic";
+            std::string feature_string;
+            if (embedded_target) {
+                cpu_name = embedded_target->cpu;
+                feature_string = embedded_target->features;
+                applyEmbeddedTargetOptions(*embedded_target, options);
+            } else if (target_triple_str == g_cached_target_triple) {
+                cpu_name = g_cached_cpu_name;
+                feature_string = g_cached_features;
+            }
             std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 21
-                target->createTargetMachine(target_triple_obj, g_cached_cpu_name, g_cached_features,
+                target->createTargetMachine(target_triple_obj, cpu_name, feature_string,
                                            options, Reloc::PIC_));
 #else
-                target->createTargetMachine(target_triple_str, g_cached_cpu_name, g_cached_features,
+                target->createTargetMachine(target_triple_str, cpu_name, feature_string,
                                            options, Reloc::PIC_));
 #endif
             if (target_machine) {
                 module->setDataLayout(target_machine->createDataLayout());
                 eshkol_debug("Set data layout for target: %s (cpu: %s)",
-                            target_triple_str.c_str(), g_cached_cpu_name.c_str());
+                            target_triple_str.c_str(), cpu_name.c_str());
             }
         }
 
@@ -2298,10 +1842,7 @@ public:
         registerBuiltinReturnTypes();
     }
 
-    // Register return types for builtin functions
-    void registerBuiltinReturnTypes();
-    
-    std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts) {
+std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeGen::generateIR(const eshkol_ast_t* asts, size_t num_asts) {
         try {
             // Reset the per-compilation name uniquifier so two compilations
             // of the same source produce identical IR (reproducible builds).
@@ -2353,6 +1894,16 @@ public:
             // top-level statement order. Flatten once, right after macro
             // expansion, so every downstream pass sees a clean flat list.
             eshkol::splice_toplevel_forms(expanded_asts);   // R7RS 5.1: recursive
+
+            if (!eshkol_config_get()->unsafe_mode && !eshkol::strictVerdictApplied()) {
+                const auto errors = eshkol::checkOwnership(expanded_asts, nullptr,
+                    eshkol::OwnershipTransaction::current());
+                if (!errors.empty()) {
+                    eshkol_error("Ownership analysis failed:");
+                    for (const auto& error : errors) eshkol_error("%s", error.c_str());
+                    return std::make_pair(nullptr, nullptr);
+                }
+            }
 
             // Resolve the expanded unit against the shared NodeId-keyed
             // semantic substrate before backend-specific lowering. The result
@@ -2634,13 +2185,17 @@ public:
                     ConstantInt::get(int64_type, 0),
                     "__ad_pert_level"
                 );
-                // ESH-0190 P5: Taylor-tower differentiation context (internal, zero init)
+                // Taylor-tower/level nesting depth: one process-wide counter,
+                // defined in runtime_autodiff.cpp, in every compilation mode. A
+                // pass opened in one module (the precompiled stdlib) and a pass
+                // opened in another (the user program) are levels of the same
+                // nest, so both must read and write the same depth.
                 ad_tower_active = new GlobalVariable(
-                    *module, int64_type, false, GlobalValue::InternalLinkage,
-                    ConstantInt::get(int64_type, 0), "__ad_tower_active");
+                    *module, int64_type, false, GlobalValue::ExternalLinkage,
+                    nullptr, "__ad_tower_active");
                 ad_tower_order = new GlobalVariable(
-                    *module, int64_type, false, GlobalValue::InternalLinkage,
-                    ConstantInt::get(int64_type, 0), "__ad_tower_order");
+                    *module, int64_type, false, GlobalValue::ExternalLinkage,
+                    nullptr, "__ad_tower_order");
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (internal with null init)
                 outer_ad_node_storage = new GlobalVariable(
@@ -2721,6 +2276,27 @@ public:
                 eshkol::hott::TypeChecker type_checker(type_env,
                     cfg->strict_types, cfg->unsafe_mode);
                 seedTypeCheckerWithReplFunctions(type_checker, type_env);
+                type_checker.beginProgram(asts_to_use, num_asts_to_use);
+
+                // `??` synthesis holes (ADR-0052): the checker reports each
+                // hole with its expected type while its scope is live; after a
+                // top-level form is checked, its holes are replaced by their
+                // best well-typed completions and the form is checked again,
+                // so code generation only ever sees the completed program.
+                eshkol::hott::HoleSynthesizer hole_synthesizer;
+                type_checker.setHoleObserver(&hole_synthesizer);
+                size_t unfilled_holes = 0;
+                auto check_with_holes = [&](eshkol_ast_t* form) {
+                    auto result = type_checker.synthesize(form);
+                    if (!hole_synthesizer.pending()) return result;
+                    unfilled_holes += hole_synthesizer.fill(
+                        g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                        g_source_text.empty() ? nullptr : g_source_text.c_str());
+                    type_checker.setHoleObserver(nullptr);
+                    result = type_checker.synthesize(form);
+                    type_checker.setHoleObserver(&hole_synthesizer);
+                    return result;
+                };
 
                 // Type check all top-level forms (definitions AND expressions)
                 // Note: const_cast is safe here because we're intentionally annotating
@@ -2733,7 +2309,9 @@ public:
                         }
                         // Then process regular definitions
                         else if (asts_to_use[i].operation.op == ESHKOL_DEFINE_OP) {
-                            auto result = type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                            hole_synthesizer.beginDefinition(asts_to_use[i].operation.define_op.name
+                                ? asts_to_use[i].operation.define_op.name : "");
+                            auto result = check_with_holes(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                             if (!result.success) {
                                 // Type error - report via unified enforcement point
                                 std::string msg = std::string("in '") +
@@ -2748,13 +2326,48 @@ public:
                         // Type check all other top-level expressions (function calls, etc.)
                         // This catches type mismatches at call sites, dimension errors, etc.
                         else {
-                            type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                            hole_synthesizer.beginDefinition("");
+                            check_with_holes(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                         }
                     } else {
                         // Non-op top-level forms (literals, variables, etc.)
-                        type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                        hole_synthesizer.beginDefinition("");
+                        check_with_holes(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                     }
                 }
+                type_checker.setHoleObserver(nullptr);
+                if (unfilled_holes > 0) {
+                    eshkol_error("Refusing to generate code: %zu synthesis hole(s) have no "
+                                 "well-typed completion", unfilled_holes);
+                    return std::make_pair(nullptr, nullptr);
+                }
+
+                // Refinement types (ADR-0044): discharge every obligation the
+                // program's (Refine T phi) annotations create. A refinement that
+                // is violated, or not proved inside an annotated function, is
+                // fatal in every mode but --unsafe, like a linearity violation;
+                // gradual-boundary and undecided findings went through
+                // reportTypeIssue and are governed by --strict-types below.
+                // Programs without refinement types are not walked.
+                {
+                    const auto refinement_options =
+                        eshkol::hott::RefinementOptions::fromEnvironment(cfg->strict_types,
+                                                                        cfg->unsafe_mode);
+                    const auto refinements = eshkol::hott::checkProgramRefinements(
+                        type_checker, asts_to_use, num_asts_to_use, refinement_options);
+                    if (refinements.errors > 0 && !cfg->unsafe_mode) {
+                        eshkol_error("HoTT: %zu refinement error(s) detected",
+                                     refinements.errors);
+                        eshkol_error("Refusing to generate code for a program whose "
+                                     "refinement types do not hold");
+                        return std::make_pair(nullptr, nullptr);
+                    }
+                }
+
+                // Effect rows (ADR-0045): infer every procedure's latent
+                // effects and check them against `declare-effects`. Findings
+                // go through the same enforcement point as type errors.
+                eshkol::effects::checkProgram(asts_to_use, num_asts_to_use, type_checker);
 
                 // A linearity violation is fatal in EVERY mode but --unsafe.
                 // Checked before the --strict-types branch below because it is
@@ -2770,12 +2383,47 @@ public:
                 // codegen outright rather than emit a binary for a program
                 // already rejected, so nothing downstream can trust $? or the
                 // existence of the output and certify a clone.
+                // A HoTT kernel rejection is fatal in every mode (ADR-0043): a
+                // proof the kernel does not accept is not a proof, and an
+                // unevaluated hott-eval has no value to compile.
+                if (type_checker.hasHottRejections()) {
+                    eshkol_error("HoTT: %zu form(s) rejected by the cubical kernel",
+                                 type_checker.hottRejections());
+                    eshkol_error("Refusing to generate code for a program whose HoTT forms do not check");
+                    return std::make_pair(nullptr, nullptr);
+                }
                 if (type_checker.hasLinearityViolations() && !cfg->unsafe_mode) {
                     eshkol_error("HoTT: %zu linearity violation(s) detected "
                                  "(linear types are use-exactly-once)",
                                  type_checker.linearityViolations());
                     eshkol_error("Refusing to generate code for a program that "
                                  "violates linear (no-cloning) typing");
+                    return std::make_pair(nullptr, nullptr);
+                }
+
+                // Row, rank and protocol violations (ADR-0046) are proofs of
+                // ill-typing in the same sense, and refuse codegen the same way.
+                if (type_checker.hasStructuralViolations() && !cfg->unsafe_mode) {
+                    eshkol_error("HoTT: %zu structural type violation(s) detected "
+                                 "(records, higher-rank types, session protocols)",
+                                 type_checker.structuralViolations());
+                    eshkol_error("Refusing to generate code for a program that "
+                                 "violates its structural types");
+                    return std::make_pair(nullptr, nullptr);
+                }
+
+                // A failed obligation of the dependent fragment (ADR-0042) is
+                // fatal in every mode but --unsafe, for the same reason as a
+                // linearity violation: the program states a dependent type
+                // (an index, a universe, a Pi or Sigma) and the checker has
+                // proved it does not hold. Only programs that write
+                // dependent types can incur one, so gradual programs are
+                // unaffected.
+                if (type_checker.hasObligationViolations() && !cfg->unsafe_mode) {
+                    eshkol_error("HoTT: %zu dependent type obligation(s) not met",
+                                 type_checker.obligationViolations());
+                    eshkol_error("Refusing to generate code for a program whose dependent "
+                                 "types do not hold");
                     return std::make_pair(nullptr, nullptr);
                 }
 
@@ -3437,33 +3085,7 @@ public:
 
                 // Step 4: Generate S-expressions for lambdas
                 if (!pending_lambda_sexprs.empty()) {
-                    for (size_t j = 0; j < pending_lambda_sexprs.size(); j++) {
-                        const auto& meta = pending_lambda_sexprs[j];
-                        Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                        std::string sexpr_key = meta.lambda_name + "_sexpr";
-                        GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                        if (!sexpr_global) {
-                            sexpr_global = new GlobalVariable(
-                                *module, int64_type, false,
-                                sexprGlobalLinkage(library_mode),
-                                ConstantInt::get(int64_type, 0),
-                                sexpr_key
-                            );
-                        }
-                        builder->CreateStore(sexpr_ptr, sexpr_global);
-                        global_symbol_table[sexpr_key] = sexpr_global;
-
-                        // Register this lambda in the registry for homoiconic display
-                        Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                        if (lambda_func) {
-                            Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                            Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                            builder->CreateCall(eshkol_lambda_registry_add_func,
-                                {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                            eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                        }
-                    }
-                    pending_lambda_sexprs.clear();
+                    emitPendingLambdaRegistrations(arena_ptr);
 
                     // CRITICAL: Create S-expression aliases for variable-bound lambdas
                     // This copies lambda_sexpr values to var_sexpr globals AFTER they're populated
@@ -3534,6 +3156,7 @@ public:
             }
 
             pruneUnusedFreestandingDeclarations();
+            markFreestandingNoUnwind();
 
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
@@ -3556,6 +3179,27 @@ public:
             std::string ir_str;
             raw_string_ostream error_stream(error_str);
             raw_string_ostream ir_stream(ir_str);
+            // An unconditional no-return emission continues in a fresh block
+            // (eshkol::continueAfterNoReturn). An emitter that returned to its
+            // caller without doing so shows up here as a block with
+            // instructions behind its first `unreachable`; name each one.
+            const auto past_unreachable = eshkol::blocksPastUnreachable(*module);
+            for (const auto& past : past_unreachable) {
+                eshkol_error("function '%s', block '%s': %u instruction(s) emitted after `unreachable`; "
+                             "a no-return emission must continue in a fresh block (continueAfterNoReturn)",
+                             past.function->getName().str().c_str(),
+                             past.block->getName().str().c_str(),
+                             past.trailing_instructions);
+            }
+            if (!past_unreachable.empty()) {
+                if (std::getenv("ESHKOL_DUMP_IR_ON_VERIFY_FAIL")) {
+                    module->print(llvm::errs(), nullptr);
+                }
+                eshkol_error("LLVM module verification failed: %zu block(s) continue after `unreachable`",
+                             past_unreachable.size());
+                return std::make_pair(nullptr, nullptr);
+            }
+
             if (verifyModule(*module, &error_stream)) {
                 // Diagnostic: with ESHKOL_DUMP_IR_ON_VERIFY_FAIL set, print the whole module
                 // before failing. The verifier names the function and the block; it does
@@ -3576,23 +3220,28 @@ public:
             return std::make_pair(nullptr, nullptr);
         }
     }
-    
-private:
-    // C library function getters (forwarding to FunctionCache)
-    Function* getStrlenFunc() { return funcs->getStrlen(); }
-    Function* getMallocFunc() { return funcs->getMalloc(); }
-    Function* getMemcpyFunc() { return funcs->getMemcpy(); }
-    Function* getMemsetFunc() { return funcs->getMemset(); }
-    Function* getStrcmpFunc() { return funcs->getStrcmp(); }
-    Function* getStrcpyFunc() { return funcs->getStrcpy(); }
-    Function* getStrcatFunc() { return funcs->getStrcat(); }
-    Function* getStrstrFunc() { return funcs->getStrstr(); }
-    Function* getSnprintfFunc() { return funcs->getSnprintf(); }
-    Function* getStrtodFunc() { return funcs->getStrtod(); }
 
-    void createBuiltinFunctions();
+Function* EshkolLLVMCodeGen::getStrlenFunc() { return funcs->getStrlen(); }
 
-    void registerArenaFunctions() __attribute__((noinline, used)) {
+Function* EshkolLLVMCodeGen::getMallocFunc() { return funcs->getMalloc(); }
+
+Function* EshkolLLVMCodeGen::getMemcpyFunc() { return funcs->getMemcpy(); }
+
+Function* EshkolLLVMCodeGen::getMemsetFunc() { return funcs->getMemset(); }
+
+Function* EshkolLLVMCodeGen::getStrcmpFunc() { return funcs->getStrcmp(); }
+
+Function* EshkolLLVMCodeGen::getStrcpyFunc() { return funcs->getStrcpy(); }
+
+Function* EshkolLLVMCodeGen::getStrcatFunc() { return funcs->getStrcat(); }
+
+Function* EshkolLLVMCodeGen::getStrstrFunc() { return funcs->getStrstr(); }
+
+Function* EshkolLLVMCodeGen::getSnprintfFunc() { return funcs->getSnprintf(); }
+
+Function* EshkolLLVMCodeGen::getStrtodFunc() { return funcs->getStrtod(); }
+
+void EshkolLLVMCodeGen::registerArenaFunctions() {
         // Register arena functions in function_table for name-based lookups
         function_table["arena_create"] = mem->getArenaCreate();
         function_table["arena_destroy"] = mem->getArenaDestroy();
@@ -3632,55 +3281,70 @@ private:
         }
     }
 
-    // Note: Old createArenaFunctions was ~600 lines - now in MemoryCodegen
+Function* EshkolLLVMCodeGen::getArenaCreateFunc() { return mem->getArenaCreate(); }
 
-    // Arena function accessors (forwarding to MemoryCodegen)
-    Function* getArenaCreateFunc() { return mem->getArenaCreate(); }
-    Function* getGlobalArenaFunc() { return mem->getGlobalArena(); }
-    Function* getArenaDestroyFunc() { return mem->getArenaDestroy(); }
-    Function* getArenaAllocateFunc() { return mem->getArenaAllocate(); }
-    Function* getArenaPushScopeFunc() { return mem->getArenaPushScope(); }
-    Function* getArenaPopScopeFunc() { return mem->getArenaPopScope(); }
-    Function* getArenaAllocateConsCellFunc() { return mem->getArenaAllocateConsCell(); }
-    Function* getArenaAllocateClosureFunc() { return mem->getArenaAllocateClosure(); }
-    Function* getArenaAllocateClosureWithHeaderFunc() { return mem->getArenaAllocateClosureWithHeader(); }
-    Function* getArenaAllocateTaggedConsCellFunc() { return mem->getArenaAllocateTaggedConsCell(); }
-    Function* getArenaAllocateConsWithHeaderFunc() { return mem->getArenaAllocateConsWithHeader(); }
-    Function* getTaggedConsGetInt64Func() { return mem->getTaggedConsGetInt64(); }
-    Function* getTaggedConsGetDoubleFunc() { return mem->getTaggedConsGetDouble(); }
-    Function* getTaggedConsGetPtrFunc() { return mem->getTaggedConsGetPtr(); }
-    Function* getTaggedConsSetInt64Func() { return mem->getTaggedConsSetInt64(); }
-    Function* getTaggedConsSetDoubleFunc() { return mem->getTaggedConsSetDouble(); }
-    Function* getTaggedConsSetPtrFunc() { return mem->getTaggedConsSetPtr(); }
-    Function* getTaggedConsSetNullFunc() { return mem->getTaggedConsSetNull(); }
-    Function* getTaggedConsGetTypeFunc() { return mem->getTaggedConsGetType(); }
-    Function* getTaggedConsGetFlagsFunc() { return mem->getTaggedConsGetFlags(); }
-    Function* getTaggedConsSetTaggedValueFunc() { return mem->getTaggedConsSetTaggedValue(); }
-    Function* getTaggedConsGetTaggedValueFunc() { return mem->getTaggedConsGetTaggedValue(); }
-    Function* getArenaAllocateTapeFunc() { return mem->getArenaAllocateTape(); }
-    Function* getArenaTapeAddNodeFunc() { return mem->getArenaTapeAddNode(); }
-    Function* getArenaTapeResetFunc() { return mem->getArenaTapeReset(); }
-    Function* getArenaTapeGetNodeFunc() { return mem->getArenaTapeGetNode(); }
-    Function* getArenaTapeGetNodeCountFunc() { return mem->getArenaTapeGetNodeCount(); }
-    Function* getArenaAllocateAdNodeFunc() { return mem->getArenaAllocateAdNode(); }
+Function* EshkolLLVMCodeGen::getGlobalArenaFunc() { return mem->getGlobalArena(); }
 
-    Value* unavailableParallelBuiltin(const std::string& func_name) {
+Function* EshkolLLVMCodeGen::getArenaDestroyFunc() { return mem->getArenaDestroy(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateFunc() { return mem->getArenaAllocate(); }
+
+Function* EshkolLLVMCodeGen::getArenaPushScopeFunc() { return mem->getArenaPushScope(); }
+
+Function* EshkolLLVMCodeGen::getArenaPopScopeFunc() { return mem->getArenaPopScope(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateConsCellFunc() { return mem->getArenaAllocateConsCell(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateClosureFunc() { return mem->getArenaAllocateClosure(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateClosureWithHeaderFunc() { return mem->getArenaAllocateClosureWithHeader(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateTaggedConsCellFunc() { return mem->getArenaAllocateTaggedConsCell(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateConsWithHeaderFunc() { return mem->getArenaAllocateConsWithHeader(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsGetInt64Func() { return mem->getTaggedConsGetInt64(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsGetDoubleFunc() { return mem->getTaggedConsGetDouble(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsGetPtrFunc() { return mem->getTaggedConsGetPtr(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsSetInt64Func() { return mem->getTaggedConsSetInt64(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsSetDoubleFunc() { return mem->getTaggedConsSetDouble(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsSetPtrFunc() { return mem->getTaggedConsSetPtr(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsSetNullFunc() { return mem->getTaggedConsSetNull(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsGetTypeFunc() { return mem->getTaggedConsGetType(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsGetFlagsFunc() { return mem->getTaggedConsGetFlags(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsSetTaggedValueFunc() { return mem->getTaggedConsSetTaggedValue(); }
+
+Function* EshkolLLVMCodeGen::getTaggedConsGetTaggedValueFunc() { return mem->getTaggedConsGetTaggedValue(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateTapeFunc() { return mem->getArenaAllocateTape(); }
+
+Function* EshkolLLVMCodeGen::getArenaTapeAddNodeFunc() { return mem->getArenaTapeAddNode(); }
+
+Function* EshkolLLVMCodeGen::getArenaTapeResetFunc() { return mem->getArenaTapeReset(); }
+
+Function* EshkolLLVMCodeGen::getArenaTapeGetNodeFunc() { return mem->getArenaTapeGetNode(); }
+
+Function* EshkolLLVMCodeGen::getArenaTapeGetNodeCountFunc() { return mem->getArenaTapeGetNodeCount(); }
+
+Function* EshkolLLVMCodeGen::getArenaAllocateAdNodeFunc() { return mem->getArenaAllocateAdNode(); }
+
+Value* EshkolLLVMCodeGen::unavailableParallelBuiltin(const std::string& func_name) {
         eshkol_error("Builtin '%s' is not available in freestanding codegen",
                      func_name.c_str());
         markFatalCodegenError();
         return nullptr;
     }
 
-    // Legacy code removed - arena functions are now in MemoryCodegen (~600 lines saved)
-    // The old createArenaFunctions() method has been replaced by:
-    //   1. MemoryCodegen construction in generateIR()
-    //   2. registerArenaFunctions() for function_table population
-    //   3. Forwarding accessors above for direct function pointer access
-
-    // ===== OLD ARENA FUNCTION DECLARATIONS REMOVED (see memory_codegen.cpp) =====
-    // Approximately 560 lines of arena function declarations were moved to MemoryCodegen
-
-    void createDisplayTensorRecursiveFunction() {
+void EshkolLLVMCodeGen::createDisplayTensorRecursiveFunction() {
         // Recursive helper function for displaying tensors with proper dimensional nesting
         // Signature: void displayTensorRecursive(double* elements, uint64_t* dims, uint64_t num_dims, uint64_t current_dim, uint64_t offset)
         
@@ -3899,22 +3563,8 @@ private:
         function_table["displayTensorRecursive"] = display_tensor_recursive_func;
         eshkol_debug("Created recursive N-dimensional tensor display helper function");
     }
-    
-    /* R7RS §5.3.1: find the top-level names that are defined more than once
-     * in this compilation unit.  Those are the names whose binding must be a
-     * single mutable location assigned in program order (see the
-     * redefined_toplevel_names comment) instead of a compile-time-resolved
-     * direct call.
-     *
-     * `:external` defines are skipped: they are the precompiled stdlib's
-     * bindings, re-materialised into this AST by process_requires with their
-     * bodies living in the linked object.  A user define of the same name is
-     * a *shadow* of a separately compiled unit, not an in-unit redefinition,
-     * and is already handled by the user-shadows-builtin path (audit Bug G).
-     * Counting them here would drag every stdlib-shadowing call onto the
-     * indirect path for no semantic gain.
-     */
-    void collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts) {
+
+void EshkolLLVMCodeGen::collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts) {
         redefined_toplevel_names.clear();
         toplevel_callee_names.clear();
         toplevel_asts_for_reassignment = asts;
@@ -3962,18 +3612,12 @@ private:
         }
     }
 
-    bool isRedefinedTopLevelName(const char* name) const {
+bool EshkolLLVMCodeGen::isRedefinedTopLevelName(const char* name) const {
         return name && name[0] &&
                redefined_toplevel_names.find(name) != redefined_toplevel_names.end();
     }
 
-    /* Is the top-level binding of `name` reassigned in this compilation
-     * unit: defined more than once, or the target of a set! anywhere at
-     * top-level scope (inside any top-level form, unless a nearer binding of
-     * the same name shadows it)? A top-level lambda binding of such a name
-     * must not be resolved statically: the lambda it was created with is not
-     * what the name denotes after the assignment. */
-    bool isReassignedTopLevelName(const char* name) {
+bool EshkolLLVMCodeGen::isReassignedTopLevelName(const char* name) {
         if (!name || !name[0]) return false;
         if (!g_repl_mode_enabled && toplevel_callee_names.count(name) == 0) return false;
         if (isRedefinedTopLevelName(name)) return true;
@@ -3989,20 +3633,7 @@ private:
         return reassigned;
     }
 
-    /* Wrap a top-level LLVM function in a zero-capture arena closure and
-     * return it as a CALLABLE tagged_value — the first-class value of a
-     * procedure definition.  Shared by the function-as-value path in
-     * codegenVariable and by the R7RS §5.3.1 redefinition stores, so both
-     * produce byte-identical closures (same packed_info / return_type_info
-     * layout the closure-call path decodes). */
-    /* Is `name` a REST-ARG (variadic) procedure, and if so how many FIXED
-     * parameters does it take? Consults both registries, exactly as the call
-     * path in codegenCall does: `variadic_function_info` for the ordinary
-     * compile, `g_repl_variadic_functions` for REPL/`-e` batches. Both are
-     * keyed by the user-visible name ("append"), never by the mangled LLVM
-     * symbol REPL hot-reload produces ("append__rv0"), so callers pass the
-     * user name first and the mangled form only as a fallback. */
-    bool lookupVariadicProcedure(const std::string& name,
+bool EshkolLLVMCodeGen::lookupVariadicProcedure(const std::string& name,
                                  uint64_t* fixed_params_out) {
         auto it = variadic_function_info.find(name);
         if (it != variadic_function_info.end() && it->second.second) {
@@ -4020,34 +3651,10 @@ private:
         return false;
     }
 
-    /* Turn an LLVM function into a first-class Eshkol callable.
-     *
-     * SW-27 — the variadic arguments are not decoration. A rest-arg procedure
-     * `(define (append . lists) …)` is called through a DIFFERENT ABI from a
-     * fixed-arity one: the closure dispatcher (codegenClosureCall) conses the
-     * caller's surplus arguments into a list and passes `fixed_params` values
-     * plus that one list. It selects that path from the closure metadata —
-     * bit 63 of `packed_info`, which the allocator turns into
-     * CLOSURE_FLAG_VARIADIC, and, for the 0-capture case where `env` is null,
-     * the `input_arity` byte, which it reads back as `fixed_params`.
-     *
-     * Before this, every function-as-value site packed a plain arity and no
-     * variadic bit, so a rest-arg procedure referenced as a value was called
-     * as if fixed-arity: its rest parameter received a bare argument instead
-     * of a list. `(h append '(1) '(2))` answered `1` — the first argument,
-     * silently — and `(h string-copy "abc")` SIGSEGV'd under AOT walking a
-     * non-list as a list. Call position was always correct; only the value
-     * representation lied about the procedure's shape.
-     *
-     * NOTE the asymmetry in what `input_arity` must hold: for a fixed-arity
-     * closure it is the parameter count, but for a variadic one the dispatcher
-     * reads it as the FIXED count (the rest parameter is not among them). A
-     * rest-arg procedure with one fixed parameter stores 1, not 2.
-     */
-    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
-                                       bool is_variadic = false,
-                                       uint64_t fixed_params = 0,
-                                       uint8_t return_category = CLOSURE_RETURN_UNKNOWN) {
+Value* EshkolLLVMCodeGen::emitFunctionAsCallableValue(Function* func, uint64_t num_params,
+                                       bool is_variadic,
+                                       uint64_t fixed_params,
+                                       uint8_t return_category) {
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
@@ -4074,11 +3681,7 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
-    /* emitFunctionAsCallableValue for a NAMED procedure: resolves the
-     * rest-arg shape from the registries so callers cannot forget to. Every
-     * "this name is being read as a value" site should use this rather than
-     * packing arity by hand. */
-    Value* emitNamedFunctionAsCallableValue(Function* func,
+Value* EshkolLLVMCodeGen::emitNamedFunctionAsCallableValue(Function* func,
                                             const std::string& user_name,
                                             uint64_t num_params) {
         uint64_t fixed_params = 0;
@@ -4089,14 +3692,7 @@ private:
         return emitFunctionAsCallableValue(func, num_params, is_variadic, fixed_params);
     }
 
-    /* Store a top-level PROCEDURE definition whose binding is mutable.
-     * Immutable procedure definitions need no store — their call sites
-     * resolve the LLVM function directly — but a reassigned name is bound
-     * through a location, so each definition assigns its procedure there at
-     * its own point in program order. Emitted from the
-     * main/global-init sequence, where `builder` is already positioned at
-     * the definition's place in the top-level order. */
-    void emitMutableProcedureStoreForFunctionDefine(const eshkol_ast_t* ast) {
+void EshkolLLVMCodeGen::emitMutableProcedureStoreForFunctionDefine(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_OP ||
             ast->operation.op != ESHKOL_DEFINE_OP ||
             !ast->operation.define_op.is_function ||
@@ -4145,34 +3741,7 @@ private:
                      (unsigned long long)arity, storage_name.c_str());
     }
 
-
-    // DWARF DEBUG INFO: build the DISubprogram for an Eshkol `define`d function.
-    //
-    // `is_definition` decides the *flavour* of the node, and that distinction is
-    // load-bearing for LLVM's verifier, not cosmetic:
-    //
-    //   * a definition subprogram is a *distinct* MDNode owned by the compile
-    //     unit -- it is what produces a DW_TAG_subprogram with code ranges, and
-    //     it is the only kind an LLVM Function *with a body* may carry;
-    //   * a declaration subprogram is *uniqued* and unit-less -- the only kind a
-    //     bodyless Function may carry ("function declaration may only have a
-    //     unique !dbg attachment", Verifier::visitFunction).
-    //
-    // Attaching a definition subprogram to a function that never receives a body
-    // is therefore a hard IR verification error, which is exactly what broke
-    // every `-g` build: `createFunctionDeclaration` runs over *all* top-level
-    // defines, including the `:external` ones that a `(require <stdlib module>)`
-    // produces, whose bodies live in the pre-linked stdlib object and are skipped
-    // by codegenFunctionDefinition. So `@caar`, `@cadr`, `@caadr`, `@cadar`,
-    // `@caddr`, `@cddr`, ... all ended up as declarations wearing a definition
-    // subprogram and the module failed to verify before a single byte of output
-    // was written.
-    //
-    // The invariant is now structural rather than predicted: declarations get the
-    // declaration flavour here, and codegenFunctionDefinition upgrades to the
-    // definition flavour at the point it actually creates the entry block. A
-    // function can only ever carry a definition subprogram if it has a body.
-    DISubprogram* createDefineSubprogram(Function* function,
+DISubprogram* EshkolLLVMCodeGen::createDefineSubprogram(Function* function,
                                         const char* func_name,
                                         unsigned line_no,
                                         uint64_t num_params,
@@ -4211,32 +3780,7 @@ private:
                           : DISubprogram::SPFlagZero);
     }
 
-    // DWARF DEBUG INFO: re-anchor the builder's current debug location to the
-    // function we are emitting into *right now*.
-    //
-    // IRBuilder's current debug location is sticky, but codegen moves the
-    // insertion point across function boundaries constantly (lambda bodies,
-    // nested defines, pre-generated helpers, AD/tensor thunks). A DILocation is
-    // only legal inside the function whose DISubprogram scopes it, so an
-    // inherited location is an IR verification error, not a cosmetic slip:
-    //
-    //   * a location scoped to another function's subprogram gives
-    //     "!dbg attachment points at wrong subprogram for function" -- e.g. the
-    //     entry-block allocas of `make-counter` were still scoped to `fact`,
-    //     simply because `fact`'s body was emitted just before it;
-    //   * no location at all, in a function that has debug info, gives
-    //     "inlinable function call in a function with debug info must have a
-    //     !dbg location" for every call in the entry scaffolding emitted before
-    //     the first AST node was visited.
-    //
-    // Both are the same defect -- trusting a sticky location across a scope
-    // change -- so the location is derived from the current insertion point
-    // instead of being trusted to still apply.
-    //
-    // `line == 0` means "no source position of its own": keep the current line
-    // if it is already scoped to this function, otherwise fall back to the
-    // function's scope line.
-    void anchorDebugLocation(unsigned line, unsigned column) {
+void EshkolLLVMCodeGen::anchorDebugLocation(unsigned line, unsigned column) {
         if (!emit_debug_info_) return;
         BasicBlock* bb = builder->GetInsertBlock();
         if (!bb) return;
@@ -4271,12 +3815,9 @@ private:
         builder->SetCurrentDebugLocation(DILocation::get(*context, l, column, sp));
     }
 
-    // Anchor to the start of whatever function is now being emitted into. Called
-    // right after a function body's entry block becomes the insertion point, and
-    // after an insertion-point restore that crosses a function boundary.
-    void anchorDebugLocationToCurrentFunction() { anchorDebugLocation(0, 0); }
+void EshkolLLVMCodeGen::anchorDebugLocationToCurrentFunction() { anchorDebugLocation(0, 0); }
 
-    void createFunctionDeclaration(const eshkol_ast_t* ast) {
+void EshkolLLVMCodeGen::createFunctionDeclaration(const eshkol_ast_t* ast) {
         if (ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP ||
             !ast->operation.define_op.is_function) {
             return;
@@ -4430,10 +3971,7 @@ private:
                     func_name, (unsigned long long)num_params, is_variadic ? " (variadic)" : "");
     }
 
-    // Recursively traverse AST to find nested function definitions
-    // Pre-generate top-level lambdas so user-defined main can reference them
-    // This is needed because user's main is compiled in Step 2, before Step 3 processes global defines
-    void preGenerateTopLevelLambdas(const eshkol_ast_t* asts, size_t num_asts) {
+void EshkolLLVMCodeGen::preGenerateTopLevelLambdas(const eshkol_ast_t* asts, size_t num_asts) {
         // Create a temporary init function to use as insertion point for any capture loads
         FunctionType* init_type = FunctionType::get(void_type, false);
         Function* init_func = Function::Create(init_type, Function::InternalLinkage,
@@ -4516,9 +4054,7 @@ private:
         }
     }
 
-    // Note: We don't pre-declare nested functions anymore - they're generated at codegen time
-    // with proper closure support (like lambdas)
-    void declareNestedFunctions(const eshkol_ast_t* ast) {
+void EshkolLLVMCodeGen::declareNestedFunctions(const eshkol_ast_t* ast) {
         if (!ast) return;
 
         // Check if this is a function definition - just recurse, don't declare
@@ -4549,7 +4085,7 @@ private:
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_COND_OP,
                         ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                         ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                         ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                         ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                         ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -4621,7 +4157,7 @@ private:
         }
     }
 
-    bool isLibraryInitAST(const eshkol_ast_t& ast) const __attribute__((noinline, used)) {
+bool EshkolLLVMCodeGen::isLibraryInitAST(const eshkol_ast_t& ast) const {
         if (ast.type != ESHKOL_OP) {
             return false;
         }
@@ -4631,7 +4167,7 @@ private:
         return ast.operation.op == ESHKOL_SET_OP;
     }
 
-    void codegenLibraryInitAST(const eshkol_ast_t& ast) __attribute__((noinline, used)) {
+void EshkolLLVMCodeGen::codegenLibraryInitAST(const eshkol_ast_t& ast) {
         codegenAST(&ast);
         if (ast.operation.op == ESHKOL_DEFINE_OP) {
             eshkol_debug("Library init: initialized global variable: %s",
@@ -4642,14 +4178,14 @@ private:
         }
     }
 
-    Function* createLibraryInitChunkFunction(
+Function* EshkolLLVMCodeGen::createLibraryInitChunkFunction(
         FunctionType* init_type,
         size_t chunk_index,
         const eshkol_ast_t* asts,
         const std::vector<size_t>& init_indices,
         size_t begin_index,
         size_t end_index
-    ) __attribute__((noinline, used)) {
+) {
         std::string chunk_name = "__eshkol_lib_init_chunk_" + std::to_string(chunk_index);
         Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
                                                 chunk_name, module.get());
@@ -4678,7 +4214,7 @@ private:
         return chunk_func;
     }
 
-    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline, used)) {
+void EshkolLLVMCodeGen::emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) {
         Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
         std::string sexpr_key = meta.lambda_name + "_sexpr";
         GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
@@ -4705,23 +4241,23 @@ private:
         }
     }
 
-    Function* createLibraryLambdaSExprChunkFunction(
+Function* EshkolLLVMCodeGen::createLibraryLambdaSExprChunkFunction(
         FunctionType* init_type,
         size_t chunk_index,
         size_t begin_index,
         size_t end_index
-    ) __attribute__((noinline, used)) {
+) {
         std::string chunk_name = "__eshkol_lib_init_sexpr_chunk_" + std::to_string(chunk_index);
         Function* chunk_func = Function::Create(init_type, Function::InternalLinkage,
                                                 chunk_name, module.get());
         chunk_func->addFnAttr(Attribute::NoInline);
 
         BasicBlock* entry = BasicBlock::Create(*context, "entry", chunk_func);
-        BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", chunk_func);
-        IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+        IRBuilderBase::InsertPointGuard insertion_guard(*builder);
         Function* saved_function = current_function;
 
         builder->SetInsertPoint(entry);
+        builder->SetCurrentDebugLocation(DebugLoc());
         current_function = chunk_func;
 
         Value* arena_param = chunk_func->arg_begin();
@@ -4731,16 +4267,12 @@ private:
             emitLambdaSExprRegistration(pending_lambda_sexprs[i]);
         }
 
-        builder->CreateBr(sexpr_continue);
-        builder->SetInsertPoint(sexpr_continue);
         builder->CreateRetVoid();
-
-        builder->restoreIP(saved_point);
         current_function = saved_function;
         return chunk_func;
     }
 
-    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) __attribute__((noinline, used)) {
+void EshkolLLVMCodeGen::finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) {
         // Make named functions external linkage for library export
         // Keep lambda functions as internal to avoid conflicts with user code
         for (auto& pair : function_table) {
@@ -4798,83 +4330,10 @@ private:
         }
 
         emitSharedLibraryExportWrappers(asts, num_asts);
+        emitFreestandingScalarExportWrappers(asts, num_asts);
     }
 
-    /* ── SHARED-LIBRARY EXPORT ABI ───────────────────────────────────────────
-     *
-     * THE DEFECT this exists to fix: LLVM's calling convention for a
-     * first-class-struct return is NOT the platform C calling convention for
-     * the same struct, and `--shared-lib` was exporting the former while
-     * promising the latter.
-     *
-     * `eshkol_tagged_value_type` is the raw 5-field struct
-     * `{i8, i8, i16, i32, i64}` (type, flags, reserved, explicit padding,
-     * data) — a field-for-field mirror of the C `eshkol_tagged_value_t`, which
-     * is exactly right for the LAYOUT of loads and stores.  It is not a
-     * description of how the value travels in registers.  Given a
-     * `define {i8,i8,i16,i32,i64} @f()`, the backend flattens the aggregate
-     * into one return value PER FIELD and assigns them to consecutive return
-     * registers.  On AArch64 that is:
-     *
-     *     _f:  mov w0, #1     ; type
-     *          mov w1, #0x10  ; flags       <- C caller reads this as data
-     *          mov w2, #0     ; reserved
-     *          mov w3, #0     ; padding
-     *          mov w4, #42    ; data        <- the payload, in x4
-     *          ret
-     *
-     * A C caller compiled against `eshkol_tagged_value_t` follows AAPCS: a
-     * 16-byte non-HFA composite comes back in x0:x1, so it reads
-     * `{type = 1, flags = 0, data = 16}` — the flags byte, zero-extended,
-     * masquerading as the payload.  `42` is stranded in x4.  Arguments were
-     * corrupted the same way and worse: with two tagged parameters the
-     * flattened fields overflow the 8 argument registers and the callee reads
-     * its second argument off the stack, while the C caller passed it in
-     * x2:x3.
-     *
-     * Both directions are affected, so the wrapper coerces both.
-     *
-     * THE FIX: leave the internal convention alone — every Eshkol-to-Eshkol
-     * call in the module is consistent with itself, and the struct type is
-     * what makes GEP-based field access correct — and coerce only at the
-     * export boundary.  The user's function keeps its body under a decorated
-     * symbol and the exported name becomes a thin thunk with the platform C
-     * signature.  This is the same coercion the REPL already performs in the
-     * opposite direction when it calls a native C function that returns a
-     * tagged value (see tryResolveReplFunction / `__cabi_thunk`); it was
-     * simply never wired for shared-library exports.
-     *
-     * PER-PLATFORM COERCION
-     *
-     *   AArch64 (AAPCS64) and x86-64 SysV, and every other 64-bit ELF/Mach-O
-     *   target we emit for (riscv64 LP64D, ppc64le ELFv2, loongarch64):
-     *   a 16-byte composite of two integer eightbytes is returned in the
-     *   first two GPRs (x0:x1 / rax:rdx) and passed in two consecutive GPRs.
-     *   `[2 x i64]` is precisely what Clang coerces such a struct to, in both
-     *   directions, so the thunk's signature is
-     *   `[2 x i64] @f([2 x i64], …)`.  Windows on ARM64 follows AAPCS64 here
-     *   and is covered by the same case.
-     *
-     *   Windows x64 (Microsoft ABI) is different and needs the memory form:
-     *   an aggregate whose size is not exactly 1, 2, 4 or 8 bytes is returned
-     *   through a hidden pointer supplied by the caller in RCX, and passed as
-     *   a pointer to a caller-owned temporary.  A 16-byte tagged value hits
-     *   both rules, so the thunk there is
-     *   `void @f(ptr sret(%tv) noalias, ptr, …)` — which is byte-identical to
-     *   what MSVC/clang-cl generate for
-     *   `eshkol_tagged_value_t f(eshkol_tagged_value_t …)`.
-     *
-     *   Anything else (32-bit targets, where the return is via memory but the
-     *   arguments are by-value on the stack, so neither shape above applies)
-     *   is refused rather than silently mis-exported.
-     */
-    enum class SharedLibraryExportAbi {
-        RegisterPair,  // [2 x i64] in and out (AAPCS64, SysV, RISC-V, …)
-        MemorySret,    // sret return + by-pointer arguments (Windows x64)
-        Unsupported
-    };
-
-    SharedLibraryExportAbi sharedLibraryExportAbi() const {
+EshkolLLVMCodeGen::SharedLibraryExportAbi EshkolLLVMCodeGen::sharedLibraryExportAbi() const {
         const llvm::Triple triple = getModuleTargetTriple(*module);
         if (!triple.isArch64Bit()) {
             // 16-byte aggregates return via memory on i386/ARM32/wasm32 but
@@ -4898,15 +4357,116 @@ private:
         }
     }
 
-    // Symbol suffix carrying the unwrapped, internal-convention definition of
-    // an exported function.  Kept exported (not internalized) so a linker map
-    // or a debugger still names the real body, and so a future Eshkol-to-
-    // Eshkol dynamic link has a struct-convention entry point to bind to.
-    static std::string sharedLibraryImplSymbolName(const std::string& name) {
+std::string EshkolLLVMCodeGen::sharedLibraryImplSymbolName(const std::string& name) {
         return name + "__eshkol_internal_abi";
     }
 
-    void emitSharedLibraryExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
+Type* EshkolLLVMCodeGen::freestandingExportScalarType(eshkol::hott::TypeId t, bool allow_void) {
+        if (auto shape = machineIntegerShape(t)) {
+            return IntegerType::get(*context, shape->bits);
+        }
+        if (t == eshkol::hott::BuiltinTypes::Pointer) return ptr_type;
+        if (allow_void && t == eshkol::hott::BuiltinTypes::Null) return void_type;
+        return nullptr;
+    }
+
+void EshkolLLVMCodeGen::emitFreestandingScalarExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
+        if (!freestanding_codegen_ || g_repl_mode_enabled) return;
+
+        for (size_t i = 0; i < num_asts; ++i) {
+            if (asts[i].type != ESHKOL_OP || asts[i].operation.op != ESHKOL_DEFINE_OP) continue;
+            const auto& def = asts[i].operation.define_op;
+            if (!def.is_function || !def.export_symbol || !def.name || def.is_variadic) continue;
+
+            const std::string symbol = def.export_name ? def.export_name : def.name;
+            Function* impl = module->getFunction(symbol);
+            if (!impl || impl->isDeclaration()) continue;
+            FunctionType* impl_type = impl->getFunctionType();
+            if (impl_type->isVarArg() || impl_type->getReturnType() != tagged_value_type ||
+                impl_type->getNumParams() != def.num_params) {
+                continue;
+            }
+
+            // Every parameter and the return must carry a machine annotation.
+            std::vector<Type*> native_params;
+            std::vector<eshkol::hott::TypeId> param_hott;
+            bool scalar_signature = def.return_type != nullptr;
+            for (uint64_t p = 0; scalar_signature && p < def.num_params; ++p) {
+                if (!def.param_types || !def.param_types[p]) { scalar_signature = false; break; }
+                eshkol::hott::TypeId t = resolveDeclaredHottTypeId(def.param_types[p]);
+                Type* native = freestandingExportScalarType(t, false);
+                if (!native) { scalar_signature = false; break; }
+                native_params.push_back(native);
+                param_hott.push_back(t);
+            }
+            eshkol::hott::TypeId ret_hott = eshkol::hott::BuiltinTypes::Value;
+            Type* native_ret = nullptr;
+            if (scalar_signature) {
+                ret_hott = resolveDeclaredHottTypeId(def.return_type);
+                native_ret = freestandingExportScalarType(ret_hott, true);
+                scalar_signature = native_ret != nullptr;
+            }
+            if (!scalar_signature) {
+                eshkol_warn("freestanding export '%s' keeps Eshkol's internal calling "
+                            "convention; annotate every parameter and the return with a "
+                            "machine type (u8..u64, i8..i64, usize, isize, ptr, null) to "
+                            "export it with the C ABI",
+                            symbol.c_str());
+                continue;
+            }
+
+            impl->setName(symbol + ".eshkol");
+            impl->setLinkage(GlobalValue::InternalLinkage);
+            impl->setSection("");
+
+            Function* thunk = Function::Create(
+                FunctionType::get(native_ret, native_params, false),
+                def.is_weak ? GlobalValue::WeakAnyLinkage : GlobalValue::ExternalLinkage,
+                symbol, module.get());
+            if (thunk->getName() != symbol) {
+                eshkol_error("freestanding export name '%s' is already taken", symbol.c_str());
+                thunk->eraseFromParent();
+                markFatalCodegenError();
+                return;
+            }
+            if (def.link_section) thunk->setSection(def.link_section);
+            if (def.has_alignment) thunk->setAlignment(Align(def.alignment));
+            if (def.is_no_return) thunk->addFnAttr(Attribute::NoReturn);
+            if (def.is_used) markGlobalValueUsed(thunk);
+            thunk->addFnAttr(Attribute::NoUnwind);
+
+            IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+            DebugLoc saved_loc = builder->getCurrentDebugLocation();
+            builder->SetCurrentDebugLocation(DebugLoc());
+            builder->SetInsertPoint(BasicBlock::Create(*context, "entry", thunk));
+
+            std::vector<Value*> args;
+            for (uint64_t p = 0; p < def.num_params; ++p) {
+                Value* raw = thunk->getArg(p);
+                Value* bits = raw->getType()->isPointerTy()
+                    ? builder->CreatePtrToInt(raw, int64_type)
+                    : builder->CreateIntCast(raw, int64_type,
+                                             machineIntegerShape(param_hott[p])->is_signed);
+                args.push_back(packInt64ToTaggedValue(bits, true));
+            }
+            Value* result = builder->CreateCall(impl, args);
+            if (native_ret->isVoidTy()) {
+                builder->CreateRetVoid();
+            } else {
+                Value* bits = unpackInt64FromTaggedValue(result);
+                if (native_ret->isPointerTy()) {
+                    builder->CreateRet(builder->CreateIntToPtr(toIntPtr(bits), ptr_type));
+                } else {
+                    builder->CreateRet(builder->CreateTrunc(bits, native_ret));
+                }
+            }
+
+            builder->restoreIP(saved_point);
+            builder->SetCurrentDebugLocation(saved_loc);
+        }
+    }
+
+void EshkolLLVMCodeGen::emitSharedLibraryExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
         if (!shared_library_exports_) return;
 
         const SharedLibraryExportAbi abi = sharedLibraryExportAbi();
@@ -5107,11 +4667,14 @@ private:
                         : "sret/by-pointer");
     }
 
-    // LIBRARY MODE: Create initialization function instead of main
-    // This function initializes global state but doesn't create an entry point
-    void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts);
+void EshkolLLVMCodeGen::markFreestandingNoUnwind() {
+        if (!freestanding_codegen_) return;
+        for (Function& function : *module) {
+            if (!function.isDeclaration()) function.addFnAttr(Attribute::NoUnwind);
+        }
+    }
 
-    void pruneUnusedFreestandingDeclarations() {
+void EshkolLLVMCodeGen::pruneUnusedFreestandingDeclarations() {
         if (!freestanding_codegen_) return;
 
         unsigned removed_functions = 0;
@@ -5155,45 +4718,7 @@ private:
         }
     }
 
-    // ESH-0216: pair the eshkol_runtime_init() call emitted at C main()
-    // entry with a matching eshkol_runtime_shutdown() right before main
-    // returns. Without this, a standalone AOT-compiled Eshkol binary never
-    // goes through the runtime's own ordered teardown at all: worker-thread
-    // pools (parallel-map/parallel-execute) never get stopped/joined ahead
-    // of shutdown hooks, and the fatal-signal handler / altstack installed
-    // by eshkol_runtime_init_signals() is never uninstalled — process exit
-    // relies solely on the unordered libc atexit/static-destructor chain.
-    // That is the SIGSEGV-after-"graceful shutdown" race fixed in ESH-0216:
-    // a still-running worker thread dereferences shared state a shutdown
-    // hook (or other teardown) frees out from under it, well after the
-    // program logged its own graceful-shutdown message. Call this at every
-    // site that emits eshkol_runtime_init(), immediately before the
-    // corresponding CreateRet. Uses the same REPL/WASM guard as the init
-    // call: the REPL keeps the process alive across evaluations (it calls
-    // eshkol_runtime_shutdown() itself once, from exe/eshkol-repl.cpp, at
-    // real process exit), and WASM has no runtime_init call to pair with.
-    /**
-     * ESH-0101 / SW-81: emit the native stack-headroom check at the entry of a
-     * user function body.
-     *
-     * Plain non-tail user recursion had NO guard at all. The frame-counting
-     * `eshkol_check_recursion_depth` is emitted only at lambda entry, and its
-     * ceiling (ESHKOL_MAX_STACK, default 100000) is a proxy for the wrong
-     * resource: raising it to cover legitimate 250k-frame recursion would make
-     * it useless, and lowering it to fire before overflow would break programs
-     * that fit. So the stack ran into its guard page and the process died with
-     * a bare SIGSEGV/SIGILL and no message.
-     *
-     * This call watches the actual resource — bytes left on this thread's
-     * stack — and is stateless, so unlike the depth counter it needs no
-     * matching decrement before returns and therefore cannot interfere with
-     * tail-call optimization.
-     *
-     * Not emitted for freestanding native or wasm objects: those profiles do
-     * not link the hosted stack runtime. A freestanding object must remain
-     * free of hosted imports, and wasm has no RLIMIT_STACK to read.
-     */
-    void emitStackGuardCheck() {
+void EshkolLLVMCodeGen::emitStackGuardCheck() {
         if (freestanding_codegen_ || module->getTargetTriple().isWasm()) {
             return;
         }
@@ -5206,7 +4731,7 @@ private:
         builder->CreateCall(guard_func);
     }
 
-    void emitRuntimeShutdownBeforeMainReturn() {
+void EshkolLLVMCodeGen::emitRuntimeShutdownBeforeMainReturn() {
         if (g_repl_mode_enabled || module->getTargetTriple().isWasm()) {
             return;
         }
@@ -5227,7 +4752,7 @@ private:
             {ConstantInt::get(builder->getInt32Ty(), 0)});
     }
 
-    void createMainWrapper() {
+void EshkolLLVMCodeGen::createMainWrapper() {
         auto emitWasmAbiCheck = [this]() {
             llvm::Function* check = mem ? mem->getWasmAbiCheck() : nullptr;
             if (!check) return;
@@ -5400,44 +4925,7 @@ private:
                 builder->CreateCall(eshkol_lambda_registry_init_func);
                 eshkol_debug("Initialized lambda registry for homoiconic display");
 
-                // Generate S-expressions now that arena is ready
-
-                for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
-                    const auto& meta = pending_lambda_sexprs[i];
-                    
-                    Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                    
-                    // Create or get global variable for this lambda's S-expression
-                    // Use ExternalLinkage for runtime resolution by display code
-                    std::string sexpr_key = meta.lambda_name + "_sexpr";
-                    GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                    if (!sexpr_global) {
-                        sexpr_global = new GlobalVariable(
-                            *module, int64_type, false,
-                            sexprGlobalLinkage(library_mode),
-                            ConstantInt::get(int64_type, 0),
-                            sexpr_key
-                        );
-                    }
-                    builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // Add to global symbol table for display lookup
-                    global_symbol_table[sexpr_key] = sexpr_global;
-                    eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
-
-                    // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                    if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                        Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                        builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                        eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                    }
-                }
-
-                // Clear pending list after generation
-                pending_lambda_sexprs.clear();
+                emitPendingLambdaRegistrations(arena_ptr);
 
                 // CRITICAL: Create S-expression aliases for variable-bound lambdas
                 // Scan symbol_table for lambda function references (var_func) and create var_sexpr aliases
@@ -5678,58 +5166,12 @@ private:
                 eshkol_debug("Called library init function for stdlib");
             }
 
-            // Generate S-expressions for pending lambdas (function definitions compiled in Step 2)
-            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a continuation block
-            if (!pending_lambda_sexprs.empty()) {
-                // Create a continuation block for after all S-expression generation
-                BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", main_func);
-
-                for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
-                    const auto& meta = pending_lambda_sexprs[i];
-
-                    Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-
-                    // Create or get global variable for this lambda's S-expression
-                    std::string sexpr_key = meta.lambda_name + "_sexpr";
-                    GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                    if (!sexpr_global) {
-                        sexpr_global = new GlobalVariable(
-                            *module, int64_type, false,
-                            sexprGlobalLinkage(library_mode),
-                            ConstantInt::get(int64_type, 0),
-                            sexpr_key
-                        );
-                    }
-                    builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // Add to global symbol table for display lookup
-                    global_symbol_table[sexpr_key] = sexpr_global;
-                    eshkol_debug("Generated S-expression for lambda %s (top-level case)", meta.lambda_name.c_str());
-
-                    // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                    if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                        Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                        builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                        eshkol_debug("Registered lambda '%s' in homoiconic registry (top-level case)", meta.lambda_name.c_str());
-                    }
-                }
-
-                // Branch to continuation and set it as the new insertion point
-                builder->CreateBr(sexpr_continue);
-                builder->SetInsertPoint(sexpr_continue);
-
-                // Update main_entry to point to the continuation block for generateIR
-                main_entry = sexpr_continue;
-
-                pending_lambda_sexprs.clear();
-            }
+            emitPendingLambdaRegistrations(arena_ptr);
+            main_entry = builder->GetInsertBlock();
         }
     }
 
-    void initializeArena() {
+void EshkolLLVMCodeGen::initializeArena() {
         // DEPRECATED: Arena initialization is now handled globally in createMainWrapper()
         // This function is kept for compatibility but does nothing
         // All functions now share the global arena automatically
@@ -5740,8 +5182,8 @@ private:
         }
         eshkol_debug("initializeArena() called but using global arena (no-op)");
     }
-    
-    Value* getArenaPtr() {
+
+Value* EshkolLLVMCodeGen::getArenaPtr() {
         // OALR Phase A (ADR-0001): route the current-allocation-arena read through
         // the eshkol_current_arena() accessor instead of loading the shared
         // __global_arena global directly. This makes allocation routing a
@@ -5768,16 +5210,15 @@ private:
                               {PointerType::getUnqual(*context)}, false));
         return builder->CreateCall(home_arena_fn, {current_arena}, "ad_home_arena");
     }
-    
-    // Mixed type arithmetic helper functions
-    TypedValue promoteInt64ToDouble(const TypedValue& int64_val) {
+
+TypedValue EshkolLLVMCodeGen::promoteInt64ToDouble(const TypedValue& int64_val) {
         if (!int64_val.isInt64()) return int64_val;
         
         Value* double_val = builder->CreateSIToFP(int64_val.llvm_value, double_type);
         return TypedValue(double_val, ESHKOL_VALUE_DOUBLE, false); // Promoted values are inexact
     }
-    
-    std::pair<TypedValue, TypedValue> promoteToCommonType(const TypedValue& left, const TypedValue& right) {
+
+std::pair<TypedValue, TypedValue> EshkolLLVMCodeGen::promoteToCommonType(const TypedValue& left, const TypedValue& right) {
         // Handle NULL types - treat as int64(0)
         if (left.isNull() && right.isNull()) {
             TypedValue zero_left(ConstantInt::get(int64_type, 0), ESHKOL_VALUE_INT64, true);
@@ -5816,35 +5257,15 @@ private:
         eshkol_error("Unsupported type combination in arithmetic: %d and %d", left.type, right.type);
         return {left, right};
     }
-    
-    // Read the HoTT type inferred for an AST node during the type-checking phase
-    // WITHOUT emitting any LLVM IR.
-    //
-    // SINGLE-EVAL FIX (ESH-0098): The typed-builtin branches below (list, vector,
-    // cons, car, cdr, vector-ref, addr-of) used to call codegenTypedAST() on their
-    // operand ASTs purely to recover an element/pointee type, then call
-    // codegenAST(ast) to actually build the value — which re-generated those same
-    // operands. That double-generated any side-effecting operand (e.g.
-    // (list (bump!)) called bump! twice; (vector ...) twice per element). The value
-    // builders (CollectionCodegen::list, codegenVector, ...) already evaluate each
-    // operand exactly once, so for type recovery we must NOT emit IR again. The
-    // type checker (run over every top-level form before codegen) annotates each
-    // sub-expression's inferred_hott_type, so we read that directly. Falls back to
-    // the generic Value type when a node was not type-checked (0), which is safe.
-    eshkol::hott::TypeId inferredHottType(const eshkol_ast_t* ast) const {
+
+eshkol::hott::TypeId EshkolLLVMCodeGen::inferredHottType(const eshkol_ast_t* ast) const {
         if (ast && ast->inferred_hott_type != 0) {
             return eshkol::hott::TypeId::unpack(ast->inferred_hott_type);
         }
         return eshkol::hott::BuiltinTypes::Value;
     }
 
-    // Recover the element type of a collection expression WITHOUT emitting IR.
-    // The type checker records only the base List/Vector type in inferred_hott_type
-    // (element precision is not packed), so for accessors like car/cdr/vector-ref we
-    // recover the element type directly from a nested constructor's operand types.
-    // Returns the generic Value type when it cannot be determined cheaply. Used by
-    // the SINGLE-EVAL FIX (ESH-0098) to avoid re-generating the collection operand.
-    eshkol::hott::TypeId inferredElementTypeOf(const eshkol_ast_t* coll_ast) const {
+eshkol::hott::TypeId EshkolLLVMCodeGen::inferredElementTypeOf(const eshkol_ast_t* coll_ast) const {
         if (coll_ast && coll_ast->type == ESHKOL_OP &&
             coll_ast->operation.op == ESHKOL_CALL_OP &&
             coll_ast->operation.call_op.func &&
@@ -5867,19 +5288,40 @@ private:
         return eshkol::hott::BuiltinTypes::Value;
     }
 
-    // Create TypedValue from AST node
-    // The central expression/call/arithmetic descent runs on heap-owned
-    // continuations. Keep these synchronous entry points for backend callbacks;
-    // recursive edges within that descent must await the Task variants so a
-    // source nesting level never adds another native dispatch frame. Locals
-    // (including provenance guards and earlier operands) live until the parent
-    // resumes, preserving the existing evaluation and IR insertion order.
-    TypedValue codegenTypedAST(const eshkol_ast_t* ast) {
+TypedValue EshkolLLVMCodeGen::codegenTypedAST(const eshkol_ast_t* ast) {
         return codegenTypedASTTask(ast).run();
     }
 
-    ContinuationTask<TypedValue> codegenTypedASTTask(const eshkol_ast_t* ast) {
-        if (!ast) co_return TypedValue();
+ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenTypedASTTask(const eshkol_ast_t* ast) {
+        if (!ast || codegen_depth_exceeded_) co_return TypedValue();
+
+        const bool new_depth_level = (ast != codegen_depth_ast_);
+        const size_t pass_depth_budget = eshkol_reader_max_pass_depth();
+        if (new_depth_level && pass_depth_budget != 0 &&
+            codegen_ast_depth_ >= pass_depth_budget) {
+            codegen_depth_exceeded_ = true;
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        pass_depth_budget, message, sizeof(message));
+            eshkol_error("expression nesting too deep: %s", message);
+            markFatalCodegenError();
+            co_return TypedValue();
+        }
+        struct ScopedTypedDepth {
+            size_t& depth;
+            const eshkol_ast_t*& current;
+            const eshkol_ast_t* prev;
+            bool counted;
+            ScopedTypedDepth(size_t& d, const eshkol_ast_t*& c, const eshkol_ast_t* n, bool b)
+                : depth(d), current(c), prev(c), counted(b) {
+                if (counted) ++depth;
+                current = n;
+            }
+            ~ScopedTypedDepth() {
+                current = prev;
+                if (counted) --depth;
+            }
+        } typed_depth_guard(codegen_ast_depth_, codegen_depth_ast_, ast, new_depth_level);
         
         switch (ast->type) {
             case ESHKOL_INT64:
@@ -5919,32 +5361,46 @@ private:
             case ESHKOL_OP: {
                 // OALR FIX: Handle ownership operations by propagating type from inner expression
                 if (ast->operation.op == ESHKOL_OWNED_OP && ast->operation.owned_op.value) {
-                    // (owned expr) - propagate type from inner expression
+                    // Evaluate once through the typed route, then apply the
+                    // ownership effect to that already evaluated value.
                     TypedValue inner = (co_await codegenTypedASTTask(ast->operation.owned_op.value));
-                    // Generate the owned wrapper (which just returns the value)
-                    Value* val = (co_await codegenASTTask(ast));
+                    if (!inner.llvm_value) co_return TypedValue();
+                    Value* tagged = typedValueToTaggedValue(inner);
+                    Value* val = codegenOwnedValue(tagged);
                     if (!val) co_return TypedValue();
-                    co_return TypedValue(val, inner.type, inner.is_exact);
+                    co_return TypedValue(val, inner.type, inner.hott_type,
+                                         inner.is_exact);
                 }
                 if (ast->operation.op == ESHKOL_MOVE_OP && ast->operation.move_op.value) {
-                    // (move expr) - get type from inner expression, then generate move
-                    // Use codegenTypedAST on inner to get proper type, but with VAR guard
+                    // (move expr) - keep the variable binding side effects while
+                    // applying the wrapper to the typed value evaluated once.
                     const eshkol_ast_t* inner = ast->operation.move_op.value;
 
                     // For variables, check if they're stored in a tagged_value GlobalVariable
                     if (inner->type == ESHKOL_VAR && inner->variable.id) {
                         std::string var_name = inner->variable.id;
-                        // Look up the variable
-                        auto it = symbol_table.find(var_name);
-                        if (it == symbol_table.end()) {
-                            it = global_symbol_table.find(var_name);
+                        // The binding the name denotes here: the local scope
+                        // first, then the module scope. Each table is searched
+                        // with its own iterator and compared against its own
+                        // end(); a name bound in neither yields no storage and
+                        // takes the general route below, where the variable
+                        // reference itself is resolved or reported.
+                        Value* var_ptr = nullptr;
+                        if (auto local_it = symbol_table.find(var_name);
+                            local_it != symbol_table.end()) {
+                            var_ptr = local_it->second;
+                        } else if (auto global_it = global_symbol_table.find(var_name);
+                                   global_it != global_symbol_table.end()) {
+                            var_ptr = global_it->second;
                         }
-                        if (it != global_symbol_table.end() || it != symbol_table.end()) {
-                            Value* var_ptr = it->second;
+                        if (var_ptr) {
                             if (GlobalVariable* gv = dyn_cast<GlobalVariable>(var_ptr)) {
                                 // If stored as tagged_value, load it and return with preserved type
                                 if (gv->getValueType() == tagged_value_type) {
-                                    Value* val = (co_await codegenASTTask(ast));
+                                    TypedValue inner_typed = (co_await codegenTypedASTTask(inner));
+                                    if (!inner_typed.llvm_value) co_return TypedValue();
+                                    Value* val = codegenMoveValue(&ast->operation,
+                                        typedValueToTaggedValue(inner_typed));
                                     if (!val) co_return TypedValue();
                                     // Return the tagged_value directly - type info is inside
                                     // Use CONS_PTR so codegenVariableDefinition stores properly
@@ -5954,11 +5410,16 @@ private:
                         }
                     }
 
-                    // For non-variable expressions or non-tagged storage, use inner type
+                    // For other variables and expressions, preserve inferred
+                    // type/exactness while applying move to one evaluation.
                     TypedValue inner_typed = (co_await codegenTypedASTTask(inner));
-                    Value* val = (co_await codegenASTTask(ast));
+                    if (!inner_typed.llvm_value) co_return TypedValue();
+                    Value* val = codegenMoveValue(&ast->operation,
+                        typedValueToTaggedValue(inner_typed));
                     if (!val) co_return TypedValue();
-                    co_return TypedValue(val, inner_typed.type, inner_typed.is_exact);
+                    co_return TypedValue(val, inner_typed.type,
+                                         inner_typed.hott_type,
+                                         inner_typed.is_exact);
                 }
                 if (ast->operation.op == ESHKOL_BORROW_OP && ast->operation.borrow_op.body) {
                     // (borrow val body...) - type is from last body expression
@@ -5968,11 +5429,15 @@ private:
                     co_return detectValueType(val);
                 }
                 if (ast->operation.op == ESHKOL_SHARED_OP && ast->operation.shared_op.value) {
-                    // (shared expr) - propagate type from inner expression
+                    emitLanguageCoverage(ast);
+                    // Evaluate once and apply shared ownership to that value.
                     TypedValue inner = (co_await codegenTypedASTTask(ast->operation.shared_op.value));
-                    Value* val = (co_await codegenASTTask(ast));
+                    if (!inner.llvm_value) co_return TypedValue();
+                    Value* val = codegenSharedValue(
+                        typedValueToTaggedValue(inner));
                     if (!val) co_return TypedValue();
-                    co_return TypedValue(val, inner.type, inner.is_exact);
+                    co_return TypedValue(val, inner.type, inner.hott_type,
+                                         inner.is_exact);
                 }
 
                 // GRADIENT FIX: Handle LAMBDA_OP specially to preserve CLOSURE_PTR type
@@ -5988,6 +5453,13 @@ private:
                 if (ast->operation.op == ESHKOL_CALL_OP && ast->operation.call_op.func &&
                     ast->operation.call_op.func->type == ESHKOL_VAR && ast->operation.call_op.func->variable.id) {
                     std::string func_name = ast->operation.call_op.func->variable.id;
+
+                    // Freestanding machine-integer operators keep their
+                    // width and signedness as the result's HoTT type.
+                    if (const char* machine_op = freestandingMachineIntegerCall(func_name)) {
+                        co_return (co_await codegenMachineIntegerOpTask(
+                            &ast->operation, machine_op, func_name.c_str()));
+                    }
 
                     // HoTT TYPE TRACKING: Look up return type for builtin functions
                     eshkol::hott::TypeId return_hott_type = eshkol::hott::BuiltinTypes::Value;
@@ -6472,23 +5944,14 @@ private:
             }
         }
     }
-    
-private:
-    // Function context management for isolation
-    struct FunctionContext {
-        std::unordered_map<std::string, Function*> local_functions;
-        std::vector<std::string> created_functions;
-    };
 
-    std::stack<FunctionContext> function_contexts;
-
-    void pushFunctionContext() {
+void EshkolLLVMCodeGen::pushFunctionContext() {
         FunctionContext ctx;
         function_contexts.push(ctx);
         eshkol_debug("Pushed function context (depth: %zu)", function_contexts.size());
     }
-    
-    void popFunctionContext() {
+
+void EshkolLLVMCodeGen::popFunctionContext() {
         if (function_contexts.empty()) {
             eshkol_warn("Attempted to pop function context with no active context");
             return;
@@ -6506,8 +5969,8 @@ private:
         function_contexts.pop();
         eshkol_debug("Popped function context (depth: %zu)", function_contexts.size());
     }
-    
-    void registerContextFunction(const std::string& name, Function* func) {
+
+void EshkolLLVMCodeGen::registerContextFunction(const std::string& name, Function* func) {
         if (!function_contexts.empty()) {
             function_contexts.top().created_functions.push_back(name);
         }
@@ -6540,7 +6003,7 @@ private:
         }
     }
 
-    Function* resolveFunctionByLogicalName(const std::string& name) __attribute__((noinline, used)) {
+Function* EshkolLLVMCodeGen::resolveFunctionByLogicalName(const std::string& name) {
         auto it = function_table.find(name);
         if (it != function_table.end() && it->second) {
             return it->second;
@@ -6548,10 +6011,7 @@ private:
         return module->getFunction(name);
     }
 
-    // REPL MODE: Check if a function exists in the global REPL context and create external declaration
-    Function* tryResolveReplFunction(const std::string& func_name);
-
-    Value* codegenArenaConsCell(Value* car_val, Value* cdr_val) {
+Value* EshkolLLVMCodeGen::codegenArenaConsCell(Value* car_val, Value* cdr_val) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
             eshkol_error("Arena not initialized for cons cell allocation");
@@ -6579,21 +6039,15 @@ private:
         // Return pointer to cons cell as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
     }
-    // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
-    Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val) {
+
+Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val) {
         Value* result = codegenTaggedArenaConsCellCopying(typedValueToTaggedValue(car_val),
                                                           typedValueToTaggedValue(cdr_val));
         eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
         return result;
     }
 
-    // Allocate a cons cell whose car and cdr are COMPLETE copies of two
-    // tagged values: type byte, flags and payload. A list builtin that moves
-    // an existing element into a new list must use this (or
-    // codegenTaggedArenaConsCellFromTaggedValue); reducing the element to its
-    // 64-bit payload first loses its type, which is how remove and split-at
-    // returned the raw bits of inexact elements.
-    Value* codegenTaggedArenaConsCellCopying(Value* car_tagged, Value* cdr_tagged) {
+Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellCopying(Value* car_tagged, Value* cdr_tagged) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
             eshkol_error("Arena not initialized for tagged cons cell allocation");
@@ -6633,10 +6087,7 @@ private:
         // Return pointer to cons cell as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
     }
-    
-    // ROBUST SOLUTION: Create cons cell directly from tagged_value with type preservation
-    // This stores the VALUE from tagged_value into the cons cell car, preserving the type
-    Value* codegenTaggedArenaConsCellFromTaggedValue(Value* car_tagged, Value* cdr_tagged) {
+Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellFromTaggedValue(Value* car_tagged, Value* cdr_tagged) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
             eshkol_error("Arena not initialized for tagged cons cell allocation");
@@ -6649,8 +6100,55 @@ private:
             return nullptr;
         }
 
+        if (outlining_metadata_cons) {
+            const char* name = "__eshkol_metadata_cons";
+            auto* helper_type = FunctionType::get(int64_type,
+                {tagged_value_type, tagged_value_type}, false);
+            // A source procedure can legitimately have the helper's spelling.
+            // Cache its compiler identity in module metadata, independently of
+            // the user-visible symbol namespace. LLVM uniquifies its name.
+            auto* helper_cache = module->getOrInsertNamedMetadata("eshkol.metadata.cons");
+            Function* helper = nullptr;
+            for (auto* entry : helper_cache->operands()) {
+                if (entry->getNumOperands() != 1) continue;
+                auto* value = dyn_cast<ValueAsMetadata>(entry->getOperand(0));
+                auto* candidate = value ? dyn_cast<Function>(value->getValue()) : nullptr;
+                if (candidate && candidate->getParent() == module.get() &&
+                    candidate->getFunctionType() == helper_type &&
+                    candidate->hasFnAttribute("eshkol.metadata.cons") &&
+                    !candidate->isDeclaration()) {
+                    helper = candidate;
+                    break;
+                }
+            }
+            if (!helper) {
+                helper = Function::Create(helper_type, Function::InternalLinkage,
+                                          name, module.get());
+                helper->addFnAttr(Attribute::NoInline);
+                helper->addFnAttr("eshkol.metadata.cons");
+                auto saved_ip = builder->saveIP();
+                auto saved_loc = builder->getCurrentDebugLocation();
+                Function* saved_function = current_function;
+                builder->SetInsertPoint(BasicBlock::Create(*context, "entry", helper));
+                builder->SetCurrentDebugLocation(DebugLoc());
+                current_function = helper;
+                Value* cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(),
+                                                {getArenaPtr()});
+                ctx_->emitConstructorAllocationCheck(cell);
+                tagged_->storeConsSlot(cell, false, helper->getArg(0));
+                tagged_->storeConsSlot(cell, true, helper->getArg(1));
+                builder->CreateRet(builder->CreatePtrToInt(cell, int64_type));
+                helper_cache->addOperand(MDNode::get(*context,
+                    {ValueAsMetadata::get(helper)}));
+                current_function = saved_function;
+                builder->restoreIP(saved_ip);
+                builder->SetCurrentDebugLocation(saved_loc);
+            }
+            return builder->CreateCall(helper, {car_tagged, cdr_tagged});
+        }
+
         // Allocate tagged cons cell with object header (consolidated pointer format)
-        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {getArenaPtr()});
         ctx_->emitConstructorAllocationCheck(cons_ptr);
 
         // Both slots are stored whole (SW-183); see TaggedValueCodegen::storeConsSlot.
@@ -6660,49 +6158,36 @@ private:
         // Return cons cell pointer as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
     }
-    
-    // ===== TAGGED VALUE HELPER FUNCTIONS =====
-    // Pack/unpack values to/from eshkol_tagged_value_t structs
-    
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packInt64ToTaggedValue(Value* int64_val, bool is_exact = true) {
+
+Value* EshkolLLVMCodeGen::packInt64ToTaggedValue(Value* int64_val, bool is_exact) {
         return tagged_->packInt64(int64_val, is_exact);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packBoolToTaggedValue(Value* bool_val) {
+Value* EshkolLLVMCodeGen::packBoolToTaggedValue(Value* bool_val) {
         return tagged_->packBool(bool_val);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packDoubleToTaggedValue(Value* double_val) {
+Value* EshkolLLVMCodeGen::packDoubleToTaggedValue(Value* double_val) {
         return tagged_->packDouble(double_val);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packPtrToTaggedValue(Value* ptr_val, eshkol_value_type_t type, uint8_t flags = 0) {
+Value* EshkolLLVMCodeGen::packPtrToTaggedValue(Value* ptr_val, eshkol_value_type_t type, uint8_t flags) {
         return tagged_->packPtr(ptr_val, type, flags);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packPtrToTaggedValueWithFlags(Value* ptr_val, Value* type_val, Value* flags_val) {
+Value* EshkolLLVMCodeGen::packPtrToTaggedValueWithFlags(Value* ptr_val, Value* type_val, Value* flags_val) {
         return tagged_->packPtrWithFlags(ptr_val, type_val, flags_val);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packNullToTaggedValue() {
+Value* EshkolLLVMCodeGen::packNullToTaggedValue() {
         return tagged_->packNull();
     }
 
-    /** The unspecified value (ADR-0024). */
-    Value* packUnspecifiedToTaggedValue() {
+Value* EshkolLLVMCodeGen::packUnspecifiedToTaggedValue() {
         return tagged_->packUnspecified();
     }
 
-    // Ensure a value is in tagged format
-    // codegenAST returns raw i64/double for primitives, but tagged structs for complex types
-    // This function checks the LLVM type and packs raw values into tagged format
-    Value* ensureTaggedValue(Value* val) {
+Value* EshkolLLVMCodeGen::ensureTaggedValue(Value* val) {
         if (!val) return packNullToTaggedValue();
 
         Type* val_type = val->getType();
@@ -6732,10 +6217,7 @@ private:
         return val;
     }
 
-    // Apply an optional Scheme converter exactly once.  Converter execution is
-    // generated here (rather than in the C parameter runtime) because a
-    // converter is an arbitrary Eshkol closure.
-    Value* codegenOptionalParameterConverter(Value* converter, Value* value,
+Value* EshkolLLVMCodeGen::codegenOptionalParameterConverter(Value* converter, Value* value,
                                              const char* context_name) {
         Value* converter_tagged = ensureTaggedValue(converter);
         Value* candidate = ensureTaggedValue(value);
@@ -6775,7 +6257,7 @@ private:
         return result;
     }
 
-    Value* codegenParameterConverterFor(Value* param_ptr, Value* value,
+Value* EshkolLLVMCodeGen::codegenParameterConverterFor(Value* param_ptr, Value* value,
                                         const char* context_name) {
         Value* converter_slot = builder->CreateAlloca(tagged_value_type, nullptr,
                                                       "parameter_converter");
@@ -6787,7 +6269,7 @@ private:
         return codegenOptionalParameterConverter(converter, value, context_name);
     }
 
-    Value* codegenParameterRef(Value* param_ptr) {
+Value* EshkolLLVMCodeGen::codegenParameterRef(Value* param_ptr) {
         Value* result_slot = builder->CreateAlloca(tagged_value_type, nullptr,
                                                    "parameter_ref");
         FunctionCallee ref = module->getOrInsertFunction(
@@ -6797,7 +6279,7 @@ private:
         return builder->CreateLoad(tagged_value_type, result_slot);
     }
 
-    Value* codegenParameterSet(Value* param_ptr, Value* value) {
+Value* EshkolLLVMCodeGen::codegenParameterSet(Value* param_ptr, Value* value) {
         Value* value_slot = builder->CreateAlloca(tagged_value_type, nullptr,
                                                   "parameter_set_value");
         Value* tagged_value = ensureTaggedValue(value);
@@ -6809,7 +6291,7 @@ private:
         return tagged_value;
     }
 
-    Value* codegenParameterPush(Value* parameter, Value* value) {
+Value* EshkolLLVMCodeGen::codegenParameterPush(Value* parameter, Value* value) {
         Value* parameter_tagged = ensureTaggedValue(parameter);
         Value* param_bits = unpackInt64FromTaggedValue(parameter_tagged);
         Value* param_ptr = builder->CreateIntToPtr(param_bits, ptr_type,
@@ -6825,7 +6307,7 @@ private:
         return tagged_value;
     }
 
-    Value* codegenParameterPop(Value* parameter) {
+Value* EshkolLLVMCodeGen::codegenParameterPop(Value* parameter) {
         Value* parameter_tagged = ensureTaggedValue(parameter);
         Value* param_bits = unpackInt64FromTaggedValue(parameter_tagged);
         Value* param_ptr = builder->CreateIntToPtr(param_bits, ptr_type,
@@ -6837,7 +6319,7 @@ private:
         return packNullToTaggedValue();
     }
 
-    Value* codegenMakeParameter(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMakeParameter(const eshkol_operations_t* op) {
         if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
             eshkol_error("make-parameter requires an initial value and an optional converter");
             return packNullToTaggedValue();
@@ -6877,47 +6359,119 @@ private:
         return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
-    /* Argument source for a RUNTIME-COUNTED closure call (see codegenClosureCall).
-     *
-     * Normally a call site knows statically how many arguments it passes, so
-     * `call_args` carries them. A caller that only learns the count at run time
-     * — the AD gradient spreading a point into a runtime closure's declared
-     * number of scalar parameters — instead hands over a staging array plus the
-     * runtime count. The dispatcher already switches on a runtime argument
-     * count (it has to: `fixed_params` comes from the closure), so this mode
-     * reuses that one switch instead of making the caller emit a separate,
-     * fully expanded closure call per possible arity.
-     *
-     * Contract for the caller:
-     *   - `args_ptr` points to `width` contiguous tagged_value slots,
-     *   - slots [0, count) hold the live arguments,
-     *   - slots [count, width) are initialised to tagged null (they are loaded
-     *     unconditionally, and are what the arity-mismatch padding reads),
-     *   - `count` is already clamped to [0, width].
-     */
-    struct ClosureSpreadArgs {
-        Value* args_ptr = nullptr;
-        Value* count = nullptr;
-        int width = 0;
-        // When set, variadic dispatch forwards this original proper list
-        // after splitting the runtime fixed prefix; no argument cap applies
-        // to the rest tail.
-        Value* list_int = nullptr;
-        Value* full_count = nullptr;
-    };
+Function* EshkolLLVMCodeGen::closureEntryPoint(Function* body, size_t num_captures) {
+        if (!body || num_captures <= eshkol::kClosureCallCaptureSlots) return body;
+        const std::string name = body->getName().str() + ".slots";
+        FunctionType* body_type = body->getFunctionType();
+        const size_t leading = body_type->getNumParams() - num_captures;
+        Type* pointer_type = PointerType::getUnqual(*context);
+        std::vector<Type*> types(body_type->param_begin(),
+                                 body_type->param_begin() + leading);
+        types.push_back(pointer_type);
+        FunctionType* entry_type =
+            FunctionType::get(body_type->getReturnType(), types, false);
+        if (Function* existing = module->getFunction(name)) {
+            // The name is derived from the body's, so an existing function is
+            // this body's entry; its signature is checked all the same, since
+            // a call through a mismatched entry would misplace every argument.
+            if (existing->getFunctionType() == entry_type) return existing;
+            eshkol_error("closure entry '%s' exists with a different signature",
+                         name.c_str());
+            markFatalCodegenError();
+            return existing;
+        }
+        Function* entry = Function::Create(
+            entry_type, Function::InternalLinkage, name, module.get());
+        IRBuilder<> ir(*context);
+        ir.SetInsertPoint(BasicBlock::Create(*context, "entry", entry));
+        std::vector<Value*> forwarded;
+        forwarded.reserve(leading + num_captures);
+        auto parameter = entry->arg_begin();
+        for (size_t i = 0; i < leading; ++i, ++parameter) forwarded.push_back(&*parameter);
+        Value* slot0 = &*parameter;
+        slot0->setName("capture_slots");
+        for (size_t i = 0; i < num_captures; ++i) {
+            forwarded.push_back(ir.CreateGEP(tagged_value_type, slot0,
+                                             ConstantInt::get(int64_type, i)));
+        }
+        CallInst* call = ir.CreateCall(body, forwarded);
+        call->setCallingConv(body->getCallingConv());
+        ir.CreateRet(call);
+        return entry;
+    }
 
-    // A resolved ABI signature (e.g. a checked REPL forward reference) already
-    // has its fixed/rest arguments marshalled. Invocation still belongs here.
-    struct KnownCallableTarget {
-        FunctionType* signature;
-        Value* address;
-    };
+// Lower the capture-slot ABI once per argument count. Call sites pass the
+// environment base and the evaluated user arguments to a module-local thunk.
+Value* EshkolLLVMCodeGen::codegenClosureEntryCall(Value* function_ptr, Value* captures,
+                                                  Value* capture_count,
+                                                  const std::vector<Value*>& arguments) {
+        const std::string arity = std::to_string(arguments.size());
+        const std::string name = (wasm_codegen_ ? "__eshkol_wasm_closure_call_"
+                                                : "__eshkol_native_closure_call_") + arity;
+        // A Scheme procedure can have the same spelling. Retain the compiler's
+        // function by identity in the module, independently of its printed name.
+        const std::string key = (wasm_codegen_ ? "eshkol.wasm.closure.call."
+                                               : "eshkol.native.closure.call.") + arity;
+        auto* cache = module->getOrInsertNamedMetadata(key);
+        Function* thunk;
+        if (cache->getNumOperands()) {
+            thunk = mdconst::extract<Function>(cache->getOperand(0)->getOperand(0));
+        } else {
+            Type* pointer_type = PointerType::getUnqual(*context);
+            std::vector<Type*> types{pointer_type, pointer_type};
+            if (wasm_codegen_) types.push_back(int64_type);
+            types.insert(types.end(), arguments.size(), tagged_value_type);
+            thunk = Function::Create(FunctionType::get(tagged_value_type, types, false),
+                                     Function::InternalLinkage, name, module.get());
+            cache->addOperand(MDNode::get(*context, ValueAsMetadata::get(thunk)));
+            thunk->addFnAttr(Attribute::NoInline);
+            IRBuilder<> ir(BasicBlock::Create(*context, "entry", thunk));
+            auto parameter = thunk->arg_begin();
+            Value* target = &*parameter++;
+            Value* environment = &*parameter++;
+            Value* count = wasm_codegen_ ? &*parameter++ : nullptr;
+            std::vector<Value*> user_args;
+            for (; parameter != thunk->arg_end(); ++parameter) user_args.push_back(&*parameter);
 
-    // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
-    // This is essential for N-dimensional lambda calculus and AD operations
-    // void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
-    //     int64_t expected, int64_t got, int64_t variadic)  -- never returns.
-    Function* getProcedureCallErrorFunc() {
+            auto call_with_slots = [&](unsigned slots) {
+                std::vector<Value*> values = user_args;
+                std::vector<Type*> signature(values.size(), tagged_value_type);
+                for (unsigned i = 0; i < slots; ++i) {
+                    values.push_back(ir.CreateGEP(tagged_value_type, environment,
+                                                  ConstantInt::get(int64_type, i)));
+                    signature.push_back(pointer_type);
+                }
+                auto* type = FunctionType::get(tagged_value_type, signature, false);
+                ir.CreateRet(ir.CreateCall(type, target, values));
+            };
+
+            const unsigned slots = eshkol::kClosureCallCaptureSlots;
+            if (wasm_codegen_) {
+                // call_indirect requires an exact signature. An entry point for
+                // a larger environment takes just the address of slot zero.
+                auto* large = BasicBlock::Create(*context, "captures_base_only", thunk);
+                auto* dispatch = ir.CreateSwitch(count, large, slots + 1);
+                for (unsigned n = 0; n <= slots; ++n) {
+                    auto* arm = BasicBlock::Create(*context, "captures_" + std::to_string(n), thunk);
+                    dispatch->addCase(ConstantInt::get(int64_type, n), arm);
+                    ir.SetInsertPoint(arm);
+                    call_with_slots(n);
+                }
+                ir.SetInsertPoint(large);
+                call_with_slots(1);
+            } else {
+                // Native caller-cleanup ABIs pass the full pointer tail. Each
+                // body consumes its declared prefix, including the large-env adapter.
+                call_with_slots(slots);
+            }
+        }
+        std::vector<Value*> parameters{function_ptr, captures};
+        if (wasm_codegen_) parameters.push_back(capture_count);
+        parameters.insert(parameters.end(), arguments.begin(), arguments.end());
+        return builder->CreateCall(thunk, parameters);
+    }
+
+Function* EshkolLLVMCodeGen::getProcedureCallErrorFunc() {
         Function* fn = module->getFunction("eshkol_procedure_call_error");
         if (!fn) {
             fn = Function::Create(FunctionType::get(builder->getVoidTy(),
@@ -6928,11 +6482,11 @@ private:
         return fn;
     }
 
-    Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
-                              const char* caller_info = "unknown",
-                              bool parameter_dispatch = true,
-                              const ClosureSpreadArgs* spread = nullptr,
-                              const KnownCallableTarget* known = nullptr) {
+Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
+                              const char* caller_info,
+                              bool parameter_dispatch,
+                              const ClosureSpreadArgs* spread,
+                              const KnownCallableTarget* known) {
         if (known) {
             return builder->CreateCall(known->signature, known->address, call_args);
         }
@@ -7379,69 +6933,16 @@ private:
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
-        // Large closures use the environment-pointer ABI emitted by
-        // codegenLambda. This branch is deliberately separate from the small
-        // closure dispatcher below: it keeps the established fast path's
-        // bounded argument matrix while making the large path independent of
-        // the capture count.
-        BasicBlock* large_capture_bb = BasicBlock::Create(
-            *context, "large_closure_env_call", current_func);
-        BasicBlock* small_capture_bb = BasicBlock::Create(
-            *context, "small_closure_capture_call", current_func);
-        Value* is_large_capture = builder->CreateICmpUGT(
-            num_captures, ConstantInt::get(int64_type, 64));
-        builder->CreateCondBr(is_large_capture, large_capture_bb, small_capture_bb);
-
-        builder->SetInsertPoint(large_capture_bb);
-        if (spread) {
-            BasicBlock* large_default = BasicBlock::Create(
-                *context, "large_closure_default", current_func);
-            SwitchInst* large_switch = builder->CreateSwitch(
-                spread_count, large_default, spread->width + 1);
-            for (int arg_count = 0; arg_count <= spread->width; ++arg_count) {
-                BasicBlock* large_case = BasicBlock::Create(
-                    *context, "large_closure_args_" + std::to_string(arg_count), current_func);
-                large_switch->addCase(ConstantInt::get(int64_type, arg_count), large_case);
-                builder->SetInsertPoint(large_case);
-                std::vector<Value*> large_args;
-                std::vector<Type*> large_types;
-                for (int i = 0; i < arg_count; ++i) {
-                    large_args.push_back(spread_arg_vals[(size_t)i]);
-                    large_types.push_back(tagged_value_type);
-                }
-                large_args.push_back(env_ptr);
-                large_types.push_back(PointerType::getUnqual(*context));
-                FunctionType* large_type = FunctionType::get(
-                    tagged_value_type, large_types, false);
-                Value* large_result = builder->CreateCall(
-                    large_type, actual_func_ptr, large_args);
-                builder->CreateBr(merge_bb);
-                results.push_back({builder->GetInsertBlock(), large_result});
-            }
-            builder->SetInsertPoint(large_default);
-            Value* large_default_result = packNullToTaggedValue();
-            builder->CreateBr(merge_bb);
-            results.push_back({large_default, large_default_result});
-        } else {
-            std::vector<Value*> large_args = call_args;
-            std::vector<Type*> large_types(
-                call_args.size(), tagged_value_type);
-            large_args.push_back(env_ptr);
-            large_types.push_back(PointerType::getUnqual(*context));
-            FunctionType* large_type = FunctionType::get(
-                tagged_value_type, large_types, false);
-            Value* large_result = builder->CreateCall(
-                large_type, actual_func_ptr, large_args);
-            builder->CreateBr(merge_bb);
-            results.push_back({builder->GetInsertBlock(), large_result});
-        }
-
-        builder->SetInsertPoint(small_capture_bb);
-
-        // Capture-count ceiling. A closure with N captures lowers to a function
-        // taking N individual capture-pointer parameters. The dispatch below
-        // Small closures retain the bounded over-provisioned pointer ABI.
-        const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
+        // One call shape for every closure. The code address in a closure
+        // object (closureEntryPoint) is either a body that takes one pointer
+        // per capture slot, for at most MAX_CLOSURE_DISPATCH_CAPTURES
+        // captures, or an entry function that takes the address of capture
+        // slot 0 and forwards every slot address to a larger body. Either way
+        // the first capture argument is &captures[0], so the dispatch below --
+        // which passes the addresses of the first MAX slots after the user
+        // arguments -- enters both with the same call, after the same arity
+        // check and rest-list construction. The capture count never selects
+        // a path.
 
         // THE CALL PROTOCOL (SW-216): a procedure is entered only with an
         // argument count its declaration accepts -- exactly fixed_params, or
@@ -7605,16 +7106,6 @@ private:
             spread_rest_list = builder->CreateLoad(tagged_value_type, spread_rest_acc,
                                                    "var_spread_rest_list");
         }
-        // Hoist the capture-slot GEPs once (loop-invariant across every
-        // fixed-arity arm; each over-provisions the same MAX capture pointers).
-        // Recomputing them per arm would be O(fixed · MAX_CAP) GEPs and inflate
-        // the -O0 frame of every closure-calling function.
-        std::vector<Value*> var_hoisted_cap_ptrs;
-        var_hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
-        for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-            var_hoisted_cap_ptrs.push_back(builder->CreateGEP(tagged_value_type, captures_typed,
-                ConstantInt::get(int64_type, i)));
-        }
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
         SwitchInst* var_fixed_sw = builder->CreateSwitch(
             fixed_params,
@@ -7650,38 +7141,11 @@ private:
                 }
             }
 
-            // OVER-PROVISION captures (see the non-variadic switch comment):
-            // pass all MAX capture pointers and let the callee read only its own
-            // N. No per-capture switch, so one call per fixed-arity arm.
-            std::vector<Value*> full_args;
-            for (int i = 0; i < fixed_count; i++) {
-                if (spread) {
-                    // Slots at or beyond the runtime count hold tagged null,
-                    // which is the same padding the static path emits below.
-                    full_args.push_back(spread_arg_vals[(size_t)i]);
-                } else if ((size_t)i < call_args.size()) {
-                    full_args.push_back(call_args[(size_t)i]);
-                } else {
-                    full_args.push_back(packPtrToTaggedValue(
-                        ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL));
-                }
-            }
-            full_args.push_back(rest_list);
-            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-                full_args.push_back(var_hoisted_cap_ptrs[(size_t)i]);
-            }
-
-            std::vector<Type*> param_types;
-            for (int i = 0; i < fixed_count; i++) {
-                param_types.push_back(tagged_value_type);
-            }
-            param_types.push_back(tagged_value_type);
-            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            const auto& supplied = spread ? spread_arg_vals : call_args;
+            std::vector<Value*> user_args(supplied.begin(), supplied.begin() + fixed_count);
+            user_args.push_back(rest_list);
+            Value* result = codegenClosureEntryCall(actual_func_ptr, captures_typed,
+                                                    num_captures, user_args);
             builder->CreateBr(merge_bb);
             variadic_results.push_back({builder->GetInsertBlock(), result});
         }
@@ -7764,14 +7228,7 @@ private:
         Value* clamped_arg_count = builder->CreateSelect(is_overflow,
             ConstantInt::get(int64_type, max_call_args), actual_arg_count);
 
-        // HOIST shared operands out of the per-arg-arm blocks. Each arm passes
-        // the same MAX capture pointers (over-provisioned) and loads the same
-        // padded argument slots; recomputing them per arm would be
-        // O(MAX_ARGS · MAX_CAP) GEPs, and at -O0 every one of those SSA values
-        // gets its own stack slot, inflating the frame of every closure-calling
-        // function. Compute each once here in the common predecessor (which
-        // dominates all arm blocks) and let the arms share them — O(MAX_ARGS +
-        // MAX_CAP).
+        // Load the padded arguments in the common predecessor of the arity arms.
         std::vector<Value*> hoisted_arg_vals;
         if (spread) {
             // Already loaded once, before the variadic split, so both dispatches
@@ -7785,42 +7242,9 @@ private:
                 hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
             }
         }
-        std::vector<Value*> hoisted_cap_ptrs;
-        hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
-        for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-            hoisted_cap_ptrs.push_back(builder->CreateGEP(tagged_value_type, captures_typed,
-                ConstantInt::get(int64_type, i)));
-        }
-
-        // Dispatch on the ARGUMENT count only. The capture count is handled by
-        // OVER-PROVISIONING: every case passes all MAX_CLOSURE_DISPATCH_CAPTURES
-        // capture pointers, and the callee — which is compiled with exactly its
-        // own N (<= MAX) capture-pointer parameters — simply reads the first N.
-        // Captures follow the fixed args positionally, so as long as arg_count
-        // matches the callee's fixed arity, the callee's slots [arg_count ..
-        // arg_count+N-1] line up with the first N pointers we pass. The extra
-        // (MAX-N) trailing pointer arguments are ignored by the callee; this is
-        // ABI-safe on caller-cleanup ABIs (AArch64 AAPCS, x86-64 SysV) exactly
-        // like the argument-padding already relied on above, and the over-count
-        // capture GEPs are pure address arithmetic that is never dereferenced.
-        //
-        // Why not switch on the capture count too (as before)? A per-(arg,cap)
-        // matrix emits O(MAX_CAP) distinct-signature calls per call site, which
-        // the -O2 optimizer cannot merge: raising MAX_CAP to 64 made -O2
-        // compilation of closure-heavy code (e.g. 256 nested closures) ~18x
-        // slower (13s -> 237s) and blew the -O0 frame. Over-provisioning keeps
-        // exactly one call per arg arm regardless of MAX_CAP, so the capture
-        // ceiling can be raised with negligible compile-time cost. Counts beyond
-        // MAX are rejected by the capture-overflow guard above.
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
         SwitchInst* sw = builder->CreateSwitch(clamped_arg_count, nonvar_switch_default,
             max_call_args + 1);
-
-        // Note: results vector is declared earlier (before arithmetic check)
-
-        // Fixed capture-pointer parameter tail shared by every arg arm.
-        std::vector<Type*> cap_param_types(
-            (size_t)MAX_CLOSURE_DISPATCH_CAPTURES, PointerType::getUnqual(*context));
 
         for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
             BasicBlock* case_bb = BasicBlock::Create(*context,
@@ -7829,31 +7253,14 @@ private:
 
             builder->SetInsertPoint(case_bb);
 
-            // Assemble args from the hoisted, shared operands (see comment above
-            // the switch). Regular args are the loaded padded values; captures
-            // are pointers to the closure env slots (all MAX passed).
-            std::vector<Value*> full_args;
-            for (int i = 0; i < arg_count; i++) {
-                full_args.push_back(hoisted_arg_vals[(size_t)i]);
-            }
-            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-                full_args.push_back(hoisted_cap_ptrs[(size_t)i]);
-            }
-
-            std::vector<Type*> param_types;
-            for (int i = 0; i < arg_count; i++) {
-                param_types.push_back(tagged_value_type);
-            }
-            param_types.insert(param_types.end(), cap_param_types.begin(), cap_param_types.end());
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-
+            std::vector<Value*> user_args(hoisted_arg_vals.begin(), hoisted_arg_vals.begin() + arg_count);
+            Value* result = codegenClosureEntryCall(actual_func_ptr, captures_typed,
+                                                    num_captures, user_args);
             builder->CreateBr(merge_bb);
             results.push_back({builder->GetInsertBlock(), result});
         }
 
-        // Default case (more than MAX_CAPTURES - shouldn't happen but handle gracefully)
+        // Default for an argument count outside the emitted arms.
         builder->SetInsertPoint(nonvar_switch_default);
         Value* default_result = packNullToTaggedValue();
         builder->CreateBr(merge_bb);
@@ -7953,7 +7360,7 @@ private:
         return phi;
     }
 
-    Value* codegenClosureSpreadCall(Value* closure, Value* slots, Value* count, int width) {
+Value* EshkolLLVMCodeGen::codegenClosureSpreadCall(Value* closure, Value* slots, Value* count, int width) {
         Function* function = builder->GetInsertBlock()->getParent();
         BasicBlock* empty = BasicBlock::Create(*context, "spread_empty", function);
         BasicBlock* nonempty = BasicBlock::Create(*context, "spread_nonempty", function);
@@ -7976,10 +7383,7 @@ private:
         return result;
     }
 
-    // Apply a tagged list without materialising its unbounded tail.  The
-    // staging array contains only the fixed-prefix window; variadic dispatch
-    // receives the original list and forwards its complete remaining tail.
-    Value* codegenClosureListCall(Value* closure, Value* list_int) {
+Value* EshkolLLVMCodeGen::codegenClosureListCall(Value* closure, Value* list_int) {
         constexpr int PREFIX_WINDOW = 16;
         Function* function = builder->GetInsertBlock()->getParent();
         BasicBlock* pre = builder->GetInsertBlock();
@@ -8061,40 +7465,7 @@ private:
         return result;
     }
 
-    /* ================= runtime-closure arity spread (AD gradient) =============
-     *
-     * A gradient of a RUNTIME closure has to call that closure with its own
-     * declared number of scalar arguments, and that number is only known at run
-     * time. GRAD_MAX_ARITY is the supported ceiling; above it the call raises a
-     * named error instead of quietly taking the single-vector path (which would
-     * leave the loss's remaining parameters uninitialised — the silent wrong
-     * answer that raising the ceiling from 8 fixed).
-     *
-     * The dispatch is emitted ONCE PER MODULE, out of line, and every gradient
-     * site calls it. It used to be inlined at each site as a switch with one
-     * fully expanded closure call per arity, whose per-arity cost grows with the
-     * arity (n-ary arithmetic fold, unrolled variadic rest-list chain). With the
-     * ceiling at 32 and six gradient sites in the standard library that came to
-     * ~1.03M lines of IR — 2.7x the entire stdlib (585,967 -> 1,561,902 lines,
-     * stdlib.bc 6.65MB -> 19.76MB). Platforms that emit stdlib definitions
-     * `linkonce_odr` discard the unused ones early; Windows/COFF emits them
-     * `weak_any` (see sexprGlobalLinkage), which cannot be discarded, so every
-     * user compile ran opt and llc over all of it: measured LLVM work per
-     * compile went 25.4s -> 117.7s and every GPU/XLA test hit the harness's 120s
-     * compile budget.
-     *
-     * Out of line the arity dispatch happens once, and it is the closure
-     * dispatcher's OWN runtime argument-count switch (ClosureSpreadArgs) rather
-     * than a second, per-arity one layered on top. Raising the ceiling now costs
-     * one more arm in one function instead of 24 fully expanded calls at every
-     * gradient site.
-     */
-    static constexpr int GRAD_MAX_ARITY = 32;
-    /* Sentinel the closure ABI uses for a variadic callable; it legitimately
-     * wants the vectorized single-argument form. */
-    static constexpr uint64_t GRAD_VARIADIC_ARITY = 255;
-
-    Function* getOrCreateGradSpreadHelper() {
+Function* EshkolLLVMCodeGen::getOrCreateGradSpreadHelper() {
         const char* helper_name = "__eshkol_ad_gradient_spread_call";
         if (Function* existing = module->getFunction(helper_name)) {
             return existing;
@@ -8233,7 +7604,7 @@ private:
         return helper;
     }
 
-    Value* codegenGradientSpreadCall(Value* closure_val, Value* point_vector,
+Value* EshkolLLVMCodeGen::codegenGradientSpreadCall(Value* closure_val, Value* point_vector,
                                      Value* dual_elems, Value* declared_arity) {
         Function* helper = getOrCreateGradSpreadHelper();
         return builder->CreateCall(helper, {ensureTaggedValue(closure_val),
@@ -8241,15 +7612,11 @@ private:
                                             dual_elems, declared_arity});
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* getTaggedValueType(Value* tagged_val) {
+Value* EshkolLLVMCodeGen::getTaggedValueType(Value* tagged_val) {
         return tagged_->getType(tagged_val);
     }
 
-    // Get base type from type tag, handling exactness flags correctly
-    // For immediate types (0-7): mask with 0x0F to strip exactness flags
-    // For types >= 8 (consolidated, multimedia, legacy): use directly
-    Value* getBaseType(Value* type_tag) {
+Value* EshkolLLVMCodeGen::getBaseType(Value* type_tag) {
         // type >= 8 ? type : (type & 0x0F)
         Value* is_not_immediate = builder->CreateICmpUGE(type_tag,
             ConstantInt::get(int8_type, 8));
@@ -8258,26 +7625,19 @@ private:
         return builder->CreateSelect(is_not_immediate, type_tag, masked);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* unpackInt64FromTaggedValue(Value* tagged_val) {
+Value* EshkolLLVMCodeGen::unpackInt64FromTaggedValue(Value* tagged_val) {
         return tagged_->unpackInt64(tagged_val);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* unpackDoubleFromTaggedValue(Value* tagged_val) {
+Value* EshkolLLVMCodeGen::unpackDoubleFromTaggedValue(Value* tagged_val) {
         return tagged_->unpackDouble(tagged_val);
     }
 
-    // MIGRATED: Delegates to TaggedValueCodegen
-    Value* unpackPtrFromTaggedValue(Value* tagged_val) {
+Value* EshkolLLVMCodeGen::unpackPtrFromTaggedValue(Value* tagged_val) {
         return tagged_->unpackPtr(tagged_val);
     }
 
-    // MIGRATION HELPER: Get subtype from object header for HEAP_PTR/CALLABLE values
-    // Object header is 8 bytes before the data pointer:
-    //   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]
-    // Returns the subtype byte (0-255)
-    Value* getObjectSubtype(Value* ptr_val) {
+Value* EshkolLLVMCodeGen::getObjectSubtype(Value* ptr_val) {
         // Ensure we have a pointer
         Value* ptr;
         if (ptr_val->getType()->isIntegerTy()) {
@@ -8291,8 +7651,7 @@ private:
         return builder->CreateLoad(int8_type, header_ptr);
     }
 
-    // MIGRATION HELPER: Check if a tagged value has a specific HEAP_PTR subtype
-    Value* isHeapSubtype(Value* tagged_val, uint8_t expected_subtype) {
+Value* EshkolLLVMCodeGen::isHeapSubtype(Value* tagged_val, uint8_t expected_subtype) {
         Value* type = getTaggedValueType(tagged_val);
         Value* base_type = getBaseType(type);
         Value* is_heap = builder->CreateICmpEQ(base_type,
@@ -8324,8 +7683,7 @@ private:
         return result;
     }
 
-    // MIGRATION HELPER: Check if a tagged value has a specific CALLABLE subtype
-    Value* isCallableSubtype(Value* tagged_val, uint8_t expected_subtype) {
+Value* EshkolLLVMCodeGen::isCallableSubtype(Value* tagged_val, uint8_t expected_subtype) {
         Value* type = getTaggedValueType(tagged_val);
         Value* base_type = getBaseType(type);
         Value* is_callable = builder->CreateICmpEQ(base_type,
@@ -8357,35 +7715,21 @@ private:
         return result;
     }
 
-    Value* extractCarAsTaggedValue(Value* cons_ptr_int) {
+Value* EshkolLLVMCodeGen::extractCarAsTaggedValue(Value* cons_ptr_int) {
         // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
         return tagged_->loadConsSlot(safeExtractInt64(cons_ptr_int), false);
     }
-    
-    Value* extractCdrAsTaggedValue(Value* cons_ptr_int) {
+
+Value* EshkolLLVMCodeGen::extractCdrAsTaggedValue(Value* cons_ptr_int) {
         // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
         return tagged_->loadConsSlot(safeExtractInt64(cons_ptr_int), true);
     }
-    
-    // MIGRATED: Delegates to TaggedValueCodegen
-    // Helper to safely extract i64 from possibly-tagged values for ICmp operations
-    // CRITICAL: This prevents ICmp type mismatch assertions
-    Value* safeExtractInt64(Value* val) {
+
+Value* EshkolLLVMCodeGen::safeExtractInt64(Value* val) {
         return tagged_->safeExtractInt64(val);
     }
 
-    /**
-     * @brief R7RS 6.2.6 `floor-quotient`: floor(a/b), for any numeric
-     *        representation.
-     *
-     * Derived from the floored remainder rather than re-implemented:
-     * `(a - (modulo a b)) / b`. The numerator is an exact multiple of `b` by
-     * construction, so exact operands stay exact (the division never produces a
-     * rational) and fixnum / bignum / flonum operands all flow through the
-     * polymorphic primitives. Also the sole place `floor/` gets its quotient,
-     * so the two can never disagree.
-     */
-    Value* emitFloorQuotient(Value* a, Value* b) {
+Value* EshkolLLVMCodeGen::emitFloorQuotient(Value* a, Value* b) {
         // i128 has its own fixed-width division domain. Dispatch it directly
         // so floor-quotient cannot accidentally re-enter a generic quotient
         // path before the modulo-adjusted numerator is formed.
@@ -8414,9 +7758,7 @@ private:
         return result;
     }
 
-    // Helper: Extract car element from cons cell as tagged value (type-safe approach)
-    // This avoids ABI issues with returning 16-byte structs from C functions
-    Value* extractConsCarAsTaggedValue(Value* cons_ptr) {
+Value* EshkolLLVMCodeGen::extractConsCarAsTaggedValue(Value* cons_ptr) {
         // The pointer-typed spelling of extractCarAsTaggedValue. It used to carry
         // its own copy of the closed representation list, and the three copies had
         // drifted apart: the car reader knew bool and char, the cdr reader bool
@@ -8428,15 +7770,13 @@ private:
         return extractCarAsTaggedValue(cons_ptr_int);
     }
 
-    // Create a unit value for erased types (when we need a valid LLVM value but the type is erased)
-    // Returns null tagged_value which is our "unit" type
-    Value* createErasedPlaceholder() {
+Value* EshkolLLVMCodeGen::createErasedPlaceholder() {
         // Create a null tagged_value as a unit placeholder
         // This is for cases where the type system requires a value but the proof is erased
         return tagged_->packNull();
     }
 
-    bool isImmediateIntegerHottType(eshkol::hott::TypeId type_id) const {
+bool EshkolLLVMCodeGen::isImmediateIntegerHottType(eshkol::hott::TypeId type_id) const {
         using namespace eshkol::hott;
         return type_id == BuiltinTypes::Int8 ||
                type_id == BuiltinTypes::Int16 ||
@@ -8452,21 +7792,7 @@ private:
                type_id == BuiltinTypes::Char;
     }
 
-    struct LowLevelValueTypeInfo {
-        eshkol::hott::TypeId hott_type;
-        Type* llvm_type;
-        bool is_signed_integer;
-        bool is_pointer;
-        bool is_null;
-    };
-
-    struct TargetIntrinsicCallInfo {
-        LowLevelValueTypeInfo return_type;
-        std::vector<LowLevelValueTypeInfo> arg_types;
-        Function* declaration;
-    };
-
-    std::optional<LowLevelValueTypeInfo> resolveLowLevelTypeInfo(const eshkol_ast_t* type_ast,
+std::optional<EshkolLLVMCodeGen::LowLevelValueTypeInfo> EshkolLLVMCodeGen::resolveLowLevelTypeInfo(const eshkol_ast_t* type_ast,
                                                                  const char* builtin_name,
                                                                  const char* role,
                                                                  bool allow_null) const {
@@ -8520,12 +7846,12 @@ private:
         }
     }
 
-    std::optional<LowLevelValueTypeInfo> resolveMemoryAccessTypeInfo(
+std::optional<EshkolLLVMCodeGen::LowLevelValueTypeInfo> EshkolLLVMCodeGen::resolveMemoryAccessTypeInfo(
         const eshkol_ast_t* type_ast, const char* builtin_name) const {
         return resolveLowLevelTypeInfo(type_ast, builtin_name, "machine", false);
     }
 
-    TypedValue makeLowLevelTypedValue(Value* raw_value, const LowLevelValueTypeInfo& type_info) {
+TypedValue EshkolLLVMCodeGen::makeLowLevelTypedValue(Value* raw_value, const LowLevelValueTypeInfo& type_info) {
         using namespace eshkol::hott;
 
         if (!raw_value) return TypedValue();
@@ -8548,7 +7874,7 @@ private:
         return TypedValue(widened, ESHKOL_VALUE_INT64, type_info.hott_type, true);
     }
 
-    Value* coerceValueToLowLevelScalar(const TypedValue& tv,
+Value* EshkolLLVMCodeGen::coerceValueToLowLevelScalar(const TypedValue& tv,
                                        const LowLevelValueTypeInfo& type_info,
                                        const char* builtin_name) {
         if (!tv.llvm_value) {
@@ -8601,7 +7927,7 @@ private:
         return raw_value;
     }
 
-    std::optional<TargetIntrinsicCallInfo> resolveTargetIntrinsicCall(
+std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::resolveTargetIntrinsicCall(
         const eshkol_operations_t* op, const char* builtin_name) {
         if (!op || op->call_op.num_vars < 2) {
             eshkol_error("%s requires a return type, intrinsic name, and zero or more typed arguments",
@@ -8682,7 +8008,7 @@ private:
         return TargetIntrinsicCallInfo{*return_type, std::move(arg_types), declaration};
     }
 
-    std::optional<AtomicOrdering> resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
+std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
                                                        const char* builtin_name) const {
         if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
             eshkol_error("%s expects a fence ordering as its first argument", builtin_name);
@@ -8708,7 +8034,7 @@ private:
         return std::nullopt;
     }
 
-    std::optional<AtomicOrdering> resolveAtomicOrdering(const eshkol_ast_t* ordering_ast,
+std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveAtomicOrdering(const eshkol_ast_t* ordering_ast,
                                                         const char* builtin_name,
                                                         bool for_store) const {
         if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
@@ -8736,7 +8062,7 @@ private:
         return std::nullopt;
     }
 
-    std::optional<AtomicOrdering> resolveAtomicRMWOrdering(const eshkol_ast_t* ordering_ast,
+std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveAtomicRMWOrdering(const eshkol_ast_t* ordering_ast,
                                                            const char* builtin_name) const {
         if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
             eshkol_error("%s expects a memory ordering designator", builtin_name);
@@ -8765,7 +8091,7 @@ private:
         return std::nullopt;
     }
 
-    std::optional<AtomicOrdering> resolveAtomicCmpXchgFailureOrdering(
+std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveAtomicCmpXchgFailureOrdering(
         const eshkol_ast_t* ordering_ast,
         const char* builtin_name) const {
         if (!ordering_ast || ordering_ast->type != ESHKOL_VAR || !ordering_ast->variable.id) {
@@ -8789,7 +8115,7 @@ private:
         return std::nullopt;
     }
 
-    bool isAtomicCmpXchgFailureOrderingAllowed(AtomicOrdering success_ordering,
+bool EshkolLLVMCodeGen::isAtomicCmpXchgFailureOrderingAllowed(AtomicOrdering success_ordering,
                                                AtomicOrdering failure_ordering) const {
         switch (success_ordering) {
             case AtomicOrdering::Monotonic:
@@ -8811,11 +8137,32 @@ private:
         }
     }
 
-    Align lowLevelABIAlignment(Type* type) const {
+Align EshkolLLVMCodeGen::lowLevelABIAlignment(Type* type) const {
         return module->getDataLayout().getABITypeAlign(type);
     }
 
-    eshkol::hott::TypeId resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
+    static EshkolTagSet ascriptionTags(const hott_type_expr_t* type) {
+        if (!type) return 0;
+        switch (type->kind) {
+            case HOTT_TYPE_SUM:
+                return ascriptionTags(type->sum.left) | ascriptionTags(type->sum.right);
+            case HOTT_TYPE_NUMBER: return eshkol_ground_type_tags("number");
+            case HOTT_TYPE_ARROW:
+            case HOTT_TYPE_DEPENDENT: return eshkol_ground_type_tags("procedure");
+            case HOTT_TYPE_PRODUCT:
+            case HOTT_TYPE_SIGMA:
+            case HOTT_TYPE_PAIR: return eshkol_ground_type_tags("pair");
+            case HOTT_TYPE_LIST: return eshkol_ground_type_tags("list");
+            case HOTT_TYPE_VECTOR: return eshkol_ground_type_tags("vector");
+            case HOTT_TYPE_TENSOR: return eshkol_ground_type_tags("tensor");
+            case HOTT_TYPE_FORALL: return ascriptionTags(type->forall.body);
+            case HOTT_TYPE_REFINE: return ascriptionTags(type->refine.base);
+            case HOTT_TYPE_APP: return eshkol_ground_type_tags(type->app.head);
+            default: return eshkol_ground_type_tags(hott_type_to_string(type));
+        }
+    }
+
+eshkol::hott::TypeId EshkolLLVMCodeGen::resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
         using namespace eshkol::hott;
 
         if (!type_expr) {
@@ -8860,6 +8207,21 @@ private:
             case HOTT_TYPE_FORALL:
                 return type_expr->forall.body ? resolveDeclaredHottTypeId(type_expr->forall.body)
                                               : BuiltinTypes::Value;
+            case HOTT_TYPE_REFINE:  // erased to its base (ADR-0044)
+                return type_expr->refine.base ? resolveDeclaredHottTypeId(type_expr->refine.base)
+                                              : BuiltinTypes::Value;
+            // The dependent type language erases to the runtime types its
+            // values have (ADR-0042): a Pi is a procedure, a Sigma a pair, a
+            // length-indexed vector a vector.
+            case HOTT_TYPE_DEPENDENT:
+                return BuiltinTypes::Function;
+            case HOTT_TYPE_SIGMA:
+                return BuiltinTypes::Pair;
+            case HOTT_TYPE_APP:
+                if (type_expr->app.head && std::string(type_expr->app.head) == "vector") {
+                    return BuiltinTypes::Vector;
+                }
+                return BuiltinTypes::Value;
             case HOTT_TYPE_VAR:
                 if (type_expr->var_name) {
                     auto builtin = ctx_->hottTypes().lookupType(type_expr->var_name);
@@ -8873,7 +8235,7 @@ private:
         }
     }
 
-    uint8_t closureReturnCategoryForHottType(eshkol::hott::TypeId hott_type) const {
+uint8_t EshkolLLVMCodeGen::closureReturnCategoryForHottType(eshkol::hott::TypeId hott_type) const {
         using namespace eshkol::hott;
 
         if (hott_type == BuiltinTypes::Boolean) {
@@ -8906,9 +8268,7 @@ private:
         return CLOSURE_RETURN_UNKNOWN;
     }
 
-    // Robust helper to convert tagged_value to TypedValue with proper runtime type detection
-    // This preserves type information through PHI nodes
-    TypedValue detectValueType(Value* llvm_val) {
+TypedValue EshkolLLVMCodeGen::detectValueType(Value* llvm_val) {
         if (!llvm_val) return TypedValue();
         
         if (llvm_val->getType() == tagged_value_type) {
@@ -9012,8 +8372,8 @@ private:
             true
         );
     }
-    // Convert TypedValue to tagged_value (AST→IR boundary crossing)
-    Value* typedValueToTaggedValue(const TypedValue& tv) {
+
+Value* EshkolLLVMCodeGen::typedValueToTaggedValue(const TypedValue& tv) {
         // HoTT PROOF ERASURE: If this is a proof type, return null (proofs have no runtime representation)
         if (tv.shouldErase()) {
             eshkol_debug("typedValueToTaggedValue: erasing proof type (HoTT TypeId %u)", tv.hott_type.id);
@@ -9086,44 +8446,29 @@ private:
         // Fallback: null tagged value
         return packNullToTaggedValue();
     }
-    
-    // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
-    // This avoids complex control flow by just storing the tagged_value as-is
-    // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
-    // These operate on tagged_value parameters and handle mixed types + dual numbers
-    
-    // MIGRATED: Polymorphic addition - delegates to ArithmeticCodegen
-    Value* polymorphicAdd(Value* left_tagged, Value* right_tagged) {
+
+Value* EshkolLLVMCodeGen::polymorphicAdd(Value* left_tagged, Value* right_tagged) {
         return arith_->add(left_tagged, right_tagged);
     }
-    
-    // MIGRATED: Polymorphic subtraction - delegates to ArithmeticCodegen
-    Value* polymorphicSub(Value* left_tagged, Value* right_tagged) {
+
+Value* EshkolLLVMCodeGen::polymorphicSub(Value* left_tagged, Value* right_tagged) {
         return arith_->sub(left_tagged, right_tagged);
     }
 
-    // MIGRATED: Polymorphic multiplication - delegates to ArithmeticCodegen
-    Value* polymorphicMul(Value* left_tagged, Value* right_tagged) {
+Value* EshkolLLVMCodeGen::polymorphicMul(Value* left_tagged, Value* right_tagged) {
         return arith_->mul(left_tagged, right_tagged);
     }
 
-    // MIGRATED: Polymorphic division - delegates to ArithmeticCodegen
-    Value* polymorphicDiv(Value* left_tagged, Value* right_tagged) {
+Value* EshkolLLVMCodeGen::polymorphicDiv(Value* left_tagged, Value* right_tagged) {
         return arith_->div(left_tagged, right_tagged);
     }
-    
-    // MIGRATED: Polymorphic comparison - delegates to ArithmeticCodegen
-    Value* polymorphicCompare(Value* left_tagged, Value* right_tagged,
+
+Value* EshkolLLVMCodeGen::polymorphicCompare(Value* left_tagged, Value* right_tagged,
                              const std::string& operation) {
         return arith_->compare(left_tagged, right_tagged, operation);
     }
-    
-    
-    
-    // ===== POLYMORPHIC FUNCTION WRAPPERS (Phase 2.4) =====
-    // Create Function* objects that wrap polymorphic arithmetic for use in higher-order functions
-    
-    Function* polymorphicAdd() {
+
+Function* EshkolLLVMCodeGen::polymorphicAdd() {
         std::string func_name = "polymorphic_add_2arg";
         
         // Check if already created
@@ -9159,8 +8504,8 @@ private:
         function_table[func_name] = func;
         return func;
     }
-    
-    Function* polymorphicSub() {
+
+Function* EshkolLLVMCodeGen::polymorphicSub() {
         std::string func_name = "polymorphic_sub_2arg";
         
         auto it = function_table.find(func_name);
@@ -9190,8 +8535,8 @@ private:
         function_table[func_name] = func;
         return func;
     }
-    
-    Function* polymorphicMul() {
+
+Function* EshkolLLVMCodeGen::polymorphicMul() {
         std::string func_name = "polymorphic_mul_2arg";
         
         auto it = function_table.find(func_name);
@@ -9221,8 +8566,8 @@ private:
         function_table[func_name] = func;
         return func;
     }
-    
-    Function* polymorphicDiv() {
+
+Function* EshkolLLVMCodeGen::polymorphicDiv() {
         std::string func_name = "polymorphic_div_2arg";
         
         auto it = function_table.find(func_name);
@@ -9252,13 +8597,8 @@ private:
         function_table[func_name] = func;
         return func;
     }
-    
-    
-    // Track current source location for error reporting
-    uint32_t current_source_line = 0;
-    uint32_t current_source_column = 0;
 
-    Value* languageCoverageString(const std::string& value) {
+Value* EshkolLLVMCodeGen::languageCoverageString(const std::string& value) {
         auto it = coverage_string_cache_.find(value);
         if (it != coverage_string_cache_.end()) {
             return it->second;
@@ -9269,7 +8609,7 @@ private:
         return ptr;
     }
 
-    void emitLanguageCoverage(const eshkol_ast_t* ast) {
+void EshkolLLVMCodeGen::emitLanguageCoverage(const eshkol_ast_t* ast) {
         if (!language_coverage_enabled_ || !ast || ast->type != ESHKOL_OP) {
             return;
         }
@@ -9363,12 +8703,55 @@ private:
         builder->SetInsertPoint(resume_block);
     }
 
-    Value* codegenAST(const eshkol_ast_t* ast) {
+Value* EshkolLLVMCodeGen::codegenAST(const eshkol_ast_t* ast) {
+        // Code generation rides on heap continuation frames, so nesting costs
+        // no native stack — except where a caller re-enters it synchronously,
+        // as the call-result and quoted-data paths do. A CODE form nests as
+        // deeply as the reader could read it, and reading has no depth limit,
+        // so this driver asks for stack headroom and refuses in words rather
+        // than descending past its bound. Quoted DATA does not reach here
+        // deeply: its spine is flattened before anything is emitted.
+        if (!eshkol_stack_headroom_ok()) {
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        eshkol_reader_max_pass_depth(),
+                                        message, sizeof(message));
+            codegen_error_at(ast, "expression nesting too deep: %s", message);
+            return nullptr;
+        }
         return codegenASTTask(ast).run();
     }
 
-    ContinuationTask<Value*> codegenASTTask(const eshkol_ast_t* ast) {
-        if (!ast) co_return nullptr;
+ContinuationTask<Value*> EshkolLLVMCodeGen::codegenASTTask(const eshkol_ast_t* ast) {
+        if (!ast || codegen_depth_exceeded_) co_return nullptr;
+
+        const bool new_depth_level = (ast != codegen_depth_ast_);
+        const size_t pass_depth_budget = eshkol_reader_max_pass_depth();
+        if (new_depth_level && pass_depth_budget != 0 &&
+            codegen_ast_depth_ >= pass_depth_budget) {
+            codegen_depth_exceeded_ = true;
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        pass_depth_budget, message, sizeof(message));
+            eshkol_error("expression nesting too deep: %s", message);
+            markFatalCodegenError();
+            co_return nullptr;
+        }
+        struct ScopedAstDepth {
+            size_t& depth;
+            const eshkol_ast_t*& current;
+            const eshkol_ast_t* prev;
+            bool counted;
+            ScopedAstDepth(size_t& d, const eshkol_ast_t*& c, const eshkol_ast_t* n, bool b)
+                : depth(d), current(c), prev(c), counted(b) {
+                if (counted) ++depth;
+                current = n;
+            }
+            ~ScopedAstDepth() {
+                current = prev;
+                if (counted) --depth;
+            }
+        } ast_depth_guard(codegen_ast_depth_, codegen_depth_ast_, ast, new_depth_level);
 
         // ADR-0000 Stage 1: resolve this node's location through the
         // NodeId -> SourceSpan substrate rather than by reading location
@@ -9543,24 +8926,17 @@ private:
                 co_return nullptr;
         }
     }
-    
-    // MIGRATED: Delegates to StringIOCodegen
-    Value* codegenString(const char* str) {
+
+Value* EshkolLLVMCodeGen::codegenString(const char* str) {
         return strio_->createString(str);
     }
 
-    // OWNERSHIP: Eshkol uses arena allocation with deterministic lifetimes.
-    // Values are valid for the lifetime of their arena region. No move
-    // semantics — the arena model guarantees validity within scope.
-    // This function is a no-op passthrough.
-    Value* emitUseAfterMoveCheck(Value* loaded_val, const std::string& var_name) {
+Value* EshkolLLVMCodeGen::emitUseAfterMoveCheck(Value* loaded_val, const std::string& var_name) {
         (void)var_name;
         return loaded_val;
     }
 
-    // OWNERSHIP ENFORCEMENT: Check if a value has the BORROWED flag set
-    // Used by codegenSet to prevent mutation of borrowed references
-    Value* emitBorrowMutationCheck(Value* var_val, const std::string& var_name) {
+Value* EshkolLLVMCodeGen::emitBorrowMutationCheck(Value* var_val, const std::string& var_name) {
         if (!var_val || var_val->getType() != tagged_value_type) return nullptr; // null = no error
 
         Function* func = builder->GetInsertBlock()->getParent();
@@ -9620,7 +8996,7 @@ private:
         return nullptr; // success
     }
 
-    Value* codegenVariable(const eshkol_ast_t* ast) {
+Value* EshkolLLVMCodeGen::codegenVariable(const eshkol_ast_t* ast) {
         if (!ast->variable.id) return nullptr;
 
         std::string var_name = ast->variable.id;
@@ -10420,23 +9796,7 @@ private:
         return nullptr;
     }
 
-    // Create a first-class wrapper for `list` / `values` — variadic builtins
-    // that the codegen normally inlines (coll_->list / codegenValues). When
-    // the user references the bare name `list` as a value (e.g. as a
-    // call-with-values consumer or a map argument), no inline expansion
-    // applies, so we have to synthesize an honest runtime function with the
-    // variadic-closure ABI. The wrapper takes a single tagged_value rest
-    // parameter (the list the closure dispatcher builds from the caller's
-    // args) and just returns it. For `list` that's the whole semantic;
-    // `values` similarly returns its args as a list in this path (used as a
-    // first-class function; the multi-value return path goes through a
-    // different code path).
-    //
-    // The closure metadata uses CLOSURE_FLAG_VARIADIC (bit 0 of flags byte at
-    // offset 34), arity=0, which signals codegenClosureCall to cons all
-    // caller args into a list and pass that as the single argument. See the
-    // "Variadic closure" branch around line ~5440.
-    Function* getOrCreateVariadicIdentityWrapper(const std::string& wrapper_name) {
+Function* EshkolLLVMCodeGen::getOrCreateVariadicIdentityWrapper(const std::string& wrapper_name) {
         Function* wrapper = module->getFunction(wrapper_name);
         if (wrapper) return wrapper;
 
@@ -10459,16 +9819,12 @@ private:
         return wrapper;
     }
 
-    Value* makeVariadicIdentityClosureValue(const std::string& wrapper_name) {
+Value* EshkolLLVMCodeGen::makeVariadicIdentityClosureValue(const std::string& wrapper_name) {
         return makeVariadicClosureValueFor(
             getOrCreateVariadicIdentityWrapper(wrapper_name));
     }
 
-    /* Wrap a `(rest_list) -> tagged_value` function as a VARIADIC closure
-     * value: arity 0 with the variadic bit set, which is what makes the
-     * closure dispatcher cons the caller's arguments into the single rest
-     * list the wrapper expects. */
-    Value* makeVariadicClosureValueFor(Function* wrapper) {
+Value* EshkolLLVMCodeGen::makeVariadicClosureValueFor(Function* wrapper) {
         if (!wrapper) return nullptr;
         Value* func_ptr_int = builder->CreatePtrToInt(wrapper, intptr_type);
         Value* arena_ptr = getArenaPtr();
@@ -10494,15 +9850,143 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
+Function* EshkolLLVMCodeGen::getOrCreateBytevectorRestWrapper() {
+        static const char* const name = "builtin_bytevector_rest_v1";
+        FunctionType* ty = FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+        Function* fn = nullptr;
+        if (llvm::NamedMDNode* ids = module->getNamedMetadata("eshkol.generated.functions")) {
+            for (unsigned i = 0; i < ids->getNumOperands(); ++i) {
+                llvm::MDNode* record = ids->getOperand(i);
+                if (record->getNumOperands() != 2) continue;
+                auto* function_id = llvm::dyn_cast<llvm::ValueAsMetadata>(record->getOperand(0));
+                auto* kind_id = llvm::dyn_cast<llvm::MDString>(record->getOperand(1));
+                auto* identified_fn = function_id
+                    ? llvm::dyn_cast<Function>(function_id->getValue()) : nullptr;
+                if (identified_fn && kind_id &&
+                    kind_id->getString() == "bytevector-rest-v1") {
+                    fn = identified_fn;
+                    break;
+                }
+            }
+        }
+        if (fn) {
+            if (fn->getFunctionType() != ty ||
+                !fn->hasFnAttribute("eshkol.generated.bytevector-rest.v1")) {
+                eshkol_error("bytevector generated wrapper identity collision");
+                return nullptr;
+            }
+            return fn;
+        }
 
-    /* SW-230: a builtin that accepts a small RANGE of argument counts (`atan`
-     * of 1 or 2, `round` with an optional precision) as a value. The closure
-     * is variadic and dispatches on the length of its rest list to the
-     * wrapper built at that arity, each generated from the call-position
-     * lowering; any other count raises an arity error. A fixed-arity value
-     * silently dropped the second argument: `((lambda (f) (f 1.0 2.0)) atan)`
-     * answered atan(1). */
-    Value* makeByCountBuiltinClosureValue(const std::string& name,
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_function = current_function;
+        DebugLoc old_debug_location = builder->getCurrentDebugLocation();
+        fn = Function::Create(ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            name, module.get());
+        fn->addFnAttr("eshkol.generated.bytevector-rest.v1");
+        llvm::Metadata* id_fields[] = {llvm::ValueAsMetadata::get(fn),
+            llvm::MDString::get(*context, "bytevector-rest-v1")};
+        llvm::NamedMDNode* ids = module->getOrInsertNamedMetadata("eshkol.generated.functions");
+        ids->addOperand(llvm::MDNode::get(*context, id_fields));
+
+        current_function = fn;
+        builder->SetCurrentDebugLocation(DebugLoc());
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", fn);
+        BasicBlock* count_head = BasicBlock::Create(*context, "count_head", fn);
+        BasicBlock* count_check = BasicBlock::Create(*context, "count_check", fn);
+        BasicBlock* count_body = BasicBlock::Create(*context, "count_body", fn);
+        BasicBlock* counted = BasicBlock::Create(*context, "counted", fn);
+        BasicBlock* size_ok = BasicBlock::Create(*context, "size_ok", fn);
+        BasicBlock* size_bad = BasicBlock::Create(*context, "size_bad", fn);
+        BasicBlock* fill_head = BasicBlock::Create(*context, "fill_head", fn);
+        BasicBlock* fill_body = BasicBlock::Create(*context, "fill_body", fn);
+        BasicBlock* done = BasicBlock::Create(*context, "done", fn);
+        Value* rest = &*fn->arg_begin();
+        builder->SetInsertPoint(entry);
+        builder->CreateBr(count_head);
+        builder->SetInsertPoint(count_head);
+        PHINode* node = builder->CreatePHI(tagged_value_type, 2, "rest_node");
+        PHINode* length = builder->CreatePHI(int64_type, 2, "rest_length");
+        node->addIncoming(rest, entry);
+        length->addIncoming(ConstantInt::get(int64_type, 0), entry);
+        Value* base = getBaseType(getTaggedValueType(node));
+        Value* is_null = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+        builder->CreateCondBr(is_null, counted, count_check);
+        builder->SetInsertPoint(count_check);
+        Value* is_heap = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        BasicBlock* cons_check = BasicBlock::Create(*context, "cons_check", fn);
+        BasicBlock* improper = BasicBlock::Create(*context, "improper", fn);
+        builder->CreateCondBr(is_heap, cons_check, improper);
+        builder->SetInsertPoint(improper);
+        arith_->emitTypeError("bytevector: expected a proper rest list");
+        builder->SetInsertPoint(cons_check);
+        Value* is_cons = isHeapSubtype(node, HEAP_SUBTYPE_CONS);
+        builder->CreateCondBr(is_cons, count_body, improper);
+        builder->SetInsertPoint(count_body);
+        Value* cons_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(node), builder->getPtrTy());
+        Value* car_ptr = builder->CreatePointerCast(cons_ptr, PointerType::getUnqual(tagged_value_type));
+        Value* car = builder->CreateLoad(tagged_value_type, car_ptr);
+        (void)emitCheckedByte(car, "bytevector");
+        Value* cdr_ptr = builder->CreateGEP(tagged_value_type, car_ptr, ConstantInt::get(int64_type, 1));
+        Value* cdr = builder->CreateLoad(tagged_value_type, cdr_ptr);
+        BasicBlock* count_latch = builder->GetInsertBlock();
+        Value* next_len = builder->CreateAdd(length, ConstantInt::get(int64_type, 1));
+        node->addIncoming(cdr, count_latch);
+        length->addIncoming(next_len, count_latch);
+        builder->CreateBr(count_head);
+
+        builder->SetInsertPoint(counted);
+        builder->CreateCondBr(
+            builder->CreateICmpULE(length,
+                ConstantInt::get(int64_type, UINT64_MAX - 8)), size_ok, size_bad);
+        builder->SetInsertPoint(size_bad);
+        arith_->emitTypeError("bytevector: argument list is too large");
+        builder->SetInsertPoint(size_ok);
+        Value* alloc_size = builder->CreateAdd(length, ConstantInt::get(int64_type, 8));
+        Value* arena = getArenaPtr();
+        Value* bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+            {arena, alloc_size, ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+             ConstantInt::get(int8_type, 0)});
+        ctx_->emitConstructorAllocationCheck(bv);
+        builder->CreateStore(length, bv);
+        Value* data = builder->CreateGEP(int8_type, bv, ConstantInt::get(int64_type, 8));
+        BasicBlock* fill_entry = builder->GetInsertBlock();
+        builder->CreateBr(fill_head);
+        builder->SetInsertPoint(fill_head);
+        PHINode* fill_node = builder->CreatePHI(tagged_value_type, 2, "fill_node");
+        PHINode* index = builder->CreatePHI(int64_type, 2, "fill_index");
+        fill_node->addIncoming(rest, fill_entry);
+        index->addIncoming(ConstantInt::get(int64_type, 0), fill_entry);
+        builder->CreateCondBr(builder->CreateICmpUGE(index, length), done, fill_body);
+        builder->SetInsertPoint(fill_body);
+        Value* fill_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(fill_node), builder->getPtrTy());
+        Value* fill_car = builder->CreateLoad(tagged_value_type,
+            builder->CreatePointerCast(fill_ptr, PointerType::getUnqual(tagged_value_type)));
+        Value* byte = emitCheckedByte(fill_car, "bytevector");
+        Value* dest = builder->CreateGEP(int8_type, data, index);
+        builder->CreateStore(byte, dest);
+        Value* fill_cdr = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type,
+                builder->CreatePointerCast(fill_ptr, PointerType::getUnqual(tagged_value_type)),
+                ConstantInt::get(int64_type, 1)));
+        BasicBlock* fill_latch = builder->GetInsertBlock();
+        fill_node->addIncoming(fill_cdr, fill_latch);
+        index->addIncoming(builder->CreateAdd(index, ConstantInt::get(int64_type, 1)), fill_latch);
+        builder->CreateBr(fill_head);
+        builder->SetInsertPoint(done);
+        builder->CreateRet(packPtrToTaggedValue(bv, ESHKOL_VALUE_HEAP_PTR));
+        current_function = old_function;
+        builder->SetCurrentDebugLocation(old_debug_location);
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return fn;
+    }
+
+Value* EshkolLLVMCodeGen::makeByCountBuiltinClosureValue(const std::string& name,
                                           const InlineBuiltinSpec& spec) {
         const std::string wrapper_name =
             "builtin_" + inlineBuiltinSymbolSuffix(name) + "_bycount";
@@ -10564,12 +10048,7 @@ private:
         return makeVariadicClosureValueFor(wrap_fn);
     }
 
-    /* SW-173: materialise a VARIADIC builtin as a genuine variadic closure.
-     *
-     * Returns nullptr when the row declares no rest form, so the caller
-     * falls back to the row's fixed-arity materialisation — the pre-existing
-     * compromise, now reached only for rows that say so. */
-    Value* makeVariadicBuiltinClosureValue(const std::string& name,
+Value* EshkolLLVMCodeGen::makeVariadicBuiltinClosureValue(const std::string& name,
                                            const InlineBuiltinSpec& spec) {
         // `error` is variadic in R7RS, but unlike the ordinary rest-list
         // builtins it raises rather than returning a value.  Its wrapper must
@@ -10675,6 +10154,9 @@ private:
             return makeVariadicClosureValueFor(wrap_fn);
         }
 
+        if (spec.variadic && spec.rest == VariadicRest::Bytevector) {
+            return makeVariadicClosureValueFor(getOrCreateBytevectorRestWrapper());
+        }
         if (spec.variadic && spec.rest == VariadicRest::ByCount) {
             return makeByCountBuiltinClosureValue(name, spec);
         }
@@ -10740,16 +10222,10 @@ private:
         return makeVariadicClosureValueFor(wrap_fn);
     }
 
-    /* `(f a b c …)` == `(f (f (f a b) c) …)` for the associative variadic
-     * builtins. The BINARY form is the authoritative call-position lowering,
-     * so the fold cannot disagree with `f` on any pair; the only thing
-     * asserted here is associativity, and it is asserted only for the rows
-     * that declare LeftFold. There is no argument-count ceiling — unlike a
-     * fixed-arity wrapper, or a switch over unrolled arities. */
-    void emitVariadicBuiltinLeftFold(Function* wrap_fn, const std::string& name,
+void EshkolLLVMCodeGen::emitVariadicBuiltinLeftFold(Function* wrap_fn, const std::string& name,
                                      Value* rest, Function* binary_fn,
-                                     const std::function<Value*(Value*)>& unary = nullptr,
-                                     const std::function<Value*()>& nullary = nullptr) {
+                                     const std::function<Value*(Value*)>& unary,
+                                     const std::function<Value*()>& nullary) {
         BasicBlock* first_bb = BasicBlock::Create(*context, "fold_first", wrap_fn);
         BasicBlock* empty_bb = BasicBlock::Create(*context, "fold_empty", wrap_fn);
         BasicBlock* loop_bb  = BasicBlock::Create(*context, "fold_loop", wrap_fn);
@@ -10820,9 +10296,7 @@ private:
         builder->CreateRet(packNullToTaggedValue());
     }
 
-    /* `(f a b c …)` == `(and (f a b) (f b c) …)` for the R7RS comparison
-     * chains. Fewer than two arguments is an arity error. */
-    void emitVariadicBuiltinChain(Function* wrap_fn, const std::string& name,
+void EshkolLLVMCodeGen::emitVariadicBuiltinChain(Function* wrap_fn, const std::string& name,
                                   Value* rest, Function* binary_fn) {
         BasicBlock* first_bb = BasicBlock::Create(*context, "chain_first", wrap_fn);
         BasicBlock* empty_bb = BasicBlock::Create(*context, "chain_empty", wrap_fn);
@@ -10876,10 +10350,7 @@ private:
         builder->CreateRet(packNullToTaggedValue());
     }
 
-    /* SW-241: the arithmetic operators and numeric comparisons as VALUES are
-     * the variadic R7RS procedures, not their 2-argument lowering. Built from
-     * the same polymorphic operations the call position uses. */
-    Value* makeVariadicOperatorClosureValue(const std::string& op) {
+Value* EshkolLLVMCodeGen::makeVariadicOperatorClosureValue(const std::string& op) {
         const bool arithmetic = op == "+" || op == "-" || op == "*" || op == "/";
         const std::string wrapper_name = "builtin_op_" + inlineBuiltinSymbolSuffix(op) + "_varargs";
         if (Function* existing = module->getFunction(wrapper_name))
@@ -10920,13 +10391,13 @@ private:
         return makeVariadicClosureValueFor(wrap_fn);
     }
 
-    void raiseVariadicBuiltinZeroArgError(const std::string& name) {
+void EshkolLLVMCodeGen::raiseVariadicBuiltinZeroArgError(const std::string& name) {
         raiseBuiltinArityError(
             name + ": variadic builtin applied to zero arguments through a "
                    "first-class reference");
     }
 
-    void raiseBuiltinArityError(const std::string& message) {
+void EshkolLLVMCodeGen::raiseBuiltinArityError(const std::string& message) {
         Function* make_exc = module->getFunction("eshkol_make_exception_with_header");
         if (!make_exc) {
             FunctionType* mt = FunctionType::get(
@@ -10950,59 +10421,14 @@ private:
         builder->CreateCall(raise_fn, {exc});
     }
 
-    /* User-shadowable builtin OPs (audit Bug G).
-     *
-     * The parser maps a handful of builtin names to dedicated OP
-     * tags (e.g. ESHKOL_MAKE_WORKSPACE_OP) so the codegen can emit
-     * a direct C-runtime call without a string-match dispatch step.
-     * That was a premature binding decision: R7RS §5.3.1 allows any
-     * top-level identifier to be redefined, and Noesis (among others)
-     * legitimately defines `make-workspace`, `make-kb`, `make-fact`,
-     * etc. at user scope. With the parser mapping in place those
-     * defines were silently ignored at every call site.
-     *
-     * The architecturally correct place to resolve this is codegen,
-     * where user scope is available (`function_table`). For every OP
-     * that corresponds to a user-overridable builtin, check whether
-     * the user has a same-named define and — if so — route the call
-     * through codegenCall with a synthesised CALL_OP/VAR header.
-     * codegenCall owns the full call-dispatch pipeline (TCO,
-     * closures, arity checks, variadic packing); synthesising the
-     * header is the minimal vehicle to reuse it without duplicating
-     * 150 lines. */
-    static const std::unordered_map<eshkol_op_t, const char*>& userShadowableOps() {
+const std::unordered_map<eshkol_op_t, const char*>& EshkolLLVMCodeGen::userShadowableOps() {
         // One table, shared with the macro expander, which resolves the
         // LEXICAL shadows before codegen runs (shadowable_ops.h). What
         // reaches this redirect is a top-level or REPL-batch definition.
         return eshkol::userShadowableBuiltinOps();
     }
 
-    /* Does `name` resolve to a user-defined binding in a scope that
-     * is unambiguously visible from the current call site?
-     *
-     * Intended solely for the userShadowableOps redirect in
-     * codegenOperation — not a general-purpose shadow check. The
-     * callers are the consciousness-engine / workspace OP tags
-     * (make-workspace, make-kb, make-fact, kb-*, fg-*, ws-*, …),
-     * none of which collide with the C math stubs registered in
-     * function_table during init (sin, cos, exp, sqrt, pow, exit,
-     * printf).
-     *
-     * Intentionally narrower than codegenCall's cascade: we only
-     * look at function_table (canonical top-level defines) and the
-     * scoped `<func>.<name>_func` key (true inner defines from the
-     * currently-enclosing function). The UNSCOPED `_func` key in
-     * symbol_table / global_symbol_table is NOT consulted here
-     * because inner-function codegen has historically registered
-     * nested defines there (llvm_codegen.cpp:8517 and friends) —
-     * so an unscoped hit can mean "an inner define from a sibling
-     * function that happens to have compiled first", which from the
-     * current call site is NOT actually in scope. A top-level
-     * `(define k1 (make-kb))` after a `(define (other) (define
-     * (make-kb) ...))` would otherwise divert to codegenCall and
-     * find the wrong (inner, non-visible) lambda via the leaked
-     * unscoped key. Fix: only accept unambiguous scope matches. */
-    bool hasUserShadow(const std::string& name) {
+bool EshkolLLVMCodeGen::hasUserShadow(const std::string& name) {
         /* Top-level user (define (f ...) ...) registers via
          * function_table[f] = Function*. For the shadowable-OP names
          * this is unambiguously a user shadow (never a C stub). */
@@ -11049,11 +10475,11 @@ private:
         return false;
     }
 
-    Value* codegenOperation(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenOperation(const eshkol_operations_t* op) {
         return codegenOperationTask(op).run();
     }
 
-    ContinuationTask<Value*> codegenOperationTask(const eshkol_operations_t* op) {
+ContinuationTask<Value*> EshkolLLVMCodeGen::codegenOperationTask(const eshkol_operations_t* op) {
         /* Bug G (v2, 2026-04-20): dispatch user-shadowable builtins
          * to the user's define when one is in scope. R7RS §5.3.1
          * requires top-level bindings be overridable.
@@ -11137,7 +10563,7 @@ private:
                 And, Or, Cond, Case, Do, When,
                 Unless, Guard, Raise, CallCc, DynamicWind, CaseLambda,
                 Parameterize, MakeParameter, Quote, Quasiquote, Unquote, UnquoteSplicing,
-                Set, DefineType, Tensor, Diff, Derivative, Taylor,
+                Set, DefineType, Hott, Tensor, Diff, Derivative, Taylor,
                 DerivativeN, Gradient, Jacobian, Hessian, Divergence, Curl,
                 Laplacian, DirectionalDeriv, WithRegion, Owned, Move, Borrow,
                 Shared, WeakRef, Import, TypeAnnotation, The, Values,
@@ -11183,6 +10609,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::UnquoteSplicing, ESHKOL_UNQUOTE_SPLICING_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
                 eshkol::AstRouteGroup<AstRoute::DefineType, ESHKOL_DEFINE_TYPE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Hott, ESHKOL_HOTT_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
@@ -11391,6 +10818,16 @@ private:
                 // The type alias is stored in the AST for use by the type checker
                 co_return packNullToTaggedValue();
 
+            case AstRoute::Hott:
+                // (hott decl...) is compile-time only. (hott-eval term) was
+                // replaced by its normal form when the type checker ran; one
+                // still here means it was never elaborated.
+                if (op->hott_op.is_eval) {
+                    eshkol_error("a hott-eval form was not elaborated by the HoTT kernel");
+                    fatal_codegen_error_ = true;
+                }
+                co_return packNullToTaggedValue();
+
             case AstRoute::Tensor:
                 co_return tensor_->tensorOperation(op);
                 
@@ -11448,11 +10885,26 @@ private:
                 // but generate no runtime code (proof erasure)
                 co_return packNullToTaggedValue();
 
-            // Expression-level checked cast (the <type> <expr>): the type is
-            // erased; the value is exactly that of the wrapped expression. Pure
-            // passthrough — emits identical IR to writing <expr> directly.
-            case AstRoute::The:
-                co_return (co_await codegenASTTask(op->the_op.expr));
+            case AstRoute::The: {
+                auto inner = co_await codegenTypedASTTask(op->the_op.expr);
+                if (!inner.llvm_value) co_return nullptr;
+                Value* value = typedValueToTaggedValue(inner);
+                auto check = module->getOrInsertFunction("eshkol_value_has_type_tag",
+                    FunctionType::get(int32_type, {builder->getPtrTy(), int64_type}, false));
+                Function* current = builder->GetInsertBlock()->getParent();
+                IRBuilder<> entry(&current->getEntryBlock(), current->getEntryBlock().begin());
+                auto* slot = entry.CreateAlloca(tagged_value_type, nullptr, "ascription");
+                builder->CreateStore(value, slot);
+                auto* matches = builder->CreateCall(check, {slot,
+                    ConstantInt::get(int64_type, ascriptionTags(op->the_op.type_expr))});
+                BasicBlock* pass = BasicBlock::Create(*context, "ascription.pass", current);
+                BasicBlock* fail = BasicBlock::Create(*context, "ascription.raise", current);
+                builder->CreateCondBr(builder->CreateIsNotNull(matches), pass, fail);
+                builder->SetInsertPoint(fail);
+                arith_->emitTypeError("the: value does not satisfy the ascribed type");
+                builder->SetInsertPoint(pass);
+                co_return value;
+            }
 
             // Multiple Return Values operations
             case AstRoute::Values:
@@ -11561,8 +11013,8 @@ private:
         }
         }
     }
-    
-    Value* codegenDefine(const eshkol_ast_t* ast) {
+
+Value* EshkolLLVMCodeGen::codegenDefine(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
             return nullptr;
         }
@@ -11605,7 +11057,7 @@ private:
         }
     }
 
-    Value* codegenDefine(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenDefine(const eshkol_operations_t* op) {
         if (!op) {
             return nullptr;
         }
@@ -11643,7 +11095,7 @@ private:
         return result;
     }
 
-    Value* codegenFunctionDefinition(const eshkol_ast_t* ast) {
+Value* EshkolLLVMCodeGen::codegenFunctionDefinition(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP) {
             return nullptr;
         }
@@ -11734,6 +11186,28 @@ private:
         if (is_variadic && arg_it != function->arg_end()) {
             symbol_table[op->define_op.rest_param] = &(*arg_it);
             eshkol_debug("Function %s uses rest parameter: %s", func_name, op->define_op.rest_param);
+        }
+
+        // FREESTANDING MACHINE SCALARS: a parameter annotated with a machine
+        // integer or pointer type is read as that type inside the body, so
+        // the machine-integer operators see its declared width/signedness
+        // (see emitMachineIntegerOp).  Hosted code keeps gradual typing.
+        std::unordered_map<std::string, eshkol::hott::TypeId> prev_symbol_hott_types =
+            symbol_hott_types;
+        if (freestanding_codegen_ && op->define_op.parameters && op->define_op.param_types) {
+            for (uint64_t i = 0; i < op->define_op.num_params; ++i) {
+                const eshkol_ast_t& param = op->define_op.parameters[i];
+                if (param.type != ESHKOL_VAR || !param.variable.id ||
+                    !op->define_op.param_types[i]) {
+                    continue;
+                }
+                eshkol::hott::TypeId declared =
+                    resolveDeclaredHottTypeId(op->define_op.param_types[i]);
+                if (machineIntegerShape(declared) ||
+                    declared == eshkol::hott::BuiltinTypes::Pointer) {
+                    symbol_hott_types[param.variable.id] = declared;
+                }
+            }
         }
 
         // TCO SETUP: Check if this function is self-tail-recursive
@@ -11957,7 +11431,9 @@ private:
 
         // Mutual TCO: collect non-self tail call sites for musttail optimization
         mutual_tail_call_sites_.clear();
-        if (op->define_op.value && !use_tco) {
+        // A freestanding image has no tail-transfer driver (a hosted runtime
+        // record), so mutual tail calls there are ordinary calls.
+        if (op->define_op.value && !use_tco && !freestanding_codegen_) {
             // Only do mutual TCO when self-TCO is NOT active (self-TCO uses loop transformation)
             collectMutualTailCallSites(op->define_op.value, op->define_op.value, func_name);
         }
@@ -12141,6 +11617,7 @@ private:
         }
 
         symbol_table = prev_symbols;
+        symbol_hott_types = prev_symbol_hott_types;
 
         // Re-add preserved function references
         for (auto& entry : func_refs_to_preserve) {
@@ -12173,7 +11650,7 @@ private:
         return function;
     }
 
-    bool isLocalCaptureStorage(Value* value) const {
+bool EshkolLLVMCodeGen::isLocalCaptureStorage(Value* value) const {
         if (!value) return false;
 
         if (isa<Argument>(value) || isa<AllocaInst>(value) ||
@@ -12184,7 +11661,7 @@ private:
         return value->getType()->isPointerTy() && !isa<GlobalVariable>(value);
     }
 
-    bool shouldDropReplTopLevelCapture(const std::string& name) const {
+bool EshkolLLVMCodeGen::shouldDropReplTopLevelCapture(const std::string& name) const {
         auto local_it = symbol_table.find(name);
         if (local_it != symbol_table.end() &&
             isLocalCaptureStorage(local_it->second)) {
@@ -12200,7 +11677,7 @@ private:
                g_repl_user_variable_names.count(name) > 0;
     }
 
-    void filterReplTopLevelCaptures(std::vector<std::string>& free_vars) {
+void EshkolLLVMCodeGen::filterReplTopLevelCaptures(std::vector<std::string>& free_vars) {
         if (!g_repl_mode_enabled || free_vars.empty()) {
             return;
         }
@@ -12214,8 +11691,7 @@ private:
             free_vars.end());
     }
 
-    // Generate a nested function definition as a closure (like a lambda)
-    Value* codegenNestedFunctionDefinition(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenNestedFunctionDefinition(const eshkol_operations_t* op) {
         // Generate unique name for this instance of the nested function
         static int nested_counter = 0;
         std::string orig_name = op->define_op.name;
@@ -12618,9 +12094,7 @@ private:
         return nested_func;
     }
 
-
-    // set! - mutate an existing variable
-    Value* codegenSet(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSet(const eshkol_operations_t* op) {
         const char* var_name = op->set_op.name;
         if (!var_name) {
             eshkol_error("set! requires a variable name");
@@ -12768,19 +12242,7 @@ private:
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // codegenCall pre-dispatch helpers (mechanical extraction; IR-identical)
-    //
-    // These three handlers cover call expressions whose head is itself an
-    // operation rather than a variable reference:
-    //   - ((lambda (x) ...) arg)        → codegenCallInlineLambda
-    //   - ((f x) y)                     → codegenCallResultAsFunc
-    //   - ((derivative f) x), etc.      → codegenCallOperationResultAsFunc
-    // Each evaluates the head into a closure and dispatches via
-    // codegenClosureCall after packing args to tagged_value.
-    // ─────────────────────────────────────────────────────────────────────
-
-    Value* codegenCallInlineLambda(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCallInlineLambda(const eshkol_operations_t* op) {
         // Generate the inline lambda
         Value* lambda = codegenLambda(&op->call_op.func->operation);
         if (!lambda) {
@@ -12820,11 +12282,13 @@ private:
         return codegenClosureCall(lambda, call_args, "inline-lambda");
     }
 
-    Value* codegenCallResultAsFunc(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCallResultAsFunc(const eshkol_operations_t* op) {
         // Evaluate the inner call to get the function value
         Value* func_result = codegenAST(op->call_op.func);
         if (!func_result) {
-            eshkol_error("Failed to evaluate function expression");
+            if (!codegen_depth_exceeded_) {
+                eshkol_error("Failed to evaluate function expression");
+            }
             return nullptr;
         }
 
@@ -12855,9 +12319,7 @@ private:
         return codegenClosureCall(func_result, call_args, "call-result-as-func");
     }
 
-    // Plain-language name for a non-procedure literal in operator position,
-    // used by the call diagnostic in codegenCallTask.
-    static const char* describeLiteralOperator(const eshkol_ast_t* head) {
+const char* EshkolLLVMCodeGen::describeLiteralOperator(const eshkol_ast_t* head) {
         switch (head ? head->type : ESHKOL_INVALID) {
             case ESHKOL_UINT8: case ESHKOL_UINT16: case ESHKOL_UINT32:
             case ESHKOL_UINT64: case ESHKOL_INT8: case ESHKOL_INT16:
@@ -12875,7 +12337,7 @@ private:
         }
     }
 
-    Value* codegenCallOperationResultAsFunc(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCallOperationResultAsFunc(const eshkol_operations_t* op) {
         // Evaluate the operation to get the closure value
         Value* func_result = codegenAST(op->call_op.func);
         if (!func_result) {
@@ -12910,7 +12372,7 @@ private:
         return codegenClosureCall(func_result, call_args, "op-result-as-func");
     }
 
-    Value* codegenFormatBuiltin(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenFormatBuiltin(const eshkol_operations_t* op) {
         if (op->call_op.num_vars < 1) {
             return packBoolToTaggedValue(ConstantInt::get(int1_type, 0));
         }
@@ -12950,27 +12412,7 @@ private:
         return builder->CreateLoad(tagged_value_type, result_ptr);
     }
 
-    // ESH-0362 (JIT/REPL half) ────────────────────────────────────────────────
-    //
-    // Authoritative parameter count of a REPL-registered callee, or -1 when it
-    // cannot be established and no arity conclusion may be drawn.
-    //
-    // The two REPL slot-call paths (a `__repl_fwd_<name>` indirect call through
-    // a JIT-resolved function pointer) SYNTHESISE the callee's FunctionType from
-    // the CALL's argument count. An arity mismatch there is therefore not even a
-    // mismatch — it is a silent ABI disagreement: the callee reads its missing
-    // parameter out of whatever the register happened to hold. Under `-r` this
-    // is the path a `(require …)`d module's functions are called through, so
-    // `(process-spawn-argv argv)` against the two-parameter definition handed
-    // the C spawn shim an uninitialised `cwd`, with no diagnostic at all. (The
-    // AOT/direct-call arity check does report it, which is why the same file
-    // compiled with `-o` names the error and this one did not.)
-    //
-    // The registry's arity is F.arg_size() at registration time, i.e. the ABI
-    // parameter count — it counts capture slots and the variadic rest slot too.
-    // So it is only usable as a user-visible arity when the callee has neither,
-    // and every other case returns -1 rather than risk rejecting a legal call.
-    int64_t replEnforceableArity(const std::string& func_name) {
+int64_t EshkolLLVMCodeGen::replEnforceableArity(const std::string& func_name) {
         if (func_name.empty()) return -1;
         std::lock_guard<std::mutex> lock(g_repl_mutex);
         auto arity_it = g_repl_function_arities.find(func_name);
@@ -12992,10 +12434,7 @@ private:
         return (int64_t)arity_it->second;
     }
 
-    // Report a REPL slot-call arity mismatch with the same wording the
-    // AOT/direct-call path uses, and fail the compilation. Returns true when a
-    // mismatch was found (caller must abort codegen of the call).
-    bool replSlotArityMismatch(const std::string& func_name, uint64_t num_call_args) {
+bool EshkolLLVMCodeGen::replSlotArityMismatch(const std::string& func_name, uint64_t num_call_args) {
         int64_t expected = replEnforceableArity(func_name);
         if (expected < 0 || (uint64_t)expected == num_call_args) {
             return false;
@@ -13012,38 +12451,7 @@ private:
         return true;
     }
 
-    // FFI POINTER-ARG GUARD (ESH-0363) ────────────────────────────────────────
-    //
-    // An `extern` parameter declared `ptr` / `string` / `char*` is passed to C
-    // by unpacking the tagged value's 64-bit payload and IntToPtr'ing it. That
-    // conversion is unconditional, so a NUMBER lands in the callee as an
-    // address: `(run-argv-capture argv 5000)` — 5000 mistaken for the positional
-    // `cwd` string — reached execvp's C shim as `const char* 0x1388` and died
-    // with SIGSEGV at address 0x1388. No diagnostic, no exit code, just a fault
-    // at a numerically suspicious address, and only because the value happened
-    // to be small; a large fixnum can hit mapped memory and corrupt instead.
-    //
-    // This emits a branch on the argument's tagged TYPE BYTE that rejects the
-    // values which provably cannot be an address, and raises a catchable type
-    // error naming the extern, the argument position, and the declared type.
-    //
-    // The predicate is a DENYLIST of immediate tags, deliberately not an
-    // allowlist of pointer tags. Eshkol's type byte is a crowded encoding: the
-    // multimedia tags (HANDLE/BUFFER/STREAM/EVENT = 16..19), the deprecated
-    // pointer aliases (CONS_PTR/STRING_PTR/… = 32..40) and the port flag bits
-    // OR'd onto HEAP_PTR all denote real addresses, and some codegen paths fold
-    // the exact/inexact flag into the type byte (see i128_runtime.cpp's
-    // TYPE_FLAG_MASK note). An allowlist would have to enumerate all of those
-    // correctly or it would reject a legitimate pointer — a guard that breaks
-    // working programs. Matching only the seven unflagged immediate tags means
-    // the worst case is a MISSED catch on an exotic encoding, never a false
-    // rejection.
-    //
-    // `#f` is exempt: it is how Eshkol spells a NULL pointer argument at this
-    // boundary (`(process-spawn-raw command cwd #f 0)` passes a NULL envp,
-    // `(process-read-all-stdout-raw proc n #f)` a NULL out-param), so BOOL is
-    // rejected only when its payload is non-zero, i.e. `#t`.
-    void emitFfiPointerArgGuard(Value* tagged_arg,
+void EshkolLLVMCodeGen::emitFfiPointerArgGuard(Value* tagged_arg,
                                 const std::string& extern_name,
                                 const std::string& real_symbol,
                                 uint64_t param_index,
@@ -13128,18 +12536,7 @@ private:
         builder->SetInsertPoint(ok_bb);
     }
 
-    /**
-     * @brief Hoist a tagged-value alloca (optionally an array) to the current
-     *        function's entry block.
-     *
-     * The region-handle builtins are designed to be called once per iteration of
-     * a long-running loop, and a TCO'd named-let/do loop is an in-function branch
-     * back to a loop header — an alloca in the body therefore re-adjusts the
-     * stack pointer on every pass and is only reclaimed when the *function*
-     * returns. That is the ESH-0214 leak that presented as a spurious "stack
-     * overflow"; `with-region` fixes it the same way for its own slots.
-     */
-    AllocaInst* entryTaggedAlloca(uint64_t count, const char* name) {
+AllocaInst* EshkolLLVMCodeGen::entryTaggedAlloca(uint64_t count, const char* name) {
         Function* fn = builder->GetInsertBlock()->getParent();
         IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
         if (fn && !fn->empty()) {
@@ -13154,22 +12551,7 @@ private:
         return slot;
     }
 
-    /**
-     * @brief Lower `(region-open …)`, `(region-close …)` and `(region-open? …)` —
-     *        the user-reachable, non-lexical region-handle surface (#341).
-     *
-     * All three are thin shims over the shared C entry points in
-     * runtime_regions.cpp, which the bytecode VM calls too, so the handle
-     * protocol and every error message are identical across substrates by
-     * construction rather than by convention.
-     *
-     * `region-close` passes its keep-list as one contiguous array of tagged
-     * values: eshkol_region_unwind_to promotes that array IN PLACE, level by
-     * level, through the same escape evacuator `with-region` uses for its result,
-     * so a kept value's whole reachable subgraph (interior pointers included) is
-     * deep-promoted out before the region arena is freed.
-     */
-    Value* codegenRegionHandleBuiltin(const eshkol_operations_t* op,
+Value* EshkolLLVMCodeGen::codegenRegionHandleBuiltin(const eshkol_operations_t* op,
                                       const std::string& func_name) {
         const uint64_t nargs = op->call_op.num_vars;
 
@@ -13264,22 +12646,7 @@ private:
         return builder->CreateLoad(tagged_value_type, out);
     }
 
-    /**
-     * @brief Emit the uniform out-of-range guard shared by every indexed
-     *        accessor: when @p bad is true, raise a *catchable*
-     *        ESHKOL_EXCEPTION_ERROR carrying @p msg; otherwise fall through
-     *        with the builder positioned in the in-range continuation.
-     *
-     * R7RS 6.9 makes an out-of-range index "an error", and the house parity
-     * contract requires every substrate (AOT/JIT codegen, the C runtime
-     * helpers in lib/core/runtime_bytevector.cpp, and the bytecode VM) to
-     * signal it identically — same catchable condition, same message text —
-     * so a `guard` around the access behaves byte-for-byte the same
-     * everywhere. This mirrors the pre-existing vector-ref / vector-set! /
-     * string-ref / tensor-ref guards (see collection_codegen.cpp) so the
-     * whole accessor family shares one contract.
-     */
-    void emitBoundsCheckRaise(Value* bad, const char* msg) {
+void EshkolLLVMCodeGen::emitBoundsCheckRaise(Value* bad, const char* msg) {
         Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* ok_bb = BasicBlock::Create(*context, "bounds_ok", func);
         BasicBlock* fail_bb = BasicBlock::Create(*context, "bounds_fail", func);
@@ -13309,11 +12676,7 @@ private:
         builder->SetInsertPoint(ok_bb);
     }
 
-    // Declared type keyword of parameter `param_index` of an `extern`, or an
-    // empty string when `callee_name` is not an extern (or the position is
-    // beyond its declared parameters — a varargs tail). Tries the Eshkol name
-    // first, then the real C symbol, because call sites reach externs by either.
-    std::string externDeclaredParamType(const std::string& eshkol_name,
+std::string EshkolLLVMCodeGen::externDeclaredParamType(const std::string& eshkol_name,
                                         const std::string& real_symbol,
                                         uint64_t param_index) const {
         for (const std::string& key : {eshkol_name, real_symbol}) {
@@ -13326,33 +12689,59 @@ private:
         return std::string();
     }
 
-    static bool externTypeIsPointerLike(const std::string& declared) {
+bool EshkolLLVMCodeGen::externTypeIsPointerLike(const std::string& declared) {
         return declared == "ptr" || declared == "string" || declared == "char*" ||
                declared == "void*";
     }
 
-    Value* codegenCall(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::emitCheckedByte(Value* value, const std::string& who) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        Value* base = getBaseType(getTaggedValueType(value));
+        Value* is_fixnum = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_bignum = isHeapSubtype(value, HEAP_SUBTYPE_BIGNUM);
+        Value* is_exact_integer = builder->CreateOr(is_fixnum, is_bignum);
+        BasicBlock* type_ok = BasicBlock::Create(*context, "byte_type_ok", fn);
+        BasicBlock* bad_type = BasicBlock::Create(*context, "byte_bad_type", fn);
+        BasicBlock* fixnum = BasicBlock::Create(*context, "byte_fixnum", fn);
+        BasicBlock* bignum = BasicBlock::Create(*context, "byte_bignum", fn);
+        BasicBlock* range_ok = BasicBlock::Create(*context, "byte_range_ok", fn);
+        BasicBlock* bad_range = BasicBlock::Create(*context, "byte_bad_range", fn);
+        builder->CreateCondBr(is_exact_integer, type_ok, bad_type);
+        builder->SetInsertPoint(bad_type);
+        arith_->emitTypeError((who + ": expected exact integer in range 0..255").c_str());
+        builder->SetInsertPoint(type_ok);
+        builder->CreateCondBr(is_fixnum, fixnum, bignum);
+        builder->SetInsertPoint(fixnum);
+        Value* raw = unpackInt64FromTaggedValue(value);
+        Value* fix_ok = builder->CreateAnd(
+            builder->CreateICmpSGE(raw, ConstantInt::get(int64_type, 0)),
+            builder->CreateICmpSLE(raw, ConstantInt::get(int64_type, 255)));
+        builder->CreateCondBr(fix_ok, range_ok, bad_range);
+        builder->SetInsertPoint(bignum);
+        Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+        Value* max = packInt64ToTaggedValue(ConstantInt::get(int64_type, 255), true);
+        Value* ge0 = arith_->emitBignumCompareCall(value, zero, 4);
+        Value* le255 = arith_->emitBignumCompareCall(value, max, 3);
+        Value* bn_ok = builder->CreateAnd(
+            builder->CreateICmpNE(unpackInt64FromTaggedValue(ge0), ConstantInt::get(int64_type, 0)),
+            builder->CreateICmpNE(unpackInt64FromTaggedValue(le255), ConstantInt::get(int64_type, 0)));
+        builder->CreateCondBr(bn_ok, range_ok, bad_range);
+        builder->SetInsertPoint(bad_range);
+        arith_->emitTypeError((who + ": expected exact integer in range 0..255").c_str());
+        builder->SetInsertPoint(range_ok);
+        Value* safe_number = arith_->extractAsDouble(value);
+        Value* safe_integer = builder->CreateFPToSI(safe_number, int64_type);
+        return builder->CreateTrunc(safe_integer, int8_type);
+    }
+
+Value* EshkolLLVMCodeGen::codegenCall(const eshkol_operations_t* op) {
         return codegenCallTask(op).run();
     }
 
-    ContinuationTask<Value*> codegenCallTask(const eshkol_operations_t* op) {
+ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             co_return nullptr;
-        }
-
-        // ((the <type> f) x) — an ascribed head. `the` is a pure no-op at
-        // runtime, so a call through it must behave exactly like a call to the
-        // wrapped expression. Unwrap and re-dispatch rather than teaching each
-        // head form about ascriptions: every case below (variable head, inline
-        // lambda, nested call, operation-result) then works through a cast.
-        // Unwrapping keeps `((the procedure f) 7)` on the same static paths
-        // as `(f 7)` instead of the general computed-operator path below.
-        if (op->call_op.func->type == ESHKOL_OP &&
-            op->call_op.func->operation.op == ESHKOL_THE_OP &&
-            op->call_op.func->operation.the_op.expr) {
-            eshkol_operations_t unwrapped = *op;
-            unwrapped.call_op.func = op->call_op.func->operation.the_op.expr;
-            co_return (co_await codegenCallTask(&unwrapped));
         }
 
         // ((lambda (x) body) arg) — inline lambda head
@@ -13391,6 +12780,100 @@ private:
         }
 
         std::string func_name = op->call_op.func->variable.id;
+
+        // Compiler-private calls to the separately compiled Eshkol runtime.
+        // Identity, not source spelling or the caller's lexical environment,
+        // selects these internal-ABI entry points.
+        if (op->call_op.func->node_id == eshkol::frontend::incremental_state_gateway_node ||
+            op->call_op.func->node_id == eshkol::frontend::incremental_check_gateway_node) {
+            const bool state = op->call_op.func->node_id == eshkol::frontend::incremental_state_gateway_node;
+            const unsigned arity = state ? 2 : 1;
+            if (op->call_op.num_vars != arity) {
+                codegen_error_at(op->call_op.func, "invalid incremental runtime gateway");
+                markFatalCodegenError(); co_return nullptr;
+            }
+            std::vector<Value*> arguments;
+            for (unsigned i = 0; i < arity; ++i) {
+                auto* value = co_await codegenASTTask(&op->call_op.variables[i]);
+                if (!value) co_return nullptr;
+                arguments.push_back(ensureTaggedValue(value));
+            }
+            auto* type = FunctionType::get(tagged_value_type, std::vector<Type*>(arity, tagged_value_type), false);
+            const std::string runtime_name = state ? "__eshkol_compiler_incremental_state" : "__eshkol_compiler_incremental_check";
+            if (auto* owner = module->getNamedValue(runtime_name)) {
+                auto* function = dyn_cast<Function>(owner);
+                if (!function || !function->hasFnAttribute("eshkol.compiler-runtime"))
+                    owner->setName(runtime_name + "__source");
+            }
+            auto function = module->getOrInsertFunction(runtime_name, type);
+            cast<Function>(function.getCallee())->addFnAttr("eshkol.compiler-runtime");
+            co_return builder->CreateCall(function, arguments);
+        }
+
+        // Compiler graph extraction follows macro expansion and shared binding
+        // resolution. No caller expression is evaluated before admission.
+        if (op->call_op.func->node_id == eshkol::frontend::differentiation_gateway_node ||
+            op->call_op.func->node_id == eshkol::frontend::differentiation_incremental_gateway_node) {
+            if (op->call_op.num_vars < 2) {
+                codegen_error_at(op->call_op.func, "invalid differentiation compiler gateway");
+                markFatalCodegenError(); co_return nullptr;
+            }
+            auto primitive = [&](const eshkol_ast_t& reference) {
+                if (reference.type != ESHKOL_VAR || !reference.variable.id) return false;
+                const std::string name = reference.variable.id;
+                eshkol_binding_info_t info{};
+                const auto id = eshkol_binding_id_for_node(reference.node_id);
+                if (eshkol_binding_info(id, &info) && info.kind != ESHKOL_BINDING_BUILTIN) return false;
+                // Some enclosing AST owners (e.g. guard) are intentionally not
+                // walked by BindingResolver yet. Check the authoritative native
+                // call scope too, using the same visible-name keys as codegenCall.
+                if (symbol_table.count(name) || symbol_table.count(name + "_func") ||
+                    global_symbol_table.count(name) || global_symbol_table.count(name + "_func")) return false;
+                if (g_repl_mode_enabled) {
+                    std::lock_guard<std::mutex> lock(g_repl_mutex);
+                    if (g_repl_user_function_names.count(name) || g_repl_user_variable_names.count(name)) return false;
+                }
+                return true;
+            };
+            for (uint64_t i = 2; i < op->call_op.num_vars; ++i) {
+                if (!primitive(op->call_op.variables[i])) {
+                    codegen_error_at(&op->call_op.variables[i], "differentiation compiler helper '%s' is shadowed",
+                                     op->call_op.variables[i].variable.id);
+                    markFatalCodegenError(); co_return nullptr;
+                }
+            }
+            try {
+                const auto& function = op->call_op.variables[0];
+                const auto graph = eshkol::frontend::DifferentiationGraph::build(function,
+                    [&](const eshkol_ast_t& call) {
+                        return call.operation.call_op.func && primitive(*call.operation.call_op.func);
+                    });
+                const auto source = op->call_op.func->node_id == eshkol::frontend::differentiation_gateway_node
+                    ? graph.numeric_source() : eshkol::frontend::IncrementalizePass::source(graph);
+                differentiation_asts_.push_back(std::make_unique<eshkol_ast_t>(
+                    eshkol::frontend::parse_generated_differentiation(source,
+                    eshkol::frontend::DifferentiationOrigin{function.node_id, function.source_file_id, function.line, function.column})));
+                auto* wrapper = differentiation_asts_.back().get();
+                if (wrapper->type == ESHKOL_INVALID) {
+                    markFatalCodegenError(); co_return nullptr;
+                }
+                eshkol_ast_t call{};
+                call.type = ESHKOL_OP; call.operation.op = ESHKOL_CALL_OP;
+                call.operation.call_op.func = wrapper;
+                call.operation.call_op.variables = &op->call_op.variables[1];
+                call.operation.call_op.num_vars = 1;
+                co_return (co_await codegenASTTask(&call));
+            } catch (const eshkol::frontend::DifferentiationError& error) {
+                eshkol_ast_t location{};
+                location.node_id = error.origin.node_id; location.source_file_id = error.origin.file_id;
+                location.line = error.origin.line; location.column = error.origin.column;
+                codegen_error_at(&location, "%s", error.what());
+                markFatalCodegenError(); co_return nullptr;
+            } catch (const std::exception& error) {
+                codegen_error_at(&op->call_op.variables[0], "scalar compiler pass failed: %s", error.what());
+                markFatalCodegenError(); co_return nullptr;
+            }
+        }
 
         // Parser-private parameter helpers.  They are intentionally lowered
         // here instead of exposed as Scheme-library procedures: this keeps the
@@ -13701,6 +13184,13 @@ private:
             }
         }
 
+        // Freestanding profiles: integer operators are native machine arithmetic.
+        if (const char* machine_op = freestandingMachineIntegerCall(func_name)) {
+            TypedValue machine_result =
+                (co_await codegenMachineIntegerOpTask(op, machine_op, func_name.c_str()));
+            co_return machine_result.llvm_value ? typedValueToTaggedValue(machine_result) : nullptr;
+        }
+
         // Handle arithmetic operations
         if (func_name == "+") co_return (co_await codegenArithmeticTask(op, "add"));
         if (func_name == "-") co_return (co_await codegenArithmeticTask(op, "sub"));
@@ -13776,6 +13266,10 @@ private:
         // an AD node or tensor map for an operation with no sound derivative.
         if (func_name == "fl-next-up") co_return codegenNextafter(op, true);
         if (func_name == "fl-next-down") co_return codegenNextafter(op, false);
+
+        // stop-gradient (ADR-0049): a number's value with every derivative
+        // carrier removed; every enclosing AD pass sees a constant.
+        if (func_name == "stop-gradient") co_return codegenStopGradient(op);
 
         // Modulo and remainder
         if (func_name == "modulo" || func_name == "mod" || func_name == "%")
@@ -14727,8 +14221,10 @@ private:
             Value* at_idx = safeExtractInt64(at_val);
             // Get from length via strlen
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* from_len = builder->CreateCall(strlen_fn, {from_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* from_len_size = builder->CreateCall(strlen_fn, {from_ptr});
+            Value* from_len = from_len_size->getType() == int64_type
+                ? from_len_size : builder->CreateZExt(from_len_size, int64_type);
             // Compute copy length (use full from string if no start/end given)
             Value* copy_len = from_len;
             if (op->call_op.num_vars >= 4) {
@@ -14774,8 +14270,10 @@ private:
             Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
             Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* str_len = builder->CreateCall(strlen_fn, {str_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len_size = builder->CreateCall(strlen_fn, {str_ptr});
+            Value* str_len = str_len_size->getType() == int64_type
+                ? str_len_size : builder->CreateZExt(str_len_size, int64_type);
             // Alloca for loop index — immune to codegenClosureCall's block changes
             Value* idx_ptr = builder->CreateAlloca(int64_type, nullptr, "sfe_idx");
             builder->CreateStore(ConstantInt::get(int64_type, 0), idx_ptr);
@@ -14811,8 +14309,10 @@ private:
             Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
             Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* str_len = builder->CreateCall(strlen_fn, {str_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len_size = builder->CreateCall(strlen_fn, {str_ptr});
+            Value* str_len = str_len_size->getType() == int64_type
+                ? str_len_size : builder->CreateZExt(str_len_size, int64_type);
             Value* arena_ptr = getArenaPtr();
             llvm::FunctionCallee alloc_fn = module->getOrInsertFunction("arena_allocate_string_with_header",
                 FunctionType::get(PointerType::getUnqual(*context),
@@ -15179,8 +14679,10 @@ private:
                 builder->CreateExtractValue(tagged, {4}), PointerType::getUnqual(*context));
             // Get string length via strlen
             llvm::FunctionCallee strlen_func = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* str_len = builder->CreateCall(strlen_func, {str_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len_size = builder->CreateCall(strlen_func, {str_ptr});
+            Value* str_len = str_len_size->getType() == int64_type
+                ? str_len_size : builder->CreateZExt(str_len_size, int64_type);
             // Call runtime: eshkol_open_input_string(arena, str, len) -> FILE*
             llvm::FunctionCallee open_func = module->getOrInsertFunction("eshkol_open_input_string",
                 FunctionType::get(PointerType::getUnqual(*context),
@@ -15356,13 +14858,11 @@ private:
             Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
             if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
-            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
             Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
-            FunctionCallee close_fn = module->getOrInsertFunction(
-                "eshkol_runtime_close_port", FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(close_fn, {close_fp});
+            pushPortCleanupWind(close_fp);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
+            popPortCleanupWindAndClose(close_fp);
             co_return ensureTaggedValue(result);
         }
         // call-with-input-file: (call-with-input-file filename proc)
@@ -15377,14 +14877,11 @@ private:
             Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
             if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
-            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
-            // Close
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
             Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
-            FunctionCallee close_fn = module->getOrInsertFunction(
-                "eshkol_runtime_close_port", FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(close_fn, {close_fp});
+            pushPortCleanupWind(close_fp);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
+            popPortCleanupWindAndClose(close_fp);
             co_return ensureTaggedValue(result);
         }
         // call-with-output-file: (call-with-output-file filename proc)
@@ -15397,13 +14894,11 @@ private:
             Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
             if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
-            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
             Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
-            FunctionCallee close_fn = module->getOrInsertFunction(
-                "eshkol_runtime_close_port", FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(close_fn, {close_fp});
+            pushPortCleanupWind(close_fp);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
+            popPortCleanupWindAndClose(close_fp);
             co_return ensureTaggedValue(result);
         }
         // with-input-from-file: (with-input-from-file filename thunk)
@@ -15475,6 +14970,28 @@ private:
         if (func_name == "current-seconds") co_return system_->currentSeconds(op);
         if (func_name == "current-time") co_return system_->currentTime(op);
         if (func_name == "current-time-ms") co_return system_->currentTimeMs(op);
+        // Algebraic effects (ADR-0045): the handler context is thread dynamic
+        // state held by the runtime (runtime_continuations.cpp), read and
+        // written through an entry-block slot.
+        if (func_name == "%effect-context" && op->call_op.num_vars == 0) {
+            Value* slot = createEntryBlockTaggedSlot("effect_context");
+            builder->CreateStore(Constant::getNullValue(tagged_value_type), slot);
+            FunctionCallee get = module->getOrInsertFunction("eshkol_effect_context_get",
+                FunctionType::get(Type::getVoidTy(*context), {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(get, {slot});
+            co_return builder->CreateLoad(tagged_value_type, slot, "effect_context_value");
+        }
+        if (func_name == "%effect-context-set!" && op->call_op.num_vars == 1) {
+            Value* v = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!v) co_return nullptr;
+            v = ensureTaggedValue(v);
+            Value* slot = createEntryBlockTaggedSlot("effect_context_new");
+            builder->CreateStore(v, slot);
+            FunctionCallee set = module->getOrInsertFunction("eshkol_effect_context_set",
+                FunctionType::get(Type::getVoidTy(*context), {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(set, {slot});
+            co_return v;
+        }
         if (func_name == "current-time-ns") co_return system_->currentTimeNs(op);
         if (func_name == "exit") co_return system_->exitProgram(op);
         if (func_name == "command-line") co_return system_->commandLine(op);
@@ -15568,9 +15085,7 @@ private:
                 FunctionType::get(void_type, {int32_type}, false));
             builder->CreateCall(exit_func, {exit_code});
             builder->CreateUnreachable();
-            // Create a continuation block for LLVM IR well-formedness
-            BasicBlock* cont = BasicBlock::Create(*context, "post_exit", builder->GetInsertBlock()->getParent());
-            builder->SetInsertPoint(cont);
+            eshkol::continueAfterNoReturn(*builder, "post_exit");
             co_return packNullToTaggedValue();
         }
 
@@ -15723,6 +15238,16 @@ private:
         if (func_name == "event-loop-poll") co_return system_->eventLoopPoll(op);
         if (func_name == "event-loop-close") co_return system_->eventLoopClose(op);
         if (func_name == "event-loop-backend") co_return system_->eventLoopBackend(op);
+        /* Stackful coroutines (inc/eshkol/core/coroutine.h). */
+        if (func_name == "make-coroutine") co_return system_->makeCoroutine(op);
+        if (func_name == "coroutine-resume") co_return system_->coroutineResume(op);
+        if (func_name == "coroutine-raise") co_return system_->coroutineRaise(op);
+        if (func_name == "coroutine-yield") co_return system_->coroutineYield(op);
+        if (func_name == "coroutine-status") co_return system_->coroutineStatus(op);
+        if (func_name == "coroutine-release!") co_return system_->coroutineRelease(op);
+        if (func_name == "current-coroutine") co_return system_->currentCoroutine(op);
+        if (func_name == "coroutine?") co_return system_->coroutinePredicate(op);
+        if (func_name == "coroutine-stats") co_return system_->coroutineStats(op);
         if (func_name == "fd-write") co_return system_->fdWrite(op);
         if (func_name == "make-line-reader") co_return system_->makeLineReader(op);
         if (func_name == "line-reader-poll") co_return system_->lineReaderPoll(op);
@@ -16904,26 +16429,36 @@ private:
         if (func_name == "bytevector") {
             // (bytevector byte ...)
             uint64_t n = op->call_op.num_vars;
+            // Evaluate every operand before validating any byte. Scheme's
+            // operand effects therefore remain observable when an early
+            // value is invalid.
+            std::vector<Value*> values;
+            values.reserve(n);
+            for (uint64_t i = 0; i < n; ++i) {
+                TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
+                if (!tv.llvm_value) co_return nullptr;
+                values.push_back(typedValueToTaggedValue(tv));
+            }
+            std::vector<Value*> bytes;
+            bytes.reserve(n);
+            for (Value* value : values) bytes.push_back(emitCheckedByte(value, "bytevector"));
+
             Value* data_size = ConstantInt::get(int64_type, n + 8);
             Value* arena_ptr = getArenaPtr();
             Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
                  ConstantInt::get(int8_type, 0)});
+            ctx_->emitConstructorAllocationCheck(bv_ptr);
 
             builder->CreateStore(ConstantInt::get(int64_type, n), bv_ptr);
             Value* data_ptr = builder->CreateGEP(int8_type, bv_ptr,
                 ConstantInt::get(int64_type, 8));
 
             for (uint64_t i = 0; i < n; i++) {
-                TypedValue elem_tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
-                if (!elem_tv.llvm_value) co_return nullptr;
-                Value* elem_tagged = typedValueToTaggedValue(elem_tv);
-                Value* byte_val = builder->CreateTrunc(
-                    unpackInt64FromTaggedValue(elem_tagged), int8_type);
                 Value* dest = builder->CreateGEP(int8_type, data_ptr,
                     ConstantInt::get(int64_type, i));
-                builder->CreateStore(byte_val, dest);
+                builder->CreateStore(bytes[i], dest);
             }
 
             co_return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
@@ -17253,10 +16788,17 @@ private:
         }
 
         if (func_name == "utf8->string") {
-            // (utf8->string bv [start [end]]) — bytevector to string
+            // (utf8->string bv [start [end]]) — bytevector slice to validated UTF-8 string
+            if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
+                eshkol_arity_error_current("utf8->string requires 1 to 3 arguments");
+                co_return nullptr;
+            }
             TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!bv_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
+            tagged_->requireContainer(
+                bv, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR),
+                "utf8->string", "bytevector");
             Value* bv_ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
             Value* bv_len = builder->CreateLoad(int64_type, bv_ptr);
@@ -17266,14 +16808,38 @@ private:
             if (op->call_op.num_vars >= 2) {
                 TypedValue s_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
                 if (!s_tv.llvm_value) co_return nullptr;
-                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
+                Value* s_val = typedValueToTaggedValue(s_tv);
+                emitBoundsCheckRaise(builder->CreateNot(tagged_->isInt64(s_val)),
+                                     "utf8->string: expected exact integer index");
+                start = unpackInt64FromTaggedValue(s_val);
             }
             if (op->call_op.num_vars >= 3) {
                 TypedValue e_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
                 if (!e_tv.llvm_value) co_return nullptr;
-                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
+                Value* e_val = typedValueToTaggedValue(e_tv);
+                emitBoundsCheckRaise(builder->CreateNot(tagged_->isInt64(e_val)),
+                                     "utf8->string: expected exact integer index");
+                end = unpackInt64FromTaggedValue(e_val);
             }
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateICmpSLT(start, ConstantInt::get(int64_type, 0)),
+                    builder->CreateOr(
+                        builder->CreateICmpSLT(end, start),
+                        builder->CreateICmpSGT(end, bv_len))),
+                "utf8->string: index out of bounds");
+
             Value* str_len = builder->CreateSub(end, start);
+            Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
+                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+
+            FunctionCallee utf8_valid_fn = module->getOrInsertFunction(
+                "eshkol_utf8_is_valid",
+                FunctionType::get(int32_type, {ptr_type, int64_type}, false));
+            Value* is_valid_utf8 = builder->CreateCall(utf8_valid_fn, {bv_data, str_len});
+            emitBoundsCheckRaise(
+                builder->CreateICmpEQ(is_valid_utf8, ConstantInt::get(int32_type, 0)),
+                "utf8->string: invalid UTF-8 sequence");
 
             // Allocate string with header: str_len + 1 (null terminator)
             Value* str_alloc_size = builder->CreateAdd(str_len, ConstantInt::get(int64_type, 1));
@@ -17283,9 +16849,7 @@ private:
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_STRING),
                  ConstantInt::get(int8_type, 0)});
 
-            // Copy bytes
-            Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
-                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+            // Copy validated bytes
             builder->CreateMemCpy(str_ptr, llvm::MaybeAlign(1),
                 bv_data, llvm::MaybeAlign(1), str_len);
 
@@ -17422,9 +16986,7 @@ private:
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
                 // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
                 Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
-                Value* t_tagged = builder->CreateOr(
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
+                Value* t_tagged = ctx_->emitDtypeHasTaggedSlots(tdtype);
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -17518,9 +17080,7 @@ private:
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
                 // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
                 Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
-                Value* t_tagged = builder->CreateOr(
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
+                Value* t_tagged = ctx_->emitDtypeHasTaggedSlots(tdtype);
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -18727,10 +18287,7 @@ private:
                         builder->CreateCall(printf_func, {error_str});
                         builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
                         builder->CreateUnreachable();
-                        // Create a new block for any code that might follow (won't be reached)
-                        Function* current_func = builder->GetInsertBlock()->getParent();
-                        BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
-                        builder->SetInsertPoint(dead_block);
+                        eshkol::continueAfterNoReturn(*builder, "unreachable_continue");
                     }
                     co_return packNullToTaggedValue();
                 }
@@ -20119,10 +19676,245 @@ private:
 
         co_return result;
     }
-    
-    // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
-    // Returns nullptr if optimization not possible (fall back to polymorphic path)
-    Value* hottOptimizedBinaryArith(const TypedValue& left, const TypedValue& right,
+
+const char* EshkolLLVMCodeGen::freestandingMachineIntegerOp(const std::string& name) {
+        static const std::unordered_map<std::string, const char*> ops = {
+            {"+", "add"}, {"-", "sub"}, {"*", "mul"},
+            {"quotient", "quotient"}, {"remainder", "remainder"},
+            {"modulo", "modulo"}, {"mod", "modulo"},
+            {"<", "lt"}, {">", "gt"}, {"<=", "le"}, {">=", "ge"}, {"=", "eq"},
+            {"bitwise-and", "and"}, {"bitwise-or", "or"}, {"bitwise-xor", "xor"},
+            {"bitwise-not", "not"},
+            {"bit-shift-left", "shl"}, {"bit-shift-right", "shr"},
+            {"arithmetic-shift", "ash"},
+        };
+        auto it = ops.find(name);
+        return it == ops.end() ? nullptr : it->second;
+    }
+
+std::optional<EshkolLLVMCodeGen::MachineIntegerShape> EshkolLLVMCodeGen::machineIntegerShape(eshkol::hott::TypeId t) const {
+        using namespace eshkol::hott;
+        const unsigned ptr_bits = module->getDataLayout().getPointerSizeInBits();
+        switch (t.id) {
+            case BuiltinTypes::Int8.id:   return MachineIntegerShape{t, 8, true};
+            case BuiltinTypes::Int16.id:  return MachineIntegerShape{t, 16, true};
+            case BuiltinTypes::Int32.id:  return MachineIntegerShape{t, 32, true};
+            case BuiltinTypes::Int64.id:  return MachineIntegerShape{t, 64, true};
+            case BuiltinTypes::ISize.id:  return MachineIntegerShape{t, ptr_bits, true};
+            case BuiltinTypes::UInt8.id:  return MachineIntegerShape{t, 8, false};
+            case BuiltinTypes::UInt16.id: return MachineIntegerShape{t, 16, false};
+            case BuiltinTypes::UInt32.id: return MachineIntegerShape{t, 32, false};
+            case BuiltinTypes::UInt64.id: return MachineIntegerShape{t, 64, false};
+            case BuiltinTypes::USize.id:  return MachineIntegerShape{t, ptr_bits, false};
+            default: return std::nullopt;
+        }
+    }
+
+Value* EshkolLLVMCodeGen::machineIntegerPayload(const TypedValue& tv) {
+        Value* v = tv.llvm_value;
+        if (!v) return nullptr;
+        Type* t = v->getType();
+        if (t == tagged_value_type) return unpackInt64FromTaggedValue(v);
+        if (t->isIntegerTy()) return v;
+        return nullptr;
+    }
+
+void EshkolLLVMCodeGen::emitTrapUnless(Value* ok, const char* label) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* trap_bb = BasicBlock::Create(*context, std::string(label) + "_trap", fn);
+        BasicBlock* cont_bb = BasicBlock::Create(*context, std::string(label) + "_ok", fn);
+        builder->CreateCondBr(ok, cont_bb, trap_bb);
+        builder->SetInsertPoint(trap_bb);
+        builder->CreateCall(ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::trap, {}));
+        builder->CreateUnreachable();
+        builder->SetInsertPoint(cont_bb);
+    }
+
+TypedValue EshkolLLVMCodeGen::emitMachineIntegerOp(const char* operation, const char* source_name,
+                                    const std::vector<TypedValue>& operands,
+                                    const std::vector<bool>& is_literal) {
+        using namespace eshkol::hott;
+        const std::string opname(operation);
+        const bool is_compare = opname == "lt" || opname == "gt" || opname == "le" ||
+                                opname == "ge" || opname == "eq";
+
+        // Width/signedness from the declared machine-typed operands.
+        std::optional<MachineIntegerShape> shape;
+        for (size_t i = 0; i < operands.size(); ++i) {
+            if (is_literal[i]) continue;
+            auto s = machineIntegerShape(operands[i].hott_type);
+            if (!s) continue;
+            if (!shape || s->bits > shape->bits ||
+                (s->bits == shape->bits && !s->is_signed && shape->is_signed)) {
+                shape = s;
+            }
+        }
+        if (!shape) shape = MachineIntegerShape{BuiltinTypes::Int64, 64, true};
+        IntegerType* ty = IntegerType::get(*context, shape->bits);
+
+        std::vector<Value*> vals;
+        vals.reserve(operands.size());
+        for (const auto& tv : operands) {
+            Value* payload = machineIntegerPayload(tv);
+            if (!payload) {
+                eshkol_error_current(
+                    "%s: freestanding profiles support machine-integer operands only "
+                    "(the numeric tower for reals and exact rationals is hosted)",
+                    source_name);
+                markFatalCodegenError();
+                return TypedValue();
+            }
+            vals.push_back(builder->CreateIntCast(payload, ty, shape->is_signed, "mint_operand"));
+        }
+
+        auto widen = [&](Value* v) -> TypedValue {
+            Value* wide = builder->CreateIntCast(v, int64_type, shape->is_signed, "mint_result");
+            return TypedValue(wide, ESHKOL_VALUE_INT64, shape->type, true);
+        };
+
+        if (is_compare) {
+            if (vals.size() < 2) {
+                eshkol_arity_error_current("%s requires at least 2 arguments", source_name);
+                return TypedValue();
+            }
+            CmpInst::Predicate pred;
+            if (opname == "eq") pred = CmpInst::ICMP_EQ;
+            else if (opname == "lt") pred = shape->is_signed ? CmpInst::ICMP_SLT : CmpInst::ICMP_ULT;
+            else if (opname == "gt") pred = shape->is_signed ? CmpInst::ICMP_SGT : CmpInst::ICMP_UGT;
+            else if (opname == "le") pred = shape->is_signed ? CmpInst::ICMP_SLE : CmpInst::ICMP_ULE;
+            else pred = shape->is_signed ? CmpInst::ICMP_SGE : CmpInst::ICMP_UGE;
+            // Chained comparison: (op a b c) = (and (op a b) (op b c)); the
+            // operands are already evaluated exactly once.
+            Value* result = nullptr;
+            for (size_t i = 0; i + 1 < vals.size(); ++i) {
+                Value* c = builder->CreateICmp(pred, vals[i], vals[i + 1], "mint_cmp");
+                result = result ? builder->CreateAnd(result, c) : c;
+            }
+            return TypedValue(result, ESHKOL_VALUE_BOOL, BuiltinTypes::Boolean, true);
+        }
+
+        if (opname == "not") {
+            if (vals.size() != 1) {
+                eshkol_arity_error_current("%s requires exactly 1 argument", source_name);
+                return TypedValue();
+            }
+            return widen(builder->CreateNot(vals[0], "mint_not"));
+        }
+
+        // Identity elements and unary forms of the folding operators.
+        if (vals.empty()) {
+            if (opname == "add" || opname == "or" || opname == "xor") return widen(ConstantInt::get(ty, 0));
+            if (opname == "mul") return widen(ConstantInt::get(ty, 1));
+            if (opname == "and") return widen(ConstantInt::getAllOnesValue(ty));
+            eshkol_arity_error_current("%s requires at least 1 argument", source_name);
+            return TypedValue();
+        }
+        if (vals.size() == 1) {
+            if (opname == "sub") return widen(builder->CreateNeg(vals[0], "mint_neg"));
+            if (opname == "add" || opname == "mul" || opname == "and" ||
+                opname == "or" || opname == "xor") {
+                return widen(vals[0]);
+            }
+            eshkol_arity_error_current("%s requires at least 2 arguments", source_name);
+            return TypedValue();
+        }
+
+        const bool binary_only = opname == "quotient" || opname == "remainder" ||
+                                 opname == "modulo" || opname == "shl" ||
+                                 opname == "shr" || opname == "ash";
+        if (binary_only && vals.size() != 2) {
+            eshkol_arity_error_current("%s requires exactly 2 arguments", source_name);
+            return TypedValue();
+        }
+
+        Value* acc = vals[0];
+        for (size_t i = 1; i < vals.size(); ++i) {
+            Value* rhs = vals[i];
+            if (opname == "add") acc = builder->CreateAdd(acc, rhs, "mint_add");
+            else if (opname == "sub") acc = builder->CreateSub(acc, rhs, "mint_sub");
+            else if (opname == "mul") acc = builder->CreateMul(acc, rhs, "mint_mul");
+            else if (opname == "and") acc = builder->CreateAnd(acc, rhs, "mint_and");
+            else if (opname == "or") acc = builder->CreateOr(acc, rhs, "mint_or");
+            else if (opname == "xor") acc = builder->CreateXor(acc, rhs, "mint_xor");
+            else if (opname == "quotient" || opname == "remainder" || opname == "modulo") {
+                emitTrapUnless(builder->CreateICmpNE(rhs, ConstantInt::get(ty, 0)), "mint_div");
+                if (opname == "quotient") {
+                    acc = shape->is_signed ? builder->CreateSDiv(acc, rhs, "mint_quot")
+                                           : builder->CreateUDiv(acc, rhs, "mint_quot");
+                } else if (!shape->is_signed) {
+                    acc = builder->CreateURem(acc, rhs, "mint_rem");
+                } else {
+                    Value* r = builder->CreateSRem(acc, rhs, "mint_rem");
+                    if (opname == "modulo") {
+                        // modulo takes the divisor's sign: adjust a nonzero
+                        // remainder whose sign differs from the divisor's.
+                        Value* nonzero = builder->CreateICmpNE(r, ConstantInt::get(ty, 0));
+                        Value* sign_differs = builder->CreateICmpSLT(
+                            builder->CreateXor(r, rhs), ConstantInt::get(ty, 0));
+                        Value* adjust = builder->CreateAnd(nonzero, sign_differs);
+                        r = builder->CreateSelect(adjust, builder->CreateAdd(r, rhs), r, "mint_mod");
+                    }
+                    acc = r;
+                }
+            } else {
+                // Shifts: amounts at or beyond the width give 0 (or the sign
+                // fill for a signed right shift), never an undefined shift.
+                Value* width = ConstantInt::get(ty, shape->bits);
+                Value* max_shift = ConstantInt::get(ty, shape->bits - 1);
+                auto shift_left = [&](Value* v, Value* n) {
+                    Value* in_range = builder->CreateICmpULT(n, width);
+                    Value* s = builder->CreateShl(v, builder->CreateSelect(in_range, n, max_shift));
+                    return builder->CreateSelect(in_range, s, ConstantInt::get(ty, 0), "mint_shl");
+                };
+                auto shift_right = [&](Value* v, Value* n) {
+                    Value* in_range = builder->CreateICmpULT(n, width);
+                    Value* clamped = builder->CreateSelect(in_range, n, max_shift);
+                    if (shape->is_signed) return builder->CreateAShr(v, clamped, "mint_shr");
+                    Value* s = builder->CreateLShr(v, clamped);
+                    return builder->CreateSelect(in_range, s, ConstantInt::get(ty, 0), "mint_shr");
+                };
+                if (opname == "shl") acc = shift_left(acc, rhs);
+                else if (opname == "shr") acc = shift_right(acc, rhs);
+                else {
+                    // arithmetic-shift: positive count shifts left, negative right.
+                    Value* negative = builder->CreateICmpSLT(rhs, ConstantInt::get(ty, 0));
+                    Value* left = shift_left(acc, rhs);
+                    Value* right = shift_right(acc, builder->CreateNeg(rhs));
+                    acc = builder->CreateSelect(negative, right, left, "mint_ash");
+                }
+            }
+        }
+        return widen(acc);
+    }
+
+ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenMachineIntegerOpTask(const eshkol_operations_t* op,
+                                                             const char* operation,
+                                                             const char* source_name) {
+        std::vector<TypedValue> operands;
+        std::vector<bool> is_literal;
+        for (uint64_t i = 0; i < op->call_op.num_vars; ++i) {
+            const eshkol_ast_t* arg = &op->call_op.variables[i];
+            TypedValue tv = (co_await codegenTypedASTTask(arg));
+            if (!tv.llvm_value) co_return TypedValue();
+            operands.push_back(tv);
+            is_literal.push_back(arg->type == ESHKOL_INT64);
+        }
+        co_return emitMachineIntegerOp(operation, source_name, operands, is_literal);
+    }
+
+const char* EshkolLLVMCodeGen::freestandingMachineIntegerCall(const std::string& func_name) {
+        if (!freestanding_codegen_) return nullptr;
+        const char* operation = freestandingMachineIntegerOp(func_name);
+        if (!operation) return nullptr;
+        if (isShadowedByLocalRuntimeBinding(func_name) ||
+            global_symbol_table.count(func_name + "_func") ||
+            symbol_table.count(func_name + "_func")) {
+            return nullptr;
+        }
+        return operation;
+    }
+
+Value* EshkolLLVMCodeGen::hottOptimizedBinaryArith(const TypedValue& left, const TypedValue& right,
                                      const std::string& operation) {
         using namespace eshkol::hott;
 
@@ -20293,11 +20085,11 @@ private:
         return nullptr;
     }
 
-    Value* codegenArithmetic(const eshkol_operations_t* op, const std::string& operation) {
+Value* EshkolLLVMCodeGen::codegenArithmetic(const eshkol_operations_t* op, const std::string& operation) {
         return codegenArithmeticTask(op, operation).run();
     }
 
-    ContinuationTask<Value*> codegenArithmeticTask(const eshkol_operations_t* op, const std::string& operation) {
+ContinuationTask<Value*> EshkolLLVMCodeGen::codegenArithmeticTask(const eshkol_operations_t* op, const std::string& operation) {
         // Handle unary minus: (- x) => negation
         if (op->call_op.num_vars == 1 && operation == "sub") {
             TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
@@ -20413,7 +20205,7 @@ private:
         co_return result;
     }
 
-    Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation) {
+Value* EshkolLLVMCodeGen::codegenComparison(const eshkol_operations_t* op, const std::string& operation) {
         if (op->call_op.num_vars < 2) {
             eshkol_warn("Comparison operation requires at least 2 arguments");
             return nullptr;
@@ -20489,9 +20281,7 @@ private:
         return result;
     }
 
-    // HoTT type-directed comparison optimization
-    // Returns optimized result if both types are known, nullptr to fall back to polymorphic
-    Value* hottOptimizedComparison(const TypedValue& left, const TypedValue& right,
+Value* EshkolLLVMCodeGen::hottOptimizedComparison(const TypedValue& left, const TypedValue& right,
                                     const std::string& operation) {
         using namespace eshkol::hott;
 
@@ -20600,16 +20390,8 @@ private:
         // Unknown type combination, fall back to polymorphic
         return nullptr;
     }
-    
-    
-    /** The spelling the PROGRAMMER wrote for this call, for diagnostics.
-     *
-     *  Lowering names and public names are not the same word: `(ceiling)` is
-     *  lowered by codegenMathFunction(op, "ceil") and `(truncate)` by
-     *  codegenMathFunction(op, "trunc"). Reporting the lowering name told the
-     *  reader about an intrinsic they never wrote. Falls back to the lowering
-     *  name for a synthesized call with no variable callee. */
-    static std::string publicCalleeName(const eshkol_operations_t* op,
+
+std::string EshkolLLVMCodeGen::publicCalleeName(const eshkol_operations_t* op,
                                         const std::string& lowering_name) {
         if (op && op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
             op->call_op.func->variable.id && *op->call_op.func->variable.id) {
@@ -20618,19 +20400,33 @@ private:
         return lowering_name;
     }
 
-    // Directed rounding: fl-next-up / fl-next-down. Unary Scheme surface
-    // (the direction is fixed by which name was called), lowered to the
-    // libm binary `nextafter(x, direction)` with `direction` a compile-time
-    // +INFINITY/-INFINITY constant -- nextafter saturates at the argument's
-    // own value once x has no representable neighbour in that direction
-    // (e.g. nextafter(+inf, +inf) == +inf, nextafter(DBL_MAX, +inf) == +inf,
-    // per C99 7.12.11.3), so no separate overflow handling is needed here.
-    // Deliberately real-scalar-only: no complex/tensor/dual/AD-node/tower
-    // fast path (see call-site comment) -- an operand in any of those
-    // representations reads as a tagged DOUBLE by extractDoubleFromTagged,
-    // which is correct only for the plain-real case, so this must never be
-    // reached for those tags. Guard here rather than trust every call site.
-    Value* codegenNextafter(const eshkol_operations_t* op, bool up) {
+Value* EshkolLLVMCodeGen::codegenStopGradient(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_arity_error_current("stop-gradient requires exactly 1 argument");
+            return nullptr;
+        }
+        Value* arg = codegenAST(&op->call_op.variables[0]);
+        if (!arg) return nullptr;
+        Value* arg_tagged = ensureTaggedValue(arg);
+        // Entry-block slots: a call inside a loop body must not grow the stack
+        // once per iteration.
+        Function* cur_fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        if (cur_fn && !cur_fn->empty()) {
+            BasicBlock& entry = cur_fn->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        AllocaInst* in_slot = builder->CreateAlloca(tagged_value_type, nullptr, "stop_gradient_in");
+        AllocaInst* out_slot = builder->CreateAlloca(tagged_value_type, nullptr, "stop_gradient_out");
+        builder->restoreIP(saved_ip);
+        builder->CreateStore(arg_tagged, in_slot);
+        FunctionType* ft = FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false);
+        FunctionCallee fn = module->getOrInsertFunction("eshkol_stop_gradient_tagged", ft);
+        builder->CreateCall(fn, {in_slot, out_slot});
+        return builder->CreateLoad(tagged_value_type, out_slot, "stop_gradient");
+    }
+
+Value* EshkolLLVMCodeGen::codegenNextafter(const eshkol_operations_t* op, bool up) {
         const char* fn = up ? "fl-next-up" : "fl-next-down";
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", fn);
@@ -20680,32 +20476,7 @@ private:
         return packDoubleToTaggedValue(result);
     }
 
-    /**
-     * @brief The libm function backing a scalar math builtin, guaranteed
-     *        non-null and of the expected `double(double[, double])` type.
-     *
-     * `function_table` is an `unordered_map<string, Function*>`, so reading it
-     * with `operator[]` on a MISSING key silently inserts a NULL Function* and
-     * hands that straight to IRBuilder::CreateCall — a null dereference inside
-     * CallInst::Create, i.e. the compiler dies with SIGSEGV instead of
-     * producing a diagnostic. That is exactly how
-     *
-     *     (display (tensor-ref (elu t 2) 0))   ; puts a bare @exp in the module
-     *     (display (exp -2.0))                 ; SIGSEGV
-     *
-     * crashed: the activation lowering materialised `exp` by bare name,
-     * AutodiffCodegen::getMathFunc then found that module symbol and returned
-     * it WITHOUT recording it in function_table, and the scalar path's
-     * `function_table["exp"]` inserted null. `exp` was the only exposed name
-     * because it was the one libm entry BuiltinFactoryCodegen never
-     * pre-declared; every other scalar math name already had a row.
-     *
-     * Routing every scalar-math lookup through here removes the whole class:
-     * a missing or wrongly-typed row is repaired from libm_codegen (intrinsic
-     * first, so it can never bind to an unrelated symbol of the same name)
-     * rather than crashed on.
-     */
-    Function* mathFunc(const std::string& name) {
+Function* EshkolLLVMCodeGen::mathFunc(const std::string& name) {
         static const std::set<std::string> binary_math = {
             "pow", "atan2", "fmod", "remainder", "fmin", "fmax",
             "nextafter", "copysign", "hypot"
@@ -20727,7 +20498,7 @@ private:
         return fn;
     }
 
-    Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
+Value* EshkolLLVMCodeGen::codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 1) {
             // Name the procedure, not the intrinsic: `(ceiling)` must say
             // "ceiling", the same word the bytecode VM's refusal uses, or the
@@ -20746,15 +20517,8 @@ private:
         return codegenMathFunctionOnTagged(arg_tagged, func_name);
     }
 
-    // The value-level core of the procedure above: everything after its
-    // arguments are evaluated. Complex component formulas (ADR-0025) call it
-    // on a component, so a derivative carrier gets the same rule it gets here.
-    // `operand_is_real` is set by the complex component formulas, whose operands
-    // are components and so never complex: the complex-operand branch is not
-    // emitted for them. It must not be, because that branch emits those same
-    // formulas, and the emission would not terminate.
-    Value* codegenMathFunctionOnTagged(Value* arg_tagged, const std::string& func_name,
-                                       bool operand_is_real = false) {
+Value* EshkolLLVMCodeGen::codegenMathFunctionOnTagged(Value* arg_tagged, const std::string& func_name,
+                                       bool operand_is_real) {
 
         // ESH-0093: while a forward-mode derivative is live, reverse-tape AD
         // nodes are frozen to jets (active gradient seed in e2) instead of
@@ -21341,7 +21105,7 @@ private:
         return builder->CreateLoad(tagged_value_type, mf_cpx_slot);
     }
 
-    Value* codegenActivationFunction(const eshkol_operations_t* op, bool relu) {
+Value* EshkolLLVMCodeGen::codegenActivationFunction(const eshkol_operations_t* op, bool relu) {
         if (op->call_op.num_vars != 1) {
             eshkol_warn("%s requires exactly 1 argument", relu ? "relu" : "sigmoid");
             return nullptr;
@@ -21476,28 +21240,7 @@ private:
         return result;
     }
 
-    // ===== ML activation family: one dispatch point =====
-    //
-    // Every activation takes a number or a tensor and returns the same kind
-    // (docs/tutorials/01_AUTODIFF_AND_ML.md, docs/API_REFERENCE.md). This table
-    // and codegenActivationFamily() are the only place an activation name is
-    // lowered. The operand is evaluated ONCE, bound to a generated name, and
-    // classified at run time:
-    //   - a tensor, or a reverse-mode node that carries a tensor, goes to the
-    //     TensorCodegen lowering, which owns tensor layout and tensor AD;
-    //   - a scalar number or scalar differentiation carrier (fixnum, flonum,
-    //     bignum, rational, dual, Taylor tower, scalar AD node) goes to the
-    //     activation's scalar definition. That definition is a composition of
-    //     the scalar primitives (+ - * / exp log tanh min max and `>` on the
-    //     primal), each of which already carries every differentiation mode,
-    //     so the activation is differentiable without a rule of its own. It is
-    //     the same formula, constants and threshold as the tensor kernel;
-    //   - anything else goes to the tensor lowering, whose operand check
-    //     coerces a numeric collection or raises a catchable type error.
-    // relu and sigmoid enter through the same table but keep their dedicated
-    // scalar lowering (codegenActivationFunction), which records dedicated AD
-    // node and Taylor operations.
-    static eshkol_ast_t* actCall(const char* fn, std::initializer_list<eshkol_ast_t*> args) {
+eshkol_ast_t* EshkolLLVMCodeGen::actCall(const char* fn, std::initializer_list<eshkol_ast_t*> args) {
         eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
         ast->type = ESHKOL_OP;
         ast->operation.op = ESHKOL_CALL_OP;
@@ -21509,27 +21252,10 @@ private:
         for (eshkol_ast_t* a : args) ast->operation.call_op.variables[i++] = *a;
         return ast;
     }
-    static eshkol_ast_t* actNum(double v) { return eshkol_make_double_ast(v); }
 
-    // An activation's definition as an AST over the operand x and the optional
-    // parameter p, and the TensorCodegen kernel it pairs with.
-    using ActivationFormula = eshkol_ast_t* (*)(eshkol_ast_t* x, eshkol_ast_t* p);
-    using ActivationKernel = Value* (eshkol::TensorCodegen::*)(const eshkol_operations_t*);
-    struct ActivationSpec {
-        const char* name;
-        uint64_t min_args;
-        uint64_t max_args;
-        double param_default;  // value of the optional second argument
-        ActivationKernel tensor_fn;
-        // Scalar definition; null for the activations with a dedicated scalar
-        // lowering (relu, sigmoid).
-        ActivationFormula scalar;
-        // Tensor definition used when the optional parameter is supplied and
-        // the tensor kernel has no parameter of its own (swish's beta).
-        ActivationFormula tensor_with_param;
-    };
+eshkol_ast_t* EshkolLLVMCodeGen::actNum(double v) { return eshkol_make_double_ast(v); }
 
-    static const ActivationSpec* findActivation(const std::string& name) {
+const EshkolLLVMCodeGen::ActivationSpec* EshkolLLVMCodeGen::findActivation(const std::string& name) {
         // Formulas mirror lib/backend/tensor_activation_codegen.cpp exactly.
         static const ActivationSpec table[] = {
             {"relu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorRelu, nullptr, nullptr},
@@ -21614,10 +21340,7 @@ private:
         return nullptr;
     }
 
-    // i1: the operand belongs to the scalar definition (a number or a scalar
-    // differentiation carrier). Everything else -- a tensor, a reverse-mode node
-    // that carries a tensor, or a non-number -- belongs to the tensor lowering.
-    Value* emitActivationOperandIsScalar(Value* arg) {
+Value* EshkolLLVMCodeGen::emitActivationOperandIsScalar(Value* arg) {
         Function* fn = builder->GetInsertBlock()->getParent();
         BasicBlock* callable_bb = BasicBlock::Create(*context, "act_callable_check", fn);
         BasicBlock* ad_bb = BasicBlock::Create(*context, "act_ad_scalar_check", fn);
@@ -21658,7 +21381,7 @@ private:
         return result;
     }
 
-    Value* codegenActivationFamily(const eshkol_operations_t* op, const ActivationSpec& spec) {
+Value* EshkolLLVMCodeGen::codegenActivationFamily(const eshkol_operations_t* op, const ActivationSpec& spec) {
         const uint64_t n = op->call_op.num_vars;
         if (n < spec.min_args || n > spec.max_args) {
             if (spec.min_args == spec.max_args) {
@@ -21748,12 +21471,7 @@ private:
         return result;
     }
 
-    // One element loader for the multi-sequence iterators (vector-map,
-    // vector-for-each): the i-th element of a source as a tagged value. A
-    // Scheme vector slot is the value; a tensor slot is a double bit pattern,
-    // unless the carrier was promoted by a non-numeric store or is a dual
-    // tensor (ADR-0020), where the slot is already a tagged value.
-    Value* loadSequenceElement(Value* is_tensor, Value* tagged_slots,
+Value* EshkolLLVMCodeGen::loadSequenceElement(Value* is_tensor, Value* tagged_slots,
                                Value* elems, Value* base, Value* idx) {
         Function* f = builder->GetInsertBlock()->getParent();
         BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
@@ -21792,9 +21510,7 @@ private:
         return phi;
     }
 
-    // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
-    // for numeric types (int64, double, bignum)
-    Value* codegenAbs(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenAbs(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("abs requires exactly 1 argument");
             return nullptr;
@@ -21892,7 +21608,7 @@ private:
         return result_phi;
     }
 
-    Value* codegenRound(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenRound(const eshkol_operations_t* op) {
         if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
             // P8 axis-3 parity: this guard is as old as the handler, but
             // eshkol_warn() leaves the build succeeding and the swallowed
@@ -21924,8 +21640,7 @@ private:
         return packDoubleToTaggedValue(result);
     }
 
-    // Binary math function codegen (for atan2, fmod, fmin, fmax, remainder, etc.)
-    Value* codegenBinaryMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
+Value* EshkolLLVMCodeGen::codegenBinaryMathFunction(const eshkol_operations_t* op, const std::string& func_name) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("%s requires exactly 2 arguments", func_name.c_str());
             return nullptr;
@@ -21949,10 +21664,7 @@ private:
         return codegenBinaryMathFunctionOnTagged(arg1, arg2, func_name);
     }
 
-    // The value-level core of the procedure above: everything after its
-    // arguments are evaluated. Complex component formulas (ADR-0025) call it
-    // on a component, so a derivative carrier gets the same rule it gets here.
-    Value* codegenBinaryMathFunctionOnTagged(Value* arg1, Value* arg2, const std::string& func_name) {
+Value* EshkolLLVMCodeGen::codegenBinaryMathFunctionOnTagged(Value* arg1, Value* arg2, const std::string& func_name) {
 
         // atan2 of a derivative carrier. A Taylor carrier (a tower or a level)
         // or a forward jet in either argument takes the carrier ring's atan2
@@ -22003,9 +21715,7 @@ private:
         return packDoubleToTaggedValue(result);
     }
 
-    // atan2 of operands that are neither Taylor carriers nor forward jets: a
-    // reverse-tape node (recorded on the tape) or plain numbers.
-    Value* codegenAtan2NonTaylor(Value* arg1, Value* arg2) {
+Value* EshkolLLVMCodeGen::codegenAtan2NonTaylor(Value* arg1, Value* arg2) {
         const std::string func_name = "atan2";
         {
             Value* arg1_base = getBaseType(getTaggedValueType(arg1));
@@ -22087,8 +21797,7 @@ private:
         return packDoubleToTaggedValue(result);
     }
 
-    // Modulo operation - Scheme semantics (result has same sign as divisor)
-    Value* codegenModulo(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenModulo(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("modulo requires exactly 2 arguments");
             return nullptr;
@@ -22319,9 +22028,7 @@ private:
         return outer_phi;
     }
 
-    // Remainder operation - handles both integer and floating point
-    // Uses truncated division semantics (sign of result matches dividend)
-    Value* codegenRemainder(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenRemainder(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("remainder requires exactly 2 arguments");
             return nullptr;
@@ -22338,8 +22045,7 @@ private:
         return arith_->remainder(arg1, arg2);
     }
 
-    // Integer quotient (truncated division)
-    Value* codegenQuotient(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuotient(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("quotient requires exactly 2 arguments");
             return nullptr;
@@ -22356,9 +22062,7 @@ private:
         return arith_->quotient(arg1, arg2);
     }
 
-    // GCD (Greatest Common Divisor) using Euclidean algorithm
-    // Helper: convert a typed value to absolute int64 for GCD/LCM
-    Value* toAbsInt64(Value* val) {
+Value* EshkolLLVMCodeGen::toAbsInt64(Value* val) {
         if (val->getType()->isDoubleTy()) {
             val = builder->CreateFPToSI(val, int64_type);
         } else if (val->getType() == tagged_value_type) {
@@ -22370,9 +22074,7 @@ private:
         return builder->CreateSelect(is_neg, builder->CreateNeg(val), val);
     }
 
-    // Helper: emit inline Euclidean GCD loop for two int64 values
-    // Returns gcd(a, b) as raw int64. Creates fresh basic blocks.
-    Value* emitGCDPair(Value* a, Value* b) {
+Value* EshkolLLVMCodeGen::emitGCDPair(Value* a, Value* b) {
         Value* zero = ConstantInt::get(int64_type, 0);
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* entry_bb = builder->GetInsertBlock();
@@ -22402,9 +22104,7 @@ private:
         return a_phi;
     }
 
-    // R7RS §6.2.6: Variadic GCD via fold of Euclidean algorithm
-    // (gcd) → 0, (gcd n) → |n|, (gcd a b ...) → gcd(gcd(a,b), ...)
-    Value* codegenGCD(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenGCD(const eshkol_operations_t* op) {
         // (gcd) → 0
         if (op->call_op.num_vars == 0) {
             return ConstantInt::get(int64_type, 0);
@@ -22514,10 +22214,7 @@ private:
         return result;  // Raw int64 (caller wraps in tagged)
     }
 
-    // Helper: emit inline LCM for two absolute int64 values
-    // lcm(a, b) = a * (b / gcd(a, b)), with zero short-circuit
-    // Returns raw int64. Creates fresh basic blocks.
-    Value* emitLCMPair(Value* abs_a, Value* abs_b) {
+Value* EshkolLLVMCodeGen::emitLCMPair(Value* abs_a, Value* abs_b) {
         Value* zero = ConstantInt::get(int64_type, 0);
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* entry_bb = builder->GetInsertBlock();
@@ -22549,9 +22246,7 @@ private:
         return result;
     }
 
-    // R7RS §6.2.6: Variadic LCM via fold
-    // (lcm) → 1, (lcm n) → |n|, (lcm a b ...) → lcm(lcm(a,b), ...)
-    Value* codegenLCM(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenLCM(const eshkol_operations_t* op) {
         // (lcm) → 1
         if (op->call_op.num_vars == 0) {
             return ConstantInt::get(int64_type, 1);
@@ -22650,14 +22345,11 @@ private:
         return result;  // Raw int64 (caller wraps in tagged)
     }
 
-    // MIGRATED: Delegates to ArithmeticCodegen
-    // Helper to convert any value to double
-    Value* toDouble(Value* val) {
+Value* EshkolLLVMCodeGen::toDouble(Value* val) {
         return arith_->extractAsDouble(val);
     }
 
-    // Min/Max - variadic, handles mixed types
-    Value* codegenMinMax(const eshkol_operations_t* op, bool is_min) {
+Value* EshkolLLVMCodeGen::codegenMinMax(const eshkol_operations_t* op, bool is_min) {
         if (op->call_op.num_vars < 1) {
             eshkol_warn("%s requires at least 1 argument", is_min ? "min" : "max");
             return nullptr;
@@ -22701,10 +22393,7 @@ private:
                                      "minmax_contagion_result");
     }
 
-    // R7RS exactness probe: a value is inexact iff it is a flonum (DOUBLE) or
-    // a complex number (always inexact in Eshkol). int64 / bignum / rational
-    // are exact. Returns an i1.
-    Value* isInexactTagged(Value* tagged) {
+Value* EshkolLLVMCodeGen::isInexactTagged(Value* tagged) {
         Value* base = getBaseType(getTaggedValueType(tagged));
         Value* is_double = builder->CreateICmpEQ(base,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
@@ -22713,18 +22402,7 @@ private:
         return builder->CreateOr(is_double, is_complex);
     }
 
-    // Conditionally coerce an EXACT tagged value to its inexact (double)
-    // representation. When `cond` is false the value is returned unchanged;
-    // when true an exact int64/bignum/rational is converted via extractAsDouble
-    // (the single exact->inexact path).
-    //
-    // Crucially the coercion only fires for *genuinely exact* results
-    // (INT64 / HEAP_PTR bignum / rational). A DUAL number (forward-mode AD)
-    // is already an inexact float carrying a tangent — routing it through
-    // extractAsDouble would strip the derivative and break AD through min/max.
-    // DOUBLE and COMPLEX are already inexact, so leaving them untouched is
-    // both correct and avoids needless work.
-    Value* coerceToInexactIf(Value* result, Value* cond) {
+Value* EshkolLLVMCodeGen::coerceToInexactIf(Value* result, Value* cond) {
         // Restrict contagion to exact results; duals/doubles/complex pass through.
         Value* base = getBaseType(getTaggedValueType(result));
         Value* is_int = builder->CreateICmpEQ(base,
@@ -22759,47 +22437,27 @@ private:
         return phi;
     }
 
-    // MIGRATED: Delegates to ArithmeticCodegen
-    // Helper to extract double from tagged value (handles both int and double)
-    Value* extractDoubleFromTagged(Value* tagged) {
+Value* EshkolLLVMCodeGen::extractDoubleFromTagged(Value* tagged) {
         return arith_->extractAsDouble(tagged);
     }
 
-    // MIGRATED: Delegates to ControlFlowCodegen
-    // Helper to check if a tagged value is "truthy" (non-false, non-null, non-zero)
-    Value* isTruthy(Value* val) {
+Value* EshkolLLVMCodeGen::isTruthy(Value* val) {
         return flow_->isTruthy(val);
     }
-    // MIGRATED: Short-circuit AND - delegates to ControlFlowCodegen
-    Value* codegenAnd(const eshkol_operations_t* op) {
+
+Value* EshkolLLVMCodeGen::codegenAnd(const eshkol_operations_t* op) {
         return flow_->codegenAnd(op);
     }
 
-    // MIGRATED: Short-circuit OR - delegates to ControlFlowCodegen
-    Value* codegenOr(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenOr(const eshkol_operations_t* op) {
         return flow_->codegenOr(op);
     }
 
-    // MIGRATED: Cond expression - delegates to ControlFlowCodegen
-    Value* codegenCond(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCond(const eshkol_operations_t* op) {
         return flow_->codegenCond(op);
     }
 
-    // SW-229: the forward-mode AD dynamic state a non-local exit must put back.
-    //
-    // A derivative pass raises __ad_pert_level (and a Taylor pass
-    // __ad_tower_active/__ad_tower_order) on entry and lowers it on its normal
-    // exit. A raise or an escaping continuation from inside the pass longjmps
-    // past that exit, so the level stayed raised: every later `derivative`
-    // believed it was nested, declined the exact tier and answered inexact
-    // (exact 6 became 6.0), and a later derivative through exact division by
-    // exact 0 answered -inf.0 instead of raising. The runtime's unwinder
-    // (eshkol_ad_state_restore) cannot reach these: they are module globals,
-    // internal to an AOT module. So every site that installs a longjmp target
-    // snapshots them into entry-block slots before setjmp and stores them back
-    // first thing on the path a longjmp arrives by.
-    using AdForwardSnapshot = std::vector<std::pair<GlobalVariable*, Value*>>;
-    AdForwardSnapshot snapshotAdForwardState() {
+EshkolLLVMCodeGen::AdForwardSnapshot EshkolLLVMCodeGen::snapshotAdForwardState() {
         AdForwardSnapshot snap;
         Function* fn = builder->GetInsertBlock()->getParent();
         for (GlobalVariable* g : {ctx_->adPertLevel(), ctx_->adTowerActive(), ctx_->adTowerOrder()}) {
@@ -22814,8 +22472,8 @@ private:
         }
         return snap;
     }
-    // Emit the restores at the start of `landing`, the block a longjmp reaches.
-    void restoreAdForwardStateAt(BasicBlock* landing, const AdForwardSnapshot& snap) {
+
+void EshkolLLVMCodeGen::restoreAdForwardStateAt(BasicBlock* landing, const AdForwardSnapshot& snap) {
         IRBuilderBase::InsertPoint ip = builder->saveIP();
         builder->SetInsertPoint(landing);
         for (const auto& gs : snap)
@@ -22823,10 +22481,45 @@ private:
         builder->restoreIP(ip);
     }
 
-    // Exception handling: guard expression
-    // Syntax: (guard (var clause ...) body ...)
-    // Sets up setjmp handler, evaluates body, handles exceptions via clauses
-    Value* codegenGuard(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::createEntryBlockTaggedSlot(const char* name) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        BasicBlock& entry = fn->getEntryBlock();
+        builder->SetInsertPoint(&entry, entry.begin());
+        Value* slot = builder->CreateAlloca(tagged_value_type, nullptr, name);
+        builder->restoreIP(ip);
+        return slot;
+    }
+
+Value* EshkolLLVMCodeGen::snapshotRecursionDepth() {
+        Function* save = module->getFunction("eshkol_save_recursion_depth");
+        if (!save) {
+            save = Function::Create(FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                                    Function::ExternalLinkage, "eshkol_save_recursion_depth", module.get());
+        }
+        Function* fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        BasicBlock& entry = fn->getEntryBlock();
+        builder->SetInsertPoint(&entry, entry.begin());
+        Value* slot = builder->CreateAlloca(builder->getInt64Ty(), nullptr, "recursion_depth_snapshot");
+        builder->restoreIP(ip);
+        builder->CreateCall(save, {slot});
+        return slot;
+    }
+
+void EshkolLLVMCodeGen::restoreRecursionDepthAt(BasicBlock* landing, Value* slot) {
+        Function* restore = module->getFunction("eshkol_restore_recursion_depth");
+        if (!restore) {
+            restore = Function::Create(FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                                       Function::ExternalLinkage, "eshkol_restore_recursion_depth", module.get());
+        }
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        builder->SetInsertPoint(landing, landing->getFirstInsertionPt());
+        builder->CreateCall(restore, {slot});
+        builder->restoreIP(ip);
+    }
+
+Value* EshkolLLVMCodeGen::codegenGuard(const eshkol_operations_t* op) {
         // Get runtime functions
         Function* push_handler_func = module->getFunction("eshkol_push_exception_handler");
         Function* pop_handler_func = module->getFunction("eshkol_pop_exception_handler");
@@ -22934,11 +22627,13 @@ private:
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp is called
         AdForwardSnapshot guard_ad_snapshot = snapshotAdForwardState();   // SW-229
+        Value* guard_ad_snapshot_depth = snapshotRecursionDepth();
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "setjmp_result");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
         restoreAdForwardStateAt(handler_block, guard_ad_snapshot);
+        restoreRecursionDepthAt(handler_block, guard_ad_snapshot_depth);
 
         // Try block - evaluate body
         builder->SetInsertPoint(try_block);
@@ -23305,10 +23000,7 @@ private:
         return packNullToTaggedValue();
     }
 
-    // Exception handling: raise expression
-    // Syntax: (raise exception)
-    // Simplified: Always create a new exception from the given value
-    Value* codegenRaise(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenRaise(const eshkol_operations_t* op) {
         // Get or declare eshkol_raise function
         Function* raise_func = module->getFunction("eshkol_raise");
         if (!raise_func) {
@@ -23379,28 +23071,11 @@ private:
         builder->CreateCall(raise_func, {exc});
         builder->CreateUnreachable();
 
-        // #244 fix (2026-05-07): Switch to a fresh "post_raise_dead" block
-        // before returning. Naive callers (codegenDisplay processing
-        // (display (raise ...)) ; codegenCall arg evaluation; etc.) will
-        // continue emitting IR using our undef return value — that IR
-        // would land *after* the CreateUnreachable in the same block
-        // and trip the LLVM verifier ("Terminator found in the middle
-        // of a basic block!"). By moving the insertion point to a
-        // brand-new block (unreachable from entry, so DCE drops it),
-        // the dead-code remains verifier-valid even if no caller
-        // bothers to check `getTerminator()`. This is the "raise's
-        // contract is no-return; downstream IR is dead code; let it
-        // live in its own block" pattern — same shape as the
-        // post-unreachable continuation block already used by
-        // codegenError and codegenAbort. The earlier loop-level
-        // `if (terminator) goto after_noreturn` fix in the top-level
-        // expression loop covered the simple `(raise) (display)` case
-        // at top level; this fix covers the general `(<consumer>
-        // (raise) ...)` case in any expression position.
-        BasicBlock* post_raise = BasicBlock::Create(
-            *context, "post_raise_dead",
-            builder->GetInsertBlock()->getParent());
-        builder->SetInsertPoint(post_raise);
+        // `raise` does not return, and the caller that asked for this form
+        // (a `display` lowering its argument, a call evaluating its operands,
+        // a `let` initialiser) goes on emitting with the value returned
+        // below. That IR is unreachable; it continues in its own block.
+        eshkol::continueAfterNoReturn(*builder, "post_raise_dead");
 
         // Return undef - this code path is unreachable, so the value doesn't matter
         // IMPORTANT: Don't call packNullToTaggedValue() here as it creates instructions
@@ -23408,15 +23083,7 @@ private:
         return UndefValue::get(tagged_value_type);
     }
 
-    // ===== CALL/CC — First-class continuations =====
-    // Syntax: (call/cc proc) or (call-with-current-continuation proc)
-    // Uses setjmp/longjmp: setjmp captures the return point, longjmp invokes the continuation
-    // True when this call/cc's continuation provably cannot outlive the
-    // capturing frame, so no stack image is needed. Requires proc to be a
-    // literal 1-parameter lambda whose body only ever calls the parameter;
-    // any other shape (a named procedure, a variadic lambda, a stored or
-    // returned reference) is treated as escaping.
-    bool callCCContinuationStaysLocal(const eshkol_operations_t* op) {
+bool EshkolLLVMCodeGen::callCCContinuationStaysLocal(const eshkol_operations_t* op) {
         const eshkol_ast_t* proc = op->call_cc_op.proc;
         if (!proc || proc->type != ESHKOL_OP) return false;
         const eshkol_operations_t* pop = &proc->operation;
@@ -23427,7 +23094,7 @@ private:
         return continuationUseStaysLocal(pop->lambda_op.body, params[0].variable.id);
     }
 
-    bool astHasEscapingCallCC(const eshkol_ast_t* ast) {
+bool EshkolLLVMCodeGen::astHasEscapingCallCC(const eshkol_ast_t* ast) {
         if (!ast) return false;
         if (ast->type == ESHKOL_CONS)
             return astHasEscapingCallCC(ast->cons_cell.car) ||
@@ -23460,7 +23127,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_MATCH_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP,
                     ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -23518,7 +23185,7 @@ private:
         }
     }
 
-    Value* codegenCallCC(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCallCC(const eshkol_operations_t* op) {
         /* call/cc supplies exactly one argument to its procedure. A literal
          * procedure with another fixed arity must be rejected here rather
          * than relying on the general closure dispatcher, which pads missing
@@ -23648,11 +23315,13 @@ private:
 
         // Call setjmp — returns 0 first time, non-zero when continuation is invoked
         AdForwardSnapshot callcc_ad_snapshot = snapshotAdForwardState();  // SW-229
+        Value* callcc_ad_snapshot_depth = snapshotRecursionDepth();
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "callcc_setjmp");
         Value* was_invoked = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(was_invoked, invoked_bb, normal_bb);
         restoreAdForwardStateAt(invoked_bb, callcc_ad_snapshot);
+        restoreRecursionDepthAt(invoked_bb, callcc_ad_snapshot_depth);
 
         // Normal path: call proc with the continuation
         builder->SetInsertPoint(normal_bb);
@@ -23740,11 +23409,65 @@ private:
         return phi;
     }
 
-    // ===== DYNAMIC-WIND =====
-    // Syntax: (dynamic-wind before thunk after)
-    // Calls before(), then thunk(), then after(), returns thunk's result
-    // before/after are also called during continuation jumps across dynamic-wind boundaries
-    Value* codegenDynamicWind(const eshkol_operations_t* op) {
+void EshkolLLVMCodeGen::pushPortCleanupWind(Value* close_fp) {
+        FunctionCallee push_fn = module->getOrInsertFunction(
+            "eshkol_push_dynamic_wind_cleanup",
+            FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false));
+        FunctionCallee cleanup_fn = module->getOrInsertFunction(
+            "eshkol_runtime_close_port_cleanup",
+            FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false));
+        builder->CreateCall(push_fn, {getArenaPtr(), cleanup_fn.getCallee(), close_fp});
+    }
+
+void EshkolLLVMCodeGen::popPortCleanupWindAndClose(Value* close_fp) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return;
+        FunctionCallee pop_fn = module->getOrInsertFunction(
+            "eshkol_pop_dynamic_wind", FunctionType::get(builder->getVoidTy(), {}, false));
+        builder->CreateCall(pop_fn, {});
+        FunctionCallee close_fn = module->getOrInsertFunction(
+            "eshkol_runtime_close_port", FunctionType::get(builder->getInt32Ty(),
+                {builder->getPtrTy()}, false));
+        builder->CreateCall(close_fn, {close_fp});
+    }
+
+    // The procedure the runtime uses to enter a thunk of this module:
+    //   void __eshkol_call_thunk(const tagged* thunk, tagged* result)
+    // Its body is one ordinary closure call, so a thunk entered by the runtime
+    // (a dynamic-wind before/after thunk run while a continuation or a raise
+    // crosses the extent) follows the same call protocol as a thunk called
+    // from generated code: any number of captured variables in either closure
+    // layout, rest parameters, and the arity check. Only pointers cross the
+    // C boundary.
+Function* EshkolLLVMCodeGen::getOrCreateRuntimeThunkCaller() {
+        static const char* const kName = "__eshkol_call_thunk";
+        if (Function* existing = module->getFunction(kName)) return existing;
+        FunctionType* caller_type = FunctionType::get(builder->getVoidTy(),
+            {builder->getPtrTy(), builder->getPtrTy()}, false);
+        Function* caller = Function::Create(caller_type, Function::InternalLinkage,
+                                            kName, module.get());
+        caller->getArg(0)->setName("thunk");
+        caller->getArg(1)->setName("result");
+        // The caller is emitted while another function is being generated:
+        // the insertion point and the function the generator considers
+        // current both move to the caller for its body and are put back.
+        IRBuilderBase::InsertPoint saved = builder->saveIP();
+        Function* prev_function = current_function;
+        current_function = caller;
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", caller));
+        Value* thunk = builder->CreateLoad(tagged_value_type, caller->getArg(0), "thunk_value");
+        std::vector<Value*> no_args;
+        Value* result = codegenClosureCall(thunk, no_args, "runtime-thunk");
+        if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+            builder->CreateStore(ensureTaggedValue(result), caller->getArg(1));
+            builder->CreateRetVoid();
+        }
+        current_function = prev_function;
+        builder->restoreIP(saved);
+        return caller;
+    }
+
+Value* EshkolLLVMCodeGen::codegenDynamicWind(const eshkol_operations_t* op) {
         // Evaluate the three thunks. Each operand goes through
         // ensureTaggedValue, the normalisation every other procedure operand
         // gets: before/after are stored into tagged slots for the wind stack,
@@ -23772,7 +23495,8 @@ private:
         Function* push_wind_func = module->getFunction("eshkol_push_dynamic_wind");
         if (!push_wind_func) {
             FunctionType* push_type = FunctionType::get(builder->getVoidTy(),
-                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false);
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy(),
+                 builder->getPtrTy()}, false);
             push_wind_func = Function::Create(push_type, Function::ExternalLinkage,
                 "eshkol_push_dynamic_wind", module.get());
         }
@@ -23798,7 +23522,8 @@ private:
 
         // Push wind entry AFTER before() succeeds (R7RS: before is called on entry)
         Value* arena_ptr = getArenaPtr();
-        builder->CreateCall(push_wind_func, {arena_ptr, before_alloca, after_alloca});
+        builder->CreateCall(push_wind_func,
+            {arena_ptr, before_alloca, after_alloca, getOrCreateRuntimeThunkCaller()});
 
         // Call thunk() — 0 args, capture result
         Value* result = codegenClosureCall(thunk_val, no_args, "dynamic-wind-thunk");
@@ -23812,12 +23537,7 @@ private:
         return result;
     }
 
-    // ===== WITH-EXCEPTION-HANDLER (R7RS) =====
-    // Syntax: (with-exception-handler handler thunk)
-    //   handler: a 1-arg procedure called with the raised value on exception
-    //   thunk: a 0-arg procedure whose body is protected
-    // Uses setjmp/longjmp, same pattern as codegenGuard
-    Value* codegenWithExceptionHandler(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenWithExceptionHandler(const eshkol_operations_t* op) {
         // with-exception-handler is parsed as a regular CALL_OP with 2 args
         if (op->call_op.num_vars < 2) {
             eshkol_debug("with-exception-handler requires 2 arguments (handler thunk)");
@@ -23912,11 +23632,13 @@ private:
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp fires
         AdForwardSnapshot weh_ad_snapshot = snapshotAdForwardState();    // SW-229
+        Value* weh_ad_snapshot_depth = snapshotRecursionDepth();
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "weh_setjmp");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
         restoreAdForwardStateAt(handler_block, weh_ad_snapshot);
+        restoreRecursionDepthAt(handler_block, weh_ad_snapshot_depth);
 
         // Try block: call the thunk (0 args)
         builder->SetInsertPoint(try_block);
@@ -23977,12 +23699,7 @@ private:
         return packNullToTaggedValue();
     }
 
-    // ===== RAISE-CONTINUABLE (R7RS 6.11) =====
-    // (raise-continuable obj): call the current with-exception-handler's
-    // procedure with obj in the dynamic environment of the raise, the outer
-    // handlers installed, and return its value. With a guard (or no handler)
-    // as the current handler, the runtime raises obj as `raise` does.
-    Value* codegenRaiseContinuable(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenRaiseContinuable(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("raise-continuable requires exactly 1 argument");
             return nullptr;
@@ -24022,12 +23739,7 @@ private:
         return result;
     }
 
-    // ===== MULTIPLE RETURN VALUES OPERATIONS =====
-
-    // Emit a diagnosed runtime error from a multiple-values dispatch path.
-    // The caller must have positioned the builder in a dedicated failure block;
-    // this helper terminates that block with `unreachable`.
-    void emitMultipleValuesRaise(const char* message) {
+void EshkolLLVMCodeGen::emitMultipleValuesRaise(const char* message) {
         Function* raise_func = module->getFunction("eshkol_raise");
         if (!raise_func) {
             FunctionType* raise_type = FunctionType::get(
@@ -24050,9 +23762,7 @@ private:
         builder->CreateUnreachable();
     }
 
-    // (values expr1 expr2 ...) - Return multiple values
-    // Creates a multi-value object that packages multiple values together
-    Value* codegenValues(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenValues(const eshkol_operations_t* op) {
         uint64_t num_values = op->values_op.num_values;
 
         // Special case: (values x) returns x directly (single value optimization)
@@ -24110,10 +23820,7 @@ private:
         return packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
-    // (call-with-values producer consumer) - Apply consumer to producer's values
-    // producer: thunk that returns multiple values
-    // consumer: function that accepts those values
-    Value* codegenCallWithValues(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCallWithValues(const eshkol_operations_t* op) {
         // Evaluate producer thunk (a zero-argument function)
         Value* producer_val = codegenAST(op->call_with_values_op.producer);
         if (!producer_val) {
@@ -24169,12 +23876,7 @@ private:
         return phi;
     }
 
-    // Helper: Call consumer with unpacked multi-value
-    // Uses runtime dispatch to handle the closure call system's supported
-    // dynamic arities (0..16).  Counts above the documented closure dispatch
-    // ceiling are rejected explicitly rather than silently calling the
-    // consumer with zero arguments.
-    Value* callConsumerWithMultiValue(Value* consumer, Value* multi_val) {
+Value* EshkolLLVMCodeGen::callConsumerWithMultiValue(Value* consumer, Value* multi_val) {
         // Extract the pointer from the tagged value
         Value* mv_ptr = unpackPtrFromTaggedValue(multi_val);
 
@@ -24243,22 +23945,18 @@ private:
         return phi;
     }
 
-    // Helper: Call closure with dynamic argument count
-    // Uses codegenClosureCall which handles all closure calling conventions
-    Value* callClosureWithArgs(Value* closure, const std::vector<Value*>& args, Value* actual_count) {
+Value* EshkolLLVMCodeGen::callClosureWithArgs(Value* closure, const std::vector<Value*>& args, Value* actual_count) {
         (void)actual_count;  // Not needed - codegenClosureCall handles arity
         // Delegate to codegenClosureCall which properly handles closures with captures
         return codegenClosureCall(closure, args, "call-with-values");
     }
 
-    // Helper: Call consumer with single value
-    Value* callConsumerWithSingleValue(Value* consumer, Value* val) {
+Value* EshkolLLVMCodeGen::callConsumerWithSingleValue(Value* consumer, Value* val) {
         std::vector<Value*> args = {val};
         return callClosureWithArgs(consumer, args, ConstantInt::get(int64_type, 1));
     }
 
-    // (let-values (((var1 var2) producer1) ...) body) - Bind multiple values
-    Value* codegenLetValues(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenLetValues(const eshkol_operations_t* op) {
         bool is_star = (op->op == ESHKOL_LET_STAR_VALUES_OP);
 
         // Save the complete lexical environment.  Both forms introduce a
@@ -24405,24 +24103,7 @@ private:
         return result ? result : packNullToTaggedValue();
     }
 
-    // ===== END MULTIPLE RETURN VALUES OPERATIONS =====
-
-    // ===== QUASIQUOTATION OPERATIONS =====
-
-    // Codegen for quasiquote - process unquotes within quoted structure.
-    //
-    // Parser shape (lib/frontend/parser.cpp: parse_quasiquoted_list_internal):
-    //   `(a ,x b)           => CALL_OP(list, [VAR(a), UNQUOTE(x), VAR(b)])
-    //   `(1 ,@xs 5)         => CALL_OP(list, [INT(1), UNQUOTE_SPLICING(xs), INT(5)])
-    //   `atom               => the bare atom AST
-    //   ,expr               => UNQUOTE_OP(expr)
-    //   ,@expr              => UNQUOTE_SPLICING_OP(expr)
-    //
-    // So the job here is: for CALL_OP(list, [...]), iterate args right-to-left,
-    // evaluating UNQUOTE bodies, splicing UNQUOTE_SPLICING bodies, and
-    // quoting everything else. Anything that isn't a recognised list shape
-    // falls back to codegenQuotedAST, which treats the AST as data.
-    Value* codegenQuasiquoteEscape(const eshkol_ast_t* escape) {
+Value* EshkolLLVMCodeGen::codegenQuasiquoteEscape(const eshkol_ast_t* escape) {
         if (!escape || escape->type != ESHKOL_OP ||
             (escape->operation.op != ESHKOL_UNQUOTE_OP &&
              escape->operation.op != ESHKOL_UNQUOTE_SPLICING_OP)) {
@@ -24441,7 +24122,7 @@ private:
         return packNullToTaggedValue();
     }
 
-    Value* codegenQuasiquote(const eshkol_ast_t* ast) {
+Value* EshkolLLVMCodeGen::codegenQuasiquote(const eshkol_ast_t* ast) {
         if (!ast) return packNullToTaggedValue();
 
         // Inline unquote / unquote-splicing at the outer level: `(,expr) would
@@ -24628,31 +24309,22 @@ private:
 
     // ===== PATTERN MATCHING OPERATIONS =====
 
-    // Helper: Compare two tagged values for equality (eqv? semantics)
-    Value* matchCompareValues(Value* val1, Value* val2) {
-        // Get types
-        Value* type1 = getTaggedValueType(val1);
-        Value* type2 = getTaggedValueType(val2);
-
-        // Types must match for equality
-        Value* types_match = builder->CreateICmpEQ(type1, type2, "types_match");
-
-        // Get the raw data parts
-        Value* data1 = unpackInt64FromTaggedValue(val1);
-        Value* data2 = unpackInt64FromTaggedValue(val2);
-
-        // Data must match
-        Value* data_match = builder->CreateICmpEQ(data1, data2, "data_match");
-
-        // Both conditions must hold
-        return builder->CreateAnd(types_match, data_match, "values_equal");
+    // A literal pattern matches a value equal to it. The runtime equal?
+    // routine compares numbers, characters, booleans and symbols by eqv?
+    // (exact and inexact stay distinct, flonums compare by representation,
+    // heap numbers by value), and strings and quoted compound data by
+    // structure. Returns an i1.
+Value* EshkolLLVMCodeGen::matchCompareValues(Value* val1, Value* val2) {
+        Function* func = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry(&func->getEntryBlock(), func->getEntryBlock().begin());
+        Value* arg1_ptr = entry.CreateAlloca(tagged_value_type, nullptr, "match_subject");
+        Value* arg2_ptr = entry.CreateAlloca(tagged_value_type, nullptr, "match_literal");
+        builder->CreateStore(val1, arg1_ptr);
+        builder->CreateStore(val2, arg2_ptr);
+        return builder->CreateCall(eshkol_deep_equal_func, {arg1_ptr, arg2_ptr}, "values_equal");
     }
 
-    // Helper: Check if a value is a pair (cons cell). HEAP_PTR alone also
-    // covers strings, vectors, records, ...; the object header's subtype is
-    // what makes it a pair, as for `pair?`. The header is read only for a
-    // non-null HEAP_PTR.
-    Value* matchIsPair(Value* val) {
+Value* EshkolLLVMCodeGen::matchIsPair(Value* val) {
         Value* is_heap = builder->CreateICmpEQ(getBaseType(getTaggedValueType(val)),
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_nonnull = builder->CreateICmpNE(unpackInt64FromTaggedValue(val),
@@ -24673,23 +24345,20 @@ private:
         return result;
     }
 
-    // Helper: Check if a value is null (empty list)
-    Value* matchIsNull(Value* val) {
+Value* EshkolLLVMCodeGen::matchIsNull(Value* val) {
         Value* type = getTaggedValueType(val);
         return builder->CreateICmpEQ(type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_NULL), "is_null");
     }
 
-    // Helper: Get car of a pair (assumes val is already known to be a pair)
-    Value* matchGetCar(Value* val) {
+Value* EshkolLLVMCodeGen::matchGetCar(Value* val) {
         Value* ptr = unpackPtrFromTaggedValue(val);
         Value* car_ptr = builder->CreatePointerCast(ptr,
             ptr_type);
         return builder->CreateLoad(tagged_value_type, car_ptr, "car_val");
     }
 
-    // Helper: Get cdr of a pair (assumes val is already known to be a pair)
-    Value* matchGetCdr(Value* val) {
+Value* EshkolLLVMCodeGen::matchGetCdr(Value* val) {
         Value* ptr = unpackPtrFromTaggedValue(val);
         Value* cdr_ptr = builder->CreateGEP(builder->getInt8Ty(), ptr,
             ConstantInt::get(int64_type, sizeof(eshkol_tagged_value_t)), "cdr_addr");
@@ -24698,16 +24367,94 @@ private:
         return builder->CreateLoad(tagged_value_type, typed_cdr_ptr, "cdr_val");
     }
 
+    // Pattern expressions see the enclosing environment. Bindings introduced
+    // by the pattern enter scope together for the guard and clause body.
+    struct PatternScope {
+        std::unordered_set<std::string> names;
+        std::vector<const eshkol_ast_t*> expressions;
+
+        void collect(const eshkol_pattern_t* root) {
+            if (!root) return;
+            std::vector<const eshkol_pattern_t*> work{root};
+            while (!work.empty()) {
+                const eshkol_pattern_t* p = work.back();
+                work.pop_back();
+                if (!p) continue;
+                switch (p->type) {
+                    case PATTERN_LITERAL:
+                        expressions.push_back(p->literal.value);
+                        break;
+                    case PATTERN_VARIABLE:
+                        names.insert(p->variable.name);
+                        break;
+                    case PATTERN_PREDICATE:
+                        expressions.push_back(p->predicate.predicate);
+                        if (p->predicate.binding_name) names.insert(p->predicate.binding_name);
+                        break;
+                    case PATTERN_CONS:
+                        if (p->cons.cdr_pattern) work.push_back(p->cons.cdr_pattern);
+                        if (p->cons.car_pattern) work.push_back(p->cons.car_pattern);
+                        break;
+                    case PATTERN_LIST:
+                    case PATTERN_VECTOR:
+                        for (uint64_t i = p->list.num_patterns; i-- > 0;)
+                            if (p->list.patterns[i]) work.push_back(p->list.patterns[i]);
+                        break;
+                    case PATTERN_OR:
+                        for (uint64_t i = p->or_pat.num_patterns; i-- > 0;)
+                            if (p->or_pat.patterns[i]) work.push_back(p->or_pat.patterns[i]);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    };
+
+    template<class Scan>
+    static bool matchUsesOuterName(const eshkol_operations_t* op, const std::string& name, Scan scan) {
+        if (scan(op->match_op.expr)) return true;
+        for (uint64_t i = 0; i < op->match_op.num_clauses; ++i) {
+            const auto& clause = op->match_op.clauses[i];
+            PatternScope scope;
+            scope.collect(clause.pattern);
+            for (auto* expr : scope.expressions)
+                if (scan(expr)) return true;
+            if (!scope.names.count(name) && (scan(clause.guard) || scan(clause.body))) return true;
+        }
+        return false;
+    }
+
     // Recursive pattern matching - returns i1 indicating if pattern matches
     // If match succeeds, binds pattern variables in symbol_table
     // fail_block: where to branch on match failure
     // continue_block: where to branch on match success (after bindings)
-    Value* compilePatternMatch(const eshkol_pattern_t* pattern, Value* val,
+Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, Value* val,
                                BasicBlock* fail_block,
                                std::vector<std::pair<std::string, Value*>>& bindings) {
         if (!pattern) {
             return ConstantInt::getTrue(*context);
         }
+        if (codegen_depth_exceeded_) {
+            return ConstantInt::getFalse(*context);
+        }
+        const size_t pattern_budget = eshkol_reader_max_pass_depth();
+        if ((pattern_budget != 0 && codegen_ast_depth_ >= pattern_budget) ||
+            !eshkol_stack_headroom_ok()) {
+            codegen_depth_exceeded_ = true;
+            char message[320];
+            eshkol_reader_depth_message("compiling a match pattern",
+                                        pattern_budget != 0 ? pattern_budget : codegen_ast_depth_,
+                                        message, sizeof(message));
+            eshkol_error("match pattern nesting too deep: %s", message);
+            markFatalCodegenError();
+            return ConstantInt::getFalse(*context);
+        }
+        struct ScopedPatternDepth {
+            size_t& depth;
+            explicit ScopedPatternDepth(size_t& d) : depth(d) { ++depth; }
+            ~ScopedPatternDepth() { --depth; }
+        } pattern_depth_guard(codegen_ast_depth_);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -24725,7 +24472,6 @@ private:
             }
 
             case PATTERN_LITERAL: {
-                // Literal matches if values are eqv?
                 if (!pattern->literal.value) {
                     return ConstantInt::getFalse(*context);
                 }
@@ -24821,6 +24567,26 @@ private:
                 return ConstantInt::getTrue(*context);
             }
 
+            case PATTERN_VECTOR: {
+                val = tagged_->resolveDenseTensorNode(val);
+                Value* vector = isHeapSubtype(val, HEAP_SUBTYPE_VECTOR);
+                Value* tensor = isHeapSubtype(val, HEAP_SUBTYPE_TENSOR);
+                BasicBlock* shape = BasicBlock::Create(*context, "vector_shape", current_func);
+                builder->CreateCondBr(builder->CreateOr(vector, tensor), shape, fail_block);
+                builder->SetInsertPoint(shape);
+                Value* length = unpackInt64FromTaggedValue(coll_->vectorLengthValue(val, true));
+                const uint64_t count = pattern->list.num_patterns;
+                Value* matched = builder->CreateICmpEQ(length, builder->getInt64(count));
+                for (uint64_t i = 0; i < count; ++i) {
+                    BasicBlock* element = BasicBlock::Create(*context, "vector_element", current_func);
+                    builder->CreateCondBr(matched, element, fail_block);
+                    builder->SetInsertPoint(element);
+                    Value* item = coll_->vectorRefValue(val, builder->getInt64(i));
+                    matched = compilePatternMatch(pattern->list.patterns[i], item, fail_block, bindings);
+                }
+                return matched;
+            }
+
             case PATTERN_PREDICATE: {
                 // Predicate pattern: (? pred) matches if (pred val) is true.
                 //
@@ -24911,41 +24677,32 @@ private:
                 }
 
                 BasicBlock* match_success = BasicBlock::Create(*context, "or_success", current_func);
-                BasicBlock* try_next = builder->GetInsertBlock();
-
-                for (uint64_t i = 0; i < pattern->or_pat.num_patterns; i++) {
-                    BasicBlock* try_pattern = BasicBlock::Create(*context, "or_try", current_func);
-                    BasicBlock* next_pattern = BasicBlock::Create(*context, "or_next", current_func);
-
-                    builder->SetInsertPoint(try_pattern);
-
-                    // Try this pattern (with temporary bindings that we may discard)
-                    std::vector<std::pair<std::string, Value*>> temp_bindings;
-                    Value* match_result = compilePatternMatch(pattern->or_pat.patterns[i],
-                                                               val, next_pattern, temp_bindings);
-
-                    // If matched, copy bindings and go to success
-                    BasicBlock* copy_bindings = BasicBlock::Create(*context, "or_bind", current_func);
-                    builder->CreateCondBr(match_result, copy_bindings, next_pattern);
-
-                    builder->SetInsertPoint(copy_bindings);
-                    for (auto& bind : temp_bindings) {
-                        bindings.push_back(bind);
-                    }
-                    builder->CreateBr(match_success);
-
-                    // Link previous block to this try
-                    builder->SetInsertPoint(try_next);
-                    builder->CreateBr(try_pattern);
-
-                    try_next = next_pattern;
+                std::map<std::string, std::map<BasicBlock*, Value*>> alternatives;
+                std::vector<BasicBlock*> exits;
+                for (uint64_t i = 0; i < pattern->or_pat.num_patterns; ++i) {
+                    BasicBlock* next = BasicBlock::Create(*context, "or_next", current_func);
+                    auto local = bindings;
+                    Value* matched = compilePatternMatch(pattern->or_pat.patterns[i], val, next, local);
+                    BasicBlock* exit = builder->GetInsertBlock();
+                    for (size_t j = bindings.size(); j < local.size(); ++j)
+                        alternatives[local[j].first][exit] = local[j].second;
+                    exits.push_back(exit);
+                    builder->CreateCondBr(matched, match_success, next);
+                    builder->SetInsertPoint(next);
                 }
-
-                // Last next_pattern goes to fail
-                builder->SetInsertPoint(try_next);
                 builder->CreateBr(fail_block);
-
                 builder->SetInsertPoint(match_success);
+                for (const auto& [name, incoming] : alternatives) {
+                    Value* fallback = Constant::getNullValue(tagged_value_type);
+                    for (const auto& prior : bindings)
+                        if (prior.first == name) fallback = prior.second;
+                    auto* phi = builder->CreatePHI(tagged_value_type, exits.size(), name);
+                    for (BasicBlock* exit : exits) {
+                        auto it = incoming.find(exit);
+                        phi->addIncoming(it == incoming.end() ? fallback : it->second, exit);
+                    }
+                    bindings.emplace_back(name, phi);
+                }
                 return ConstantInt::getTrue(*context);
             }
 
@@ -24955,8 +24712,7 @@ private:
         }
     }
 
-    // (match expr (pattern body) ...) - Pattern matching expression
-    Value* codegenMatch(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMatch(const eshkol_operations_t* op) {
         if (op->match_op.num_clauses == 0) {
             eshkol_warn("match requires at least one clause");
             return packNullToTaggedValue();
@@ -24986,7 +24742,6 @@ private:
 
             BasicBlock* try_clause = BasicBlock::Create(*context, "match_clause", current_func);
             BasicBlock* next_clause = BasicBlock::Create(*context, "match_next", current_func);
-            BasicBlock* clause_body = BasicBlock::Create(*context, "match_body", current_func);
 
             builder->CreateBr(try_clause);
             builder->SetInsertPoint(try_clause);
@@ -25001,19 +24756,23 @@ private:
             Value* pattern_match = compilePatternMatch(clause->pattern, match_value,
                                                         next_clause, bindings);
 
-            // After pattern matching, check result
-
-            // Add bindings to symbol table
-            for (auto& bind : bindings) {
-                symbol_table[bind.first] = bind.second;
+            BasicBlock* matched = BasicBlock::Create(*context, "match_bound", current_func);
+            builder->CreateCondBr(pattern_match, matched, next_clause);
+            builder->SetInsertPoint(matched);
+            for (const auto& [name, value] : bindings) {
+                Value* cell;
+                if (astVarCapturedByNestedClosure(clause->body, name) ||
+                    astVarCapturedByNestedClosure(clause->guard, name)) {
+                    cell = builder->CreateCall(getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)}, name);
+                } else {
+                    IRBuilder<> entry(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                    cell = entry.CreateAlloca(tagged_value_type, nullptr, name);
+                }
+                builder->CreateStore(value, cell);
+                symbol_table[name] = cell;
             }
 
-            // Check if we need to evaluate a guard
             if (clause->guard) {
-                BasicBlock* check_guard = BasicBlock::Create(*context, "match_guard", current_func);
-                builder->CreateCondBr(pattern_match, check_guard, next_clause);
-
-                builder->SetInsertPoint(check_guard);
                 TypedValue guard_tv = codegenTypedAST(clause->guard);
                 // NORETURN SAFETY: If the guard expression raised
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
@@ -25021,32 +24780,20 @@ private:
                     builder->SetInsertPoint(next_clause);
                     continue;
                 }
-                if (!guard_tv.llvm_value) {
-                    builder->CreateBr(next_clause);
-                } else {
-                    Value* guard_val = typedValueToTaggedValue(guard_tv);
-                    Value* guard_true = flow_->isTruthy(guard_val);
-                    builder->CreateCondBr(guard_true, clause_body, next_clause);
-                }
-            } else {
-                // No guard, just check pattern result
-                builder->CreateCondBr(pattern_match, clause_body, next_clause);
+                BasicBlock* body = BasicBlock::Create(*context, "match_body", current_func);
+                Value* passed = guard_tv.llvm_value
+                    ? flow_->isTruthy(typedValueToTaggedValue(guard_tv)) : builder->getFalse();
+                builder->CreateCondBr(passed, body, next_clause);
+                builder->SetInsertPoint(body);
             }
 
-            // Clause body - pattern matched (and guard passed if any)
-            builder->SetInsertPoint(clause_body);
-
             TypedValue body_tv = codegenTypedAST(clause->body);
-            Value* body_result = body_tv.llvm_value ? typedValueToTaggedValue(body_tv)
-                                                     : packNullToTaggedValue();
-
-            BasicBlock* after_body = builder->GetInsertBlock();
-            bool body_terminated = eshkol::llvm_compat::terminatorOrNull(after_body) != nullptr;
-
-            phi_inputs.push_back({body_result, after_body});
-
-            if (!body_terminated) {
+            if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+                Value* body_result = body_tv.llvm_value ? typedValueToTaggedValue(body_tv)
+                                                        : packNullToTaggedValue();
+                BasicBlock* after_body = builder->GetInsertBlock();
                 builder->CreateBr(done_block);
+                phi_inputs.push_back({body_result, after_body});
             }
 
             // Restore symbol table
@@ -25122,11 +24869,7 @@ private:
         return result;
     }
 
-    // ===== END PATTERN MATCHING OPERATIONS =====
-
-    // Helper function to compare two tagged values using eqv? semantics
-    // Returns an i1 (boolean) value
-    Value* callBuiltinEqv(Value* arg1, Value* arg2) {
+Value* EshkolLLVMCodeGen::callBuiltinEqv(Value* arg1, Value* arg2) {
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
@@ -25188,22 +24931,11 @@ private:
         return result;
     }
 
-    // MIGRATED: Case expression - delegates to ControlFlowCodegen
-    Value* codegenCase(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenCase(const eshkol_operations_t* op) {
         return flow_->codegenCase(op);
     }
 
-    // Do loop: (do ((var init step) ...) ((test) result ...) body ...)
-    // Parser structure: call_op.func = CONS(bindings-list, test-clause)
-    //                   call_op.variables = body expressions
-    // Where bindings-list is CALL_OP with CONS bindings (var, CONS(init, step))
-    // And test-clause is CONS(test, results-list)
-    // ESH-0074c: does any closure created ANYWHERE in this `do` form capture
-    // `var`? `main_cons` carries the bindings (inits and steps), the test and the
-    // result expressions; `op->call_op.variables[]` carries the body commands.
-    // Every one of them can build a closure, and any of them doing so forces the
-    // loop variable onto a shared cell — see codegenDo's storage-class comment.
-    bool doFormCapturesVar(const eshkol_operations_t* op,
+bool EshkolLLVMCodeGen::doFormCapturesVar(const eshkol_operations_t* op,
                            const eshkol_ast_t* main_cons,
                            const std::string& var) {
         if (astVarCapturedByNestedClosure(main_cons, var)) return true;
@@ -25213,13 +24945,7 @@ private:
         return false;
     }
 
-    // Assignment conversion is a storage decision, not only a capture
-    // decision. A do variable that is set! from its own body must use one
-    // durable cell when an escaping continuation can re-enter the loop; a
-    // captured variable must use that same cell even without call/cc. Keeping
-    // this predicate beside doFormCapturesVar prevents the step/header/body
-    // paths from ever selecting different locations.
-    bool doFormSetsVar(const eshkol_operations_t* op,
+bool EshkolLLVMCodeGen::doFormSetsVar(const eshkol_operations_t* op,
                        const eshkol_ast_t* main_cons,
                        const std::string& var) {
         if (astSetsVar(main_cons, var)) return true;
@@ -25228,7 +24954,7 @@ private:
         return false;
     }
 
-    Value* codegenDo(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenDo(const eshkol_operations_t* op) {
         if (!op->call_op.func || op->call_op.func->type != ESHKOL_CONS) {
             eshkol_warn("do requires properly formed structure");
             return nullptr;
@@ -25488,28 +25214,19 @@ private:
         return result;
     }
 
-    // MIGRATED: Logical NOT - delegates to ControlFlowCodegen
-    Value* codegenNot(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenNot(const eshkol_operations_t* op) {
         return flow_->codegenNot(op);
     }
 
-    // MIGRATED: When conditional - delegates to ControlFlowCodegen
-    Value* codegenWhen(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenWhen(const eshkol_operations_t* op) {
         return flow_->codegenWhen(op);
     }
 
-    // MIGRATED: Unless conditional - delegates to ControlFlowCodegen
-    Value* codegenUnless(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenUnless(const eshkol_operations_t* op) {
         return flow_->codegenUnless(op);
     }
 
-    // ============================================================
-    // Bitwise Operations (Phase 8)
-    // ============================================================
-
-    // bitwise-and: (bitwise-and a b) -> integer AND
-    // Helper: emit bignum bitwise dispatch for binary ops
-    Value* emitBitwiseBignumDispatch(Value* a, Value* b, int op_code, const char* int_op_name) {
+Value* EshkolLLVMCodeGen::emitBitwiseBignumDispatch(Value* a, Value* b, int op_code, const char* int_op_name) {
         Value* is_bn_a = isHeapSubtype(a, HEAP_SUBTYPE_BIGNUM);
         Value* is_bn_b = isHeapSubtype(b, HEAP_SUBTYPE_BIGNUM);
         Value* either_bn = builder->CreateOr(is_bn_a, is_bn_b);
@@ -25557,7 +25274,7 @@ private:
         return phi;
     }
 
-    Value* codegenBitwiseAnd(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBitwiseAnd(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("bitwise-and requires exactly 2 arguments");
             return nullptr;
@@ -25570,8 +25287,7 @@ private:
         return emitBitwiseBignumDispatch(a, b, 0, "bitand");
     }
 
-    // bitwise-or: (bitwise-or a b) -> integer OR
-    Value* codegenBitwiseOr(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBitwiseOr(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("bitwise-or requires exactly 2 arguments");
             return nullptr;
@@ -25584,8 +25300,7 @@ private:
         return emitBitwiseBignumDispatch(a, b, 1, "bitor");
     }
 
-    // bitwise-xor: (bitwise-xor a b) -> integer XOR
-    Value* codegenBitwiseXor(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBitwiseXor(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("bitwise-xor requires exactly 2 arguments");
             return nullptr;
@@ -25598,8 +25313,7 @@ private:
         return emitBitwiseBignumDispatch(a, b, 2, "bitxor");
     }
 
-    // bitwise-not: (bitwise-not a) -> integer NOT (one's complement)
-    Value* codegenBitwiseNot(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBitwiseNot(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("bitwise-not requires exactly 1 argument");
             return nullptr;
@@ -25647,9 +25361,7 @@ private:
         return phi;
     }
 
-    // arithmetic-shift: (arithmetic-shift n count) -> shift n by count bits
-    // Positive count = left shift, negative count = right shift (arithmetic)
-    Value* codegenArithmeticShift(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenArithmeticShift(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("arithmetic-shift requires exactly 2 arguments");
             return nullptr;
@@ -25662,21 +25374,7 @@ private:
         return emitArithmeticShiftTagged(n, count);
     }
 
-    /**
-     * @brief `(bit-shift-left n k)` / `(bit-shift-right n k)`.
-     *
-     * Documented in docs/tutorials/20_BITWISE_AND_SYSTEM.md:
-     *   (bit-shift-left 1 8)    => 256
-     *   (bit-shift-right 256 4) => 16
-     *
-     * These are the directional spellings of `arithmetic-shift` and share its
-     * exact semantics — including the limb-aware bignum path and the
-     * sign-propagating (arithmetic, to -inf) right shift — so
-     *   (bit-shift-left  n k) === (arithmetic-shift n k)
-     *   (bit-shift-right n k) === (arithmetic-shift n (- k))
-     * A negative count shifts the other way rather than being undefined.
-     */
-    Value* codegenBitShift(const eshkol_operations_t* op, bool shift_right) {
+Value* EshkolLLVMCodeGen::codegenBitShift(const eshkol_operations_t* op, bool shift_right) {
         const char* name = shift_right ? "bit-shift-right" : "bit-shift-left";
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("%s requires exactly 2 arguments", name);
@@ -25695,27 +25393,7 @@ private:
         return emitArithmeticShiftTagged(n, k);
     }
 
-    /**
-     * @brief `(popcount n)` / `(bit-count n)` — population count.
-     *
-     * Documented in docs/tutorials/20_BITWISE_AND_SYSTEM.md as
-     * `(popcount 255) => 8` and in docs/API_REFERENCE.md as `(bit-count n)`;
-     * the two names are exact synonyms.
-     *
-     * Contract, defined for every exact integer (fixnum and bignum alike):
-     *   n >= 0 : the number of 1 bits in n's binary representation.
-     *   n <  0 : Eshkol models a negative integer as an *infinite*
-     *            two's-complement bit string (see
-     *            docs/breakdown/EXACT_ARITHMETIC.md), which has infinitely
-     *            many 1 bits, so the width-independent R6RS
-     *            `bitwise-bit-count` convention is used:
-     *              (popcount n) = (bitwise-not (popcount (bitwise-not n)))
-     *                           = -1 - (popcount (bitwise-not n))
-     *            e.g. (popcount -1) => -1, (popcount -256) => -9.
-     * Because the rule never mentions a word width, the int64 fast path and
-     * the bignum path agree on every value they both represent.
-     */
-    Value* codegenPopcount(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenPopcount(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("popcount requires exactly 1 argument");
             return nullptr;
@@ -25789,19 +25467,7 @@ private:
         return phi;
     }
 
-    /**
-     * @brief Shared body of `arithmetic-shift` / `bit-shift-left` /
-     *        `bit-shift-right`.
-     *
-     * Dispatches to the exact bignum runtime (`eshkol_bignum_bitwise_tagged`
-     * op=4) when the operand is already a bignum, *or* when a left shift of an
-     * int64 operand would overflow int64.  Without the overflow test the
-     * documented `(arithmetic-shift 1 64) => 18446744073709551616`
-     * (docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md) silently wrapped to
-     * -2^63, and `(bit-shift-left 1 100)` would do the same.  Right shifts of
-     * an int64 can never overflow, so they stay on the fast path.
-     */
-    Value* emitArithmeticShiftTagged(Value* n, Value* count) {
+Value* EshkolLLVMCodeGen::emitArithmeticShiftTagged(Value* n, Value* count) {
         Value* is_bn = isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM);
 
         // Overflow probe for a left shift of an int64 operand:
@@ -25873,9 +25539,7 @@ private:
         return phi;
     }
 
-    // Type predicates - MIGRATED to consolidated type system
-    // For immediate types: checks type directly
-    Value* codegenTypePredicate(const eshkol_operations_t* op, uint8_t expected_type) {
+Value* EshkolLLVMCodeGen::codegenTypePredicate(const eshkol_operations_t* op, uint8_t expected_type) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
@@ -25893,8 +25557,7 @@ private:
         return packBoolToTaggedValue(matches);
     }
 
-    // Consolidated type predicates - check HEAP_PTR/CALLABLE and subtype in header
-    Value* codegenHeapSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
+Value* EshkolLLVMCodeGen::codegenHeapSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("Type predicate requires exactly 1 argument");
             return nullptr;
@@ -25908,9 +25571,7 @@ private:
         return packBoolToTaggedValue(matches);
     }
 
-    // vector? predicate - returns #t for both Scheme vectors (HEAP_SUBTYPE_VECTOR)
-    // and tensor literals created with #(...) syntax (HEAP_SUBTYPE_TENSOR)
-    Value* codegenVectorPredicate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenVectorPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("vector? requires exactly 1 argument");
             return nullptr;
@@ -25932,22 +25593,12 @@ private:
         return packBoolToTaggedValue(matches);
     }
 
-    // ============================================================================
-    // STRING FUNCTIONS
-    // ============================================================================
-
-    // Helper: Extract string pointer from tagged value
-    Value* extractStringPtr(Value* tagged_val) {
+Value* EshkolLLVMCodeGen::extractStringPtr(Value* tagged_val) {
         Value* ptr_int = unpackInt64FromTaggedValue(tagged_val);
         return builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
     }
 
-    // symbol->string: Convert a symbol to its string representation
-    // Symbols and strings share the same data layout, just differ in header subtype
-    // Layout: header at offset -8, string data starts at offset 0 (null-terminated)
-    // Header has: subtype(i8), flags(i8), ref_count(i16), size(i32)
-    // Size field at offset -4 contains string length + 1 (for null terminator)
-    Value* codegenSymbolToString(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSymbolToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("symbol->string requires exactly 1 argument");
             return nullptr;
@@ -25984,22 +25635,7 @@ private:
         return tagged_->packHeapPtr(new_str);
     }
 
-    // string->symbol: Convert a string to a symbol.
-    //
-    // Previously this allocated a fresh symbol per call, which meant two
-    // (string->symbol "foo") calls returned distinct objects and broke eq?
-    // — the same identity bug as R7RS-1 but on the runtime-constructed
-    // side. Fix: route through eshkol_intern_symbol_lookup (the same
-    // runtime helper that codegenQuote uses for literal symbols), so
-    //   (eq? (string->symbol "foo") (string->symbol "foo")) ⇒ #t
-    //   (eq? (string->symbol "foo") 'foo)                   ⇒ #t
-    // which is what R7RS §6.5 mandates.
-    //
-    // The input must be a C-terminated string; Eshkol strings carry their
-    // char data directly at the tagged-value's ptr, so we pass it straight
-    // to the helper — the helper computes strlen and does its own copy
-    // into a properly-headered symbol allocation.
-    Value* codegenStringToSymbol(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenStringToSymbol(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("string->symbol requires exactly 1 argument");
             return nullptr;
@@ -26024,17 +25660,7 @@ private:
         return tagged_->packHeapPtr(sym_ptr);
     }
 
-    // gensym: generate a fresh, uninterned symbol ("G<counter>", process-wide
-    // monotonically increasing counter). Was implemented in
-    // lib/core/introspection.cpp (eshkol_gensym / eshkol_gensym_prefix) but
-    // never wired into any dispatch table, so `(gensym)` failed with
-    // "Unknown function: gensym" on this backend. Wired the same way as the
-    // string->symbol sibling above: call the runtime helper for the raw
-    // symbol pointer and pack it as a HEAP_PTR tagged value (the header
-    // written by arena_allocate_symbol_with_header, inside
-    // eshkol_gensym_prefix, is what makes ESHKOL_GET_HEADER report
-    // HEAP_SUBTYPE_SYMBOL for it).
-    Value* codegenGensym(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenGensym(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 0) {
             eshkol_arity_error_current("gensym requires exactly 0 arguments");
             return nullptr;
@@ -26051,14 +25677,7 @@ private:
         return tagged_->packHeapPtr(sym_ptr);
     }
 
-    // ptr->string: Convert a raw C char* pointer (from FFI extern) to an Eshkol string.
-    // The FFI extern returns a ptr (i64 holding a char* address). This function:
-    //   1. Calls strlen() on the raw pointer to get length
-    //   2. Allocates a proper Eshkol string with object header
-    //   3. Copies the C string data
-    //   4. Returns a tagged HEAP_PTR value
-    // This enables: (display (ptr->string (system-capture "echo hello")))
-    Value* codegenPtrToString(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenPtrToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("ptr->string requires exactly 1 argument");
             return nullptr;
@@ -26090,9 +25709,11 @@ private:
 
         // Valid path: copy C string
         builder->SetInsertPoint(valid_bb);
-        FunctionType* strlen_ty = FunctionType::get(int64_type, {builder->getPtrTy()}, false);
+        FunctionType* strlen_ty = FunctionType::get(size_type, {builder->getPtrTy()}, false);
         FunctionCallee strlen_fn = module->getOrInsertFunction("strlen", strlen_ty);
-        Value* length = builder->CreateCall(strlen_fn, {raw_ptr});
+        Value* length_size = builder->CreateCall(strlen_fn, {raw_ptr});
+        Value* length = length_size->getType() == int64_type
+            ? length_size : builder->CreateZExt(length_size, int64_type);
 
         Value* arena_ptr = getArenaPtr();
         Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
@@ -26111,11 +25732,7 @@ private:
         return tagged_->packHeapPtr(result);
     }
 
-    // ptr->string-n: Copy exactly N bytes from a raw C pointer into an Eshkol
-    // string. Unlike ptr->string, this does not call strlen(), so embedded NUL
-    // bytes are preserved. This is the required boundary for binary-safe FFI
-    // APIs such as HTTP responses that return a pointer and an explicit length.
-    Value* codegenPtrToStringN(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenPtrToStringN(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("ptr->string-n requires exactly 2 arguments");
             return nullptr;
@@ -26211,12 +25828,7 @@ private:
         return tagged_->packHeapPtr(result);
     }
 
-    // ============================================================================
-    // CHARACTER FUNCTIONS
-    // ============================================================================
-
-    // Helper: Pack a character (as integer codepoint) into tagged value
-    Value* packCharToTaggedValue(Value* char_val) {
+Value* EshkolLLVMCodeGen::packCharToTaggedValue(Value* char_val) {
         // Save current insertion point
         IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
 
@@ -26251,16 +25863,7 @@ private:
         return builder->CreateLoad(tagged_value_type, tagged_val_ptr);
     }
 
-    // ============================================================================
-    // SCHEME VECTOR FUNCTIONS (heterogeneous arrays)
-    // ============================================================================
-
-    // Vector structure: [i64 length][tagged_value_t elements...]
-    // Each element size comes from LLVM's DataLayout for proper alignment
-
-
-    // vector: Create a vector from given elements
-    Value* codegenVector(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenVector(const eshkol_operations_t* op) {
         uint64_t num_elems = op->call_op.num_vars;
 
         // Consolidated pointer system: Use header-based allocation
@@ -26297,8 +25900,7 @@ private:
         return packPtrToTaggedValue(vec_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
-    // Numeric predicates
-    Value* codegenNumericPredicate(const eshkol_operations_t* op, const std::string& pred) {
+Value* EshkolLLVMCodeGen::codegenNumericPredicate(const eshkol_operations_t* op, const std::string& pred) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", pred.c_str());
             return nullptr;
@@ -26550,8 +26152,7 @@ private:
         return packBoolToTaggedValue(result);
     }
 
-    // eq? - Identity comparison (pointer equality for lists, value equality for primitives)
-    Value* codegenEq(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenEq(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("eq? requires exactly 2 arguments");
             return nullptr;
@@ -26567,9 +26168,7 @@ private:
         return emitEqTagged(arg1, arg2);
     }
 
-    // eq? logic operating on two already-tagged values (shared by codegenEq and
-    // the first-class / apply'd eq? wrapper). Returns a packed boolean.
-    Value* emitEqTagged(Value* arg1, Value* arg2) {
+Value* EshkolLLVMCodeGen::emitEqTagged(Value* arg1, Value* arg2) {
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
@@ -26617,8 +26216,7 @@ private:
         return packBoolToTaggedValue(result);
     }
 
-    // eqv? - Value equality for numbers (including bignums), identity for everything else
-    Value* codegenEqv(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenEqv(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("eqv? requires exactly 2 arguments");
             return nullptr;
@@ -26633,9 +26231,7 @@ private:
         return emitEqvTagged(arg1, arg2);
     }
 
-    // eqv? logic operating on two already-tagged values (shared by codegenEqv and
-    // the first-class / apply'd eqv? wrapper). Returns a packed boolean.
-    Value* emitEqvTagged(Value* arg1, Value* arg2) {
+Value* EshkolLLVMCodeGen::emitEqvTagged(Value* arg1, Value* arg2) {
         // Get types
         Value* type1 = getTaggedValueType(arg1);
         Value* type2 = getTaggedValueType(arg2);
@@ -26759,8 +26355,7 @@ private:
         return packBoolToTaggedValue(outer_result);
     }
 
-    // equal? - Deep structural equality using runtime helper
-    Value* codegenEqual(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenEqual(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("equal? requires exactly 2 arguments");
             return nullptr;
@@ -26775,9 +26370,7 @@ private:
         return emitEqualTagged(arg1, arg2);
     }
 
-    // equal? logic operating on two already-tagged values (shared by codegenEqual
-    // and the first-class / apply'd equal? wrapper). Returns a packed boolean.
-    Value* emitEqualTagged(Value* arg1, Value* arg2) {
+Value* EshkolLLVMCodeGen::emitEqualTagged(Value* arg1, Value* arg2) {
         // Use the runtime deep equality function for all comparisons
         // This handles all edge cases: nested lists, empty lists (NULL vs CONS_PTR with null), etc.
         Value* arg1_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "equal_arg1");
@@ -26789,9 +26382,7 @@ private:
         return packBoolToTaggedValue(result);
     }
 
-    // (type-name v) on an already-tagged value: the runtime classifies it
-    // through the shared type-name vocabulary and returns an interned symbol.
-    Value* emitTypeNameTagged(Value* tagged) {
+Value* EshkolLLVMCodeGen::emitTypeNameTagged(Value* tagged) {
         Function* f = module->getFunction("eshkol_type_name_into");
         if (!f) {
             FunctionType* ft = FunctionType::get(builder->getVoidTy(),
@@ -26808,10 +26399,7 @@ private:
         return builder->CreateLoad(tagged_value_type, out, "type_name");
     }
 
-    // NOTE: codegenNewline has been migrated to StringIOCodegen (strio_->newline)
-
-    // (error-object? obj) — #t iff obj is an error object created by `error`.
-    Value* codegenErrorObjectPredicate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenErrorObjectPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("error-object? requires exactly 1 argument");
             return nullptr;
@@ -26835,9 +26423,7 @@ private:
         return packBoolToTaggedValue(b);
     }
 
-    // (error-object-message obj) / (error-object-irritants obj) — extract the
-    // stored message string or irritant list via an out-param runtime call.
-    Value* codegenErrorObjectAccessor(const eshkol_operations_t* op,
+Value* EshkolLLVMCodeGen::codegenErrorObjectAccessor(const eshkol_operations_t* op,
                                       const char* runtime_fn, const char* scheme_name) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", scheme_name);
@@ -26863,7 +26449,7 @@ private:
         return builder->CreateLoad(tagged_value_type, out, "errobj_result");
     }
 
-    Value* codegenError(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenError(const eshkol_operations_t* op) {
         // Use exception system: create exception and raise it
         // This allows (error "msg" ...) to be caught by guard
 
@@ -26957,22 +26543,14 @@ private:
         builder->CreateCall(raise_func, {exception});
         builder->CreateUnreachable();
 
-        // Create a new block for any subsequent code (which would be dead code)
-        // Don't terminate it yet - subsequent code might add instructions
-        // It will be terminated later when we detect it's unreachable
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* dead_block = BasicBlock::Create(*context, "error_dead", current_func);
-        builder->SetInsertPoint(dead_block);
+        // The caller keeps emitting the rest of the enclosing form; that
+        // unreachable IR continues in its own block.
+        eshkol::continueAfterNoReturn(*builder, "error_dead");
 
         return packNullToTaggedValue();
     }
 
-    // =========================================================================
-    // SYSTEM & ENVIRONMENT / FILE SYSTEM FUNCTIONS
-    // Moved to system_codegen.cpp - delegated via system_-> in dispatch
-    // =========================================================================
-
-    Value* codegenSequence(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSequence(const eshkol_operations_t* op) {
         Value* last_value = nullptr;
         for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
             if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
@@ -26990,7 +26568,7 @@ private:
         return last_value;
     }
 
-    Value* codegenExternVar(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenExternVar(const eshkol_operations_t* op) {
         const char* var_name = op->extern_var_op.name;
         const char* real_name = op->extern_var_op.real_name ? op->extern_var_op.real_name : var_name;
 
@@ -27043,9 +26621,105 @@ private:
                      var_name, real_name, op->extern_var_op.type);
 
         return externVar;
-    }                        
-    
-    Value* codegenExtern(const eshkol_operations_t* op) {
+    }
+
+    // ── The `ffi` capability at a program's own foreign declaration ──────
+    //
+    // `(extern … :real sym)` is the one construct that reaches outside the
+    // language, and on the native engines it reaches anything the process can
+    // resolve: the JIT searches the whole process and an ahead-of-time build
+    // links libc. So this is where the `ffi` capability has to hold, or it
+    // governs nothing a native program can call.
+    //
+    // A module shipped with the language is exempt. Those declarations are how
+    // core.net, core.tls, agent.sqlite and the rest reach the runtime entry
+    // points they are built on, and each of those entry points carries its own
+    // gate already; making them ask for `ffi` as well would mean a policy
+    // granting `network` could not open a socket.
+
+    // The entry points that are the policy itself. A program must not be able
+    // to reach them through a foreign declaration: a policy that the governed
+    // code can switch off is not a policy. core.capabilities reaches them the
+    // same way and is exempt, being part of the module tree.
+    static bool externNamesThePolicy(const char* real_name) {
+        if (!real_name) return false;
+        static const char* const kPolicyEntryPoints[] = {
+            "eshkol_capability_runtime_clear",
+            "eshkol_capability_runtime_host_reset",
+            "eshkol_capability_runtime_begin_install",
+            "eshkol_capability_runtime_end_install",
+            "eshkol_capability_runtime_allow",
+            "eshkol_capability_runtime_install",
+            "eshkol_capability_runtime_deny",
+            "eshkol_capability_require",
+            "eshkol_capability_enforce",
+        };
+        for (const char* entry : kPolicyEntryPoints) {
+            if (std::strcmp(real_name, entry) == 0) return true;
+        }
+        return false;
+    }
+
+    // Whether this declaration is the program's own rather than a module's.
+    // A file the runtime cannot place counts as the program's own, so an
+    // unplaceable source cannot buy an exemption.
+    static bool externIsProgramOwn() {
+        const char* host = eshkol_source_file_host_path(g_source_file_id_active);
+        return !(host && eshkol_path_is_stdlib_module(host));
+    }
+
+    // Bind the declared name to a wrapper that asks for `ffi` and then calls
+    // the symbol, instead of to the symbol itself, so every call site goes
+    // through the gate without the call path knowing anything about it.
+    // With no policy installed the wrapper costs one allow query that always
+    // permits; under a policy that withholds `ffi` the wrapper raises and the
+    // symbol is never entered.
+Function* EshkolLLVMCodeGen::externFfiGateWrapper(Function* target, const char* real_name) {
+        FunctionType* target_type = target->getFunctionType();
+        const std::string wrapper_name = std::string("__eshkol_ffi_gate.") + real_name;
+        if (Function* existing = module->getFunction(wrapper_name)) {
+            if (existing->getFunctionType() == target_type) return existing;
+        }
+
+        Function* wrapper = Function::Create(
+            target_type, Function::InternalLinkage, wrapper_name, module.get());
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrapper);
+        IRBuilder<> gate_builder(entry);
+
+        FunctionType* enforce_type = FunctionType::get(
+            void_type,
+            {PointerType::getUnqual(*context), PointerType::getUnqual(*context)},
+            false);
+        FunctionCallee enforce = module->getOrInsertFunction(
+            "eshkol_capability_enforce", enforce_type);
+        Value* capability = eshkol::llvm_compat::createGlobalString(
+            gate_builder, "ffi", "eshkol_ffi_capability");
+        Value* operation = eshkol::llvm_compat::createGlobalString(
+            gate_builder, real_name, "eshkol_ffi_operation");
+        gate_builder.CreateCall(enforce, {capability, operation});
+
+        std::vector<Value*> forwarded;
+        forwarded.reserve(wrapper->arg_size());
+        for (auto& argument : wrapper->args()) forwarded.push_back(&argument);
+        CallInst* call = gate_builder.CreateCall(target_type, target, forwarded);
+        if (target_type->isVarArg()) {
+            // A variadic callee cannot be forwarded by re-packing arguments;
+            // a guaranteed tail call hands the frame over unchanged. "thunk" is
+            // what the language reference asks of a function that forwards its
+            // arguments this way, and it is what tells the backends to keep the
+            // variadic registers intact across the call.
+            wrapper->addFnAttr("thunk");
+            call->setTailCallKind(CallInst::TCK_MustTail);
+        }
+        if (target_type->getReturnType()->isVoidTy()) {
+            gate_builder.CreateRetVoid();
+        } else {
+            gate_builder.CreateRet(call);
+        }
+        return wrapper;
+    }
+
+Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         const char* return_type_str = op->extern_op.return_type;
         const char* func_name = op->extern_op.name;
         const char* real_func_name = op->extern_op.real_name ? op->extern_op.real_name : func_name;
@@ -27054,6 +26728,22 @@ private:
         bool is_vaarg = false;
 
         eshkol_debug("Creating external function declaration: %s (real: %s)", func_name, real_func_name);
+
+        // Who wrote this declaration decides whether the `ffi` capability
+        // applies to it, and whether it may name the policy at all.
+        const bool extern_is_program_own = externIsProgramOwn();
+        if (extern_is_program_own && externNamesThePolicy(real_func_name)) {
+            eshkol_error_at(
+                g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                current_source_line, current_source_column,
+                g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                "extern '%s' names '%s', which is the capability policy itself. "
+                "A program cannot declare the policy's own entry points; install "
+                "and inspect a policy through core.capabilities.",
+                func_name, real_func_name);
+            markFatalCodegenError();
+            return nullptr;
+        }
 
         // FFI POINTER-ARG GUARD (ESH-0363): record the DECLARED parameter type
         // keywords before anything can return early. Both the "already
@@ -27081,7 +26771,9 @@ private:
         if (Function* existing_func = module->getFunction(real_func_name)) {
             // Function already exists - use the existing declaration
             applyExternFunctionAttributes(op->extern_op, existing_func);
-            function_table[func_name] = existing_func;
+            function_table[func_name] = extern_is_program_own
+                ? externFfiGateWrapper(existing_func, real_func_name)
+                : existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
             // ESH-0362: reuse binds the Eshkol name to a signature the
             // declaration did not ask for. That is intentional for benign
@@ -27122,6 +26814,11 @@ private:
         auto ft_it = function_table.find(func_name);
         if (ft_it != function_table.end() && ft_it->second) {
             applyExternFunctionAttributes(op->extern_op, ft_it->second);
+            if (extern_is_program_own &&
+                !ft_it->second->getName().starts_with("__eshkol_ffi_gate.")) {
+                function_table[func_name] =
+                    externFfiGateWrapper(ft_it->second, real_func_name);
+            }
             eshkol_info("External function '%s' already in function_table, skipping re-declaration", func_name);
             return nullptr;
         }
@@ -27207,8 +26904,12 @@ private:
         );
         applyExternFunctionAttributes(op->extern_op, extern_func);
 
-        // Add to function table using the given name so it can be called by that name
-        function_table[func_name] = extern_func;
+        // Add to function table using the given name so it can be called by
+        // that name. A program's own declaration is bound to the `ffi` gate
+        // wrapper rather than to the symbol, so every call site passes the gate.
+        function_table[func_name] = extern_is_program_own
+            ? externFfiGateWrapper(extern_func, real_func_name)
+            : extern_func;
 
         eshkol_info("Declared external function: %s (real: %s) with %llu parameters",
                    func_name, real_func_name, (unsigned long long)num_params);
@@ -27216,13 +26917,8 @@ private:
         // extern declarations don't return a value at runtime, just nullptr
         return nullptr;
     }
-    
-    // =========================================================================
-    // R7RS ENVIRONMENT PRIMITIVES IMPLEMENTATION
-    // =========================================================================
 
-    // (eval expr) or (eval expr env) → Evaluates S-expression via JIT
-    Value* codegenEval(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenEval(const eshkol_operations_t* op) {
         if (op->call_op.num_vars < 1) {
             eshkol_error("eval requires at least 1 argument");
             return packNullToTaggedValue();
@@ -27274,17 +26970,12 @@ private:
         }
     }
 
-    // (null-environment 7) → Returns empty environment (only syntax keywords)
-    Value* codegenNullEnvironment(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenNullEnvironment(const eshkol_operations_t* op) {
         (void)op;  // Version argument ignored — only R7RS (7) is supported
         return packNullToTaggedValue();  // '() — empty alist
     }
 
-    // (scheme-report-environment 7) → Returns R7RS standard environment
-    // Builds an alist of standard procedure names as symbols.
-    // Since all standard bindings are always available through builtin dispatch,
-    // the alist serves as introspection data for the R7RS standard set.
-    Value* codegenSchemeReportEnvironment(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSchemeReportEnvironment(const eshkol_operations_t* op) {
         (void)op;  // Version argument ignored
 
         // R7RS base library procedure names
@@ -27421,6 +27112,9 @@ private:
             "line-reader-poll", "line-reader-close", "fd-close",
             "make-event-loop", "event-loop-add-fd!", "event-loop-remove-fd!",
             "event-loop-poll", "event-loop-close", "event-loop-backend",
+            "make-coroutine", "coroutine-resume", "coroutine-raise",
+            "coroutine-yield", "coroutine-status", "coroutine-release!",
+            "current-coroutine", "coroutine?", "coroutine-stats",
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
             "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
             "http-server-create", "http-server-port", "http-server-accept",
@@ -27485,9 +27179,7 @@ private:
         return result;
     }
 
-    // (interaction-environment) / (current-environment) → Returns current bindings
-    // Builds an alist of all globally defined symbol names at compile time.
-    Value* codegenInteractionEnvironment(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenInteractionEnvironment(const eshkol_operations_t* op) {
         (void)op;
 
         // Collect unique symbol names from global symbol table
@@ -27518,21 +27210,15 @@ private:
         return result;
     }
 
-    // If expression - delegate to control flow module
-    Value* codegenIfCall(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenIfCall(const eshkol_operations_t* op) {
         return flow_->codegenIf(op);
     }
 
-    // Begin sequence - delegate to control flow module
-    Value* codegenBegin(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBegin(const eshkol_operations_t* op) {
         return flow_->codegenBegin(op);
     }
-    
-    // NOTE: codegenCons, codegenCar, codegenCdr, codegenList, codegenNullCheck, codegenPairCheck
-    // have been migrated to CollectionCodegen. See coll_->cons(), coll_->car(), etc.
-    // ~1100 lines of old implementations removed (now in collection_codegen.cpp)
 
-    Value* codegenConsCell(const eshkol_ast_t* ast) {
+Value* EshkolLLVMCodeGen::codegenConsCell(const eshkol_ast_t* ast) {
         // Generate code for a cons cell AST node using arena allocation
         if (!ast->cons_cell.car || !ast->cons_cell.cdr) {
             eshkol_error("Invalid cons cell structure");
@@ -27549,73 +27235,7 @@ private:
         return codegenArenaConsCell(car_val, cdr_val);
     }
 
-    // ===== TAIL CALL OPTIMIZATION SUPPORT =====
-    // These functions detect and handle tail-recursive patterns to prevent stack overflow
-    // NOTE: The active TailCallContext is in BindingCodegen (binding_codegen.h:283).
-    // TCO setup is in letrec()/letrecStar()/codegenFunctionDefinition.
-    // TCO interception is in codegenCall (line ~8640) via binding_->isTCOActive().
-
-    // Mutual TCO: set of operation nodes that are non-self tail calls in the current function
-    std::unordered_set<const eshkol_operations_t*> mutual_tail_call_sites_;
-
-    // ===== TAIL-TRANSFER DISPATCHER (ADR-0006 §3) ==============================
-    //
-    // `musttail` is only one of the two lowerings a proper tail call may take.
-    // It requires byte-identical LLVM signatures, no argument pointing into the
-    // caller's frame, and a backend able to lower an aggregate return that way.
-    // The shapes that fail one of those conditions -- different arities between
-    // the two procedures, a `guard` frame that owes a handler-stack pop, and
-    // every non-AArch64 target -- take the transfer lowering instead.
-    //
-    // A transfer does not call the callee. It copies the evaluated arguments
-    // into the thread's eshkol_tail_transfer_t, records the callee's uniform
-    // entry, sets `pending`, and lets the value flow to the function's ordinary
-    // return. Returning normally is exactly what makes `guard` sound here where
-    // `musttail` is not: leaving the guard still runs its
-    // eshkol_pop_exception_handler(), because nothing about the epilogue is
-    // skipped. The driver loop then runs the transfer in the caller's stead.
-    //
-    // Three symbols implement it for a participating procedure F:
-    //
-    //   F                    public entry, unchanged type and linkage. Its body
-    //                        becomes the DRIVER: call F<BODY>, then loop while a
-    //                        transfer is pending. Every ordinary caller -- Eshkol
-    //                        code, the FFI, a closure value, an AOT export --
-    //                        keeps calling this symbol and is unaffected.
-    //   F<BODY>              internal, same type. The real body, with transfer
-    //                        sites in it. It never drives, so a transfer chain
-    //                        entered from one driver reuses that one frame.
-    //   F<UNIFORM>           internal, (const tagged*, i64) -> tagged. Loads the
-    //                        record's arguments into SSA values and calls
-    //                        F<BODY>. This is where differing arities stop
-    //                        mattering: every transfer target has this one shape.
-    //
-    // musttail sites target F<BODY> rather than F, because musttail into a
-    // driver would leave that driver's frame live for the rest of the chain --
-    // one frame every two hops, which is the growth this work exists to remove.
-    // A callee that was never split still needs the symbol, so
-    // finalizeTailTransferThunks() gives every remaining F<BODY> declaration a
-    // one-instruction forwarder.
-    static constexpr const char* kTailBodySuffix = "__eshkol_tail_body";
-    static constexpr const char* kTailUniformSuffix = "__eshkol_tail_uniform";
-
-    // Set for the duration of one define body that is allowed to emit transfer
-    // sites; null everywhere else. Guards against a nested lambda or a stale
-    // AST-node match emitting a transfer into a function that has no driver.
-    Function* tail_transfer_home_ = nullptr;
-    // True once tail_transfer_home_ has emitted EITHER lowering. Both need the
-    // driver: a transfer queues one directly, and a `musttail` into a callee's
-    // body hands this frame to code that may queue one, with no other frame left
-    // to catch it. A function with no mutual tail call at all is untouched.
-    bool tail_transfer_emitted_ = false;
-    // Every F<BODY> this module has referred to, so finalization can tell a real
-    // split body from a declaration that still needs a forwarder.
-    std::vector<Function*> tail_body_decls_;
-
-    /**
-     * @brief Declare eshkol_tail_transfer_slot(), the per-thread record accessor.
-     */
-    Function* getTailTransferSlotFunc() {
+Function* EshkolLLVMCodeGen::getTailTransferSlotFunc() {
         Function* f = module->getFunction("eshkol_tail_transfer_slot");
         if (!f) {
             FunctionType* ft = FunctionType::get(builder->getPtrTy(), {}, false);
@@ -27625,22 +27245,12 @@ private:
         return f;
     }
 
-    /**
-     * @brief The (const tagged*, i64) -> tagged shape every uniform entry has.
-     */
-    FunctionType* tailUniformEntryType() {
+FunctionType* EshkolLLVMCodeGen::tailUniformEntryType() {
         return FunctionType::get(tagged_value_type,
                                  {builder->getPtrTy(), int64_type}, false);
     }
 
-    /**
-     * @brief The F<BODY> symbol for @p target, declaring it if needed.
-     *
-     * Returns null when the name is already taken by something of another type,
-     * in which case the caller must keep the ordinary lowering rather than emit
-     * a call it cannot type-check.
-     */
-    Function* getOrDeclareTailBody(Function* target) {
+Function* EshkolLLVMCodeGen::getOrDeclareTailBody(Function* target) {
         if (!target) return nullptr;
         std::string name = target->getName().str() + kTailBodySuffix;
         if (Function* existing = module->getFunction(name)) {
@@ -27654,16 +27264,7 @@ private:
         return body;
     }
 
-    /**
-     * @brief The F<UNIFORM> entry for @p target, generating it on first use.
-     *
-     * Loads exactly the callee's declared number of arguments out of the
-     * record-owned buffer -- by value, before calling the body, so a transfer
-     * the body performs may overwrite that buffer -- and calls F<BODY>. Any
-     * argument the transfer did not supply arrives as tagged null, matching
-     * what the ordinary arity-mismatch path would have produced.
-     */
-    Function* getOrCreateTailUniformEntry(Function* target) {
+Function* EshkolLLVMCodeGen::getOrCreateTailUniformEntry(Function* target) {
         if (!target) return nullptr;
         std::string name = target->getName().str() + kTailUniformSuffix;
         if (Function* existing = module->getFunction(name)) {
@@ -27717,28 +27318,12 @@ private:
         return uniform;
     }
 
-    /**
-     * @brief Field address inside the thread's transfer record.
-     */
-    Value* tailTransferField(Value* slot, size_t offset, const char* name) {
+Value* EshkolLLVMCodeGen::tailTransferField(Value* slot, size_t offset, const char* name) {
         return builder->CreateGEP(int8_type, slot,
                                   ConstantInt::get(int64_type, (int64_t)offset), name);
     }
 
-    /**
-     * @brief Emit a tail TRANSFER to @p callee in place of a call.
-     *
-     * Stores the arguments into the thread's record, names the callee's uniform
-     * entry as the target, raises `pending`, and returns the value the enclosing
-     * expression should yield -- tagged null, which no epilogue interprets. The
-     * caller must NOT emit a `ret`: the whole point is that control leaves this
-     * frame through the ordinary return path, running every pop, scope end and
-     * handler unwind that path owes.
-     *
-     * @return the placeholder value, or null if this site cannot be transferred
-     *         (in which case the caller keeps the ordinary, bounded lowering).
-     */
-    Value* emitTailTransfer(Function* callee, const std::vector<Value*>& args) {
+Value* EshkolLLVMCodeGen::emitTailTransfer(Function* callee, const std::vector<Value*>& args) {
         if (!callee || !tail_transfer_home_) return nullptr;
         // Only the function that will receive a driver may transfer.
         BasicBlock* here = builder->GetInsertBlock();
@@ -27790,17 +27375,7 @@ private:
         return packNullToTaggedValue();
     }
 
-    /**
-     * @brief Turn @p f into F (driver) + F<BODY> once its body is complete.
-     *
-     * The body is MOVED, not copied: `f` keeps its name, type, linkage and
-     * Function* identity, so every table, export wrapper and closure value that
-     * already refers to it stays correct, while the code that contains transfer
-     * sites moves into an internal symbol that never drives.
-     *
-     * @return true if the split happened.
-     */
-    bool splitFunctionForTailDriver(Function* f) {
+bool EshkolLLVMCodeGen::splitFunctionForTailDriver(Function* f) {
         if (!f || f->isDeclaration()) return false;
         Function* body = getOrDeclareTailBody(f);
         if (!body || !body->isDeclaration()) return false;
@@ -27876,18 +27451,7 @@ private:
         return true;
     }
 
-    /**
-     * @brief Give every F<BODY> that was referenced but never split a forwarder.
-     *
-     * A musttail site names the callee's F<BODY> without knowing whether that
-     * callee will contain transfer sites of its own. When it does not, the
-     * symbol is still owed a definition: a single forwarding call to the public
-     * entry. It is a `musttail` forward wherever the target can lower one, so
-     * the forwarder's frame is replaced rather than stacked and the chain stays
-     * flat; where it cannot, transfers are the only lowering in use and the
-     * forwarder is entered once per hop from a driver that reclaims it.
-     */
-    void finalizeTailTransferThunks() {
+void EshkolLLVMCodeGen::finalizeTailTransferThunks() {
         const llvm::Triple mod_triple = getModuleTargetTriple(*module);
         const llvm::Triple::ArchType arch = mod_triple.getArch();
         const char* transfer_only = std::getenv("ESHKOL_TAIL_TRANSFER_ONLY");
@@ -27927,58 +27491,7 @@ private:
         builder->SetCurrentDebugLocation(saved_debug_loc);
     }
 
-    // ═══════════ SW-58: a `guard` that carries a self-recursive TCO loop ═══════════
-    //
-    // ESH-0222 made a `guard` body a tail position for the self-call it
-    // contains and had the back edge DRAIN the handler chain. That is what the
-    // resident tick loop needs — its error boundary is re-entered once per
-    // tick, forever, so the chain must not grow — and it is exactly wrong for a
-    // handler that RE-RAISES. R7RS 7.3 derives `guard` from
-    // `with-exception-handler` wrapping the body, so every activation installs
-    // its own handler and they NEST; a re-raise out of the innermost one has to
-    // find the PREVIOUS activation's guard, which answers with THAT
-    // activation's variables. Draining them sent the re-raise to whatever stood
-    // outside the loop, and a different handler answered — silently. That is
-    // SW-58, whose fixture is
-    // tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk.
-    //
-    // Reverting ESH-0222 would trade a rare wrong answer for a common crash, so
-    // it is not the fix. Instead every guard that carries a loop is classified
-    // into one of three lowerings. ALL THREE ARE SEMANTICALLY EXACT — they
-    // differ only in what they cost:
-    //
-    //   Collapse  the enclosing activations are PROVABLY unobservable, so
-    //             draining them changes nothing a program can see. Constant
-    //             stack and flat RSS. This is the resident tick-loop shape.
-    //   Replay    keep the handler frames standing and attach the departing
-    //             activation's loop parameters to each. Constant stack; one
-    //             handler frame per LIVE guard — the space R7RS's own semantics
-    //             require, moved off the native stack onto the heap.
-    //   Forbid    the clauses read a binding the loop rebinds every iteration,
-    //             which no snapshot of the loop PARAMETERS can restore. Leave
-    //             the call a real call: R7RS's own stack cost, never a guess.
-    enum class GuardLoopClass { Collapse, Replay, Forbid };
-
-    // Names bound inside the innermost TCO loop currently being generated,
-    // minus its own parameters. Set by setupGuardReplayForLoop, consulted by
-    // codegenGuard, saved/restored alongside the rest of the TCO context by
-    // codegenNamedLet.
-    std::set<std::string> tco_loop_bound_names_;
-    bool in_do_loop_codegen_ = false;
-
-    // Operators whose Eshkol lowering has no path to `eshkol_raise`, so an
-    // expression built from them cannot transfer control to an ENCLOSING
-    // handler while a guard's clauses are running (the guard's own handler is
-    // already removed at that point, so such a transfer is precisely what makes
-    // the enclosing activations observable).
-    //
-    // Deliberately small and total. `/`, `modulo`, `quotient` and `remainder`
-    // are absent because a zero divisor raises; `car`/`cdr`/`vector-ref` are
-    // absent because a domain violation raises; anything user-defined is absent
-    // because its body is unbounded. A name missing from this set costs a
-    // Replay lowering — correct, and one handler frame per iteration — never a
-    // wrong answer, so the set may be grown by measurement but never guessed.
-    static const std::set<std::string>& guardNonRaisingOperators() {
+const std::set<std::string>& EshkolLLVMCodeGen::guardNonRaisingOperators() {
         static const std::set<std::string> ops = {
             "+", "-", "*",
             "not", "eq?", "eqv?", "equal?",
@@ -27989,16 +27502,7 @@ private:
         return ops;
     }
 
-    // Can evaluating `e` inside a guard clause reach an enclosing handler?
-    // Conservative: anything not modelled answers "yes".
-    //
-    // A self tail call to `loop_name` counts as non-raising because it is not a
-    // call at all in this lowering — it is the loop's back edge, and whatever
-    // the next activation raises is caught by the guard that activation
-    // re-establishes. (That is an induction over the loop, and it is sound
-    // exactly when this predicate holds for every clause, which is the
-    // condition Collapse is granted under.)
-    bool guardClauseExprCannotRaise(const eshkol_ast_t* e,
+bool EshkolLLVMCodeGen::guardClauseExprCannotRaise(const eshkol_ast_t* e,
                                     const std::string& loop_name) {
         if (!e) return true;
         switch (e->type) {
@@ -28028,7 +27532,7 @@ private:
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP,
                     ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
                     ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
-                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP,
                     ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
@@ -28088,11 +27592,7 @@ private:
         }
     }
 
-    // Does this guard have a clause that always matches — `else`, or a literal
-    // true test?  Without one, a raise the clauses do not match is re-raised
-    // into the enclosing handler by R7RS, which is the enclosing ACTIVATION's
-    // guard, which makes the collapsed activations observable.
-    bool guardHasCatchAllClause(const eshkol_operations_t* g) {
+bool EshkolLLVMCodeGen::guardHasCatchAllClause(const eshkol_operations_t* g) {
         for (uint64_t i = 0; i < g->guard_op.num_clauses; i++) {
             const eshkol_ast_t* clause = &g->guard_op.clauses[i];
             if (clause->type != ESHKOL_OP ||
@@ -28112,11 +27612,7 @@ private:
         return false;
     }
 
-    // Names bound INSIDE a loop body — let/let*/letrec/letrec*/named let/do
-    // variables and lambda parameters. A guard clause that reads one of these
-    // cannot be replayed from a snapshot of the loop PARAMETERS, because that
-    // binding's storage is reused by the next iteration.
-    void collectLoopBoundNames(const eshkol_ast_t* ast, std::set<std::string>& out) {
+void EshkolLLVMCodeGen::collectLoopBoundNames(const eshkol_ast_t* ast, std::set<std::string>& out) {
         if (!ast) return;
         if (ast->type == ESHKOL_CONS) {
             collectLoopBoundNames(ast->cons_cell.car, out);
@@ -28178,7 +27674,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::Extern, ESHKOL_EXTERN_OP>{},
                 eshkol::AstRouteGroup<AstRoute::ExternVar,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
-                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
                     ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
                     ESHKOL_LOGIC_VAR_OP
@@ -28419,10 +27915,7 @@ private:
         }
     }
 
-    // Is there a call to `loop_name` in TAIL position of `body`?  Mirrors the
-    // tail-context rules isInTailPosition() encodes, walking DOWN from a known
-    // tail expression rather than up from a known call.
-    bool tailPositionHasSelfCall(const eshkol_ast_t* body,
+bool EshkolLLVMCodeGen::tailPositionHasSelfCall(const eshkol_ast_t* body,
                                  const std::string& loop_name) {
         if (!body || body->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &body->operation;
@@ -28452,7 +27945,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                     ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -28553,16 +28046,12 @@ private:
         }
     }
 
-    // Does this guard's BODY carry the loop — i.e. does a back edge get taken
-    // from inside its dynamic extent?  Only those guards constrain the
-    // lowering; a guard whose self-call sits in a CLAUSE has already had its
-    // own handler removed when that call runs, so it leaves nothing behind.
-    bool guardCarriesLoop(const eshkol_operations_t* g, const std::string& loop_name) {
+bool EshkolLLVMCodeGen::guardCarriesLoop(const eshkol_operations_t* g, const std::string& loop_name) {
         return g->guard_op.body && g->guard_op.num_body_exprs > 0 &&
                tailPositionHasSelfCall(&g->guard_op.body[0], loop_name);
     }
 
-    GuardLoopClass classifyGuardForLoop(const eshkol_operations_t* g,
+EshkolLLVMCodeGen::GuardLoopClass EshkolLLVMCodeGen::classifyGuardForLoop(const eshkol_operations_t* g,
                                         const std::string& loop_name,
                                         const std::set<std::string>& loop_bound) {
         // Collapse: the innermost activation's handler provably always answers,
@@ -28620,11 +28109,7 @@ private:
         return GuardLoopClass::Replay;
     }
 
-    // Whole-loop verdict: does ANY guard that carries this loop need the replay
-    // lowering?  One does ⇒ every guard back edge in the loop takes it, which
-    // keeps a single rule for the whole loop and is always exact (Collapse is
-    // only ever an optimisation over Replay).
-    bool loopNeedsGuardReplay(const eshkol_ast_t* ast, const std::string& loop_name,
+bool EshkolLLVMCodeGen::loopNeedsGuardReplay(const eshkol_ast_t* ast, const std::string& loop_name,
                               const std::set<std::string>& loop_bound) {
         if (!ast) return false;
         if (ast->type == ESHKOL_CONS) {
@@ -28725,7 +28210,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
                     ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_CASE_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_DEFINE_SYNTAX_OP,
                     ESHKOL_LOGIC_VAR_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
                     ESHKOL_SYNTAX_ERROR_OP
@@ -28859,10 +28344,7 @@ private:
         }
     }
 
-    // One-shot setup for a loop that is about to be lowered: decides the guard
-    // lowering and, when it is Replay, allocates the two entry-block slots the
-    // mechanism needs. `arity` is the loop's parameter count.
-    void setupGuardReplayForLoop(eshkol::BindingCodegen::TailCallContext& tco_ctx,
+void EshkolLLVMCodeGen::setupGuardReplayForLoop(eshkol::BindingCodegen::TailCallContext& tco_ctx,
                                  const eshkol_ast_t* loop_body,
                                  const std::string& loop_name) {
         tco_ctx.guard_replay = false;
@@ -28909,9 +28391,7 @@ private:
                      loop_name.c_str(), tco_ctx.param_allocas.size());
     }
 
-    // Declarations for the four SW-58 runtime entry points.
-    enum class GuardReplayFn { Depth, UnwindTo, Snapshot, Restore };
-    Function* getGuardReplayFn(GuardReplayFn which) {
+Function* EshkolLLVMCodeGen::getGuardReplayFn(GuardReplayFn which) {
         const char* name = nullptr;
         FunctionType* ty = nullptr;
         switch (which) {
@@ -28941,21 +28421,14 @@ private:
         return f;
     }
 
-    // Emitted on every path that leaves a replaying guard loop: drop whatever
-    // replay frames the loop's back edges left standing. Without it a loop that
-    // exits WITHOUT passing through the guard (`(if done acc (guard ...))`)
-    // would leave live handler frames whose landing pad is a frame the function
-    // is about to return from.
-    void emitGuardReplayUnwindAt(Value* mark_slot) {
+void EshkolLLVMCodeGen::emitGuardReplayUnwindAt(Value* mark_slot) {
         if (!mark_slot) return;
         if (builder->GetInsertBlock() && builder->GetInsertBlock()->getTerminator()) return;
         Value* mark = builder->CreateLoad(int64_type, mark_slot, "guard_replay_mark_v");
         builder->CreateCall(getGuardReplayFn(GuardReplayFn::UnwindTo), {mark});
     }
 
-    // Check if an AST node is in tail position within its parent
-    // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
-    bool isInTailPosition(const eshkol_ast_t* expr, const eshkol_ast_t* body) {
+bool EshkolLLVMCodeGen::isInTailPosition(const eshkol_ast_t* expr, const eshkol_ast_t* body) {
         if (!expr || !body) return false;
 
         // Direct match - expr IS the body
@@ -28991,7 +28464,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                         ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                        ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                        ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                         ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                         ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                         ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -29170,8 +28643,7 @@ private:
         return false;
     }
 
-    // Count ALL recursive calls (both tail and non-tail) to a specific function name
-    size_t countAllRecursiveCalls(const eshkol_ast_t* ast, const std::string& func_name) {
+size_t EshkolLLVMCodeGen::countAllRecursiveCalls(const eshkol_ast_t* ast, const std::string& func_name) {
         if (!ast) return 0;
 
         size_t count = 0;
@@ -29206,7 +28678,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                         ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                         ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                         ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                         ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -29374,9 +28846,7 @@ private:
         return count;
     }
 
-    // Find all tail calls to a specific function name in an AST
-    // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
-    void findTailCalls(const eshkol_ast_t* ast, const eshkol_ast_t* body,
+void EshkolLLVMCodeGen::findTailCalls(const eshkol_ast_t* ast, const eshkol_ast_t* body,
                        const std::string& func_name,
                        std::vector<const eshkol_operations_t*>& tail_calls) {
         if (!ast) return;
@@ -29411,7 +28881,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                         ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                         ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                         ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                         ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -29598,10 +29068,7 @@ private:
         }
     }
 
-    // Collect ALL non-self tail call sites in a function body for mutual TCO.
-    // Walks the AST to find function calls in tail position that are NOT self-recursive
-    // (self-recursive calls are handled by the loop-based TCO above).
-    void collectMutualTailCallSites(const eshkol_ast_t* ast, const eshkol_ast_t* body,
+void EshkolLLVMCodeGen::collectMutualTailCallSites(const eshkol_ast_t* ast, const eshkol_ast_t* body,
                                      const std::string& self_name) {
         if (!ast) return;
 
@@ -29634,7 +29101,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                         ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                         ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                         ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                         ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -29842,9 +29309,7 @@ private:
         }
     }
 
-    // Check if a lambda/function is self-tail-recursive (calls itself ONLY in tail position)
-    // Returns true only if ALL recursive calls are in tail position
-    bool isSelfTailRecursive(const eshkol_operations_t* op, const std::string& func_name) {
+bool EshkolLLVMCodeGen::isSelfTailRecursive(const eshkol_operations_t* op, const std::string& func_name) {
         if (!op) return false;
 
         // Get the body based on operation type
@@ -29881,91 +29346,7 @@ private:
         return all_in_tail;
     }
 
-    // ═════════════════════════════════════════════════════════════════════
-    // ESH-0214b: AUTOMATIC PER-ITERATION ARENA SCOPE RECLAMATION
-    //
-    // When a named-let loop compiles to the branch-based TCO transform, its
-    // body's arena allocations normally accumulate in the enclosing
-    // (typically process-lifetime) arena forever -- the unbounded-RSS
-    // daemon-loop failure mode of ESH-0214. Here we make the loop reclaim
-    // its own per-iteration garbage automatically:
-    //
-    //   * codegenNamedLet pushes an arena scope at the top of the TCO loop
-    //     header block (once per iteration),
-    //   * every TCO back edge and the loop's exit path end the scope via
-    //     eshkol_arena_iter_scope_end(arena, outflowing_values, n), which
-    //     POPS the scope (rewinds -- reclaims the whole iteration) when no
-    //     out-flowing value points into the iteration's allocation span, and
-    //     COMMITS it (keeps the memory, drops the mark -- the pre-existing
-    //     behavior) otherwise.
-    //
-    // Correctness rests on two pillars:
-    //   1. A conservative STATIC analysis (below) that only enables the
-    //      mechanism when the loop body cannot leak an iteration-allocated
-    //      value through any channel other than the loop-carried arguments
-    //      or the loop result: no set!, no mutating builtins (any name
-    //      ending in '!', plus an explicit blacklist), no unknown callees
-    //      (only whitelisted allocation-escape-free builtins, local named
-    //      lets, inline lambdas, and recursively-analyzed user defines), no
-    //      exception/continuation control flow that could skip the scope
-    //      end, no parallel constructs (worker arenas interleave with the
-    //      scope span).
-    //   2. A DYNAMIC per-value check at each scope end (the runtime helper)
-    //      for the two channels that remain: loop args and loop result. A
-    //      heap value allocated in the ending iteration flips that edge to
-    //      commit -- so e.g. an accumulator loop keeps today's keep-
-    //      everything behavior, while a loop whose carried state is numeric
-    //      (or pre-loop-allocated, like a port) reclaims every iteration.
-    //
-    // Anything the analysis cannot prove safe silently disables the
-    // mechanism (the loop just behaves exactly as before this feature).
-    // ESHKOL_NO_ITER_SCOPE=1 disables it globally for debugging.
-    // ═════════════════════════════════════════════════════════════════════
-
-    // Memo for per-user-function analysis results (name -> safe?)
-    std::unordered_map<std::string, bool> iter_scope_fn_memo;
-
-    // ESH-0214e: parallel memo recording whether an escape-safe user function's
-    // body contains a barriered structural mutation, so a loop that calls it is
-    // lowered with a nursery region even on a memo hit (a mutation reached only
-    // through a called define must still flip the whole loop to nursery mode, or
-    // the arena-scope path would rewind a slot the mutation stored into
-    // persistent state). Keyed identically to iter_scope_fn_memo.
-    std::unordered_map<std::string, bool> iter_scope_fn_nursery_memo;
-
-    // ESH-0214e: set by iterScopeSafeExpr while analyzing ONE loop body when it
-    // admits a barriered structural mutation (see iterScopeNurseryMutators).
-    // loopBodyIterScopeSafe resets it before each analysis and reports it out.
-    // Mutation channels admitted here MUST be exactly the ones whose codegen
-    // unconditionally emits eshkol_region_write_barrier_into on the mutated
-    // structure pointer, so a nursery-allocated value stored into persistent
-    // state is deep-promoted out of the nursery at the store.
-    bool iter_scope_needs_nursery_ = false;
-    bool iter_scope_direct_exit_allowed_ = false;
-    bool iter_scope_has_terminal_exit_ = false;
-    bool iter_scope_tensor_dot_allowed_ = false;
-
-    class IterScopeExitAdmissionGuard {
-    public:
-        IterScopeExitAdmissionGuard(bool& flag, bool value)
-            : flag_(flag), saved_(flag) { flag_ = value; }
-        ~IterScopeExitAdmissionGuard() { flag_ = saved_; }
-    private:
-        bool& flag_;
-        bool saved_;
-    };
-
-    // The structural mutators admitted into iter-scope under ESH-0214e. Each is
-    // barriered UNCONDITIONALLY at its codegen site on the mutated structure's
-    // pointer (collection_codegen.cpp vector-set!/vector-fill!, hash_codegen.cpp
-    // hash-table-set!, llvm_codegen.cpp set-car!/set-cdr!), so the write barrier
-    // promotes any nursery value they store into an outer/persistent structure.
-    // set! is deliberately EXCLUDED: its barrier fires only for GlobalVariable
-    // targets, and proving a set! target is global (not a shadowing enclosing-
-    // scope local, whose alloca is NOT barriered) needs full lexical resolution
-    // this downward-only analysis does not have — admitting it unsoundly would
-    // reintroduce exactly the dangling-pointer corruption this series closes.
-    static const std::set<std::string>& iterScopeNurseryMutators() {
+const std::set<std::string>& EshkolLLVMCodeGen::iterScopeNurseryMutators() {
         static const std::set<std::string> s = {
             "vector-set!", "vector-fill!", "hash-table-set!",
             "set-car!", "set-cdr!",
@@ -29973,47 +29354,7 @@ private:
         return s;
     }
 
-    // ═════════════════════════════════════════════════════════════════════
-    // ESH-0214c: PARALLEL-WORKER REACHABILITY (whole-program pre-pass)
-    //
-    // iterScopeSafeExpr above proves a loop body cannot LEAK a value through
-    // any channel other than loop args / loop result. That is necessary but
-    // not sufficient: __global_arena's scope stack (arena_commit_scope /
-    // eshkol_arena_iter_scope_end, see arena_memory.h + runtime_arena_core.cpp)
-    // is a single, un-synchronized linked list shared by every OS thread --
-    // "thread-safe" there only covers the bump-pointer allocation path
-    // (arena_create_threadsafe), not scope push/commit/pop. If a named-let's
-    // *enclosing function* is ever invoked on a parallel-map/-fold/-filter/
-    // -for-each/-execute or future worker thread, that thread's per-iteration
-    // scope push/pop races against every other worker doing the same thing
-    // concurrently and corrupts the shared scope list -> SIGSEGV. This is
-    // exactly what tests/parallel/parallel_flags_byte_regression.esk hits:
-    // `work` (run on worker threads by parallel-map) calls `busy-int64`,
-    // whose named-let loop body is otherwise perfectly escape-safe.
-    //
-    // The hazard lives in the *caller* context, which iterScopeSafeExpr
-    // cannot see (it only walks downward from the loop body). So: once per
-    // compilation, before any function is codegen'd, walk the whole program
-    // for calls into a parallel/future constructor, and mark every AST node
-    // transitively reachable from each callback argument (through ordinary
-    // calls) as parallel-worker code. namedLetIterScopeSafe then hard-rejects
-    // any loop whose body lands in that set, before running the local
-    // analysis. Conservative by construction: a function that merely *can*
-    // run on a worker thread is excluded everywhere it is defined, even at
-    // call sites that never go through parallel-map. Known precision loss:
-    // limited to the single generateIR() invocation's AST (a REPL line
-    // referencing a not-yet-compiled future parallel-map user is not
-    // caught -- consistent with the pre-existing per-function analysis,
-    // which has the same single-compilation-unit horizon).
-    // ═════════════════════════════════════════════════════════════════════
-
-    std::unordered_set<const void*> parallel_worker_ast_nodes;
-
-    // Builtins whose callback argument(s) run on a worker thread (or, for
-    // `future`, a continuation not provably the calling thread). Everything
-    // but parallel-execute takes the callback as argument 0; parallel-execute
-    // treats every argument as an independently-scheduled thunk.
-    static bool iterScopeIsParallelCallSite(const std::string& name, bool& all_args_are_callbacks) {
+bool EshkolLLVMCodeGen::iterScopeIsParallelCallSite(const std::string& name, bool& all_args_are_callbacks) {
         static const std::set<std::string> single_callback = {
             "parallel-map", "parallel-fold", "parallel-filter",
             "parallel-for-each", "future",
@@ -30022,9 +29363,7 @@ private:
         return all_args_are_callbacks || single_callback.count(name) != 0;
     }
 
-    // Mark `name`'s body (if known) as parallel-worker-reachable. Guarded by
-    // `visiting_fns` so mutually recursive helpers terminate.
-    void iterScopeMarkFnUnsafe(const std::string& name,
+void EshkolLLVMCodeGen::iterScopeMarkFnUnsafe(const std::string& name,
                                 const std::unordered_map<std::string, const eshkol_ast_t*>& all_fn_bodies,
                                 std::set<std::string>& visiting_fns) {
         if (!visiting_fns.insert(name).second) return;
@@ -30033,14 +29372,7 @@ private:
         iterScopeWalkParallelReach(it->second, /*mark=*/true, all_fn_bodies, visiting_fns);
     }
 
-    // Single recursive walk used both to scan the whole program for calls
-    // into a parallel/future constructor (mark=false: nothing is inserted,
-    // we are only looking for such call sites) and to flood-fill a reachable
-    // subtree once one is found (mark=true: every node visited is recorded
-    // in parallel_worker_ast_nodes). Either way, any call into a parallel
-    // constructor found along the walk switches its callback argument(s) to
-    // mark=true regardless of the walk's own mode.
-    void iterScopeWalkParallelReach(const eshkol_ast_t* node, bool mark,
+void EshkolLLVMCodeGen::iterScopeWalkParallelReach(const eshkol_ast_t* node, bool mark,
                                      const std::unordered_map<std::string, const eshkol_ast_t*>& all_fn_bodies,
                                      std::set<std::string>& visiting_fns) {
         if (!node) return;
@@ -30095,7 +29427,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                     ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -30171,9 +29503,7 @@ private:
         }
     }
 
-    // Entry point: call once, early in generateIR(), on the whole flattened
-    // program before any function body is codegen'd.
-    void computeParallelWorkerReachability(const eshkol_ast_t* asts, size_t num_asts) {
+void EshkolLLVMCodeGen::computeParallelWorkerReachability(const eshkol_ast_t* asts, size_t num_asts) {
         std::unordered_map<std::string, const eshkol_ast_t*> all_fn_bodies;
         for (size_t i = 0; i < num_asts; i++) {
             const eshkol_ast_t* node = &asts[i];
@@ -30190,11 +29520,7 @@ private:
                      parallel_worker_ast_nodes.size());
     }
 
-    // First-order builtins that cannot leak an argument or an allocation
-    // into a structure that outlives the call: pure computation, fresh-
-    // allocation constructors, read-side I/O, and output of DATA (display
-    // writes bytes, it does not retain pointers). Anything absent → unsafe.
-    static const std::set<std::string>& iterScopeSafeBuiltins() {
+const std::set<std::string>& EshkolLLVMCodeGen::iterScopeSafeBuiltins() {
         static const std::set<std::string> s = {
             // arithmetic / numeric
             "+", "-", "*", "/", "=", "<", ">", "<=", ">=",
@@ -30253,11 +29579,7 @@ private:
         return s;
     }
 
-    // Higher-order builtins that CALL one of their arguments but do not
-    // retain pointers beyond their own return value. Maps builtin name to
-    // the index of the function-valued argument, which must itself be
-    // analyzable (inline lambda, local loop, or known user define).
-    static const std::map<std::string, int>& iterScopeHigherOrderBuiltins() {
+const std::map<std::string, int>& EshkolLLVMCodeGen::iterScopeHigherOrderBuiltins() {
         static const std::map<std::string, int> m = {
             {"map", 0}, {"for-each", 0}, {"filter", 0},
             {"fold-left", 0}, {"fold-right", 0}, {"reduce", 0},
@@ -30266,10 +29588,7 @@ private:
         return m;
     }
 
-    // Explicit blacklist: names without a trailing '!' that still leak
-    // pointers into global/runtime state, run arbitrary code, or introduce
-    // control flow that could skip the balanced scope end.
-    static const std::set<std::string>& iterScopeBlacklist() {
+const std::set<std::string>& EshkolLLVMCodeGen::iterScopeBlacklist() {
         static const std::set<std::string> s = {
             "read",                 // reader interns symbols into global state
             "string->symbol", "gensym",  // symbol interning
@@ -30285,7 +29604,7 @@ private:
         return s;
     }
 
-    static bool iterScopeNumericTensorElement(const eshkol_ast_t* expr) {
+bool EshkolLLVMCodeGen::iterScopeNumericTensorElement(const eshkol_ast_t* expr) {
         if (!expr) return false;
         switch (expr->type) {
             case ESHKOL_INT8: case ESHKOL_INT16: case ESHKOL_INT32: case ESHKOL_INT64:
@@ -30297,7 +29616,7 @@ private:
         }
     }
 
-    bool iterScopeSafeTensorLiteral(const eshkol_ast_t* elements,
+bool EshkolLLVMCodeGen::iterScopeSafeTensorLiteral(const eshkol_ast_t* elements,
                                    const uint64_t* dimensions,
                                    uint64_t num_dimensions,
                                    uint64_t total_elements,
@@ -30330,7 +29649,7 @@ private:
         return true;
     }
 
-    bool iterScopeSafeTensorDotOperand(const eshkol_ast_t* expr,
+bool EshkolLLVMCodeGen::iterScopeSafeTensorDotOperand(const eshkol_ast_t* expr,
                                        uint64_t* vector_length,
                                        std::set<std::string>& local_fns,
                                        std::set<std::string>& analyzing,
@@ -30368,11 +29687,7 @@ private:
         return true;
     }
 
-    // Is `expr` free of iteration-escape channels? local_fns holds names
-    // callable as plain loops from this position (the enclosing loop name +
-    // any locally nested named-let names); analyzing holds user-define names
-    // currently on the recursion stack (cycles are resolved inductively).
-    bool iterScopeSafeExpr(const eshkol_ast_t* expr,
+bool EshkolLLVMCodeGen::iterScopeSafeExpr(const eshkol_ast_t* expr,
                            std::set<std::string>& local_fns,
                            std::set<std::string>& analyzing,
                            int depth) {
@@ -30427,7 +29742,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                     ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -30872,10 +30187,7 @@ private:
         }
     }
 
-    // Analyze a user-defined function's body by name (define-level map).
-    // Memoized; a name already on the analysis stack is resolved inductively
-    // (recursive helpers are safe iff every other path through them is).
-    bool iterScopeSafeUserFn(const std::string& name,
+bool EshkolLLVMCodeGen::iterScopeSafeUserFn(const std::string& name,
                              std::set<std::string>& analyzing,
                              int depth) {
         auto memo_it = iter_scope_fn_memo.find(name);
@@ -30920,18 +30232,16 @@ private:
         return ok;
     }
 
-    // Gate for codegenNamedLet AND the self-tail-recursive define TCO path
-    // (ESH-0214b Bug 1): is this loop body eligible for automatic
-    // per-iteration scope reclamation? `loop_name` is the name whose
-    // self-tail-calls are the loop's back edges (the named-let name, or the
-    // define's own function name).
-    bool loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name,
-                               bool* out_needs_nursery = nullptr,
-                               bool loop_shadows_exit = false,
-                               bool loop_shadows_tensor_dot = false) {
+bool EshkolLLVMCodeGen::loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name,
+                               bool* out_needs_nursery,
+                               bool loop_shadows_exit,
+                               bool loop_shadows_tensor_dot) {
         if (out_needs_nursery) *out_needs_nursery = false;
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
+        // Iteration scopes are arena regions, a hosted runtime facility; a
+        // freestanding loop allocates nothing on an arena to reclaim.
+        if (freestanding_codegen_) return false;
         // ESH-0214c: reject outright if this loop's body is reachable (via
         // ordinary calls) from a parallel-map/-fold/-filter/-for-each/
         // -execute or future callback argument -- see the pre-pass docblock
@@ -30975,17 +30285,7 @@ private:
         return ok;
     }
 
-    // Emit the end-of-iteration scope release: store the out-flowing tagged
-    // values into an entry-hoisted scratch array and call the runtime helper,
-    // which pops the scope when none of them escape it and commits otherwise.
-    // SW-164: open the loop's LOOP scope once, in the setup block that
-    // dominates the loop header. It sits OUTSIDE the per-iteration scope and
-    // is what gives an escaping back edge somewhere to rewind to: without it
-    // the runtime can only retain the iteration (the pre-SW-164 behavior),
-    // because the previous iteration's promoted accumulator lives below the
-    // iteration mark and nothing can reclaim it. Balanced by
-    // emitIterScopeFinish on every exit path.
-    void emitLoopScopeBegin() {
+void EshkolLLVMCodeGen::emitLoopScopeBegin() {
         FunctionCallee begin_fn = module->getOrInsertFunction(
             "eshkol_arena_loop_scope_begin",
             FunctionType::get(void_type, {PointerType::getUnqual(*context)}, false));
@@ -30993,16 +30293,7 @@ private:
         if (arena_ptr) builder->CreateCall(begin_fn, {arena_ptr});
     }
 
-    // SW-164: end an iteration scope and RETURN the out-values as they stand
-    // afterwards. The runtime promotes survivors out of the span it rewinds and
-    // rewrites them in the scratch array in place, so the values that go in are
-    // not necessarily the values that come out — the caller must use these,
-    // exactly as the ESH-0214e nursery recycle already required.
-    //
-    // @param finish  false at a tail-call back edge (the loop scope is reopened
-    //                for the next iteration); true at the loop's exit (both the
-    //                iteration scope and the loop scope are closed for good).
-    std::vector<Value*> emitIterScopeEndImpl(const std::vector<Value*>& out_values,
+std::vector<Value*> EshkolLLVMCodeGen::emitIterScopeEndImpl(const std::vector<Value*>& out_values,
                                              bool finish) {
         FunctionCallee iter_end_fn = module->getOrInsertFunction(
             finish ? "eshkol_arena_iter_scope_finish"
@@ -31044,31 +30335,21 @@ private:
         return promoted;
     }
 
-    std::vector<Value*> emitIterScopeEnd(const std::vector<Value*>& out_values) {
+std::vector<Value*> EshkolLLVMCodeGen::emitIterScopeEnd(const std::vector<Value*>& out_values) {
         return emitIterScopeEndImpl(out_values, /*finish=*/false);
     }
-    Value* emitIterScopeFinish(Value* out_value) {
+
+Value* EshkolLLVMCodeGen::emitIterScopeFinish(Value* out_value) {
         std::vector<Value*> v = emitIterScopeEndImpl({out_value}, /*finish=*/true);
         return v.empty() ? out_value : v[0];
     }
-    void finishIterScopeBeforeExit() {
+
+void EshkolLLVMCodeGen::finishIterScopeBeforeExit() {
         if (!binding_ || !binding_->getTCOContext().iter_scope) return;
         emitIterScopeEndImpl(std::vector<Value*>{}, /*finish=*/true);
     }
-    // ═══════════════════ END ESH-0214b ═══════════════════
 
-    // ═══════════════════ ESH-0214e: nursery lowering for mutating loops ═══════
-    // A loop whose body is escape-safe AND contains a barriered structural
-    // mutation is lowered with a per-loop NURSERY REGION instead of the
-    // arena-scope path. These three emitters reuse the EXACT runtime entry points
-    // codegenWithRegion emits (region_create/push/enter/escape/pop/leave), so the
-    // nursery converges on the 48-h-validated with-region deep-promotion path
-    // rather than forking a second evacuator. See runtime_regions.cpp
-    // (eshkol_iter_nursery_recycle) for the runtime side.
-    struct IterNurseryFns {
-        FunctionCallee create, push, pop, enter, leave, recycle, escape_into;
-    };
-    IterNurseryFns getIterNurseryFns() {
+EshkolLLVMCodeGen::IterNurseryFns EshkolLLVMCodeGen::getIterNurseryFns() {
         PointerType* p = PointerType::get(*context, 0);
         IterNurseryFns f;
         f.create = module->getOrInsertFunction("region_create",
@@ -31088,11 +30369,7 @@ private:
         return f;
     }
 
-    // Open the loop's nursery region in the current (setup) block, ONCE per loop
-    // activation. Stashes the region ptr and the eshkol_region_enter displaced-
-    // arena token into tco_ctx — both SSA values in the setup block, which
-    // dominates every back edge and the loop exit.
-    void emitIterNurseryOpen(eshkol::BindingCodegen::TailCallContext& tco_ctx) {
+void EshkolLLVMCodeGen::emitIterNurseryOpen(eshkol::BindingCodegen::TailCallContext& tco_ctx) {
         IterNurseryFns f = getIterNurseryFns();
         Value* name = builder->CreateGlobalString("iter-nursery", "iter_nursery_name");
         // Generous first-block size: a tick body's transient burst usually fits
@@ -31105,12 +30382,7 @@ private:
         tco_ctx.nursery_saved_arena = saved;
     }
 
-    // End-of-iteration recycle at a TCO back edge: store the loop-carried
-    // out-values into an entry-hoisted scratch array, call the runtime recycle
-    // (promote them out of the nursery + reset the nursery), then load the
-    // PROMOTED values back so the caller stores those into the loop's parameter
-    // allocas (the originals are about to be reclaimed).
-    std::vector<Value*> emitIterNurseryRecycle(const std::vector<Value*>& out_values,
+std::vector<Value*> EshkolLLVMCodeGen::emitIterNurseryRecycle(const std::vector<Value*>& out_values,
                                                Value* region) {
         IterNurseryFns f = getIterNurseryFns();
         const size_t n = out_values.size();
@@ -31139,13 +30411,7 @@ private:
         return promoted;
     }
 
-    // Loop exit: escape the result out of the nursery (same as with-region's
-    // result escape), then tear the nursery down — region_pop frees its arena,
-    // eshkol_region_leave restores the displaced allocation arena (@p saved_arena
-    // is the eshkol_region_enter token from emitIterNurseryOpen). Returns the
-    // escaped result value to return from the loop. Takes @p saved_arena
-    // explicitly so the caller may hold it in a local past any tco_ctx reset.
-    Value* emitIterNurseryClose(Value* result, Value* saved_arena) {
+Value* EshkolLLVMCodeGen::emitIterNurseryClose(Value* result, Value* saved_arena) {
         IterNurseryFns f = getIterNurseryFns();
         Value* escaped = result;
         if (result && result->getType() == tagged_value_type) {
@@ -31169,11 +30435,8 @@ private:
         builder->CreateCall(f.leave, {saved_arena});
         return escaped;
     }
-    // ═══════════════════ END ESH-0214e ═══════════════════
 
-    // Generate a tail call as a jump back to loop header (TCO transformation)
-    // Uses the binding module's TCO context
-    Value* codegenTailCallFromContext(const eshkol_operations_t* call_op,
+Value* EshkolLLVMCodeGen::codegenTailCallFromContext(const eshkol_operations_t* call_op,
                                        eshkol::BindingCodegen::TailCallContext& tco_ctx) {
         eshkol_debug("TCO: codegenTailCallFromContext called, enabled=%d, loop_header=%p",
                      tco_ctx.enabled, (void*)tco_ctx.loop_header);
@@ -31211,14 +30474,7 @@ private:
         return emitTCOBackEdge(arg_nodes, tco_ctx);
     }
 
-    // Shared core of a TCO loop back-edge: evaluate `arg_nodes` (with TCO
-    // suppressed during the evaluation, since arguments are never in tail
-    // position), store the resulting values into the loop's parameter allocas,
-    // and branch to the loop header. Returns a null sentinel (the block is
-    // terminated by the branch and the caller never observes a real value), or
-    // nullptr if TCO is inactive or the argument count does not match the
-    // loop's arity, in which case the caller must fall back to a normal call.
-    Value* emitTCOBackEdge(const std::vector<const eshkol_ast_t*>& arg_nodes,
+Value* EshkolLLVMCodeGen::emitTCOBackEdge(const std::vector<const eshkol_ast_t*>& arg_nodes,
                            eshkol::BindingCodegen::TailCallContext& tco_ctx) {
         if (!tco_ctx.enabled || !tco_ctx.loop_header) {
             return nullptr;
@@ -31471,20 +30727,18 @@ private:
         // with the unconditional jump back to the loop header.
         Value* unreachable_sentinel = packNullToTaggedValue();
 
-        // Jump back to loop header
+        // Jump back to loop header. Enclosing expression emitters may still
+        // emit cleanup or a merge after this call; give them an unreachable
+        // block rather than allowing instructions after this terminator.
         builder->CreateBr(tco_ctx.loop_header);
+        BasicBlock* post_tco_dead = BasicBlock::Create(
+            *context, "post_tco_dead", builder->GetInsertBlock()->getParent());
+        builder->SetInsertPoint(post_tco_dead);
 
         return unreachable_sentinel;
     }
-    // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
 
-    // ESH-0074c: which node test astScanVar() applies while walking. See the
-    // comment on astScanVar for the contract.
-    enum class VarScanMode { SetTarget, ClosureCapture, ObservationContext };
-
-    // True iff `var` is bound by this parameter list (so an inner reference to it
-    // is the PARAMETER, not a capture of the enclosing binding).
-    bool paramListShadows(const eshkol_ast_t* params, uint64_t num_params,
+bool EshkolLLVMCodeGen::paramListShadows(const eshkol_ast_t* params, uint64_t num_params,
                           const char* rest_param, const std::string& var) {
         if (rest_param && var == rest_param) return true;
         if (!params) return false;
@@ -31497,9 +30751,7 @@ private:
         return false;
     }
 
-    // Same question for a let/named-let binding list, whose entries are
-    // (variable value) pairs.
-    bool bindingListShadows(const eshkol_ast_t* bindings, uint64_t num_bindings,
+bool EshkolLLVMCodeGen::bindingListShadows(const eshkol_ast_t* bindings, uint64_t num_bindings,
                             const std::string& var) {
         if (!bindings) return false;
         for (uint64_t i = 0; i < num_bindings; i++) {
@@ -31518,44 +30770,8 @@ private:
         return false;
     }
 
-    // Helper function to find free variables in a lambda body
-    // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
-    // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Returns true iff `var` is the target of
-    // a SET_OP anywhere in the AST subtree `ast`. Mirrors the recursion structure
-    // of findFreeVariablesImpl.
-    //
-    // COMPLETENESS MATTERS (ESH-0214f / vm-parity `do_set_param_native`): this
-    // predicate also drives ASSIGNMENT CONVERSION — boxing a set!-mutated
-    // function/lambda parameter into an alloca (codegenFunctionDefinition ~11252,
-    // codegenLambda ~27380). There, a MISSED set! is not merely "incomplete": the
-    // parameter stays a by-value LLVM Argument, so codegenSet finds no storage
-    // location and the assignment is dropped with a "not mutable" diagnostic. That
-    // is exactly how
-    //     (define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
-    // returned 10 instead of 13: `do` lowers to the call_op layout but had no case
-    // here, and nothing walked into ESHKOL_CONS subtrees (which is where `do`
-    // keeps its bindings/steps/test/result forms), so the set! was invisible.
-    //
-    // The safe direction of error is to over-approximate — a spurious `true` only
-    // costs one unused alloca / one arena-promoted capture, whereas a spurious
-    // `false` silently miscompiles a mutation. So every structural container the
-    // parser can produce is walked, and `default: return false` is now reached
-    // only by genuine leaves (literals, quote, type annotations, macro defs).
-    //
-    // ESH-0074c: that completeness is scarce, so the traversal is shared rather
-    // than copied. `VarScanMode` selects which NODE TEST is applied while the
-    // walk itself stays byte-identical:
-    //   SetTarget      — `var` is the target of a set! (the original predicate).
-    //   ClosureCapture — `var` is referenced from inside a form whose capture
-    //                    machinery SHARES the enclosing cell by pointer, and which
-    //                    arena-moves a stack alloca to do it: a lambda or a named
-    //                    let. Internal function defines capture through
-    //                    module-level storage instead and are excluded on purpose
-    //                    (see the DEFINE_OP case).
-    // The second mode drives codegenDo's storage-class decision; see
-    // doFormCapturesVar().
-    bool astScanVar(const eshkol_ast_t* ast, const std::string& var,
-                    VarScanMode mode, unsigned scope_depth = 0) {
+bool EshkolLLVMCodeGen::astScanVar(const eshkol_ast_t* ast, const std::string& var,
+                    VarScanMode mode, unsigned scope_depth) {
         if (!ast) return false;
         // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
         // clauses and every other list-shaped payload live in CONS cells, not in
@@ -31637,7 +30853,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
                     ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
-                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
                     ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
                     ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
@@ -31846,14 +31062,10 @@ private:
                 return astScanVar(op->let_values_op.body, var, mode,
                                   scope_depth + (values_shadow ? 1u : 0u));
             }
-            case AstRoute::Match: {
-                if (astScanVar(op->match_op.expr, var, mode)) return true;
-                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                    if (astScanVar(op->match_op.clauses[i].guard, var, mode)) return true;
-                    if (astScanVar(op->match_op.clauses[i].body, var, mode)) return true;
-                }
-                return false;
-            }
+            case AstRoute::Match:
+                return matchUsesOuterName(op, var, [&](const eshkol_ast_t* expr) {
+                    return astScanVar(expr, var, mode, scope_depth);
+                });
             case AstRoute::CallCc:
                 return astScanVar(op->call_cc_op.proc, var, mode, scope_depth);
             case AstRoute::DynamicWind:
@@ -31934,10 +31146,7 @@ private:
         }
     }
 
-    // Collect a mutation summary for ASTs that contain no nested binder. Such
-    // bodies are the hot path for large generated lets/letrecs; binder-shaped
-    // ASTs deliberately fall back to astScanVar so shadowing remains exact.
-    bool collectFlatMutationTargets(const eshkol_ast_t* ast,
+bool EshkolLLVMCodeGen::collectFlatMutationTargets(const eshkol_ast_t* ast,
                                     std::unordered_set<std::string>& targets) {
         if (!ast) return true;
         if (ast->type == ESHKOL_CONS) {
@@ -31963,7 +31172,7 @@ private:
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP,
                     ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                     ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                     ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -32008,8 +31217,7 @@ private:
         }
     }
 
-    // Returns true iff `var` is the target of a set! anywhere in `ast`.
-    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
+bool EshkolLLVMCodeGen::astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
         if (ast && !flat_mutation_ineligible_.count(ast)) {
             auto it = flat_mutation_targets_.find(ast);
             if (it == flat_mutation_targets_.end()) {
@@ -32026,43 +31234,16 @@ private:
         return astScanVar(ast, var, VarScanMode::SetTarget);
     }
 
-    // ESH-0074c: returns true iff some closure created inside `ast` captures
-    // `var` THROUGH THE POINTER-SHARING PATH — i.e. `var` is referenced from the
-    // body of a lambda or a named let and is not shadowed by that form's own
-    // bindings. Drives codegenDo's storage-class decision.
-    bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
+bool EshkolLLVMCodeGen::astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var) {
         return astScanVar(ast, var, VarScanMode::ClosureCapture);
     }
 
-    // Shared assignment-conversion observation query used by BindingCodegen.
-    // This includes compiler-generated contexts such as guard handlers, not
-    // only source-level lambda nodes.
-    bool astMayBeObservedAfterMutation(const eshkol_ast_t* ast,
+bool EshkolLLVMCodeGen::astMayBeObservedAfterMutation(const eshkol_ast_t* ast,
                                        const std::string& var) {
         return astScanVar(ast, var, VarScanMode::ObservationContext);
     }
 
-    // ── Escape analysis for a captured continuation ───────────────────────
-    //
-    // Snapshotting the C stack is what makes a continuation survive its
-    // frame's return, but it costs an arena copy proportional to the live
-    // stack at every capture. The overwhelmingly common use of call/cc —
-    // early return / exception-style unwinding, `(call/cc (lambda (k) … (k v)
-    // …))` — never needs it: such a continuation can only be invoked while
-    // proc is running, hence while the capturing frame is still live, so the
-    // plain setjmp/longjmp path is already correct and free. Measured before
-    // this analysis: an escape-only call/cc at depth 200 burned ~270KB of
-    // arena per capture and drove a 3000-iteration loop into the 1GB heap
-    // limit, where it had previously used none.
-    //
-    // Returns true only when EVERY use of `name` is the operator of a direct
-    // call and none appears inside a nested lambda or named let (which could
-    // outlive the frame). Anything this does not model falls through to
-    // astReferencesVar(), so an unrecognised form is treated as escaping. The
-    // safe direction of error is `false`: a spurious false only pays for a
-    // stack copy that was not needed, whereas a spurious true would drop the
-    // image a later re-entry depends on.
-    bool continuationUseStaysLocal(const eshkol_ast_t* ast, const std::string& name) {
+bool EshkolLLVMCodeGen::continuationUseStaysLocal(const eshkol_ast_t* ast, const std::string& name) {
         if (!ast) return true;
         if (ast->type == ESHKOL_CONS) {
             return continuationUseStaysLocal(ast->cons_cell.car, name) &&
@@ -32091,7 +31272,7 @@ private:
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP,
                     ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_MATCH_OP,
                     ESHKOL_DO_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                     ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -32161,7 +31342,7 @@ private:
         }
     }
 
-    bool astReferencesVarScoped(const eshkol_ast_t* ast, const std::string& var,
+bool EshkolLLVMCodeGen::astReferencesVarScoped(const eshkol_ast_t* ast, const std::string& var,
                                 bool shadowed) {
         if (!ast) return false;
         if (ast->type == ESHKOL_VAR) {
@@ -32198,7 +31379,7 @@ private:
         {
             enum class AstRoute {
                 Set, Call, Sequence, Let, Lambda, Define,
-                Guard, LetValues, CallCc, DynamicWind, WithRegion, Unify,
+                Guard, Match, LetValues, CallCc, DynamicWind, WithRegion, Unify,
                 OtherOperations
             };
             switch (eshkol::routeAstOperation(op->op,
@@ -32216,6 +31397,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
                 eshkol::AstRouteGroup<AstRoute::LetValues,
                     ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
                 >{},
@@ -32237,9 +31419,9 @@ private:
                 >{},
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
-                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -32341,6 +31523,10 @@ private:
                                            }())) return true;
                 return false;
             }
+            case AstRoute::Match:
+                return matchUsesOuterName(op, var, [&](const eshkol_ast_t* expr) {
+                    return astReferencesVarScoped(expr, var, shadowed);
+                });
             case AstRoute::CallCc:
                 return astReferencesVarScoped(op->call_cc_op.proc, var, shadowed);
             case AstRoute::DynamicWind:
@@ -32363,31 +31549,11 @@ private:
         }
     }
 
-    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
+bool EshkolLLVMCodeGen::astReferencesVar(const eshkol_ast_t* ast, const std::string& var) {
         return astReferencesVarScoped(ast, var, false);
     }
 
-    /**
-     * @brief True iff @p name is used as a VALUE (not merely called) anywhere in
-     *        @p ast — `(set! g loop)`, `(list loop)`, `(map loop xs)`, a return
-     *        position — as opposed to the direct call `(loop …)`.
-     *
-     * codegenNamedLet uses this to decide whether the loop procedure can outlive
-     * the frame that created it. If it can, every capture cell must live in the
-     * arena rather than on the caller's stack: a leaked procedure reads its
-     * captures through the cell pointer, and a stack cell is dangling as soon as
-     * the enclosing function returns. That was a real crash, not a theoretical
-     * one — a read-only captured PARAMETER (materialised into an entry-block
-     * alloca) came back as a pair once the frame had been reused, so
-     * `(< i n)` inside a leaked loop body reported "expected number, got pair".
-     *
-     * Only the direct-callee position is excluded, and only for CALL_OP. IF_OP /
-     * COND_OP share the call_op layout but their `func` field is the condition,
-     * so it is inspected normally. Unhandled op kinds fall back to
-     * astReferencesVar, which counts a direct call too: that OVER-approximates
-     * escape, which costs one arena cell and can never be incorrect.
-     */
-    bool astUsesNameAsValue(const eshkol_ast_t* ast, const std::string& name) {
+bool EshkolLLVMCodeGen::astUsesNameAsValue(const eshkol_ast_t* ast, const std::string& name) {
         if (!ast) return false;
         if (ast->type == ESHKOL_VAR) {
             return ast->variable.id && name == ast->variable.id;
@@ -32423,7 +31589,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                     ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                     ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -32489,7 +31655,7 @@ private:
         }
     }
 
-    void findFreeVariablesImpl(const eshkol_ast_t* ast,
+void EshkolLLVMCodeGen::findFreeVariablesImpl(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
                           const eshkol_ast_t* parameters, uint64_t num_params,
                           std::vector<std::string>& free_vars,
@@ -32647,7 +31813,7 @@ private:
                         eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
                         eshkol::AstRouteGroup<AstRoute::OtherOperations,
                             ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
-                            ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP,
+                            ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP,
                             ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP,
                             ESHKOL_FORALL_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
                             ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
@@ -33002,13 +32168,15 @@ private:
                         if (op->match_op.expr) {
                             findFreeVariablesImpl(op->match_op.expr, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
-                        for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                            if (op->match_op.clauses[i].guard) {
-                                findFreeVariablesImpl(op->match_op.clauses[i].guard, current_scope, parameters, num_params, free_vars, bound_vars);
-                            }
-                            if (op->match_op.clauses[i].body) {
-                                findFreeVariablesImpl(op->match_op.clauses[i].body, current_scope, parameters, num_params, free_vars, bound_vars);
-                            }
+                        for (uint64_t i = 0; i < op->match_op.num_clauses; ++i) {
+                            const auto& clause = op->match_op.clauses[i];
+                            PatternScope scope;
+                            scope.collect(clause.pattern);
+                            for (auto* expr : scope.expressions)
+                                findFreeVariablesImpl(expr, current_scope, parameters, num_params, free_vars, bound_vars);
+                            scope.names.insert(bound_vars.begin(), bound_vars.end());
+                            findFreeVariablesImpl(clause.guard, current_scope, parameters, num_params, free_vars, scope.names);
+                            findFreeVariablesImpl(clause.body, current_scope, parameters, num_params, free_vars, scope.names);
                         }
                         break;
                     }
@@ -33237,8 +32405,7 @@ private:
         }
     }
 
-    // Wrapper function for findFreeVariablesImpl - initializes empty bound_vars set
-    void findFreeVariables(const eshkol_ast_t* ast,
+void EshkolLLVMCodeGen::findFreeVariables(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
                           const eshkol_ast_t* parameters, uint64_t num_params,
                           std::vector<std::string>& free_vars) {
@@ -33246,7 +32413,7 @@ private:
         findFreeVariablesImpl(ast, current_scope, parameters, num_params, free_vars, bound_vars);
     }
 
-    Value* codegenLambda(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenLambda(const eshkol_operations_t* op) {
         // Generate anonymous function for lambda expression
         static int lambda_counter = 0;
         // Use module prefix to prevent symbol collisions when linking with stdlib.o
@@ -33529,8 +32696,9 @@ private:
 
         // Create polymorphic function type - all parameters and return type are tagged_value
         // CLOSURE FIX: Include captures as additional parameters after declared params.
-        // Large closures use one environment pointer instead of an ABI argument
-        // per capture; this keeps the call ABI lossless for arbitrary counts.
+        // The body takes one pointer per capture for any count; a closure
+        // with more captures than a call passes slot addresses for is entered
+        // through closureEntryPoint.
         // VARIADIC FIX: For variadic lambdas, add an extra parameter for the rest list
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
@@ -33543,15 +32711,12 @@ private:
             eshkol_debug("Lambda %s is variadic with rest param: %s",
                         lambda_name.c_str(), op->lambda_op.rest_param);
         }
-        const bool use_env_capture_abi = free_vars.size() > 64;
-        // Small closures retain the established one-pointer-per-capture ABI.
-        // Large closures receive the contiguous environment as one pointer.
-        if (use_env_capture_abi) {
+        // The body takes one pointer parameter per captured variable, whatever
+        // their number, so every capture is an ordinary argument inside it.
+        // The closure object's entry point is chosen where the closure is
+        // allocated (closureEntryPoint).
+        for (size_t i = 0; i < free_vars.size(); i++) {
             param_types.push_back(PointerType::getUnqual(*context));
-        } else {
-            for (size_t i = 0; i < free_vars.size(); i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -33585,17 +32750,10 @@ private:
             ++arg_it;
         }
         // Set names for capture parameters
-        if (use_env_capture_abi) {
+        for (const std::string& var_name : free_vars) {
             if (arg_it != lambda_func->arg_end()) {
-                arg_it->setName("captured_env");
+                arg_it->setName("captured_" + var_name);
                 ++arg_it;
-            }
-        } else {
-            for (const std::string& var_name : free_vars) {
-                if (arg_it != lambda_func->arg_end()) {
-                    arg_it->setName("captured_" + var_name);
-                    ++arg_it;
-                }
             }
         }
 
@@ -33690,22 +32848,8 @@ private:
         // They get new stack frames on each call, so we can't use pointer-passing for them.
         std::vector<Value*> capture_args;
         capture_args.reserve(free_vars.size());
-        if (use_env_capture_abi) {
-            if (arg_it != lambda_func->arg_end()) {
-                Value* capture_env = &(*arg_it);
-                for (size_t i = 0; i < free_vars.size(); ++i) {
-                    Value* slot = builder->CreateGEP(
-                        int8_type, capture_env,
-                        ConstantInt::get(int64_type, 8 + i * sizeof(eshkol_tagged_value_t)));
-                    capture_args.push_back(builder->CreateBitCast(
-                        slot, PointerType::getUnqual(*context)));
-                }
-                ++arg_it;
-            }
-        } else {
-            for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
-                capture_args.push_back(&(*arg_it));
-        }
+        for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
+            capture_args.push_back(&(*arg_it));
         for (size_t capture_index = 0; capture_index < free_vars.size(); ++capture_index) {
             const std::string& var_name = free_vars[capture_index];
             if (capture_index < capture_args.size()) {
@@ -34118,12 +33262,23 @@ private:
         // CLOSURE FIX: If there are captures, allocate a closure at runtime
         if (!free_vars.empty()) {
             // Get function pointer as intptr_t (i32 on wasm32, i64 on native)
-            Value* func_ptr = builder->CreatePtrToInt(lambda_func, intptr_type);
+            Function* closure_entry = closureEntryPoint(lambda_func, free_vars.size());
+            Value* func_ptr = builder->CreatePtrToInt(closure_entry, intptr_type);
 
             // HOMOICONICITY FIX: Generate S-expression at closure creation time
             // We're past restoreIP so control flow disruption is acceptable - we'll end up
             // in the merge block and continue from there
             Value* sexpr_ptr = codegenLambdaToSExpr(op);
+
+            // The display registry is keyed by the code address a closure
+            // object stores. When that address is the body's entry function
+            // rather than the body, the entry is registered under the same
+            // source form, so a lookup by either address finds it.
+            if (closure_entry != lambda_func && eshkol_lambda_registry_add_func) {
+                builder->CreateCall(eshkol_lambda_registry_add_func,
+                    {func_ptr, toIntPtr(sexpr_ptr),
+                     builder->CreateGlobalString(lambda_name)});
+            }
 
             // Store to global variable so display code can also find it
             std::string closure_sexpr_key = lambda_name + "_sexpr";
@@ -34481,26 +33636,7 @@ private:
         return closure_tagged;
     }
 
-
-    /**
-     * @brief Build (once per loop function) the trampoline that lets an escaped
-     *        named-let loop procedure be entered through the ordinary closure ABI.
-     *
-     * A named-let loop function is `tagged f(tagged p0..pk-1, ptr c0..cm-1)`,
-     * where each `ci` points DIRECTLY at the shared cell holding capture `i`.
-     * The closure dispatcher, by contrast, passes `&env.captures[i]` — a slot
-     * holding a tagged value. The trampoline bridges exactly that one level:
-     * each slot carries the cell address as a tagged INT64 (the same convention
-     * `capturePointerTagFromCurrentFunction` uses when a body lambda captures a
-     * `_cap` argument), so the thunk loads it, turns it back into a pointer, and
-     * forwards it. Without the trampoline the dispatcher would hand the loop
-     * function pointers to the env slots themselves and every read of a captured
-     * variable would return the tag bytes instead of the value.
-     *
-     * Emitted lazily: only a named let whose loop procedure is actually used as
-     * a value pays for it, so the stdlib's many ordinary loops emit no extra IR.
-     */
-    Function* getNamedLetEscapeThunk(const NamedLetEscapeInfo& info) {
+Function* EshkolLLVMCodeGen::getNamedLetEscapeThunk(const NamedLetEscapeInfo& info) {
         if (!info.loop_func) return nullptr;
         auto cached = named_let_escape_thunks.find(info.loop_func);
         if (cached != named_let_escape_thunks.end()) return cached->second;
@@ -34548,20 +33684,7 @@ private:
         return thunk;
     }
 
-    /**
-     * @brief Materialise a first-class closure for a named-let loop procedure
-     *        used as a VALUE, or nullptr when the capture cells are not
-     *        reachable from the function currently being emitted.
-     *
-     * Each capture's shared cell is located the same three ways the rest of the
-     * backend locates one: the loop function's own `<fv>_cap` pointer argument,
-     * an enclosing lambda's `captured_<fv>` slot (which holds the cell address
-     * as a tagged int64), or the symbol table when the cell is a plain alloca /
-     * global / pointer instruction of the active function. Returning nullptr
-     * (rather than guessing) keeps the old behaviour for any shape not covered,
-     * so this can never make a working program worse.
-     */
-    Value* codegenNamedLetEscapeClosure(const std::string& loop_name,
+Value* EshkolLLVMCodeGen::codegenNamedLetEscapeClosure(const std::string& loop_name,
                                         const NamedLetEscapeInfo& info) {
         Function* active_function = builder->GetInsertBlock()
             ? builder->GetInsertBlock()->getParent()
@@ -34619,7 +33742,8 @@ private:
         Function* thunk = getNamedLetEscapeThunk(info);
         if (!thunk) return nullptr;
 
-        Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
+        Value* func_ptr_int = builder->CreatePtrToInt(
+            closureEntryPoint(thunk, info.captures.size()), intptr_type);
         Value* arena_ptr = getArenaPtr();
         uint64_t packed_info = info.captures.size() & UINT64_C(0xFFFFFFFF);
         packed_info |= (info.arity & 0xFFFF) << 32;
@@ -34653,9 +33777,7 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
-    // Named let: (let loop ((var init) ...) body)
-    // Transforms to: (letrec ((loop (lambda (var ...) body))) (loop init ...))
-    Value* codegenNamedLet(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenNamedLet(const eshkol_operations_t* op) {
         std::string loop_name = op->let_op.name;
         eshkol_debug("Processing named let '%s' with %llu bindings",
                     loop_name.c_str(), (unsigned long long)op->let_op.num_bindings);
@@ -35315,14 +34437,7 @@ private:
         return result;
     }
 
-
-    // NOTE: codegenLetrec was removed (was ~480 lines of dead code).
-    // Letrec is fully handled by binding_codegen.cpp:letrec() (dispatched at
-    // codegenOperation). The dead code used a separate TailCallContext in
-    // LLVMCodegen that did not integrate with the active TCO interception in
-    // codegenCall (which checks binding_->isTCOActive()).
-
-    Value* codegenTensor(const eshkol_ast_t* ast) {
+Value* EshkolLLVMCodeGen::codegenTensor(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_TENSOR) return nullptr;
         
         // Use class member tensor_type (shared by all tensor operations)
@@ -35398,13 +34513,8 @@ private:
         // Return pointer to tensor as int64
         return builder->CreatePtrToInt(typed_tensor_ptr, int64_type);
     }
-    
-    // Emit an out-of-bounds raise for the vref/tensor-ref access paths and
-    // terminate the current block with `unreachable`. The caller is expected to
-    // have positioned the builder in a dedicated failure block. Mirrors the
-    // eshkol_raise / eshkol_make_exception_with_header idiom used by the
-    // collection and string bounds-check paths.
-    void emitVrefBoundsRaise(const char* message) {
+
+void EshkolLLVMCodeGen::emitVrefBoundsRaise(const char* message) {
         Function* raise_func = module->getFunction("eshkol_raise");
         if (!raise_func) {
             FunctionType* raise_type = FunctionType::get(
@@ -35427,7 +34537,7 @@ private:
         builder->CreateUnreachable();
     }
 
-    Value* codegenTensorVectorRef(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenTensorVectorRef(const eshkol_operations_t* op) {
         // vref: (vref tensor index) - shorthand for (tensor-get tensor index)
         // Simplified 1D tensor access for numerical arrays
         // PHASE 3/4 FIX: Now AD-aware - detects and preserves AD node pointers
@@ -35697,9 +34807,7 @@ private:
         {
             Value* tref_dtype = builder->CreateLoad(int64_type,
                 builder->CreateStructGEP(tensor_type, vector_ptr, 4), "tref_dtype");
-            Value* tref_is_tagged = builder->CreateOr(
-                builder->CreateICmpEQ(tref_dtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)),
-                builder->CreateICmpEQ(tref_dtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)));
+            Value* tref_is_tagged = ctx_->emitDtypeHasTaggedSlots(tref_dtype);
             BasicBlock* tref_tagged = BasicBlock::Create(*context, "vref_tensor_tagged_slot", current_func);
             BasicBlock* tref_numeric = BasicBlock::Create(*context, "vref_tensor_numeric_slot", current_func);
             builder->CreateCondBr(tref_is_tagged, tref_tagged, tref_numeric);
@@ -35827,10 +34935,7 @@ private:
         return final_result;
     }
 
-
-    // matmul: (matmul A B) - Matrix multiplication [M x K] @ [K x N] -> [M x N]
-    // Uses BLAS (Accelerate/OpenBLAS) for large matrices via runtime dispatch
-    Value* codegenMatmul(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMatmul(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("matmul requires exactly 2 arguments");
             return nullptr;
@@ -35987,9 +35092,10 @@ private:
                 builder->CreateStructGEP(tensor_type, ptr_a, 4));
             Value* b_dtype = builder->CreateLoad(int64_type,
                 builder->CreateStructGEP(tensor_type, ptr_b, 4));
-            Value* dual_code = ConstantInt::get(int64_type, eshkol::TensorCodegen::TENSOR_DTYPE_DUAL);
-            Value* a_is_dual = builder->CreateICmpEQ(a_dtype, dual_code);
-            Value* b_is_dual = builder->CreateICmpEQ(b_dtype, dual_code);
+            // ADR-0058: an exact tensor takes the same tagged kernel, which
+            // multiplies and sums through the generic exact ring.
+            Value* a_is_dual = ctx_->emitDtypeIsTaggedNumeric(a_dtype);
+            Value* b_is_dual = ctx_->emitDtypeIsTaggedNumeric(b_dtype);
             Value* any_dual = builder->CreateOr(a_is_dual, b_is_dual);
 
             Function* mm_fn = builder->GetInsertBlock()->getParent();
@@ -36552,9 +35658,7 @@ private:
         return mm_result_phi;
     }
 
-
-    // trace: (trace matrix) - Sum of diagonal elements
-    Value* codegenTrace(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenTrace(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("trace requires exactly 1 argument");
             return nullptr;
@@ -36648,11 +35752,7 @@ private:
         return packDoubleToTaggedValue(result_phi);
     }
 
-    // det: Now implemented in lib/math.esk using pure Eshkol
-    // The compiler-level implementation was removed due to complexity.
-
-    // norm: (norm vector) - Euclidean norm (L2 norm)
-    Value* codegenNorm(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenNorm(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("norm requires exactly 1 argument");
             return nullptr;
@@ -36783,8 +35883,7 @@ private:
         return packDoubleToTaggedValue(norm_result);
     }
 
-    // outer: (outer v1 v2) - Outer product of two vectors
-    Value* codegenOuterProduct(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenOuterProduct(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("outer requires exactly 2 arguments");
             return nullptr;
@@ -36898,9 +35997,7 @@ private:
         return packPtrToTaggedValue(result_int, ESHKOL_VALUE_HEAP_PTR);
     }
 
-    // Symbolic differentiation function
-    // Returns S-expression (list) representing symbolic derivative formula
-    Value* codegenDiff(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenDiff(const eshkol_operations_t* op) {
         if (!op->diff_op.expression || !op->diff_op.variable) {
             eshkol_error("Invalid diff operation");
             return nullptr;
@@ -36943,16 +36040,10 @@ private:
             Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
             builder->CreateCall(raise_func, {exception});
             builder->CreateUnreachable();
-            // codegenAST callers expect to keep emitting into the block this
-            // function leaves the builder positioned in (e.g. `guard`'s
-            // try-block epilogue branches to its merge block right after
-            // this call returns) — CreateUnreachable() above terminates the
-            // current block, so a fresh, unreachable-but-unterminated block
-            // is required here, exactly like the borrow-violation raise
-            // above (codegenSet's "mutation of borrowed value" path).
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* after_raise_bb = BasicBlock::Create(*context, "diff_quote_unreachable", current_func);
-            builder->SetInsertPoint(after_raise_bb);
+            // codegenAST callers keep emitting into the block this function
+            // leaves the builder on (e.g. `guard`'s try-block epilogue
+            // branches to its merge block right after this call returns).
+            eshkol::continueAfterNoReturn(*builder, "diff_quote_unreachable");
             return packNullToTaggedValue();
         }
 
@@ -36991,11 +36082,8 @@ private:
 
         return result;
     }
-    
-    // ===== PHASE 0: AUTODIFF TYPE-AWARE HELPERS =====
-    
-    // Helper: Detect if an expression evaluates to double type
-    bool isDoubleExpression(const eshkol_ast_t* expr) {
+
+bool EshkolLLVMCodeGen::isDoubleExpression(const eshkol_ast_t* expr) {
         if (!expr) return false;
         
         switch (expr->type) {
@@ -37038,9 +36126,8 @@ private:
                 return false;
         }
     }
-    
-    // Helper: Type-aware multiplication for derivatives
-    Value* createTypedMul(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+
+Value* EshkolLLVMCodeGen::createTypedMul(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
         if (isDoubleExpression(reference_expr)) {
             // Convert both to double if needed
             if (a->getType()->isIntegerTy()) {
@@ -37061,9 +36148,8 @@ private:
             return builder->CreateMul(a, b);
         }
     }
-    
-    // Helper: Type-aware addition for derivatives
-    Value* createTypedAdd(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+
+Value* EshkolLLVMCodeGen::createTypedAdd(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
         if (isDoubleExpression(reference_expr)) {
             // Convert both to double if needed
             if (a->getType()->isIntegerTy()) {
@@ -37084,9 +36170,8 @@ private:
             return builder->CreateAdd(a, b);
         }
     }
-    
-    // Helper: Type-aware subtraction for derivatives
-    Value* createTypedSub(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+
+Value* EshkolLLVMCodeGen::createTypedSub(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
         if (isDoubleExpression(reference_expr)) {
             // Convert both to double if needed
             if (a->getType()->isIntegerTy()) {
@@ -37107,9 +36192,8 @@ private:
             return builder->CreateSub(a, b);
         }
     }
-    
-    // Helper: Type-aware division for derivatives
-    Value* createTypedDiv(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
+
+Value* EshkolLLVMCodeGen::createTypedDiv(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
         // Division always returns double
         if (a->getType()->isIntegerTy()) {
             a = builder->CreateSIToFP(a, double_type);
@@ -37119,46 +36203,37 @@ private:
         }
         return builder->CreateFDiv(a, b);
     }
-    // ===== SYMBOLIC DIFFERENTIATION HELPER FUNCTIONS =====
-    // AST-based symbolic derivative builder (compile-time transformation)
-    
-    // Helper: Check if AST is a constant (number)
-    bool isConstant(const eshkol_ast_t* ast) {
+
+bool EshkolLLVMCodeGen::isConstant(const eshkol_ast_t* ast) {
         return ast && (ast->type == ESHKOL_INT64 || ast->type == ESHKOL_DOUBLE);
     }
-    
-    // Helper: Check if AST is specific variable
-    bool isVariable(const eshkol_ast_t* ast, const char* var_name) {
+
+bool EshkolLLVMCodeGen::isVariable(const eshkol_ast_t* ast, const char* var_name) {
         return ast && ast->type == ESHKOL_VAR &&
                ast->variable.id && strcmp(ast->variable.id, var_name) == 0;
     }
-    
-    // Helper: Check if constant equals specific value
-    bool isConstantValue(const eshkol_ast_t* ast, double value) {
+
+bool EshkolLLVMCodeGen::isConstantValue(const eshkol_ast_t* ast, double value) {
         if (ast->type == ESHKOL_INT64) return (double)ast->int64_val == value;
         if (ast->type == ESHKOL_DOUBLE) return ast->double_val == value;
         return false;
     }
-    
-    // Helper: Check if constant equals 0
-    bool isConstantZero(const eshkol_ast_t* ast) {
+
+bool EshkolLLVMCodeGen::isConstantZero(const eshkol_ast_t* ast) {
         return isConstantValue(ast, 0.0);
     }
-    
-    // Helper: Check if constant equals 1
-    bool isConstantOne(const eshkol_ast_t* ast) {
+
+bool EshkolLLVMCodeGen::isConstantOne(const eshkol_ast_t* ast) {
         return isConstantValue(ast, 1.0);
     }
 
-    // Helper: Get numeric value from constant AST node
-    double getConstantValue(const eshkol_ast_t* ast) {
+double EshkolLLVMCodeGen::getConstantValue(const eshkol_ast_t* ast) {
         if (ast->type == ESHKOL_INT64) return (double)ast->int64_val;
         if (ast->type == ESHKOL_DOUBLE) return ast->double_val;
         return 0.0;
     }
 
-    // Helper: Check if two ASTs are structurally identical
-    bool astEqual(const eshkol_ast_t* a, const eshkol_ast_t* b) {
+bool EshkolLLVMCodeGen::astEqual(const eshkol_ast_t* a, const eshkol_ast_t* b) {
         if (!a || !b) return a == b;
         if (a->type != b->type) return false;
         switch (a->type) {
@@ -37186,8 +36261,7 @@ private:
         }
     }
 
-    // Helper: Check if AST is a call to a specific function
-    bool isCallTo(const eshkol_ast_t* ast, const char* func_name) {
+bool EshkolLLVMCodeGen::isCallTo(const eshkol_ast_t* ast, const char* func_name) {
         return ast && ast->type == ESHKOL_OP &&
                ast->operation.op == ESHKOL_CALL_OP &&
                ast->operation.call_op.func &&
@@ -37196,8 +36270,7 @@ private:
                strcmp(ast->operation.call_op.func->variable.id, func_name) == 0;
     }
 
-    // Helper: Check if AST contains the given variable
-    bool containsVariable(const eshkol_ast_t* ast, const char* var) {
+bool EshkolLLVMCodeGen::containsVariable(const eshkol_ast_t* ast, const char* var) {
         if (!ast || !var) return false;
         switch (ast->type) {
             case ESHKOL_VAR:
@@ -37214,11 +36287,7 @@ private:
         }
     }
 
-    // ===== EXPRESSION SIMPLIFICATION ENGINE =====
-    // Post-differentiation simplification: algebraic identities, constant folding,
-    // log/exp cancellation, term collection. Called after each differentiation step.
-
-    eshkol_ast_t* simplifySymbolicAST(eshkol_ast_t* ast) {
+eshkol_ast_t* EshkolLLVMCodeGen::simplifySymbolicAST(eshkol_ast_t* ast) {
         if (!ast) return ast;
 
         // Base cases: constants and variables are already simplified
@@ -37380,11 +36449,7 @@ private:
         return eshkol_copy_ast(ast);
     }
 
-    // ===== HIGHER-ORDER SYMBOLIC DERIVATIVES =====
-    // Apply differentiation n times with simplification after each step
-
-    // Core symbolic differentiation function (AST → AST transformation)
-    eshkol_ast_t* buildSymbolicDerivative(const eshkol_ast_t* expr, const char* var) {
+eshkol_ast_t* EshkolLLVMCodeGen::buildSymbolicDerivative(const eshkol_ast_t* expr, const char* var) {
         if (!expr || !var) return eshkol_make_int_ast(0);
         
         switch (expr->type) {
@@ -37407,9 +36472,8 @@ private:
                 return eshkol_make_int_ast(0);
         }
     }
-    
-    // Differentiate operations (symbolic, AST-based)
-    eshkol_ast_t* differentiateOperationSymbolic(const eshkol_operations_t* op, const char* var) {
+
+eshkol_ast_t* EshkolLLVMCodeGen::differentiateOperationSymbolic(const eshkol_operations_t* op, const char* var) {
         if (!op) return eshkol_make_int_ast(0);
 
         // Handle lambda: differentiate the body expression
@@ -37766,10 +36830,273 @@ private:
         return eshkol_make_int_ast(0);
     }
 
-    // Convert AST to runtime S-expression (quoted list). Identifiers carry
-    // their source spelling: this is also the source form of a procedure,
-    // whose binders the expander renamed (syntax_color.h).
-    Value* codegenQuotedAST(const eshkol_ast_t* ast) {
+bool EshkolLLVMCodeGen::tryEncodeQuotedDatum(const eshkol_ast_t* root,
+                                             std::vector<uint8_t>& out) const {
+        if (!root) return false;
+        out.clear();
+
+        auto push_u32 = [&](uint32_t v) {
+            out.push_back(static_cast<uint8_t>(v & 0xFFu));
+            out.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
+            out.push_back(static_cast<uint8_t>((v >> 16) & 0xFFu));
+            out.push_back(static_cast<uint8_t>((v >> 24) & 0xFFu));
+        };
+        auto push_u64 = [&](uint64_t v) {
+            push_u32(static_cast<uint32_t>(v & 0xFFFFFFFFu));
+            push_u32(static_cast<uint32_t>((v >> 32) & 0xFFFFFFFFu));
+        };
+        auto emit_symbol = [&](const std::string& name) -> bool {
+            const size_t len = name.size();
+            if (len > UINT32_MAX - 1) return false;
+            out.push_back(0x07);  // QD_SYMBOL
+            push_u32(static_cast<uint32_t>(len));
+            out.insert(out.end(),
+                       reinterpret_cast<const uint8_t*>(name.c_str()),
+                       reinterpret_cast<const uint8_t*>(name.c_str()) + len + 1);
+            return true;
+        };
+
+        enum class WorkKind : uint8_t { Node, Op, Symbol };
+        struct WorkItem {
+            WorkKind kind;
+            uint8_t op;
+            const eshkol_ast_t* node;
+            const char* sym;
+        };
+        std::vector<WorkItem> work;
+        work.push_back({WorkKind::Node, 0, root, nullptr});
+
+        while (!work.empty()) {
+            const WorkItem item = work.back();
+            work.pop_back();
+
+            if (item.kind == WorkKind::Op) {
+                out.push_back(item.op);
+                continue;
+            }
+            if (item.kind == WorkKind::Symbol) {
+                if (!item.sym || !emit_symbol(eshkol_syntax_source_name(item.sym))) return false;
+                continue;
+            }
+
+            const eshkol_ast_t* ast = item.node;
+            if (!ast) {
+                out.push_back(0x00);  // QD_NULL
+                continue;
+            }
+            switch (ast->type) {
+                case ESHKOL_NULL:
+                    out.push_back(0x00);  // QD_NULL
+                    break;
+                case ESHKOL_BOOL:
+                    out.push_back(ast->int64_val ? 0x02 : 0x01);  // QD_BOOL_T / QD_BOOL_F
+                    break;
+                case ESHKOL_INT64:
+                    out.push_back(0x03);  // QD_INT64
+                    push_u64(static_cast<uint64_t>(ast->int64_val));
+                    break;
+                case ESHKOL_UINT64:
+                    if (ast->int64_val == 0) {
+                        out.push_back(0x00);  // QD_NULL
+                    } else {
+                        out.push_back(0x03);  // QD_INT64
+                        push_u64(static_cast<uint64_t>(ast->int64_val));
+                    }
+                    break;
+                case ESHKOL_DOUBLE: {
+                    uint64_t bits = 0;
+                    static_assert(sizeof(bits) == sizeof(ast->double_val));
+                    std::memcpy(&bits, &ast->double_val, sizeof(bits));
+                    out.push_back(0x04);  // QD_DOUBLE
+                    push_u64(bits);
+                    break;
+                }
+                case ESHKOL_CHAR:
+                    out.push_back(0x05);  // QD_CHAR
+                    push_u64(static_cast<uint64_t>(ast->int64_val));
+                    break;
+                case ESHKOL_STRING: {
+                    const size_t slen = ast->str_val.size > 0 ? ast->str_val.size - 1 : 0;
+                    if (slen > UINT32_MAX || (slen > 0 && !ast->str_val.ptr)) return false;
+                    out.push_back(0x06);  // QD_STRING
+                    push_u32(static_cast<uint32_t>(slen));
+                    if (slen > 0) {
+                        out.insert(out.end(),
+                                   reinterpret_cast<const uint8_t*>(ast->str_val.ptr),
+                                   reinterpret_cast<const uint8_t*>(ast->str_val.ptr) + slen);
+                    }
+                    break;
+                }
+                case ESHKOL_VAR:
+                    if (!ast->variable.id) return false;
+                    if (!emit_symbol(eshkol_syntax_source_name(ast->variable.id))) return false;
+                    break;
+                case ESHKOL_SYMBOL:
+                    if (!ast->str_val.ptr) return false;
+                    if (!emit_symbol(ast->str_val.ptr)) return false;
+                    break;
+                case ESHKOL_BIGNUM_LITERAL: {
+                    if (!ast->str_val.ptr) return false;
+                    const size_t slen = std::strlen(ast->str_val.ptr);
+                    if (slen > UINT32_MAX) return false;
+                    out.push_back(0x08);  // QD_BIGNUM
+                    push_u32(static_cast<uint32_t>(slen));
+                    out.insert(out.end(),
+                               reinterpret_cast<const uint8_t*>(ast->str_val.ptr),
+                               reinterpret_cast<const uint8_t*>(ast->str_val.ptr) + slen);
+                    break;
+                }
+                case ESHKOL_OP: {
+                    const eshkol_operations_t* op = &ast->operation;
+                    if (op->op != ESHKOL_CALL_OP) return false;
+                    if (isQuotedRationalLiteralDesugar(op) || isQuotedComplexLiteralDesugar(op))
+                        return false;
+                    if (op->call_op.func && op->call_op.func->type != ESHKOL_VAR)
+                        return false;
+
+                    const char* func_name =
+                        (op->call_op.func && op->call_op.func->variable.id)
+                            ? op->call_op.func->variable.id
+                            : nullptr;
+                    // Dotted pair: (cons car cdr)
+                    if (func_name && std::strcmp(func_name, "cons") == 0 &&
+                        op->call_op.num_vars == 2) {
+                        work.push_back({WorkKind::Op, 0x0A, nullptr, nullptr});  // QD_PREPEND
+                        work.push_back({WorkKind::Node, 0, &op->call_op.variables[0], nullptr});
+                        work.push_back({WorkKind::Node, 0, &op->call_op.variables[1], nullptr});
+                        break;
+                    }
+
+                    const bool has_head_sym =
+                        func_name != nullptr && std::strcmp(func_name, "list") != 0;
+                    const uint64_t total = op->call_op.num_vars + (has_head_sym ? 1u : 0u);
+                    if (total == 0) {
+                        out.push_back(0x00);  // QD_NULL
+                        break;
+                    }
+                    if (total == 1) {
+                        work.push_back({WorkKind::Op, 0x09, nullptr, nullptr});  // QD_CONS_NIL
+                        if (has_head_sym) {
+                            work.push_back({WorkKind::Symbol, 0, nullptr, func_name});
+                        } else {
+                            work.push_back({WorkKind::Node, 0, &op->call_op.variables[0], nullptr});
+                        }
+                        break;
+                    }
+
+                    // Multi-element list: emit QD_NULL, then elements right-to-left
+                    // paired with QD_PREPEND so runtime stack depth stays O(1).
+                    if (has_head_sym) {
+                        work.push_back({WorkKind::Op, 0x0A, nullptr, nullptr});  // QD_PREPEND
+                        work.push_back({WorkKind::Symbol, 0, nullptr, func_name});
+                    }
+                    for (uint64_t i = 0; i < op->call_op.num_vars; ++i) {
+                        work.push_back({WorkKind::Op, 0x0A, nullptr, nullptr});  // QD_PREPEND
+                        work.push_back({WorkKind::Node, 0, &op->call_op.variables[i], nullptr});
+                    }
+                    work.push_back({WorkKind::Op, 0x00, nullptr, nullptr});  // QD_NULL
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+        return !out.empty();
+    }
+
+Value* EshkolLLVMCodeGen::codegenQuotedDatumFromBytes(const std::vector<uint8_t>& bytes) {
+        Value* arena_ptr = getArenaPtr();
+        if (!arena_ptr) {
+            eshkol_error("Arena not initialized for quoted datum construction");
+            return packNullToTaggedValue();
+        }
+        Constant* byte_array = ConstantDataArray::get(
+            *context, ArrayRef<uint8_t>(bytes.data(), bytes.size()));
+        auto* data_global = new GlobalVariable(
+            *module,
+            byte_array->getType(),
+            /*isConstant=*/true,
+            GlobalValue::PrivateLinkage,
+            byte_array,
+            ".eshkol.quoted_datum");
+        data_global->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        data_global->setAlignment(Align(1));
+
+        Type* ptr_ty = PointerType::getUnqual(*context);
+        FunctionCallee build_fn = module->getOrInsertFunction(
+            "eshkol_build_quoted_datum_sret",
+            FunctionType::get(Type::getVoidTy(*context),
+                              {ptr_ty, ptr_ty, ptr_ty, int64_type},
+                              false));
+
+        // Hoist the single SRET slot to the function entry block.
+        Value* out_alloca = nullptr;
+        {
+            IRBuilderBase::InsertPoint saved = builder->saveIP();
+            Function* fn = builder->GetInsertBlock()->getParent();
+            if (fn && !fn->empty()) {
+                BasicBlock& entry = fn->getEntryBlock();
+                builder->SetInsertPoint(&entry, entry.begin());
+            }
+            out_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_datum_out");
+            builder->restoreIP(saved);
+        }
+        Value* data_ptr = builder->CreateBitCast(data_global, ptr_ty);
+        builder->CreateCall(
+            build_fn,
+            {out_alloca, arena_ptr, data_ptr,
+             ConstantInt::get(int64_type, static_cast<uint64_t>(bytes.size()))});
+        return builder->CreateLoad(tagged_value_type, out_alloca, "quoted_datum_val");
+    }
+
+Value* EshkolLLVMCodeGen::codegenQuotedAST(const eshkol_ast_t* ast) {
+        if (!ast) return packNullToTaggedValue();
+
+        auto built = quoted_built_.find(ast);
+        if (built != quoted_built_.end()) return built->second;
+
+        if (quoted_flattening_ || !isQuotedListNode(ast))
+            return codegenQuotedASTNode(ast);
+
+        // Pre-order walk of the nested-list spine; reversing it puts every
+        // node after all of its descendants.
+        std::vector<const eshkol_ast_t*> order;
+        std::vector<const eshkol_ast_t*> pending{ast};
+        uint64_t total_elems = 0;
+        while (!pending.empty()) {
+            const eshkol_ast_t* node = pending.back();
+            pending.pop_back();
+            order.push_back(node);
+            const eshkol_operations_t* op = &node->operation;
+            total_elems += op->call_op.num_vars;
+            for (int64_t i = (int64_t)op->call_op.num_vars - 1; i >= 0; --i) {
+                const eshkol_ast_t* child = &op->call_op.variables[i];
+                if (isQuotedListNode(child)) pending.push_back(child);
+            }
+        }
+
+        // Large quoted data trees are materialized from a compact read-only
+        // bytecode descriptor instead of emitting inline per-cons-cell IR.
+        constexpr size_t kCompactQuotedDatumThreshold = 64;
+        if (order.size() >= kCompactQuotedDatumThreshold ||
+            total_elems >= kCompactQuotedDatumThreshold) {
+            std::vector<uint8_t> encoded;
+            if (tryEncodeQuotedDatum(ast, encoded)) {
+                return codegenQuotedDatumFromBytes(encoded);
+            }
+        }
+
+        quoted_flattening_ = true;
+        for (size_t i = order.size(); i-- > 0;)
+            quoted_built_[order[i]] = codegenQuotedASTNode(order[i]);
+        quoted_flattening_ = false;
+
+        Value* result = quoted_built_[ast];
+        quoted_built_.clear();
+        return result;
+    }
+
+Value* EshkolLLVMCodeGen::codegenQuotedASTNode(const eshkol_ast_t* ast) {
         if (!ast) return packNullToTaggedValue();
 
         switch (ast->type) {
@@ -37872,8 +37199,7 @@ private:
         }
     }
 
-    // Handle operation AST nodes for S-expression generation
-    Value* codegenQuotedOperation(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuotedOperation(const eshkol_operations_t* op) {
         if (!op) return packNullToTaggedValue();
 
         {
@@ -37904,7 +37230,7 @@ private:
                     ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
-                    ESHKOL_UNLESS_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_UNLESS_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                     ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -38272,8 +37598,7 @@ private:
         }
     }
 
-    // Helper to build (op arg1 arg2 ...) for n-ary operations
-    Value* codegenQuotedNaryOp(const char* op_name, const eshkol_ast_t* args, uint64_t num_args) {
+Value* EshkolLLVMCodeGen::codegenQuotedNaryOp(const char* op_name, const eshkol_ast_t* args, uint64_t num_args) {
         Value* op_sym = packPtrToTaggedValue(ctx_->internStringWithHeader(op_name, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
         Value* result = packNullToTaggedValue();
 
@@ -38287,20 +37612,8 @@ private:
         result = codegenTaggedArenaConsCellFromTaggedValue(op_sym, result);
         return packPtrToTaggedValue(builder->CreateIntToPtr(result, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
     }
-    
-    // True when `op` is exactly the `n/d` -> `(make-rational n d)` desugar
-    // the parser synthesizes for a rational-literal token (parser.cpp,
-    // parse_atom's TOKEN_NUMBER '/' branch): a call to "make-rational" with
-    // precisely two operands, each an int64 or bignum-magnitude LITERAL.
-    //
-    // This is deliberately the same whitelist autodiff_codegen.cpp's
-    // towerSafeExpr uses to accept a rational literal into the exact AD
-    // tier, and for the same reason: `(make-rational n d)` written directly
-    // by a user is indistinguishable in the AST from the literal's desugar,
-    // so only the shape a literal can actually produce is treated as a
-    // literal. `(make-rational x 3)` (a variable operand) is a genuine call
-    // and must still be quoted as list data.
-    static bool isQuotedRationalLiteralDesugar(const eshkol_operations_t* op) {
+
+bool EshkolLLVMCodeGen::isQuotedRationalLiteralDesugar(const eshkol_operations_t* op) {
         if (!op || op->op != ESHKOL_CALL_OP) return false;
         const auto& call = op->call_op;
         if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
@@ -38313,12 +37626,7 @@ private:
         return true;
     }
 
-    // True when `op` is exactly the complex-literal desugar the parser
-    // synthesizes (parser.cpp, parse_atom's TOKEN_NUMBER branch): a call to
-    // "make-rectangular" with two DOUBLE literal operands. A complex literal's
-    // parts are always inexact, so a variable or exact operand is a genuine
-    // call and stays list data under quote.
-    static bool isQuotedComplexLiteralDesugar(const eshkol_operations_t* op) {
+bool EshkolLLVMCodeGen::isQuotedComplexLiteralDesugar(const eshkol_operations_t* op) {
         if (!op || op->op != ESHKOL_CALL_OP) return false;
         const auto& call = op->call_op;
         if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
@@ -38327,13 +37635,7 @@ private:
         return call.variables[0].type == ESHKOL_DOUBLE && call.variables[1].type == ESHKOL_DOUBLE;
     }
 
-    // Construct the actual rational VALUE for a quoted `n/d` literal
-    // (isQuotedRationalLiteralDesugar already verified the shape). Routes
-    // through the same eshkol_rational_make_tagged runtime entry point the
-    // evaluated `(make-rational n d)` call uses (see the
-    // func_name == "make-rational" arm above), so a quoted bignum-rational
-    // literal and its evaluated twin are the same runtime value (SW-163).
-    Value* codegenQuotedRationalLiteral(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuotedRationalLiteral(const eshkol_operations_t* op) {
         Value* num_tagged = codegenQuotedAST(&op->call_op.variables[0]);
         Value* den_tagged = codegenQuotedAST(&op->call_op.variables[1]);
 
@@ -38353,8 +37655,7 @@ private:
         return builder->CreateLoad(tagged_value_type, result_alloca, "quoted_make_rational_result");
     }
 
-    // Build runtime S-expression list from call operation
-    Value* codegenQuotedList(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuotedList(const eshkol_operations_t* op) {
         if (!op || op->op != ESHKOL_CALL_OP) {
             return packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
         }
@@ -38433,12 +37734,8 @@ private:
         // SYMBOLIC DIFF FIX: Return int64 pointer, not tagged (for consistency with codegenQuotedAST caller)
         return result_int;
     }
-        
-    // ===== LAMBDA S-EXPRESSION HOMOICONIC DISPLAY =====
-    // Convert lambda AST to runtime S-expression for code-as-data display
-    
-    // Helper: Build parameter list as cons chain: (param1 param2 ...)
-    Value* buildParameterList(const eshkol_ast_t* params, uint64_t num_params) {
+
+Value* EshkolLLVMCodeGen::buildParameterList(const eshkol_ast_t* params, uint64_t num_params) {
         if (num_params == 0) {
             return ConstantInt::get(int64_type, 0); // Empty list
         }
@@ -38470,11 +37767,14 @@ private:
         
         return result;
     }
-    
-    // Convert lambda or function definition AST to runtime S-expression for homoiconic display
-    // Returns cons list pointer (int64): (lambda (param1 param2 ...) body)
-    // Handles both LAMBDA_OP and DEFINE_OP (for named function definitions)
-    Value* codegenLambdaToSExpr(const eshkol_operations_t* op) {
+
+Value* EshkolLLVMCodeGen::codegenLambdaToSExpr(const eshkol_operations_t* op) {
+        struct MetadataConsScope {
+            bool& flag;
+            bool previous;
+            explicit MetadataConsScope(bool& value) : flag(value), previous(value) { flag = true; }
+            ~MetadataConsScope() { flag = previous; }
+        } metadata_cons_scope(outlining_metadata_cons);
         if (!op) {
             eshkol_error("codegenLambdaToSExpr: null operation");
             return ConstantInt::get(int64_type, 0);
@@ -38557,273 +37857,192 @@ private:
         return result;
     }
 
-    // ===== END LAMBDA S-EXPRESSION HOMOICONIC DISPLAY =====
-    
-    // ===== DUAL NUMBER LLVM IR HELPER FUNCTIONS =====
-    
-    // MIGRATED: Pack value and derivative into dual number struct - delegates to AutodiffCodegen
-    Value* packDualNumber(Value* value, Value* derivative) {
+Value* EshkolLLVMCodeGen::packDualNumber(Value* value, Value* derivative) {
         return autodiff_->createDualNumber(value, derivative);
     }
 
-    // MIGRATED: Unpack dual number into value and derivative components - uses AutodiffCodegen
-    std::pair<Value*, Value*> unpackDualNumber(Value* dual) {
+std::pair<Value*, Value*> EshkolLLVMCodeGen::unpackDualNumber(Value* dual) {
         if (!dual) return {nullptr, nullptr};
         return {autodiff_->getDualPrimal(dual), autodiff_->getDualTangent(dual)};
     }
-    
-    // MIGRATED: Pack dual number into tagged value for storage - delegates to AutodiffCodegen
-    Value* packDualToTaggedValue(Value* dual) {
+
+Value* EshkolLLVMCodeGen::packDualToTaggedValue(Value* dual) {
         return autodiff_->packDualToTagged(dual);
     }
 
-    // MIGRATED: Unpack dual number from tagged value - delegates to AutodiffCodegen
-    Value* unpackDualFromTaggedValue(Value* tagged) {
+Value* EshkolLLVMCodeGen::unpackDualFromTaggedValue(Value* tagged) {
         return autodiff_->unpackDualFromTagged(tagged);
     }
-    
-    // ===== END DUAL NUMBER HELPERS =====
-    
-    // ===== PHASE 2: DUAL NUMBER ARITHMETIC OPERATIONS =====
-    // MIGRATED: These all delegate to AutodiffCodegen
 
-    // MIGRATED: Addition: (a, a') + (b, b') = (a+b, a'+b')
-    Value* dualAdd(Value* dual_a, Value* dual_b) {
+Value* EshkolLLVMCodeGen::dualAdd(Value* dual_a, Value* dual_b) {
         return autodiff_->dualAdd(dual_a, dual_b);
     }
 
-    // MIGRATED: Subtraction: (a, a') - (b, b') = (a-b, a'-b')
-    Value* dualSub(Value* dual_a, Value* dual_b) {
+Value* EshkolLLVMCodeGen::dualSub(Value* dual_a, Value* dual_b) {
         return autodiff_->dualSub(dual_a, dual_b);
     }
 
-    // MIGRATED: Multiplication: (a, a') * (b, b') = (a*b, a'*b + a*b')
-    Value* dualMul(Value* dual_a, Value* dual_b) {
+Value* EshkolLLVMCodeGen::dualMul(Value* dual_a, Value* dual_b) {
         return autodiff_->dualMul(dual_a, dual_b);
     }
 
-    // MIGRATED: Division: (a, a') / (b, b') = (a/b, (a'*b - a*b')/b²)
-    Value* dualDiv(Value* dual_a, Value* dual_b) {
+Value* EshkolLLVMCodeGen::dualDiv(Value* dual_a, Value* dual_b) {
         return autodiff_->dualDiv(dual_a, dual_b);
     }
-    
-    // MIGRATED: Dual number math operations - now delegate to AutodiffCodegen
 
-    // Sine: sin(a, a') = (sin(a), a' * cos(a))
-    Value* dualSin(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualSin(Value* dual_a) {
         return autodiff_->dualSin(dual_a);
     }
 
-    // Cosine: cos(a, a') = (cos(a), -a' * sin(a))
-    Value* dualCos(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualCos(Value* dual_a) {
         return autodiff_->dualCos(dual_a);
     }
 
-    // Exponential: exp(a, a') = (exp(a), a' * exp(a))
-    Value* dualExp(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualExp(Value* dual_a) {
         return autodiff_->dualExp(dual_a);
     }
 
-    // Logarithm: log(a, a') = (log(a), a'/a)
-    Value* dualLog(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualLog(Value* dual_a) {
         return autodiff_->dualLog(dual_a);
     }
 
-    // Tangent: tan(a, a') = (tan(a), a' * sec²(a))
-    Value* dualTan(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualTan(Value* dual_a) {
         return autodiff_->dualTan(dual_a);
     }
 
-    // Hyperbolic sine: sinh(a, a') = (sinh(a), a' * cosh(a))
-    Value* dualSinh(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualSinh(Value* dual_a) {
         return autodiff_->dualSinh(dual_a);
     }
 
-    // Hyperbolic cosine: cosh(a, a') = (cosh(a), a' * sinh(a))
-    Value* dualCosh(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualCosh(Value* dual_a) {
         return autodiff_->dualCosh(dual_a);
     }
 
-    // Hyperbolic tangent: tanh(a, a') = (tanh(a), a' * sech²(a))
-    Value* dualTanh(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualTanh(Value* dual_a) {
         return autodiff_->dualTanh(dual_a);
     }
 
-    // Absolute value: abs(a, a') = (|a|, a' * sign(a))
-    Value* dualAbs(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAbs(Value* dual_a) {
         return autodiff_->dualAbs(dual_a);
     }
 
-    // Square root: sqrt(a, a') = (sqrt(a), a' / (2 * sqrt(a)))
-    Value* dualSqrt(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualSqrt(Value* dual_a) {
         return autodiff_->dualSqrt(dual_a);
     }
 
-    // Power: (a, a')^(b, b') = (a^b, a^b * (b' * log(a) + b * a'/a))
-    Value* dualPow(Value* dual_a, Value* dual_b) {
+Value* EshkolLLVMCodeGen::dualPow(Value* dual_a, Value* dual_b) {
         return autodiff_->dualPow(dual_a, dual_b);
     }
 
-    // Negation: -(a, a') = (-a, -a')
-    Value* dualNeg(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualNeg(Value* dual_a) {
         return autodiff_->dualNeg(dual_a);
     }
 
-    // Arc sine: asin(a, a') = (asin(a), a' / sqrt(1 - a²))
-    Value* dualAsin(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAsin(Value* dual_a) {
         return autodiff_->dualAsin(dual_a);
     }
 
-    // Arc cosine: acos(a, a') = (acos(a), -a' / sqrt(1 - a²))
-    Value* dualAcos(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAcos(Value* dual_a) {
         return autodiff_->dualAcos(dual_a);
     }
 
-    // Arc tangent: atan(a, a') = (atan(a), a' / (1 + a²))
-    Value* dualAtan(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAtan(Value* dual_a) {
         return autodiff_->dualAtan(dual_a);
     }
 
-    // Inverse hyperbolic sine: asinh(a, a') = (asinh(a), a' / sqrt(1 + a²))
-    Value* dualAsinh(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAsinh(Value* dual_a) {
         return autodiff_->dualAsinh(dual_a);
     }
 
-    // Inverse hyperbolic cosine: acosh(a, a') = (acosh(a), a' / sqrt(a² - 1))
-    Value* dualAcosh(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAcosh(Value* dual_a) {
         return autodiff_->dualAcosh(dual_a);
     }
 
-    // Inverse hyperbolic tangent: atanh(a, a') = (atanh(a), a' / (1 - a²))
-    Value* dualAtanh(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualAtanh(Value* dual_a) {
         return autodiff_->dualAtanh(dual_a);
     }
 
-    // Base-10 logarithm: log10(a, a') = (log10(a), a' / (a * ln(10)))
-    Value* dualLog10(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualLog10(Value* dual_a) {
         return autodiff_->dualLog10(dual_a);
     }
 
-    // Base-2 logarithm: log2(a, a') = (log2(a), a' / (a * ln(2)))
-    Value* dualLog2(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualLog2(Value* dual_a) {
         return autodiff_->dualLog2(dual_a);
     }
 
-    // Base-2 exponential: exp2(a, a') = (2^a, a' * 2^a * ln(2))
-    Value* dualExp2(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualExp2(Value* dual_a) {
         return autodiff_->dualExp2(dual_a);
     }
 
-    // Cube root: cbrt(a, a') = (cbrt(a), a' / (3 * cbrt(a)²))
-    Value* dualCbrt(Value* dual_a) {
+Value* EshkolLLVMCodeGen::dualCbrt(Value* dual_a) {
         return autodiff_->dualCbrt(dual_a);
     }
 
-    // ===== END DUAL NUMBER ARITHMETIC =====
-
-    // ===== NESTED GRADIENT SUPPORT: TAPE STACK OPERATIONS =====
-    // MIGRATED: These delegate to AutodiffCodegen
-
-    // Push current tape context onto stack and activate new tape
-    void pushTapeContext(Value* new_tape) {
+void EshkolLLVMCodeGen::pushTapeContext(Value* new_tape) {
         autodiff_->pushTapeContext(new_tape);
     }
 
-    // Pop tape context from stack, restoring previous tape
-    void popTapeContext() {
+void EshkolLLVMCodeGen::popTapeContext() {
         autodiff_->popTapeContext();
     }
 
-    // ===== DOUBLE BACKWARD HELPER FUNCTIONS =====
-    // MIGRATED: These delegate to AutodiffCodegen
-
-    // Get the outer tape (from stack[depth-1])
-    Value* getOuterTape() {
+Value* EshkolLLVMCodeGen::getOuterTape() {
         return autodiff_->getOuterTape();
     }
 
-    // Check if currently nested (tape_depth > 0)
-    Value* isNested() {
+Value* EshkolLLVMCodeGen::isNested() {
         return autodiff_->isNested();
     }
 
-    // MIGRATED: Create AD constant node on a specific tape - delegates to AutodiffCodegen
-    Value* createADConstantOnTape(Value* tape_ptr, Value* value) {
+Value* EshkolLLVMCodeGen::createADConstantOnTape(Value* tape_ptr, Value* value) {
         return autodiff_->createADConstantOnTape(tape_ptr, value);
     }
 
-    // MIGRATED: Record binary operation on a specific tape - delegates to AutodiffCodegen
-    Value* recordADNodeBinaryOnTape(Value* tape_ptr, uint32_t op_type, Value* left_node, Value* right_node) {
+Value* EshkolLLVMCodeGen::recordADNodeBinaryOnTape(Value* tape_ptr, uint32_t op_type, Value* left_node, Value* right_node) {
         return autodiff_->recordADNodeBinaryOnTape(tape_ptr, op_type, left_node, right_node);
     }
 
-    // ===== PHASE 3: AD NODE HELPER FUNCTIONS =====
-    // Computational graph construction for reverse-mode automatic differentiation
-    
-    // MIGRATED: Create AD node for a constant value - delegates to AutodiffCodegen
-    Value* createADConstant(Value* value) {
+Value* EshkolLLVMCodeGen::createADConstant(Value* value) {
         return autodiff_->createADConstant(value);
     }
-    
-    // MIGRATED: Create AD variable node - delegates to AutodiffCodegen
-    Value* createADVariable(Value* value, size_t var_index) {
+
+Value* EshkolLLVMCodeGen::createADVariable(Value* value, size_t var_index) {
         return autodiff_->createADVariable(value, var_index);
     }
 
-    // MIGRATED: Record binary operation node - delegates to AutodiffCodegen
-    Value* recordADNodeBinary(uint32_t op_type, Value* left_node, Value* right_node) {
+Value* EshkolLLVMCodeGen::recordADNodeBinary(uint32_t op_type, Value* left_node, Value* right_node) {
         return autodiff_->recordADNodeBinary(op_type, left_node, right_node);
     }
 
-    // MIGRATED: Record unary operation node - delegates to AutodiffCodegen
-    Value* recordADNodeUnary(uint32_t op_type, Value* input_node) {
+Value* EshkolLLVMCodeGen::recordADNodeUnary(uint32_t op_type, Value* input_node) {
         return autodiff_->recordADNodeUnary(op_type, input_node);
     }
-    
-    // MIGRATED: AD node helpers delegate to AutodiffCodegen
-    Value* loadNodeValue(Value* node_ptr) {
+
+Value* EshkolLLVMCodeGen::loadNodeValue(Value* node_ptr) {
         return autodiff_->loadNodeValue(node_ptr);
     }
 
-    Value* loadNodeGradient(Value* node_ptr) {
+Value* EshkolLLVMCodeGen::loadNodeGradient(Value* node_ptr) {
         return autodiff_->loadNodeGradient(node_ptr);
     }
 
-    void storeNodeGradient(Value* node_ptr, Value* gradient) {
+void EshkolLLVMCodeGen::storeNodeGradient(Value* node_ptr, Value* gradient) {
         autodiff_->storeNodeGradient(node_ptr, gradient);
     }
 
-    void accumulateGradient(Value* node_ptr, Value* gradient_to_add) {
+void EshkolLLVMCodeGen::accumulateGradient(Value* node_ptr, Value* gradient_to_add) {
         autodiff_->accumulateGradient(node_ptr, gradient_to_add);
     }
-    
-    // MIGRATED: Load input node pointers - delegates to AutodiffCodegen
-    Value* loadNodeInput1(Value* node_ptr) {
+
+Value* EshkolLLVMCodeGen::loadNodeInput1(Value* node_ptr) {
         return autodiff_->loadNodeInput1(node_ptr);
     }
 
-    Value* loadNodeInput2(Value* node_ptr) {
+Value* EshkolLLVMCodeGen::loadNodeInput2(Value* node_ptr) {
         return autodiff_->loadNodeInput2(node_ptr);
     }
-    
-    // ===== END AD NODE HELPERS =====
-    // ===== PHASE 3: BACKWARD PASS IMPLEMENTATION =====
-    // Backpropagation through computational graph (delegated to AutodiffCodegen)
 
-    // ===== END BACKWARD PASS =====
-    
-    
-    // ===== PHASE 2: DERIVATIVE OPERATOR IMPLEMENTATION =====
-    // Runtime derivative computation using dual numbers
-
-    // Helper function to load captures for an autodiff function call
-    // Returns a vector of captured values that should be appended to call arguments
-
-    // ===== CALCULUS OPERATORS — All in AutodiffCodegen =====
-
-    // ===== OALR (Ownership-Aware Lexical Regions) CODEGEN =====
-
-    Value* codegenWithRegion(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenWithRegion(const eshkol_operations_t* op) {
         if (!op || !op->with_region_op.body || op->with_region_op.num_body_exprs == 0) {
             eshkol_error("Invalid with-region: missing body");
             return packNullToTaggedValue();
@@ -39014,9 +38233,7 @@ private:
         return result;
     }
 
-    // Codegen for (owned expr) - marks a value as owned (linear type)
-    // Sets ESHKOL_OBJ_FLAG_LINEAR on the object header so the value must be consumed exactly once
-    Value* codegenOwned(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenOwned(const eshkol_operations_t* op) {
         if (!op || !op->owned_op.value) {
             eshkol_error("Invalid owned expression: missing value");
             return packNullToTaggedValue();
@@ -39025,6 +38242,11 @@ private:
         eshkol_debug("Generating owned expression");
 
         Value* value = codegenAST(op->owned_op.value);
+        if (!value) return packNullToTaggedValue();
+        return codegenOwnedValue(value);
+    }
+
+Value* EshkolLLVMCodeGen::codegenOwnedValue(Value* value) {
         if (!value) return packNullToTaggedValue();
 
         // Only set LINEAR flag for heap-allocated values that have object headers
@@ -39055,9 +38277,8 @@ private:
         return value;
     }
 
-    // Codegen for (move value) - transfers ownership
-    // Sets CONSUMED flag on source object and nulls out the source binding
-    Value* codegenMove(const eshkol_operations_t* op) {
+// Codegen for (move value) - transfers ownership
+Value* EshkolLLVMCodeGen::codegenMove(const eshkol_operations_t* op) {
         if (!op || !op->move_op.value) {
             eshkol_error("Invalid move expression: missing value");
             return packNullToTaggedValue();
@@ -39067,57 +38288,34 @@ private:
 
         Value* value = codegenAST(op->move_op.value);
         if (!value) return packNullToTaggedValue();
+        return codegenMoveValue(op, value);
+    }
 
-        // Check if value is heap-allocated (has object header)
-        Value* type = getTaggedValueType(value);
-        Value* base_type = getBaseType(type);
-        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* has_header = builder->CreateOr(is_heap, is_callable);
+Value* EshkolLLVMCodeGen::codegenMoveValue(const eshkol_operations_t* op, Value* value) {
+        if (!op || !op->move_op.value || !value) return packNullToTaggedValue();
 
-        Function* func = builder->GetInsertBlock()->getParent();
-        BasicBlock* consume_bb = BasicBlock::Create(*context, "move_consume", func);
-        BasicBlock* done_bb = BasicBlock::Create(*context, "move_done", func);
-        builder->CreateCondBr(has_header, consume_bb, done_bb);
-
-        // Set CONSUMED flag on the source object header
-        builder->SetInsertPoint(consume_bb);
-        Value* ptr_int = unpackInt64FromTaggedValue(value);
-        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
-        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "move_flags");
-        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_CONSUMED));
-        builder->CreateStore(new_flags, flags_ptr);
-
-        // Null out the source binding if it's a variable reference
-        if (op->move_op.value->type == ESHKOL_VAR && op->move_op.value->variable.id) {
-            std::string var_name = op->move_op.value->variable.id;
-            auto it = symbol_table.find(var_name);
-            if (it != symbol_table.end()) {
-                Value* binding = it->second;
-                if (isa<AllocaInst>(binding) || isa<GlobalVariable>(binding)) {
-                    builder->CreateStore(packNullToTaggedValue(), binding);
-                }
-            }
+        const eshkol_ast_t* source = op->move_op.value;
+        if (source->type != ESHKOL_VAR || !source->variable.id) return value;
+        Value* storage = nullptr;
+        auto local = symbol_table.find(source->variable.id);
+        if (local != symbol_table.end()) {
+            storage = local->second;
+        } else {
+            auto global = global_symbol_table.find(source->variable.id);
+            if (global != global_symbol_table.end()) storage = global->second;
         }
-
-        // Clear the CONSUMED flag on the object for the new owner.
-        // The source binding is nulled out above, so the CONSUMED flag
-        // only needs to live on the source (which is now null).
-        // The new owner (receiver of move) gets a clean object.
-        Value* cleared_flags = builder->CreateAnd(old_flags,
-            ConstantInt::get(int8_type, ~ESHKOL_OBJ_FLAG_CONSUMED));
-        builder->CreateStore(cleared_flags, flags_ptr);
-
-        builder->CreateBr(done_bb);
-
-        builder->SetInsertPoint(done_bb);
+        // Ownership belongs to a binding. Clear only mutable tagged slots.
+        if (auto* slot = dyn_cast_or_null<AllocaInst>(storage)) {
+            if (slot->getAllocatedType() == tagged_value_type)
+                builder->CreateStore(packNullToTaggedValue(), slot);
+        } else if (auto* global = dyn_cast_or_null<GlobalVariable>(storage)) {
+            if (!global->isConstant() && global->getValueType() == tagged_value_type)
+                builder->CreateStore(packNullToTaggedValue(), global);
+        }
         return value;
     }
 
-    // Codegen for (borrow value body ...) - temporary read-only access with scope guard
-    // Sets BORROWED flag before body, clears it after body completes
-    Value* codegenBorrow(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBorrow(const eshkol_operations_t* op) {
         if (!op || !op->borrow_op.value || !op->borrow_op.body) {
             eshkol_error("Invalid borrow expression: missing value or body");
             return packNullToTaggedValue();
@@ -39185,9 +38383,7 @@ private:
         return result ? result : packNullToTaggedValue();
     }
 
-    // Codegen for (shared expr) - creates a reference-counted value
-    // Sets SHARED flag and initializes ref_count to 1 in the object header
-    Value* codegenShared(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenShared(const eshkol_operations_t* op) {
         if (!op || !op->shared_op.value) {
             eshkol_error("Invalid shared expression: missing value");
             return packNullToTaggedValue();
@@ -39196,6 +38392,11 @@ private:
         eshkol_debug("Generating shared expression");
 
         Value* value = codegenAST(op->shared_op.value);
+        if (!value) return packNullToTaggedValue();
+        return codegenSharedValue(value);
+    }
+
+Value* EshkolLLVMCodeGen::codegenSharedValue(Value* value) {
         if (!value) return packNullToTaggedValue();
 
         // Only set SHARED flag for heap-allocated values
@@ -39235,9 +38436,7 @@ private:
         return value;
     }
 
-    // Codegen for (weak-ref value) - creates a weak reference to a shared value
-    // Sets WEAK flag on the object header without incrementing ref_count
-    Value* codegenWeakRef(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenWeakRef(const eshkol_operations_t* op) {
         if (!op || !op->weak_ref_op.value) {
             eshkol_error("Invalid weak-ref expression: missing value");
             return packNullToTaggedValue();
@@ -39274,12 +38473,7 @@ private:
         return value;
     }
 
-    // ===== END OALR CODEGEN =====
-
-
-    // Core symbolic differentiation function
-    // Now works within lambda context - variable comes from lambda parameter
-    Value* differentiate(const eshkol_ast_t* expr, const char* var) {
+Value* EshkolLLVMCodeGen::differentiate(const eshkol_ast_t* expr, const char* var) {
         if (!expr || !var) return nullptr;
         
         // Variable should already be in symbol table from lambda parameter
@@ -39324,9 +38518,8 @@ private:
         // No symbol table restoration needed - variable stays from lambda context
         return result;
     }
-    
-    // Differentiate operations (arithmetic, functions, etc.)
-    Value* differentiateOperation(const eshkol_operations_t* op, const char* var) {
+
+Value* EshkolLLVMCodeGen::differentiateOperation(const eshkol_operations_t* op, const char* var) {
         if (!op) return ConstantInt::get(int64_type, 0);
         
         if (op->op == ESHKOL_CALL_OP && op->call_op.func &&
@@ -39613,8 +38806,8 @@ private:
         // Unknown operation - return 0
         return ConstantInt::get(int64_type, 0);
     }
-    
-    Value* codegenVectorToString(const eshkol_operations_t* op) {
+
+Value* EshkolLLVMCodeGen::codegenVectorToString(const eshkol_operations_t* op) {
         // vector-to-string: (vector-to-string vector)
         // Converts a vector to a string representation like "[1, 2, 3]"
         if (op->call_op.num_vars != 1) {
@@ -39802,8 +38995,8 @@ private:
         Value* result_string = builder->CreateCall(copy_string, {arena_ptr, typed_string_buffer});
         return packPtrToTaggedValue(result_string, ESHKOL_VALUE_HEAP_PTR);
     }
-    
-    Value* codegenMatrixToString(const eshkol_operations_t* op) {
+
+Value* EshkolLLVMCodeGen::codegenMatrixToString(const eshkol_operations_t* op) {
         // matrix-to-string: (matrix-to-string matrix)
         // Converts a matrix to a string representation like "[[1, 2], [3, 4]]"
         if (op->call_op.num_vars != 1) {
@@ -40016,9 +39209,8 @@ private:
         Value* result_string = builder->CreateCall(copy_string, {arena_ptr, typed_string_buffer});
         return packPtrToTaggedValue(result_string, ESHKOL_VALUE_HEAP_PTR);
     }
-    
-    // Production implementation: Compound car/cdr operations using TAGGED cons cells
-    Value* codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern) {
+
+Value* EshkolLLVMCodeGen::codegenCompoundCarCdr(const eshkol_operations_t* op, const std::string& pattern) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("compound car/cdr requires exactly 1 argument");
             return nullptr;
@@ -40306,49 +39498,9 @@ private:
         
         return current;
     }
-    
-    // Production implementation: List length
-    // codegenLength removed - now in stdlib.esk (core/list/query.esk)
 
-    // Random number generation: (random) returns double in [0.0, 1.0)
-    Value* codegenRandom(const eshkol_operations_t* op) {
-        // Get or create global flag for random seed initialization
-        // This is a RUNTIME flag, not a compile-time flag
-        GlobalVariable* random_seeded = module->getNamedGlobal("__random_seeded__");
-        if (!random_seeded) {
-            random_seeded = new GlobalVariable(
-                *module, int8_type, false,
-                GlobalValue::InternalLinkage,
-                ConstantInt::get(int8_type, 0),  // Initially not seeded
-                "__random_seeded__"
-            );
-        }
-
-        // Check at runtime if we need to seed
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* seed_block = BasicBlock::Create(*context, "random_seed", current_func);
-        BasicBlock* continue_block = BasicBlock::Create(*context, "random_continue", current_func);
-
-        Value* is_seeded = builder->CreateLoad(int8_type, random_seeded);
-        Value* need_seed = builder->CreateICmpEQ(is_seeded, ConstantInt::get(int8_type, 0));
-        builder->CreateCondBr(need_seed, seed_block, continue_block);
-
-        // Seed block - only executed once per program run
-        builder->SetInsertPoint(seed_block);
-        Function* time_func = function_table["time"];
-        Function* srand48_func = function_table["srand48"];
-        if (time_func && srand48_func) {
-            Value* time_val = builder->CreateCall(time_func,
-                {ConstantPointerNull::get(PointerType::get(*context, 0))});
-            builder->CreateCall(srand48_func, {time_val});
-        }
-        // Mark as seeded
-        builder->CreateStore(ConstantInt::get(int8_type, 1), random_seeded);
-        builder->CreateBr(continue_block);
-
-        // Continue block - generate random number
-        builder->SetInsertPoint(continue_block);
-
+// Random number generation: (random) returns double in [0.0, 1.0)
+Value* EshkolLLVMCodeGen::codegenRandom(const eshkol_operations_t* op) {
         // Call drand48() to get random double
         Function* drand48_func = function_table["drand48"];
         if (!drand48_func) {
@@ -40360,19 +39512,7 @@ private:
         return packDoubleToTaggedValue(random_val);
     }
 
-    // ─── PRNG: deterministic-replay seed + isolated per-task generators ───
-    //
-    // (set-random-seed! N)        ─ explicit seed for the global PRNG
-    // (make-prng N)               ─ allocate isolated PRNG state (lock-free)
-    // (prng? x)                   ─ heap-subtype check for HEAP_SUBTYPE_PRNG
-    // (prng-random p)             ─ next double in [0.0, 1.0) on the given PRNG
-    // (prng-random-integer p n)   ─ next int64 in [0, n) on the given PRNG
-    //
-    // The runtime functions live in lib/core/prng.cpp. The global PRNG path
-    // remains the existing drand48-with-mutex; the per-PRNG path is mutex-
-    // free because each state is independent.
-
-    Value* codegenSetRandomSeed(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSetRandomSeed(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("set-random-seed! requires exactly 1 argument (seed)");
             return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
@@ -40395,21 +39535,11 @@ private:
         }
         builder->CreateCall(seed_fn, {seed});
 
-        // Mark the codegenRandom global flag as seeded so the auto-seed-from-time
-        // path doesn't override the user's explicit seed.
-        GlobalVariable* random_seeded = module->getNamedGlobal("__random_seeded__");
-        if (!random_seeded) {
-            random_seeded = new GlobalVariable(
-                *module, int8_type, false, GlobalValue::InternalLinkage,
-                ConstantInt::get(int8_type, 0), "__random_seeded__");
-        }
-        builder->CreateStore(ConstantInt::get(int8_type, 1), random_seeded);
-
         // R7RS convention: side-effecting forms return an unspecified value.
         return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));
     }
 
-    Value* codegenMakePrng(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMakePrng(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("make-prng requires exactly 1 argument (seed)");
             return nullptr;
@@ -40430,7 +39560,7 @@ private:
         return packPtrToTaggedValue(state_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
-    Value* codegenPrngP(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenPrngP(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("prng? requires exactly 1 argument");
             return packBoolToTaggedValue(ConstantInt::getFalse(*context));
@@ -40442,7 +39572,7 @@ private:
         return packBoolToTaggedValue(matches);
     }
 
-    Value* codegenPrngRandom(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenPrngRandom(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("prng-random requires exactly 1 argument (prng)");
             return nullptr;
@@ -40466,7 +39596,7 @@ private:
         return packDoubleToTaggedValue(result);
     }
 
-    Value* codegenPrngRandomInteger(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenPrngRandomInteger(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("prng-random-integer requires exactly 2 arguments (prng n)");
             return nullptr;
@@ -40492,9 +39622,7 @@ private:
         return packInt64ToTaggedValue(result);
     }
 
-    // Quantum random number generation: (quantum-random) returns double in [0.0, 1.0)
-    // Uses quantum-inspired RNG for higher quality randomness
-    Value* codegenQuantumRandom(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuantumRandom(const eshkol_operations_t* op) {
         Function* qrng_double_func = function_table["eshkol_qrng_double"];
         if (!qrng_double_func) {
             eshkol_error("eshkol_qrng_double function not found");
@@ -40504,16 +39632,7 @@ private:
         return packDoubleToTaggedValue(random_val);
     }
 
-    /**
-     * Lower (vqe-energy-primitive ham params) to the Moonlab energy bridge.
-     *
-     * The AD branch receives the parameter tensor produced by gradient(): its
-     * element slots hold ad_node_t* bit patterns. The C preparation helper
-     * snapshots those primal values, creates an arena-owned exact Moonlab VJP,
-     * and returns its descriptor plus the input-node array. recordADNodeCustom
-     * then appends the opaque scalar to the active Eshkol tape.
-     */
-    Value* codegenVqeEnergyPrimitive(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenVqeEnergyPrimitive(const eshkol_operations_t* op) {
         if (!op || op->call_op.num_vars != 2) {
             eshkol_arity_error_current("vqe-energy requires exactly a Hamiltonian and parameter vector");
             return nullptr;
@@ -40596,12 +39715,7 @@ private:
         return result;
     }
 
-    // Quantum random integer: (quantum-random-int bound) -> integer in [0, bound).
-    // Mirrors the VM path (vm_native.c case 1861): bound <= 1 yields 0, otherwise
-    // the unsigned remainder of a raw 64-bit draw by bound. Previously this ignored
-    // its argument and returned the raw uint64, diverging from the VM and violating
-    // the documented [0, bound) contract.
-    Value* codegenQuantumRandomInt(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuantumRandomInt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("quantum-random-int requires exactly 1 argument (bound)");
             return nullptr;
@@ -40637,8 +39751,7 @@ private:
         return builder->CreateSelect(is_small, zero, modv);  // raw int64 in [0, bound)
     }
 
-    // Quantum random range: (quantum-random-range min max) returns int in [min, max]
-    Value* codegenQuantumRandomRange(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenQuantumRandomRange(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("quantum-random-range requires exactly 2 arguments (min max)");
             return nullptr;
@@ -40677,12 +39790,7 @@ private:
         return result;  // Return raw int64
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // COMPLEX NUMBER OPERATIONS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // Helper: Create complex number from real and imaginary parts
-    Value* createComplexNumber(Value* real_val, Value* imag_val) {
+Value* EshkolLLVMCodeGen::createComplexNumber(Value* real_val, Value* imag_val) {
         // Allocate complex struct on stack
         Value* complex_ptr = builder->CreateAlloca(ctx_->complexNumberType(), nullptr, "complex_alloca");
 
@@ -40700,8 +39808,7 @@ private:
         return builder->CreateLoad(ctx_->complexNumberType(), complex_ptr, "complex");
     }
 
-    // Helper: Pack complex struct to tagged value (heap allocate)
-    Value* packComplexToTagged(Value* complex_struct) {
+Value* EshkolLLVMCodeGen::packComplexToTagged(Value* complex_struct) {
         // Get the calling thread's allocation arena.
         FunctionType* arena_type = FunctionType::get(ptr_type, {}, false);
         FunctionCallee arena_accessor = module->getOrInsertFunction(
@@ -40731,36 +39838,21 @@ private:
         return tagged;
     }
 
-    // Helper: Unpack complex struct from tagged value
-    Value* unpackComplexFromTagged(Value* tagged_val) {
+Value* EshkolLLVMCodeGen::unpackComplexFromTagged(Value* tagged_val) {
         Value* ptr_int = builder->CreateExtractValue(tagged_val, {4}, "complex_ptr_int");
         Value* ptr = builder->CreateIntToPtr(ptr_int, ptr_type, "complex_ptr");
         return builder->CreateLoad(ctx_->complexNumberType(), ptr, "complex");
     }
 
-    // Helper: Extract real part from complex struct
-    Value* getComplexReal(Value* complex_struct) {
+Value* EshkolLLVMCodeGen::getComplexReal(Value* complex_struct) {
         return builder->CreateExtractValue(complex_struct, {0}, "real");
     }
 
-    // Helper: Extract imaginary part from complex struct
-    Value* getComplexImag(Value* complex_struct) {
+Value* EshkolLLVMCodeGen::getComplexImag(Value* complex_struct) {
         return builder->CreateExtractValue(complex_struct, {1}, "imag");
     }
 
-    // ── Native 128-bit integer (i128) builtins ──────────────────────────────
-    //
-    // i128 is a distinct fixed-width, wrapping type that lives OFF the numeric
-    // tower. Every builtin lowers to a runtime call in lib/core/i128_runtime.cpp
-    // (which delegates the actual arithmetic to the pure header core shared with
-    // the VM). Following the bignum tagged-in/tagged-out dispatch pattern, all
-    // args and the result are marshalled through entry-block allocas so the call
-    // never grows the stack inside a loop (preserving TCO), mirroring
-    // ArithmeticCodegen::emitBignumBinaryCall.
-    //
-    // Correctness first: this PR intentionally boxes on the arena and does NOT
-    // attempt an unboxed LLVM-i128 hot path (noted as future work in the docs).
-    Value* codegenI128Runtime(const eshkol_operations_t* op, const char* fn_name,
+Value* EshkolLLVMCodeGen::codegenI128Runtime(const eshkol_operations_t* op, const char* fn_name,
                               int expected_args, bool needs_arena,
                               bool has_op, int op_code) {
         if ((int)op->call_op.num_vars != expected_args) {
@@ -40814,21 +39906,7 @@ private:
         return builder->CreateLoad(tagged_value_type, result_alloca, "i128_result");
     }
 
-    // (make-rectangular real imag) - Create complex from rectangular coordinates
-    // === Complex values that carry a derivative (ADR-0025) ===
-    //
-    // Every complex builtin reaches its carrier rule here and nowhere else. A
-    // carrier complex is read through its two tagged components and the result
-    // is the textbook component formula evaluated by the generic arithmetic
-    // and the value-level math functions, so a jet, a tape node or a Taylor
-    // tower flows through with the rule it already has. A REAL carrier is a
-    // complex number with no imaginary part, and gets the same treatment
-    // instead of being flattened to its primal.
-    enum ComplexUnaryKind { CPX_REAL_PART, CPX_IMAG_PART, CPX_MAGNITUDE, CPX_ANGLE, CPX_CONJUGATE };
-
-    // Raises unless the complex value is away from the origin, where neither
-    // the magnitude nor the angle has a derivative. Never answers 0 there.
-    void guardComplexAwayFromOrigin(Value* re, Value* im, const char* who) {
+void EshkolLLVMCodeGen::guardComplexAwayFromOrigin(Value* re, Value* im, const char* who) {
         Function* fn = builder->GetInsertBlock()->getParent();
         BasicBlock* at_origin = BasicBlock::Create(*context, "cplx_at_origin", fn);
         BasicBlock* away = BasicBlock::Create(*context, "cplx_away_from_origin", fn);
@@ -40844,24 +39922,22 @@ private:
         builder->SetInsertPoint(away);
     }
 
-    // 0 - v through the binary operator, which has a rule for every carrier;
-    // the unary negation has one for tape nodes only.
-    Value* carrierNegate(Value* v) {
+Value* EshkolLLVMCodeGen::carrierNegate(Value* v) {
         return arith_->sub(packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0)), v);
     }
 
-    Value* carrierMagnitude(Value* re, Value* im) {
+Value* EshkolLLVMCodeGen::carrierMagnitude(Value* re, Value* im) {
         guardComplexAwayFromOrigin(re, im, "magnitude");
         return codegenMathFunctionOnTagged(
             arith_->add(arith_->mul(re, re), arith_->mul(im, im)), "sqrt", /*operand_is_real=*/true);
     }
 
-    Value* carrierAngle(Value* re, Value* im) {
+Value* EshkolLLVMCodeGen::carrierAngle(Value* re, Value* im) {
         guardComplexAwayFromOrigin(re, im, "angle");
         return codegenBinaryMathFunctionOnTagged(im, re, "atan2");
     }
 
-    Value* complexUnaryWithCarriers(Value* z_tagged, ComplexUnaryKind kind,
+Value* EshkolLLVMCodeGen::complexUnaryWithCarriers(Value* z_tagged, ComplexUnaryKind kind,
                                     const std::function<Value*()>& plain) {
         Function* fn = builder->GetInsertBlock()->getParent();
         BasicBlock* carrier_cplx = BasicBlock::Create(*context, "cplx_unary_carrier", fn);
@@ -40919,69 +39995,80 @@ private:
         return out;
     }
 
-    // A complex number as its two real components, each any real number: a
-    // plain number or a derivative carrier. The carrier formulas below are
-    // written on these pairs with the real arithmetic and the value-level math
-    // functions, which have a rule for every carrier, and mirror the plain
-    // kernels in <eshkol/core/complex_math.h> formula for formula.
-    struct CPair { Value* re; Value* im; };
-    Value* cpxDouble(double v) { return packDoubleToTaggedValue(ConstantFP::get(double_type, v)); }
-    Value* cpxExact(int64_t v) { return packInt64ToTaggedValue(ConstantInt::get(int64_type, v), true); }
-    CPair cpxOf(Value* z) { return {arith_->complexComponent(z, false), arith_->complexComponent(z, true)}; }
-    Value* cpxPack(const CPair& p) { return arith_->makeRectangular(p.re, p.im); }
-    Value* cpxReal(Value* v, const char* name) { return codegenMathFunctionOnTagged(v, name, /*operand_is_real=*/true); }
-    CPair cpxAdd(const CPair& a, const CPair& b) { return {arith_->add(a.re, b.re), arith_->add(a.im, b.im)}; }
-    CPair cpxSub(const CPair& a, const CPair& b) { return {arith_->sub(a.re, b.re), arith_->sub(a.im, b.im)}; }
-    CPair cpxMul(const CPair& a, const CPair& b) {
+Value* EshkolLLVMCodeGen::cpxDouble(double v) { return packDoubleToTaggedValue(ConstantFP::get(double_type, v)); }
+
+Value* EshkolLLVMCodeGen::cpxExact(int64_t v) { return packInt64ToTaggedValue(ConstantInt::get(int64_type, v), true); }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxOf(Value* z) { return {arith_->complexComponent(z, false), arith_->complexComponent(z, true)}; }
+
+Value* EshkolLLVMCodeGen::cpxPack(const CPair& p) { return arith_->makeRectangular(p.re, p.im); }
+
+Value* EshkolLLVMCodeGen::cpxReal(Value* v, const char* name) { return codegenMathFunctionOnTagged(v, name, /*operand_is_real=*/true); }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxAdd(const CPair& a, const CPair& b) { return {arith_->add(a.re, b.re), arith_->add(a.im, b.im)}; }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxSub(const CPair& a, const CPair& b) { return {arith_->sub(a.re, b.re), arith_->sub(a.im, b.im)}; }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxMul(const CPair& a, const CPair& b) {
         return {arith_->sub(arith_->mul(a.re, b.re), arith_->mul(a.im, b.im)),
                 arith_->add(arith_->mul(a.re, b.im), arith_->mul(a.im, b.re))};
     }
-    CPair cpxDiv(const CPair& a, const CPair& b) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxDiv(const CPair& a, const CPair& b) {
         Value* den = arith_->add(arith_->mul(b.re, b.re), arith_->mul(b.im, b.im));
         return {arith_->div(arith_->add(arith_->mul(a.re, b.re), arith_->mul(a.im, b.im)), den),
                 arith_->div(arith_->sub(arith_->mul(a.im, b.re), arith_->mul(a.re, b.im)), den)};
     }
-    CPair cpxScale(const CPair& a, Value* k) { return {arith_->mul(a.re, k), arith_->mul(a.im, k)}; }
-    CPair cpxMulI(const CPair& a) { return {carrierNegate(a.im), a.re}; }   // i a
-    CPair cpxDivI(const CPair& a) { return {a.im, carrierNegate(a.re)}; }   // a / i
-    CPair cpxConst(int64_t re) { return {cpxExact(re), cpxExact(0)}; }
-    CPair cpxExp(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxScale(const CPair& a, Value* k) { return {arith_->mul(a.re, k), arith_->mul(a.im, k)}; }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxMulI(const CPair& a) { return {carrierNegate(a.im), a.re}; }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxDivI(const CPair& a) { return {a.im, carrierNegate(a.re)}; }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxConst(int64_t re) { return {cpxExact(re), cpxExact(0)}; }
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxExp(const CPair& a) {
         Value* e = cpxReal(a.re, "exp");
         return {arith_->mul(e, cpxReal(a.im, "cos")), arith_->mul(e, cpxReal(a.im, "sin"))};
     }
-    CPair cpxLog(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxLog(const CPair& a) {
         return {cpxReal(carrierMagnitude(a.re, a.im), "log"), carrierAngle(a.re, a.im)};
     }
-    CPair cpxSqrt(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxSqrt(const CPair& a) {
         Value* m = cpxReal(carrierMagnitude(a.re, a.im), "sqrt");
         Value* half = arith_->mul(carrierAngle(a.re, a.im), cpxDouble(0.5));
         return {arith_->mul(m, cpxReal(half, "cos")), arith_->mul(m, cpxReal(half, "sin"))};
     }
-    CPair cpxSin(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxSin(const CPair& a) {
         return {arith_->mul(cpxReal(a.re, "sin"), cpxReal(a.im, "cosh")),
                 arith_->mul(cpxReal(a.re, "cos"), cpxReal(a.im, "sinh"))};
     }
-    CPair cpxCos(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxCos(const CPair& a) {
         return {arith_->mul(cpxReal(a.re, "cos"), cpxReal(a.im, "cosh")),
                 carrierNegate(arith_->mul(cpxReal(a.re, "sin"), cpxReal(a.im, "sinh")))};
     }
-    CPair cpxSinh(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxSinh(const CPair& a) {
         return {arith_->mul(cpxReal(a.re, "sinh"), cpxReal(a.im, "cos")),
                 arith_->mul(cpxReal(a.re, "cosh"), cpxReal(a.im, "sin"))};
     }
-    CPair cpxCosh(const CPair& a) {
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxCosh(const CPair& a) {
         return {arith_->mul(cpxReal(a.re, "cosh"), cpxReal(a.im, "cos")),
                 arith_->mul(cpxReal(a.re, "sinh"), cpxReal(a.im, "sin"))};
     }
-    CPair cpxAsin(const CPair& z) {            // -i log(iz + sqrt(1 - z^2))
+
+EshkolLLVMCodeGen::CPair EshkolLLVMCodeGen::cpxAsin(const CPair& z) {            // -i log(iz + sqrt(1 - z^2))
         CPair root = cpxSqrt(cpxSub(cpxConst(1), cpxMul(z, z)));
         return cpxDivI(cpxLog(cpxAdd(cpxMulI(z), root)));
     }
 
-    // Every complex procedure with a plain complex kernel, on a carrier complex,
-    // by its component formula (ADR-0025). nullptr for a procedure with no
-    // formula here; the caller raises.
-    Value* complexCarrierMath(Value* z_tagged, const std::string& func_name) {
+Value* EshkolLLVMCodeGen::complexCarrierMath(Value* z_tagged, const std::string& func_name) {
         CPair z = cpxOf(z_tagged);
         auto scaled_log = [&](double base_ln) { return cpxScale(cpxLog(z), cpxDouble(1.0 / base_ln)); };
         if (func_name == "exp")   return cpxPack(cpxExp(z));
@@ -41023,13 +40110,7 @@ private:
         return nullptr;
     }
 
-    // (expt a b) when a derivative is in play and either operand is complex
-    // (SW-211). The plain kernel eshkol_complex_pow works on the primals and
-    // drops the derivative. An exact integer exponent is repeated complex
-    // multiplication (binary exponentiation, a reciprocal for a negative one),
-    // which is exact where the components are and defined at a zero base;
-    // any other exponent is exp(b log a), as eshkol_cpx_pow computes it.
-    Value* complexCarrierPow(Value* base, Value* expo) {
+Value* EshkolLLVMCodeGen::complexCarrierPow(Value* base, Value* expo) {
         Function* fn = builder->GetInsertBlock()->getParent();
         BasicBlock* int_bb = BasicBlock::Create(*context, "cpow_int", fn);
         BasicBlock* gen_bb = BasicBlock::Create(*context, "cpow_general", fn);
@@ -41125,7 +40206,7 @@ private:
         return out;
     }
 
-    Value* codegenMakeRectangular(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMakeRectangular(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("make-rectangular requires exactly 2 arguments");
             return nullptr;
@@ -41141,8 +40222,7 @@ private:
         return arith_->makeRectangular(real_tagged, imag_tagged);
     }
 
-    // (make-polar magnitude angle) - Create complex from polar coordinates
-    Value* codegenMakePolar(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMakePolar(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("make-polar requires exactly 2 arguments");
             return nullptr;
@@ -41201,8 +40281,7 @@ private:
         }
     }
 
-    // (real-part z) - Extract real component
-    Value* codegenRealPart(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenRealPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("real-part requires exactly 1 argument");
             return nullptr;
@@ -41248,8 +40327,7 @@ private:
         });
     }
 
-    // (imag-part z) - Extract imaginary component
-    Value* codegenImagPart(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenImagPart(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("imag-part requires exactly 1 argument");
             return nullptr;
@@ -41294,8 +40372,7 @@ private:
         });
     }
 
-    // (magnitude z) - |z| = sqrt(real² + imag²)
-    Value* codegenMagnitude(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMagnitude(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("magnitude requires exactly 1 argument");
             return nullptr;
@@ -41361,8 +40438,7 @@ private:
         });
     }
 
-    // (angle z) - arg(z) = atan2(imag, real)
-    Value* codegenAngle(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenAngle(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("angle requires exactly 1 argument");
             return nullptr;
@@ -41417,8 +40493,7 @@ private:
         });
     }
 
-    // (complex? x) - Type predicate
-    Value* codegenComplexPredicate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenComplexPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("complex? requires exactly 1 argument");
             return nullptr;
@@ -41459,8 +40534,7 @@ private:
         return packBoolToTaggedValue(is_numeric);
     }
 
-    // (conjugate z) - Complex conjugate: conj(a+bi) = a-bi
-    Value* codegenConjugate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenConjugate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("conjugate requires exactly 1 argument");
             return nullptr;
@@ -41507,14 +40581,7 @@ private:
         });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // HoTT SUM TYPE OPERATIONS (Discriminated Unions)
-    // Sum types are represented as cons pairs: (tag . value)
-    // where tag is 0 (left) or 1 (right).
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // (inject-left value) or (inject-right value) — construct sum type variant
-    Value* codegenSumInject(const eshkol_operations_t* op, int tag) {
+Value* EshkolLLVMCodeGen::codegenSumInject(const eshkol_operations_t* op, int tag) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", tag == 0 ? "inject-left" : "inject-right");
             return nullptr;
@@ -41533,8 +40600,7 @@ private:
         return tagged_->packHeapPtr(cons_ptr);
     }
 
-    // (sum-tag sum-val) — extract tag from sum type (0 = left, 1 = right)
-    Value* codegenSumTag(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSumTag(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("sum-tag requires exactly 1 argument");
             return nullptr;
@@ -41550,8 +40616,7 @@ private:
         return extractConsCarAsTaggedValue(cons_ptr);
     }
 
-    // (sum-value sum-val) — extract inner value from sum type
-    Value* codegenSumValue(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSumValue(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("sum-value requires exactly 1 argument");
             return nullptr;
@@ -41566,8 +40631,7 @@ private:
         return extractCdrAsTaggedValue(ptr_int);
     }
 
-    // (left? sum-val) or (right? sum-val) — check sum variant
-    Value* codegenSumPredicate(const eshkol_operations_t* op, int expected_tag) {
+Value* EshkolLLVMCodeGen::codegenSumPredicate(const eshkol_operations_t* op, int expected_tag) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", expected_tag == 0 ? "left?" : "right?");
             return nullptr;
@@ -41590,12 +40654,7 @@ private:
         return tagged_->packBool(matches);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // FFT/IFFT Implementation (Cooley-Tukey Radix-2 DIT)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // Helper: Check if n is a power of 2
-    Value* isPowerOfTwo(Value* n) {
+Value* EshkolLLVMCodeGen::isPowerOfTwo(Value* n) {
         // n > 0 && (n & (n-1)) == 0
         Value* gt_zero = builder->CreateICmpSGT(n, ConstantInt::get(int64_type, 0));
         Value* n_minus_1 = builder->CreateSub(n, ConstantInt::get(int64_type, 1));
@@ -41604,8 +40663,7 @@ private:
         return builder->CreateAnd(gt_zero, is_zero);
     }
 
-    // Helper: Bit-reverse an index for FFT
-    Value* bitReverse(Value* idx, Value* log2n) {
+Value* EshkolLLVMCodeGen::bitReverse(Value* idx, Value* log2n) {
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         Value* result_ptr = builder->CreateAlloca(int64_type, nullptr, "br_result");
@@ -41651,8 +40709,7 @@ private:
         return builder->CreateLoad(int64_type, result_ptr);
     }
 
-    // Helper: Compute log2(n) for power-of-2 n
-    Value* computeLog2(Value* n) {
+Value* EshkolLLVMCodeGen::computeLog2(Value* n) {
         Function* current_func = builder->GetInsertBlock()->getParent();
 
         Value* result_ptr = builder->CreateAlloca(int64_type, nullptr, "log2_result");
@@ -41687,10 +40744,7 @@ private:
         return builder->CreateLoad(int64_type, result_ptr);
     }
 
-    // (fft vec) or (ifft vec) - Cooley-Tukey radix-2 DIT FFT
-    // Input: vector of real or complex numbers (length must be power of 2)
-    // Output: vector of complex numbers
-    Value* codegenFFT(const eshkol_operations_t* op, bool inverse) {
+Value* EshkolLLVMCodeGen::codegenFFT(const eshkol_operations_t* op, bool inverse) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("%s requires exactly 1 argument", inverse ? "ifft" : "fft");
             return nullptr;
@@ -42189,18 +41243,7 @@ private:
         return result_tagged;
     }
 
-    // codegenRange removed - now in stdlib.esk (core/list/generate.esk)
-    // codegenZip removed - now in stdlib.esk (core/list/generate.esk)
-
-    // sort is now implemented in stdlib.esk
-
-
-
-
-    // Reduce/Fold: Left fold with explicit initial value
-    // (reduce f init list) => fold-left style
-    // Also supports (reduce f list) which uses first element as initial value
-    Value* codegenReduce(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenReduce(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2 && op->call_op.num_vars != 3) {
             eshkol_error("reduce requires 2 or 3 arguments: (reduce f list) or (reduce f init list)");
             return nullptr;
@@ -42339,8 +41382,7 @@ private:
         return result;
     }
 
-    // Boolean predicate: checks if value is #t or #f
-    Value* codegenBooleanPredicate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenBooleanPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("boolean? requires exactly 1 argument");
             return nullptr;
@@ -42357,11 +41399,7 @@ private:
         return packBoolToTaggedValue(is_bool);
     }
 
-    // List predicate: checks if value is a proper list (null-terminated chain of cons cells)
-    // A proper list is either:
-    //   - null (empty list)
-    //   - a cons cell whose cdr is also a proper list
-    Value* codegenListPredicate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenListPredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("list? requires exactly 1 argument");
             return nullptr;
@@ -42474,8 +41512,7 @@ private:
         return result;
     }
 
-    // Procedure predicate: checks if value is a function
-    Value* codegenProcedurePredicate(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenProcedurePredicate(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("procedure? requires exactly 1 argument");
             return nullptr;
@@ -42535,34 +41572,7 @@ private:
         return packBoolToTaggedValue(result);
     }
 
-    // codegenAppend removed - now in stdlib.esk (core/list/transform.esk)
-
-    // codegenIterativeAppend removed - now in stdlib.esk (core/list/transform.esk)
-
-    // codegenReverse removed - now in stdlib.esk (core/list/transform.esk)
-
-    // codegenListRef removed - now in stdlib.esk (core/list/search.esk)
-    // codegenListTail removed - now in stdlib.esk (core/list/search.esk)
-
-    // ─── Procedure reflection ──────────────────────────────────────────
-    //
-    //   (procedure-arity proc)      → fixed param count (int), or 0 if not a
-    //                                 closure. For variadic procedures this
-    //                                 is the minimum-arity (the leading fixed
-    //                                 parameters); use (procedure-variadic? p)
-    //                                 to distinguish.
-    //   (procedure-name proc)       → the bound name from `(define name …)`
-    //                                 or "" for anonymous lambdas.
-    //   (procedure-variadic? proc)  → #t if the procedure accepts a rest
-    //                                 argument, else #f.
-    //
-    // Each takes a CALLABLE tagged value, unpacks the pointer, and reads
-    // from the closure struct (eshkol_closure_t). For non-closures (e.g.
-    // builtins exposed as CALLABLE_SUBTYPE_PRIMITIVE without a closure
-    // struct), we currently return 0/""/#f — a future refinement could
-    // consult a builtin arity table.
-
-    Value* codegenProcedureArity(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenProcedureArity(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("procedure-arity requires exactly 1 argument");
             return nullptr;
@@ -42585,23 +41595,7 @@ private:
         return packInt64ToTaggedValue(arity);
     }
 
-    // Production implementation: Set car (mutable)
-    // Shared implementation: mutate car (is_cdr=0) or cdr (is_cdr=1) of a
-    // pair. Previously the typed setters (SetInt64 / SetDouble / SetPtr)
-    // forced us to compress every replacement value into a single
-    // {value,type-tag} slot, which lost the type byte whenever the new
-    // value was already a full tagged_value struct (e.g. the result of
-    // `(list ...)` or `(cons ...)`). detectValueType was then returning
-    // INT64 for the struct's payload, so the setter wrote the raw heap
-    // address with an INT64 tag — and all subsequent cdr walks saw an
-    // integer instead of a pair (Noesis Bug E, 2026-04-19).
-    //
-    // Fix: when the replacement is already a tagged_value struct, spill
-    // it to a stack slot and call arena_tagged_cons_set_tagged_value,
-    // which copies the full 16-byte struct (including type byte) into
-    // the cons cell. This is the same path used by cons / allocConsCell,
-    // so behaviour is now uniform across cons, set-car!, and set-cdr!.
-    Value* codegenSetPairField(const eshkol_operations_t* op, bool is_cdr_bit) {
+Value* EshkolLLVMCodeGen::codegenSetPairField(const eshkol_operations_t* op, bool is_cdr_bit) {
         const char* name = is_cdr_bit ? "set-cdr!" : "set-car!";
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("%s requires exactly 2 arguments: pair and new-value", name);
@@ -42662,19 +41656,15 @@ private:
         return packUnspecifiedToTaggedValue();  // ADR-0024
     }
 
-    Value* codegenSetCar(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSetCar(const eshkol_operations_t* op) {
         return codegenSetPairField(op, /*is_cdr_bit=*/false);
     }
 
-    Value* codegenSetCdr(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSetCdr(const eshkol_operations_t* op) {
         return codegenSetPairField(op, /*is_cdr_bit=*/true);
     }
-    
-    // Create a wrapper function for indirect calls through function parameters
-    // This enables higher-order functions where functions are passed as arguments
-    // The wrapper takes the function pointer as its first argument (captured from outer scope)
-    // followed by the actual arguments for the function call
-    Value* codegenIndirectFunctionCall(Argument* func_arg, size_t arity) {
+
+Value* EshkolLLVMCodeGen::codegenIndirectFunctionCall(Argument* func_arg, size_t arity) {
         // Create wrapper function type:
         // First param is the function pointer (as tagged_value)
         // Remaining params are the actual arguments (tagged_value each)
@@ -42734,33 +41724,16 @@ private:
         return wrapper_func;
     }
 
-    // Production implementation: Map function
-    // REFACTORED: Delegates to MapCodegen module
-    Value* codegenMap(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenMap(const eshkol_operations_t* op) {
         return map_->map(op);
     }
 
-    
-    // Helper function to resolve lambda/function from AST with arity-specific builtin handling
-    /**
-     * @brief True when @p name denotes a runtime binding of the current
-     *        function that no static alias describes (ESH-0070 class).
-     *
-     * A function parameter or local storage cell shadows any same-named
-     * top-level function, and any scoped alias an earlier binding of the name
-     * left in this function. Static procedure resolution MUST decline when
-     * this returns true; the only resolution that agrees with lexical scope is
-     * runtime dispatch on the local value. The exception is a scoped alias
-     * recorded by the binding the name denotes now: that binding is a
-     * never-reassigned lambda and static resolution is exact. The rule lives
-     * in static_callee_binding.h so every static fast path applies it.
-     */
-    bool isShadowedByLocalRuntimeBinding(const std::string& name) {
+bool EshkolLLVMCodeGen::isShadowedByLocalRuntimeBinding(const std::string& name) {
         return eshkol::staticCalleeHiddenByRuntimeBinding(
             &symbol_table, &global_symbol_table, current_function, name);
     }
 
-    Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
+Value* EshkolLLVMCodeGen::resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity) {
         if (!func_ast) {
             eshkol_error("resolveLambdaFunction: func_ast is nullptr");
             return nullptr;
@@ -42822,7 +41795,7 @@ private:
                         ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_COND_OP,
                         ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                         ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                         ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                         ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                         ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -43293,10 +42266,7 @@ private:
         return nullptr;
     }
 
-    // Production implementation: Apply function
-    // (apply fn args-list) - calls fn with arguments from args-list
-    // REFACTORED: Delegates to CallApplyCodegen module
-    Value* codegenApply(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenApply(const eshkol_operations_t* op) {
         // ESH-0227: proper tail call through `apply`. `(apply f a1 ... aM
         // (list b1 ... bK))`, where `f` names the enclosing function's active
         // TCO loop and the total spelled-out argument count (M + K) matches the
@@ -43319,12 +42289,7 @@ private:
         return call_apply_->apply(op);
     }
 
-    // Recognize and lower a statically-spelled apply-self-call in tail position
-    // to a TCO loop back-edge (ESH-0227). Returns nullptr (no interception) for
-    // anything that is not provably `(apply <this-loop> leading... (list ...))`
-    // with a total argument count equal to the loop's arity, so the caller
-    // falls back to the ordinary apply lowering.
-    Value* tryApplyTailCall(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::tryApplyTailCall(const eshkol_operations_t* op) {
         if (!binding_) return nullptr;
         // (apply proc last) needs at least the procedure + one final list.
         if (op->call_op.num_vars < 2) return nullptr;
@@ -43367,20 +42332,7 @@ private:
         return emitTCOBackEdge(arg_nodes, tco_ctx);
     }
 
-    /* Bug P (2026-04-23): apply on a cross-file user-defined function
-     * (REPL forward-reference). Direct calls already handle this via
-     * the `__repl_fwd_<name>` indirect-call shape; apply needs the
-     * same. Returns nullptr if `func_name` is not a known REPL
-     * forward-ref, so the caller's existing "Unknown function"
-     * fallback still fires for genuine unknowns.
-     *
-     * This mirrors the direct-call indirect-emit at ~line 13520+ but
-     * sources arguments from a runtime cons list (`list_int`) instead
-     * of compile-time AST nodes. Variadic functions are handled via
-     * g_repl_variadic_functions: the first fixed_params elements are
-     * extracted positionally from the list, the remaining tail is
-     * passed as the rest argument unchanged. */
-    Value* emitApplyForwardRef(const std::string& func_name, Value* list_int) {
+Value* EshkolLLVMCodeGen::emitApplyForwardRef(const std::string& func_name, Value* list_int) {
         if (!g_repl_mode_enabled) return nullptr;
 
         size_t arity = 0;
@@ -43478,10 +42430,7 @@ private:
         return builder->CreateCall(func_type, func_ptr, call_args, func_name + "_fwd_apply");
     }
 
-    // codegenAssoc removed - now in stdlib.esk (core/list/search.esk)
-
-    // Production implementation: List* (improper list constructor)
-    Value* codegenListStar(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenListStar(const eshkol_operations_t* op) {
         if (op->call_op.num_vars == 0) {
             eshkol_warn("list* requires at least 1 argument");
             return nullptr;
@@ -43518,8 +42467,7 @@ private:
         return result_tagged;
     }
 
-    // Production implementation: Acons (association constructor)
-    Value* codegenAcons(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenAcons(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 3) {
             eshkol_arity_error_current("acons requires exactly 3 arguments: key, value, and alist");
             return nullptr;
@@ -43548,13 +42496,7 @@ private:
         return tagged_->packHeapPtr(result_ptr);
     }
 
-    // codegenTake removed - now in stdlib.esk (core/list/query.esk)
-    // codegenDrop removed - now in stdlib.esk (core/list/query.esk)
-    // codegenFind removed - now in stdlib.esk (core/list/query.esk)
-
-
-    // Production implementation: Split-at function (split list at index)
-    Value* codegenSplitAt(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSplitAt(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("split-at requires exactly 2 arguments: list and index");
             return nullptr;
@@ -43672,10 +42614,7 @@ private:
         return tagged_->packHeapPtr(result_pair_ptr);
     }
 
-    // Production implementation: Remove function family (remove elements that match)
-    // Supports both element-based removal: (remove 2 '(1 2 3)) => (1 3)
-    // and predicate-based removal: (remove even? '(1 2 3 4)) => (1 3)
-    Value* codegenRemove(const eshkol_operations_t* op, const std::string& comparison_type) {
+Value* EshkolLLVMCodeGen::codegenRemove(const eshkol_operations_t* op, const std::string& comparison_type) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("remove requires exactly 2 arguments: item/predicate and list");
             return nullptr;
@@ -43871,8 +42810,7 @@ private:
         return result;
     }
 
-    // Production implementation: Last function (return last element)
-    Value* codegenLast(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenLast(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("last requires exactly 1 argument: list");
             return nullptr;
@@ -43951,9 +42889,8 @@ private:
         
         return phi;
     }
-    
-    // Production implementation: Last-pair function (return last cons cell)
-    Value* codegenLastPair(const eshkol_operations_t* op) {
+
+Value* EshkolLLVMCodeGen::codegenLastPair(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("last-pair requires exactly 1 argument: list");
             return nullptr;
@@ -44036,8 +42973,7 @@ private:
         return result;
     }
 
-    // Production implementation: Create arity-specific builtin arithmetic functions (POLYMORPHIC)
-    Function* createBuiltinArithmeticFunction(const std::string& operation, size_t arity) {
+Function* EshkolLLVMCodeGen::createBuiltinArithmeticFunction(const std::string& operation, size_t arity) {
         // FIX: For arity=0, just use arity=2 (fold will call with 2 args anyway)
         if (arity == 0) {
             eshkol_debug("Arity 0 requested for %s, using arity 2 instead", operation.c_str());
@@ -44129,9 +43065,7 @@ private:
         return builtin_func;
     }
 
-    // Create builtin comparison function for use as first-class value (sort, etc.)
-    // Comparison operators take 2 tagged values and return a tagged boolean
-    Function* createBuiltinComparisonFunction(const std::string& operation) {
+Function* EshkolLLVMCodeGen::createBuiltinComparisonFunction(const std::string& operation) {
         std::string func_name = "builtin_cmp_" + operation;
 
         // Sanitize special characters in function name for LLVM
@@ -44246,13 +43180,7 @@ private:
         return builtin_func;
     }
 
-    // Create a (tagged_value, tagged_value) -> tagged_value wrapper for an
-    // identity/equality predicate (eq?, eqv?, equal?) so it can be used as a
-    // first-class value or via apply. These are normally codegen-inline
-    // (codegenEq/Eqv/Equal); without a wrapper, `(car (list eq?))` and
-    // `(apply eq? …)` had no callable closure. The body delegates to the same
-    // emitEq*Tagged helpers the inline path uses, so semantics stay identical.
-    Function* createBuiltinEqualityFunction(const std::string& pred_name) {
+Function* EshkolLLVMCodeGen::createBuiltinEqualityFunction(const std::string& pred_name) {
         std::string func_name = "builtin_eqpred_" + pred_name;
         for (char& c : func_name) {
             if (c == '?') c = 'Q';
@@ -44297,8 +43225,7 @@ private:
         return builtin_func;
     }
 
-    // Create wrapper function for builtin predicates (even?, odd?, zero?, etc.)
-    Function* createBuiltinPredicateFunction(const std::string& pred_name) {
+Function* EshkolLLVMCodeGen::createBuiltinPredicateFunction(const std::string& pred_name) {
         std::string func_name = "builtin_pred_" + pred_name;
 
         // Sanitize special characters in function name for LLVM
@@ -44430,11 +43357,7 @@ private:
         return builtin_func;
     }
 
-    // Create a tagged_value -> tagged_value wrapper for an ASCII character
-    // case-conversion builtin (char-upcase / char-downcase / char-foldcase)
-    // so it can be used as a first-class procedure. The body mirrors the
-    // inline codegen in codegenAST's char-upcase/char-downcase dispatch.
-    Function* createBuiltinCharFunction(const std::string& op_name) {
+Function* EshkolLLVMCodeGen::createBuiltinCharFunction(const std::string& op_name) {
         std::string func_name = "builtin_char_" + op_name;
         for (char& c : func_name) { if (c == '-') c = '_'; }
 
@@ -44480,26 +43403,7 @@ private:
         return builtin_func;
     }
 
-    // Create a closure-ABI wrapper around a C runtime sret builtin.
-    //
-    // Many faculty-level builtins (ad-mul, ad-add, ad-sin, hash-table-ref, …)
-    // are exposed to Scheme only at the call site — `codegenCall` recognises
-    // their name and dispatches directly. That made them fail to evaluate
-    // when passed as a value: `(define op ad-mul)` or
-    // `(apply-op ad-mul a b)` would hit "Undefined variable" because
-    // codegenVariable had no synthesised closure for them.
-    //
-    // This helper produces an LLVM function with the closure ABI
-    //   tagged_value(tagged_value…)    (by-value args, by-value return)
-    // that internally calls the sret-style C helper
-    //   void c_name(tagged_value* out, const tagged_value* a, …)
-    // — the same sret functions `codegenCall` already emits for call-site
-    // dispatch. Wrapping it into a closure makes the builtin a first-class
-    // value without duplicating per-builtin logic.
-    //
-    // Returns nullptr if the builtin name isn't known. Result is cached so
-    // repeated (define x ad-mul) uses share one LLVM function.
-    Function* createBuiltinSretWrapper(const std::string& c_name,
+Function* EshkolLLVMCodeGen::createBuiltinSretWrapper(const std::string& c_name,
                                        size_t arity) {
         std::string func_name = "builtin_sret_" + c_name;
         auto existing = function_table.find(func_name);
@@ -44561,12 +43465,8 @@ private:
         return wrap_fn;
     }
 
-    // Map from Scheme name → (C sret symbol, arity) for faculty-level
-    // builtins that aren't yet first-class. Expand this table as we
-    // extend coverage. Hot-path builtins (math ops, comparisons,
-    // arithmetic) go through their dedicated factories above.
-    const std::pair<std::string, size_t>*
-    lookupSretBuiltin(const std::string& var_name) const {
+const std::pair<std::string, size_t>*
+    EshkolLLVMCodeGen::lookupSretBuiltin(const std::string& var_name) const {
         static const std::unordered_map<std::string,
                                         std::pair<std::string, size_t>> table = {
             // Reverse-mode AD tape ops
@@ -44598,113 +43498,13 @@ private:
         return &it->second;
     }
 
-    /* ------------------------------------------------------------------
-     * FIRST-CLASS REFERENCES TO CALL-POSITION-ONLY BUILTINS  (LE-01)
-     * ------------------------------------------------------------------
-     *
-     * Most of Eshkol's builtin surface is lowered INLINE at the call site:
-     * `codegenCall` string-matches the head name and emits the operation
-     * directly (`string<?` -> StringIOCodegen::stringCompare, `vector-ref`
-     * -> the tensor/vector path, `expt`/`min`/`max` -> ArithmeticCodegen,
-     * and so on). That is the right lowering for `(string<? a b)`, but it
-     * means the NAME by itself never denotes a value: there is no LLVM
-     * function to point a closure at.
-     *
-     * Before this, each builtin that someone needed as a value got its own
-     * hand-written factory (createBuiltinComparisonFunction,
-     * createBuiltinPredicateFunction, createBuiltinCharFunction, …), each
-     * re-implementing the operation's semantics a SECOND time in IR. Two
-     * consequences, both observed:
-     *
-     *   1. Coverage was whatever had been asked for. Everything else fell
-     *      off the end of codegenVariable into "Undefined variable: <name>"
-     *      — or, worse, into the raw-Function* fallback below, which hands
-     *      the closure dispatcher a pointer to a function with a FOREIGN
-     *      ABI. Calling that is undefined behaviour: `(h2 remainder 7 3)`
-     *      SIGSEGV'd and `(h2 append '(1) '(2))` returned `1`.
-     *   2. The second implementation could drift from the call-site one
-     *      with nothing to catch it.
-     *
-     * The fix generalises the wrapper-closure IDIOM but not the duplicated
-     * bodies: we synthesise `builtin_fc_<name>_a<arity>` with the closure ABI
-     * (tagged_value…)->tagged_value whose body is generated by re-entering
-     * `codegenCall` on a synthetic `(name p0 … pN-1)` AST whose arguments
-     * are the wrapper's own parameters. The authoritative call-site lowering
-     * IS the wrapper body, so a first-class reference cannot disagree with a
-     * direct call, and adding a builtin to the first-class surface is one
-     * row of data rather than a new IR implementation.
-     *
-     * Placement: this is consulted only where the old code would otherwise
-     * have produced a garbage callable or an "Undefined variable" error, so
-     * it never changes which binding a name resolves to. Shadowing order —
-     * user definitions, locals, captures, REPL namespaces — is decided
-     * strictly before we get here and is untouched.
-     */
-    /* How a VARIADIC builtin computes its result from the REST LIST.
-     *
-     * A first-class reference to a variadic builtin is called through the
-     * closure ABI, and that ABI has exactly one shape for "any number of
-     * arguments": the dispatcher conses the caller's arguments into a list
-     * and passes that single list (see the variadic branch of the closure
-     * dispatcher, `CLOSURE_FLAG_VARIADIC`). So the wrapper body for such a
-     * reference is not "call the builtin with N arguments" — it is
-     * "compute the builtin's answer from this list", and each variadic
-     * builtin says here how:
-     *
-     *   Identity   the rest list IS the answer  (`list`; `values` in this
-     *              path, which yields its arguments as a list)
-     *   RestUnary  a UNARY builtin is definitionally `(apply <name> lst)`
-     *              (`vector` is `list->vector`, `string` is `list->string`)
-     *   LeftFold   left-fold the list with the builtin's BINARY form
-     *              (`string-append`, `max`, `gcd`, `vector-append`, …)
-     *   ByCount    the builtin takes `arity` required arguments and up to
-     *              `max_arity` in all (`atan`, `round`, and `display`/`write`
-     *              with their optional port): the rest list is counted and
-     *              the call-position lowering at exactly that count is
-     *              called; any other count raises an arity error
-     *   None       the row is variadic but has no rest form, so a value
-     *              reference still materialises at the row's fixed arity —
-     *              the pre-existing compromise, recorded rather than
-     *              silently assumed.
-     *
-     * Every one of these is built from the AUTHORITATIVE call-position
-     * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
-     * of them is a second implementation that can drift. */
-    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount, Chain };
-
-    /* A row of the first-class builtin table.
-     *
-     * `arity` is the arity a wrapper is built at when the USE SITE names
-     * none. For a `variadic` row that number is a default, never a claim
-     * about the procedure: a use site that knows its own arity — `map` over
-     * k lists passes k as required_arity — must get a wrapper built at THAT
-     * arity, or the surplus arguments are silently dropped (SW-173). */
-    struct InlineBuiltinSpec {
-        size_t arity;
-        bool variadic = false;
-        VariadicRest rest = VariadicRest::None;
-        const char* rest_unary = nullptr;   // RestUnary only
-        size_t max_arity = 0;               // ByCount only: arities arity..max_arity
-    };
-
-    /* A row's `arity` is what a use site gets when it names no arity of its
-     * own. It was once the WHOLE story, described here as a compromise:
-     * R7RS `min`/`max`/`string-append` accept any number of arguments and a
-     * value reference yielded the binary form. That compromise was not a
-     * compromise, it was a silently wrong answer — `(map vector xs ys)`
-     * dropped the second list, `(apply vector (list 1 2 3))` answered
-     * `#(1)`, `(define f string-append) (f "a" "b" "c")` answered `"ab"`,
-     * none of them with a diagnostic (SW-173). So a variadic row now SAYS
-     * it is variadic, and says how it computes its answer from a rest list
-     * (see VariadicRest above): a use site that knows its arity gets a
-     * wrapper built at that arity, and a value reference gets a genuine
-     * variadic closure. */
-    const InlineBuiltinSpec* lookupInlineBuiltin(const std::string& name) const {
+const EshkolLLVMCodeGen::InlineBuiltinSpec* EshkolLLVMCodeGen::lookupInlineBuiltin(const std::string& name) const {
         static const std::unordered_map<std::string, InlineBuiltinSpec> table = {
             // Output — R7RS 6.13.3: an optional trailing port.
             {"display", {1, true, VariadicRest::ByCount, nullptr, 2}},
             {"write",   {1, true, VariadicRest::ByCount, nullptr, 2}},
             {"newline", {0, true, VariadicRest::ByCount, nullptr, 1}},
+            {"hash-ref", {2, true, VariadicRest::ByCount, nullptr, 3}},
             // Strings — comparisons
             // R7RS comparison CHAINS: (string<? a b c) is legal, so these are
             // variadic rows. Marked so a use site that knows its arity gets a
@@ -44845,6 +43645,11 @@ private:
             {"directory-list", {1}}, {"directory-walk", {1}}, {"emergency-exit", {0}},
             {"event-loop-add-fd!", {3}}, {"event-loop-backend", {0}}, {"event-loop-close", {1}},
             {"event-loop-poll", {2}}, {"event-loop-remove-fd!", {2}}, {"executable-path", {1}},
+            // Stackful coroutines: the transferred value is optional on both ends.
+            {"make-coroutine", {1}}, {"coroutine-resume", {1, true, VariadicRest::ByCount, nullptr, 2}},
+            {"coroutine-raise", {2}}, {"coroutine-yield", {0, true, VariadicRest::ByCount, nullptr, 1}},
+            {"coroutine-status", {1}}, {"coroutine-release!", {1}}, {"current-coroutine", {0}},
+            {"coroutine?", {1}}, {"coroutine-stats", {0}},
             {"execv", {2}}, {"fd-close", {1}}, {"fd-write", {2}},
             {"file-atime", {1}}, {"file-chmod", {2}}, {"file-copy", {2}},
             {"file-delete", {1}}, {"file-lock", {1}}, {"file-mmap", {3}},
@@ -44904,7 +43709,7 @@ private:
             {"yoga-node-free!", {1}}, {"yoga-node-get-computed", {2}}, {"yoga-node-set!", {3}},
             // Hash tables (LE-16)
             {"hash-clear!", {1}}, {"hash-count", {1}}, {"hash-delete!", {2}},
-            {"hash-has-key?", {2}}, {"hash-keys", {1}}, {"hash-ref", {2}},
+            {"hash-has-key?", {2}}, {"hash-keys", {1}},
             {"hash-remove!", {2}}, {"hash-set!", {3}}, {"hash-table-clear!", {1}},
             {"hash-table-contains?", {2}}, {"hash-table-delete!", {2}}, {"hash-table-exists?", {2}},
             {"hash-table-keys", {1}}, {"hash-table-ref", {2}}, {"hash-table-ref/default", {3}},
@@ -45031,7 +43836,7 @@ private:
             {"triplet-loss", {3}}, {"unsqueeze", {2}}, {"xavier-normal!", {3}},
             {"xavier-uniform!", {3}}, {"zero-grad!", {1}}, {"zeros", {1}},
             // Vectors (LE-16)
-            {"bytevector", {1, true}},
+            {"bytevector", {0, true, VariadicRest::Bytevector}},
             {"bytevector-append", {2, true, VariadicRest::LeftFold}},
             {"bytevector-copy", {1}},
             {"bytevector-copy!", {3}}, {"bytevector-length", {1}}, {"bytevector-u8-ref", {2}},
@@ -45053,17 +43858,7 @@ private:
         return &it->second;
     }
 
-    // Names currently having a wrapper body generated, so a builtin whose
-    // call-site lowering ends up resolving its own head as a variable cannot
-    // recurse into this factory forever.
-    std::set<std::string> inline_builtin_wrapper_in_progress_;
-    // Stable storage for the synthetic parameter identifiers handed to the
-    // AST (`variable.id` is a char*; a std::deque never invalidates).
-    std::deque<std::string> inline_builtin_synthetic_names_;
-
-    /* Symbol-safe spelling of a builtin's name. Shared by every wrapper
-     * factory so one builtin can never acquire two wrapper symbols. */
-    static std::string inlineBuiltinSymbolSuffix(const std::string& name) {
+std::string EshkolLLVMCodeGen::inlineBuiltinSymbolSuffix(const std::string& name) {
         std::string out;
         for (char c : name) {
             if (std::isalnum(static_cast<unsigned char>(c))) out += c;
@@ -45072,7 +43867,7 @@ private:
         return out;
     }
 
-    Function* createInlineBuiltinWrapper(const std::string& name, size_t arity) {
+Function* EshkolLLVMCodeGen::createInlineBuiltinWrapper(const std::string& name, size_t arity) {
         /* The ARITY is part of the symbol. A variadic builtin is wrapped
          * at whatever arity each use site needs — `(map list xs)` wants a
          * 1-argument wrapper and `(map list xs ys)` a 2-argument one — and
@@ -45178,9 +43973,7 @@ private:
         return wrap_fn;
     }
 
-    /* Give a call-position-only builtin an honest first-class value, or
-     * nullptr if the name is not one we can wrap. */
-    Value* codegenInlineBuiltinAsValue(const std::string& name) {
+Value* EshkolLLVMCodeGen::codegenInlineBuiltinAsValue(const std::string& name) {
         const InlineBuiltinSpec* spec = lookupInlineBuiltin(name);
         if (!spec) return nullptr;
         Function* wrapper = createInlineBuiltinWrapper(name, spec->arity);
@@ -45188,22 +43981,14 @@ private:
         return emitFunctionAsCallableValue(wrapper, spec->arity);
     }
 
-    // SW-230: a math builtin of the math dispatch (a row or an alias of the
-    // Taylor recurrence table, which the route guard keeps complete) that has
-    // a first-class table row. The activations have their own value route.
-    bool isFirstClassMathBuiltin(const std::string& name) const {
+bool EshkolLLVMCodeGen::isFirstClassMathBuiltin(const std::string& name) const {
         if (eshkol_taylor_unary_opcode(name.c_str()) < 0 &&
             eshkol_taylor_binary_opcode(name.c_str()) < 0) return false;
         if (findActivation(name)) return false;
         return lookupInlineBuiltin(name) != nullptr;
     }
 
-    /* Quirk 11: create a unary (or nullary for `newline`) closure wrapper
-     * around an I/O runtime helper so the builtin can be passed as a
-     * first-class value. ABI: tagged_value -> tagged_value (returns null).
-     * Reusable from codegenVariable; memoised in function_table so each
-     * distinct call-site shares one wrapper. */
-    Function* createBuiltinIOFunction(const std::string& io_name) {
+Function* EshkolLLVMCodeGen::createBuiltinIOFunction(const std::string& io_name) {
         std::string wrapper_name = "builtin_io_" + io_name;
         auto existing_it = function_table.find(wrapper_name);
         if (existing_it != function_table.end()) {
@@ -45273,12 +44058,7 @@ private:
         return wrapper_func;
     }
 
-    // ═════════════════════════════════════════════════════════════════════
-    // NEURO-SYMBOLIC CONSCIOUSNESS ENGINE CODEGEN
-    // ═════════════════════════════════════════════════════════════════════
-
-    // Helper: get-or-declare a C runtime function
-    Function* getOrDeclareRuntimeFunc(const char* name, FunctionType* fn_type) {
+Function* EshkolLLVMCodeGen::getOrDeclareRuntimeFunc(const char* name, FunctionType* fn_type) {
         Function* func = module->getFunction(name);
         if (!func) {
             func = Function::Create(fn_type, Function::ExternalLinkage, name, module.get());
@@ -45286,24 +44066,21 @@ private:
         return func;
     }
 
-    // Helper: load arena pointer from global
-    Value* loadArenaPtr() {
+Value* EshkolLLVMCodeGen::loadArenaPtr() {
         return getArenaPtr();
     }
 
-    // Helper: alloca + store a tagged value, return the alloca ptr
-    Value* allocaAndStore(Value* tagged_val, const char* name) {
+Value* EshkolLLVMCodeGen::allocaAndStore(Value* tagged_val, const char* name) {
         Value* alloca_ptr = builder->CreateAlloca(tagged_value_type, nullptr, name);
         builder->CreateStore(tagged_val, alloca_ptr);
         return alloca_ptr;
     }
 
-    // Helper: alloca a tagged value result slot
-    Value* allocaResult(const char* name) {
+Value* EshkolLLVMCodeGen::allocaResult(const char* name) {
         return builder->CreateAlloca(tagged_value_type, nullptr, name);
     }
 
-    Value* allocaJmpBuf(const char* name) {
+Value* EshkolLLVMCodeGen::allocaJmpBuf(const char* name) {
         FunctionType* size_type = FunctionType::get(int64_type, {}, false);
         Function* size_func = module->getFunction(eshkol::runtime::jmp_buf_size_symbol);
         if (!size_func) {
@@ -45320,7 +44097,7 @@ private:
         return jmp_buf;
     }
 
-    Function* getOrDeclareSetjmpFunc() {
+Function* EshkolLLVMCodeGen::getOrDeclareSetjmpFunc() {
         const Triple& target_triple = module->getTargetTriple();
         const bool is_windows_target = target_triple.isOSWindows();
         const char* setjmp_symbol = is_windows_target ? "_setjmpex" : "setjmp";
@@ -45339,7 +44116,7 @@ private:
         return setjmp_func;
     }
 
-    std::vector<Value*> makeSetjmpArgs(Value* jmp_buf_alloc) {
+std::vector<Value*> EshkolLLVMCodeGen::makeSetjmpArgs(Value* jmp_buf_alloc) {
         std::vector<Value*> args = {jmp_buf_alloc};
         const Triple& target_triple = module->getTargetTriple();
         if (!target_triple.isOSWindows()) {
@@ -45365,19 +44142,11 @@ private:
         return args;
     }
 
-    // Helper: load tagged value from alloca
-    Value* loadResult(Value* result_alloca, const char* name) {
+Value* EshkolLLVMCodeGen::loadResult(Value* result_alloca, const char* name) {
         return builder->CreateLoad(tagged_value_type, result_alloca, name);
     }
 
-    // ─── Logic / KB primitives ──────────────────────────────────────────
-    // codegenLogicVar / codegenUnify / codegenMakeSubst / codegenWalk
-    // codegenMakeFact / codegenMakeKB / codegenKBAssert / codegenKBQuery
-    // codegenKBQueryPrefix — extracted to LogicWorkspaceCodegen.
-
-    // ─── Type Predicates ────────────────────────────────────────────────
-
-    Value* codegenLogicVarPred(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenLogicVarPred(const eshkol_operations_t* op) {
         // (logic-var? x) → bool
         if (op->call_op.num_vars < 1) return packBoolToTaggedValue(ConstantInt::getFalse(*context));
 
@@ -45403,7 +44172,7 @@ private:
         return packBoolToTaggedValue(is_lv);
     }
 
-    Value* codegenSubstPred(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenSubstPred(const eshkol_operations_t* op) {
         // (substitution? x) → bool — check HEAP_PTR with HEAP_SUBTYPE_SUBSTITUTION
         if (op->call_op.num_vars < 1) return packBoolToTaggedValue(ConstantInt::getFalse(*context));
 
@@ -45443,7 +44212,7 @@ private:
         return packBoolToTaggedValue(phi);
     }
 
-    Value* codegenKBPred(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenKBPred(const eshkol_operations_t* op) {
         // (kb? x) → bool — check HEAP_PTR with HEAP_SUBTYPE_KNOWLEDGE_BASE
         if (op->call_op.num_vars < 1) return packBoolToTaggedValue(ConstantInt::getFalse(*context));
 
@@ -45480,15 +44249,7 @@ private:
         return packBoolToTaggedValue(phi);
     }
 
-    // ─── Tensor/model serialization + factor-graph + active inference ────
-    // codegenTensorSave / codegenTensorLoad / codegenModelSave / codegenModelLoad
-    // codegenMakeFactorGraph / codegenFGAddFactor / codegenFGInfer
-    // codegenFreeEnergy / codegenEFE / codegenFGUpdateCPT / codegenFGObserve
-    // — extracted to LogicWorkspaceCodegen.
-
-    // ─── Additional Type Predicates ─────────────────────────────────────
-
-    Value* codegenFactPred(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenFactPred(const eshkol_operations_t* op) {
         // (fact? x) → bool — check HEAP_PTR with HEAP_SUBTYPE_FACT
         if (op->call_op.num_vars < 1) return packBoolToTaggedValue(ConstantInt::getFalse(*context));
 
@@ -45525,7 +44286,7 @@ private:
         return packBoolToTaggedValue(phi);
     }
 
-    Value* codegenFactorGraphPred(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenFactorGraphPred(const eshkol_operations_t* op) {
         // (factor-graph? x) → bool — check HEAP_PTR with HEAP_SUBTYPE_FACTOR_GRAPH
         if (op->call_op.num_vars < 1) return packBoolToTaggedValue(ConstantInt::getFalse(*context));
 
@@ -45562,7 +44323,7 @@ private:
         return packBoolToTaggedValue(phi);
     }
 
-    Value* codegenWorkspacePred(const eshkol_operations_t* op) {
+Value* EshkolLLVMCodeGen::codegenWorkspacePred(const eshkol_operations_t* op) {
         // (workspace? x) → bool — check HEAP_PTR with HEAP_SUBTYPE_WORKSPACE
         if (op->call_op.num_vars < 1) return packBoolToTaggedValue(ConstantInt::getFalse(*context));
 
@@ -45599,9 +44360,6 @@ private:
         return packBoolToTaggedValue(phi);
     }
 
-    // ─── Global Workspace ───────────────────────────────────────────────
-    // codegenMakeWorkspace / codegenWSRegister / codegenWSStep — extracted to
-    // LogicWorkspaceCodegen.
 #if 0  // Replaced by LogicWorkspaceCodegen — kept #if 0 stub bodies for now
        // until the next commit removes them entirely; dispatch in
        // codegenOperation already routes through logic_workspace_->.
@@ -45696,10 +44454,16 @@ private:
         }
         Value* content_tv = loadResult(content_tv_a, "content_tv");
 
-        // Allocate results array on stack (max 16 modules)
-        const uint32_t MAX_WS_MODULES = 16;
-        Value* results_arr = builder->CreateAlloca(tagged_value_type,
-            ConstantInt::get(i32_type, MAX_WS_MODULES), "ws_results");
+        // Allocate results array dynamically in the arena for the exact module
+        // count so arbitrarily many registered cognitive modules stay safe.
+        Value* num_modules_i64 = builder->CreateZExt(num_modules, int64_type, "num_modules_i64");
+        Value* results_bytes = builder->CreateMul(num_modules_i64,
+            ConstantInt::get(int64_type, 16), "ws_results_bytes");
+        FunctionType* alloc_fn_type = FunctionType::get(ptr_type,
+            {ptr_type, int64_type}, false);
+        Function* arena_alloc_fn = getOrDeclareRuntimeFunc("arena_allocate", alloc_fn_type);
+        Value* results_arr = builder->CreateCall(arena_alloc_fn,
+            {loadArenaPtr(), results_bytes}, "ws_results");
 
         // Modules start at ws_ptr + sizeof(eshkol_workspace_t) = ws_ptr + 24
         Value* modules_base = builder->CreateGEP(int8_type, ws_ptr,
@@ -45772,8 +44536,7 @@ private:
         builder->SetInsertPoint(merge_bb);
         return ws_tv;
     }
-#endif // codegenMakeWorkspace / codegenWSRegister / codegenWSStep stubs (extracted)
-};
+#endif
 
 // ============================================================================
 // ControlFlowCodegen Callback Implementations
@@ -46411,6 +45174,22 @@ LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t n
     }
 }
 
+int eshkol_add_stdlib_identity(LLVMModuleRef module_ref, const char* symbol) {
+    if (!module_ref || !symbol || !*symbol) return -1;
+    auto it = g_llvm_modules.find(module_ref);
+    if (it == g_llvm_modules.end() || !it->second->module) return -1;
+
+    Module& module = *it->second->module;
+    if (module.getNamedValue(symbol)) return -1;
+    LLVMContext& context = module.getContext();
+    Constant* initializer = ConstantDataArray::getString(context, symbol, true);
+    auto* identity = new GlobalVariable(
+        module, initializer->getType(), true, GlobalValue::ExternalLinkage,
+        initializer, symbol);
+    identity->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+    return 0;
+}
+
 // REPL MODE API FUNCTIONS
 
 void eshkol_repl_enable() {
@@ -46733,13 +45512,25 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // sections + /OPT:REF dead-stripping (see the linker flags below).
         const bool object_is_aarch64_windows =
             object_triple.getArch() == Triple::aarch64 && object_triple.isOSWindows();
+        // A bare-metal module is one linked image placed by a link script, so
+        // it takes the embedded description's static, small-model setup
+        // instead (see embeddedTargetForModule).
+        const eshkol::profile::EmbeddedTarget* embedded_target =
+            embeddedTargetForModule(*module);
         const bool use_large_aarch64_code_model =
+            !embedded_target &&
             object_triple.getArch() == Triple::aarch64 && !object_triple.isOSWindows();
         if (use_large_aarch64_code_model) {
             code_model = llvm::CodeModel::Large;
         }
 
         TargetOptions target_options;
+        if (embedded_target) {
+            applyEmbeddedTargetOptions(*embedded_target, target_options);
+            if (embedded_target->code_model == eshkol::profile::CodeModel::Medium) {
+                code_model = llvm::CodeModel::Medium;
+            }
+        }
         if (object_is_aarch64_windows) {
             // Emit each function/datum in its own COFF section so lld-link's
             // /OPT:REF can dead-strip everything the small test binary doesn't
@@ -46749,17 +45540,37 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             target_options.DataSections = true;
         }
         auto codegen_opt = getCodeGenOptLevel();
-        const bool use_host_cpu_features = (object_triple_str == g_cached_target_triple);
-        const std::string cpu_name = use_host_cpu_features ? g_cached_cpu_name : "generic";
-        const std::string feature_string = use_host_cpu_features ? g_cached_features : "";
+        // Keep backend instruction selection and register allocation linear when
+        // a module contains a huge generated function (e.g., deeply nested
+        // quoted-datum builders), while preserving full -O codegen elsewhere.
+        constexpr unsigned kMaxBackendOptInstructions = 50000;
+        for (const llvm::Function& fn : *module) {
+            if (!fn.isDeclaration() &&
+                fn.getInstructionCount() > kMaxBackendOptInstructions) {
+#if LLVM_VERSION_MAJOR >= 18
+                codegen_opt = llvm::CodeGenOptLevel::None;
+#else
+                codegen_opt = llvm::CodeGenOpt::None;
+#endif
+                break;
+            }
+        }
+        const bool use_host_cpu_features =
+            !embedded_target && (object_triple_str == g_cached_target_triple);
+        const std::string cpu_name = embedded_target ? std::string(embedded_target->cpu)
+            : (use_host_cpu_features ? g_cached_cpu_name : std::string("generic"));
+        const std::string feature_string = embedded_target
+            ? std::string(embedded_target->features)
+            : (use_host_cpu_features ? g_cached_features : std::string());
+        const Reloc::Model reloc_model = embedded_target ? Reloc::Static : Reloc::PIC_;
         std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(object_triple, cpu_name, feature_string,
-                                       target_options, Reloc::PIC_, code_model,
+                                       target_options, reloc_model, code_model,
                                        codegen_opt));
 #else
             target->createTargetMachine(object_triple_str, cpu_name, feature_string,
-                                       target_options, Reloc::PIC_, code_model,
+                                       target_options, reloc_model, code_model,
                                        codegen_opt));
 #endif
 
@@ -46954,9 +45765,21 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 
     const auto output_path = eshkol::platform::with_executable_suffix(filename);
 
-    // First compile to temporary object file
-    std::string temp_obj = output_path.generic_string() + ".tmp.o";
+    // First compile to a PID- and sequence-scoped temporary object file so an
+    // interrupted build never leaves a shared `.tmp.o` reservation behind.
+    static std::atomic<uint64_t> temp_obj_counter{0};
+    const uint64_t temp_seq = temp_obj_counter.fetch_add(1, std::memory_order_relaxed);
+#ifdef _WIN32
+    const unsigned long long pid_val = static_cast<unsigned long long>(_getpid());
+#else
+    const unsigned long long pid_val = static_cast<unsigned long long>(getpid());
+#endif
+    std::string temp_obj = output_path.generic_string() + "." +
+                           std::to_string(pid_val) + "." +
+                           std::to_string(temp_seq) + ".tmp.o";
     if (eshkol_compile_llvm_ir_to_object(module_ref, temp_obj.c_str()) != 0) {
+        std::error_code ec;
+        std::filesystem::remove(temp_obj, ec);
         return -1;
     }
 
@@ -47128,11 +45951,9 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("-framework");
         link_args.emplace_back("Foundation");
         link_args.emplace_back("-framework");
-        link_args.emplace_back("ImageIO");
+        link_args.emplace_back("CoreFoundation");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreGraphics");
-        link_args.emplace_back("-framework");
-        link_args.emplace_back("CoreFoundation");
         // Resolve libobjc portably via the macOS SDK lib dir (see
         // eshkol-run.cpp): a bare -lobjc misses the default search path on a
         // freshly-built binary on a non-builder host.
@@ -47154,6 +45975,10 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         // eshkol-agent-ffi archive. See Noesis bug report #2 (2026-07-04).
         link_args.emplace_back("-framework");
         link_args.emplace_back("Security");
+        // Core Graphics: the runtime archive's window layer
+        // (lib/platform/window/window_cocoa.m) calls it directly.
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreGraphics");
 #endif
 
 #ifdef __APPLE__
@@ -47238,19 +46063,31 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
 
-        // Clean up temporary object file
-        std::remove(temp_obj.c_str());
-
         if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+            std::remove(temp_obj.c_str());
             eshkol_error("Linking timed out after %u seconds and was aborted "
                          "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
                          link_subprocess_timeout_seconds());
             return -1;
         }
         if (result != 0) {
+            std::remove(temp_obj.c_str());
             eshkol_error("Linking failed with exit code %d", result);
             return -1;
         }
+
+        if (g_emit_debug_info) {
+            const int debug_status = eshkol::backend::finishNativeDebugArtifact(
+                output_path, link_subprocess_timeout_seconds());
+            if (debug_status != 0) {
+                eshkol_error("Debug symbol generation failed with exit code %d "
+                             "(macOS requires dsymutil; ESHKOL_DSYMUTIL can select it)",
+                             debug_status);
+                std::remove(temp_obj.c_str());
+                return -1;
+            }
+        }
+        std::remove(temp_obj.c_str());
 
         eshkol_info("Successfully generated executable: %s", output_path.generic_string().c_str());
         return 0;
@@ -47397,6 +46234,21 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         std::string features = "";
 
         auto codegen_opt = getCodeGenOptLevel();
+        // Keep backend instruction selection and register allocation linear when
+        // a module contains a huge generated function (e.g., deeply nested
+        // quoted-datum builders), while preserving full -O codegen elsewhere.
+        constexpr unsigned kMaxBackendOptInstructions = 50000;
+        for (const llvm::Function& fn : *module) {
+            if (!fn.isDeclaration() &&
+                fn.getInstructionCount() > kMaxBackendOptInstructions) {
+#if LLVM_VERSION_MAJOR >= 18
+                codegen_opt = llvm::CodeGenOptLevel::None;
+#else
+                codegen_opt = llvm::CodeGenOpt::None;
+#endif
+                break;
+            }
+        }
         // Use Reloc::Static for standalone WASM modules loaded via WebAssembly.instantiate().
         // Reloc::PIC_ generates GOT (Global Offset Table) entries that require a dynamic
         // linker — browsers reject these with "Import GOT.func: module is not an object".

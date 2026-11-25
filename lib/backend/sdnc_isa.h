@@ -25,8 +25,9 @@
  *
  * The types are named `SdncOpCode` / `SdncInstr`, NOT `OpCode` / `Instr`. Five
  * other unrelated translation units in this tree declare their own `OpCode` and
- * `Instr` for their own, different instruction sets (eshkol_compiler.c,
- * vm_core.c, stackvm_codegen.c, weight_compiler.c, eshkol_benchmark.c). Reusing
+ * `Instr` for their own, different instruction sets (vm_core.c,
+ * stackvm_codegen.c, weight_compiler.c, eshkol_benchmark.c). The retired hosted
+ * compiler formerly used the same generic spellings. Reusing
  * those spellings for a *different* ISA is precisely what let the SWAP drift
  * hide in plain sight: two things that were never the same thing looked
  * identical. Distinct concepts get distinct names, so the collision is gone
@@ -70,7 +71,7 @@
 #define ARENA_CELLS 16       /**< Bounded in-state heap cells. */
 #define ARENA_CELL_FIELDS 5  /**< Fields per arena cell. */
 
-/* Opcodes — canonical numbering from eshkol_compiler.c */
+/* Opcodes — canonical numbering for this private weight-machine ISA. */
 typedef enum {
     OP_NOP=0, OP_CONST=1, OP_NIL=2, OP_TRUE=3, OP_FALSE=4, OP_POP=5, OP_DUP=6,
     OP_ADD=7, OP_SUB=8, OP_MUL=9, OP_DIV=10, OP_MOD=11, OP_NEG=12, OP_ABS=13,

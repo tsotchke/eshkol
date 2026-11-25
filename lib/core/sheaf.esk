@@ -1,0 +1,31 @@
+;;; core.sheaf -- sheaf theory on finite sites as one library.
+;;;
+;;; Usage: (require core.sheaf)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.integer_linalg     Smith normal form, integer kernels, lattices,
+;;;                           cochain cohomology with torsion and generators
+;;;   core.sheaf.site         finite categories, sieves, Grothendieck
+;;;                           topologies, sites, finite (Alexandrov) spaces
+;;;   core.sheaf.glue         gluing results, covers of data by pieces,
+;;;                           gluing with named obstructions
+;;;   core.sheaf.presheaf     presheaves of sets: matching families, the
+;;;                           sheaf condition, the plus construction
+;;;   core.sheaf.module       presheaves of free Z-modules and Q-vector
+;;;                           spaces: sheaf condition, gluing, plus construction
+;;;   core.sheaf.cohomology   Cech cohomology, sheaves on finite spaces by
+;;;                           stalks, derived limits, cocycle generators
+;;;
+;;; Reference: docs/reference/stdlib/sheaf.md; design: ADR-0033
+;;; (docs/design/adr/0033-core-sheaf-finite-sites.md).
+;;; Sources: SGA 4 (Expose I-V); R. Godement, "Topologie algebrique et
+;;; theorie des faisceaux" (1958); S. Mac Lane, I. Moerdijk, "Sheaves in
+;;; Geometry and Logic" (1992); G. E. Bredon, "Sheaf Theory" (1997);
+;;; B. Iversen, "Cohomology of Sheaves" (1986).
+
+(require core.integer_linalg)
+(require core.sheaf.site)
+(require core.sheaf.glue)
+(require core.sheaf.presheaf)
+(require core.sheaf.module)
+(require core.sheaf.cohomology)

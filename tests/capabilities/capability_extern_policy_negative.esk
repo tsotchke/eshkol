@@ -1,0 +1,13 @@
+;;; A program cannot declare the capability policy's own entry points. If it
+;;; could, any policy would last only until the governed program switched it
+;;; off. Compiling this must fail.
+(require stdlib)
+(require core.capabilities)
+
+(extern void turn-the-policy-off :real eshkol_capability_runtime_clear)
+
+(capability-install-policy! (list 'file-read))
+(turn-the-policy-off)
+(display "policy-still-active:")
+(display (capability-policy-active?))
+(newline)

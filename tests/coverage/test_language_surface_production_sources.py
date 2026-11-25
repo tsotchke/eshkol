@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Guard production surface generation against retired compiler ghosts."""
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+REPO = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location(
+    "gen_language_surface", REPO / "scripts/gen_language_surface.py")
+SURFACE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SURFACE)
+
+
+class ProductionSurfaceSources(unittest.TestCase):
+    def test_scheme_reader_ignores_nested_comment_string_and_quoted_ghosts(self):
+        source = r''' ; (define line-comment-ghost 0)
+#| (define block-comment-ghost 0)
+   (require core.block-comment-ghost) |#
+#; (define datum-comment-ghost 0)
+#; #; (define datum-comment-ghost-a 0) (define datum-comment-ghost-b 0)
+(define after-datum-comments 7)
+(define (public-name x)
+  (let () (define local-ghost 0) x))
+(define-values (first-value second-value) (values 1 2))
+(define text "(define string-ghost 0) (require core.string-ghost)")
+'(define quoted-ghost 0)
+'#; (define prefix-comment-ghost 0) (define quoted-after-comment-ghost 1)
+(define nested-require
+  (lambda () #; (require core.datum-local-only)
+    (require core.local-only)))
+(provide public-name first-value second-value
+  ;; local-looking entries never occur at top level
+)
+'''
+        forms = SURFACE.parse_scheme_forms(source)
+        definitions = {name for form in forms
+                       for name, _ in SURFACE._top_level_definition(form)}
+        exports = {name for form in forms
+                   for name, _ in SURFACE._top_level_exports(form)}
+        requires = {name for form in forms
+                    for name, _ in SURFACE._require_module_names(form)}
+        self.assertEqual(
+            {"public-name", "first-value", "second-value", "text",
+             "nested-require", "after-datum-comments"},
+            definitions)
+        self.assertEqual({"public-name", "first-value", "second-value"}, exports)
+        self.assertEqual(set(), requires)
+        for ghost in ("line-comment-ghost", "block-comment-ghost",
+                      "datum-comment-ghost", "datum-comment-ghost-a",
+                      "datum-comment-ghost-b", "local-ghost", "string-ghost",
+                      "quoted-ghost", "prefix-comment-ghost",
+                      "quoted-after-comment-ghost", "local-only",
+                      "datum-local-only"):
+            self.assertNotIn(ghost, definitions | exports | requires)
+
+    def test_scheme_reader_rejects_unterminated_escaped_symbols(self):
+        with self.assertRaisesRegex(ValueError, "unterminated escaped Scheme symbol"):
+            SURFACE.parse_scheme_forms("(define |unfinished-symbol 1)")
+
+    def test_scheme_reader_accepts_trailing_comments_and_rejects_missing_datums(self):
+        def list_symbols(form):
+            return [SURFACE._scheme_symbol(item)
+                    for item in SURFACE._scheme_list(form) or []]
+
+        self.assertEqual(["a"], list_symbols(SURFACE.parse_scheme_forms("(a #; b)")[0]))
+        define_x = SURFACE.parse_scheme_forms("(define x (list #; 1))")[0]
+        define_items = SURFACE._scheme_list(define_x)
+        self.assertEqual(["define", "x"], [SURFACE._scheme_symbol(item)
+                                             for item in define_items[:2]])
+        self.assertEqual(["list"], list_symbols(define_items[2]))
+        self.assertEqual(["a"], list_symbols(SURFACE.parse_scheme_forms("(a #; #; b c)")[0]))
+        quoted = SURFACE.parse_scheme_forms("'(a #; b c)")[0]
+        quote_items = SURFACE._scheme_list(quoted)
+        self.assertEqual("quote", SURFACE._scheme_symbol(quote_items[0]))
+        self.assertEqual(["a", "c"], list_symbols(quote_items[1]))
+        for source in ("#;", "(a #;)", "(define x (list #;))", "#; #; a )"):
+            with self.subTest(source=source), self.assertRaisesRegex(
+                    ValueError, "datum comment.*has no datum"):
+                SURFACE.parse_scheme_forms(source)
+
+    def test_stdlib_reader_fails_closed_on_visibility_modifiers_and_export_renames(self):
+        require = SURFACE.parse_scheme_forms("(require (only core.dep public-name))")[0]
+        provide = SURFACE.parse_scheme_forms("(provide (rename old-name new-name))")[0]
+        with self.assertRaisesRegex(ValueError, "non-symbol require specifier"):
+            SURFACE._require_module_names(require)
+        with self.assertRaisesRegex(ValueError, "nested provide specifier"):
+            SURFACE._top_level_exports(provide)
+
+    def test_stdlib_closure_uses_exports_and_root_definitions_with_provenance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "lib/core").mkdir(parents=True)
+            (root / "lib/stdlib.esk").write_text('''
+; (require core.line-ghost)
+#| (require core.block-ghost) |#
+#; (require core.datum-ghost)
+(define (stdlib-root-api x)
+  (let () (define local-ghost 0) x))
+(define source-text "(define string-ghost 1) (require core.string-ghost)")
+'(require core.quoted-ghost)
+(require core.alpha)
+''')
+            (root / "lib/core/alpha.esk").write_text('''
+(provide alpha-public beta-public)
+(require core.beta)
+(define (alpha-public x)
+  (let () (define alpha-local-ghost 0) x))
+(define alpha-private-helper 1)
+'(provide quoted-export-ghost)
+''')
+            (root / "lib/core/beta.esk").write_text('''
+#| (provide block-export-ghost)
+   (define (block-export-ghost) 0) |#
+(provide beta-public beta-only)
+(define (beta-public) 42)
+(define (beta-only) 7)
+''')
+
+            result = SURFACE.extract_stdlib_surface(str(root))
+            names = set(result["names"])
+            self.assertTrue({"stdlib-root-api", "source-text", "alpha-public",
+                             "beta-public"}.issubset(names))
+            self.assertFalse({"alpha-private-helper", "alpha-local-ghost",
+                              "beta-only",
+                              "line-ghost", "block-ghost", "datum-ghost",
+                              "string-ghost", "quoted-ghost",
+                              "quoted-export-ghost", "block-export-ghost"} & names)
+            modules = {item["module"]: item for item in result["modules"]}
+            self.assertEqual({"stdlib", "core.alpha", "core.beta"}, set(modules))
+            self.assertEqual(["alpha-public", "beta-public"],
+                             [e["name"] for e in modules["core.alpha"]["exports"]])
+            self.assertEqual(["alpha-private-helper", "alpha-public"],
+                             [e["name"] for e in modules["core.alpha"]["top_level_definitions"]])
+            self.assertEqual("module_export", result["names"]["alpha-public"][0]["kind"])
+            self.assertEqual("lib/core/alpha.esk", result["names"]["alpha-public"][0]["path"])
+            self.assertEqual(["core.alpha"], result["root_requires"])
+            self.assertEqual("closure_presence_only", modules["core.beta"]["stdlib_visibility"])
+            self.assertEqual("closure_export_presence",
+                             result["closure_names"]["beta-only"][0]["visibility"])
+            self.assertEqual(["core.alpha", "core.beta"],
+                             result["names"]["beta-public"][0]["definition_origin"]["chain"])
+        self.assertTrue(all(export["definition_origin"]
+                            for module in result["modules"]
+                            for export in module["exports"]))
+
+    def test_stdlib_reader_rejects_ambiguous_transitive_export_origin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "lib/core").mkdir(parents=True)
+            (root / "lib/stdlib.esk").write_text("(require core.alpha)\n")
+            (root / "lib/core/alpha.esk").write_text(
+                "(provide shared-api)\n(require core.beta core.gamma)\n")
+            (root / "lib/core/beta.esk").write_text(
+                "(provide shared-api)\n(define (shared-api) 1)\n")
+            (root / "lib/core/gamma.esk").write_text(
+                "(provide shared-api)\n(define (shared-api) 2)\n")
+            with self.assertRaisesRegex(ValueError, "ambiguous re-export"):
+                SURFACE.extract_stdlib_surface(str(root))
+
+    def test_binding_metadata_tracks_only_provable_kinds_and_resolved_origins(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "lib/core").mkdir(parents=True)
+            (root / "lib/stdlib.esk").write_text("(require core.alpha)\n")
+            (root / "lib/core/alpha.esk").write_text('''
+(provide stream-null-like explicit-procedure lambda-procedure local-alias
+         forwarded beta-value conditional-value redefined syntax-name
+         mutable-later mutable-closure alias-of-mutable shadowed-write
+         cross-module-mutable alias-of-cross-module)
+(require core.beta)
+(define stream-null-like '())
+(define (explicit-procedure x)
+  (let ((stream-null-like (if #t x 0))) stream-null-like))
+(define lambda-procedure (lambda (x) x))
+(define-syntax syntax-name (syntax-rules () ((_ x) x)))
+(define local-alias stream-null-like)
+(define forwarded beta-value)
+(define conditional-value (if #t 'safe 'also-safe))
+(define redefined '())
+(define redefined (if #t 1 2))
+(define mutable-later 1)
+(define mutable-closure 1)
+(define alias-of-mutable mutable-later)
+(define shadowed-write '())
+(define cross-module-mutable '())
+(define alias-of-cross-module cross-module-mutable)
+(set! mutable-later (lambda () 2))
+(define (mutate-closure) (set! mutable-closure 2))
+(define (lexical-setter shadowed-write) (set! shadowed-write 2))
+''')
+            (root / "lib/core/beta.esk").write_text('''
+(require core.alpha)
+(provide beta-value)
+(define beta-value '())
+(set! cross-module-mutable (lambda () 2))
+''')
+
+            result = SURFACE.extract_stdlib_surface(str(root))
+            entries = {name: records[0] for name, records in result["names"].items()}
+            self.assertEqual("value", entries["stream-null-like"]["binding_category"])
+            self.assertEqual("procedure", entries["explicit-procedure"]["binding_category"])
+            self.assertEqual("procedure", entries["lambda-procedure"]["binding_category"])
+            self.assertEqual("syntax", entries["syntax-name"]["binding_category"])
+            self.assertEqual("value", entries["local-alias"]["binding_category"])
+            self.assertEqual(entries["stream-null-like"]["binding_identity"],
+                             entries["local-alias"]["binding_identity"])
+            self.assertEqual("beta-value",
+                             entries["forwarded"]["resolved_binding_origin"]["name"])
+            self.assertEqual("core.alpha",
+                             entries["forwarded"]["definition_origin"]["module"])
+            self.assertEqual("forwarded", entries["forwarded"]["public_name"])
+            direct_reexport = next(item for item in result["names"]["beta-value"]
+                                   if item["module"] == "core.alpha")
+            self.assertEqual("core.beta",
+                             direct_reexport["resolved_binding_origin"]["module"])
+            self.assertEqual("beta-value", direct_reexport["public_name"])
+            self.assertEqual("unknown", entries["conditional-value"]["binding_category"])
+            self.assertIn("binding_identity", entries["conditional-value"])
+            self.assertEqual("unknown", entries["redefined"]["binding_category"])
+            self.assertNotIn("binding_identity", entries["redefined"])
+            self.assertTrue(entries["redefined"]["definition_origin"])
+            self.assertIsNone(entries["redefined"]["resolved_binding_origin"])
+            for mutable in ("mutable-later", "mutable-closure",
+                            "alias-of-mutable", "shadowed-write"):
+                self.assertEqual("unknown", entries[mutable]["binding_category"])
+            self.assertEqual(entries["mutable-later"]["binding_identity"],
+                             entries["alias-of-mutable"]["binding_identity"])
+            self.assertEqual("unknown",
+                             entries["cross-module-mutable"]["binding_category"])
+            self.assertEqual(entries["cross-module-mutable"]["binding_identity"],
+                             entries["alias-of-cross-module"]["binding_identity"])
+
+    def test_generation_is_independent_of_legacy_compiler(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "scripts").mkdir()
+            shutil.copy(REPO / "scripts/gen_language_surface.py", root / "scripts")
+            module_surface = SURFACE.extract_stdlib_surface(str(REPO))
+            inputs = {
+                "lib/backend/eshkol_vm.c", "lib/backend/llvm_codegen.cpp",
+                "lib/backend/vm_prelude_source.h", "lib/frontend/parser.cpp",
+                "inc/eshkol/eshkol.h", "lib/agent/quantum.esk",
+                "lib/agent/pqc.esk",
+            }
+            inputs.update(entry["path"] for entry in module_surface["modules"])
+            for relative in inputs:
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(REPO / relative, target)
+            legacy = root / "lib/backend/eshkol_compiler.c"
+            legacy.write_text("GHOST_ONLY_BUILTIN_33\n")
+            out = root / "surface.json"
+            command = ["python3", str(root / "scripts/gen_language_surface.py"),
+                       "--out", str(out)]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            first = out.read_bytes()
+            legacy.write_text('"SECOND_GHOST_ONLY_BUILTIN"\n')
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertEqual(first, out.read_bytes())
+            manifest = json.loads(first)
+            names = {row["name"] for row in manifest["builtins"]}
+            self.assertNotIn("GHOST_ONLY_BUILTIN_33", names)
+            self.assertNotIn("SECOND_GHOST_ONLY_BUILTIN", names)
+
+    def test_live_builtin_ids_and_stdlib_provenance_are_source_grounded(self):
+        manifest = SURFACE.build_manifest()
+        vm = SURFACE.extract_builtin_table(SURFACE.VM_C)
+        self.assertNotIn("native_builtins", manifest["_meta"]["sources"])
+        for row in manifest["builtins"]:
+            self.assertNotIn("native", row["backends"])
+            if "vm" in row["backends"]:
+                members = [row["name"]] + row.get("aliases", [])
+                source_ids = sorted({nid for name in members
+                                     for nid in vm.get(name, {}).get("ids", [])})
+                self.assertEqual(source_ids, row["ids"])
+                if any(name in vm for name in members):
+                    self.assertIsNotNone(row["arity"])
+                else:
+                    vm_bootstrap = SURFACE.extract_vm_prelude_defs()
+                    self.assertTrue(any(name in vm_bootstrap for name in members))
+
+        closure = {item["module"]: item
+                   for item in manifest["_meta"]["sources"]["stdlib_module_closure"]}
+        self.assertIn("stdlib", closure)
+        self.assertIn("core.io", closure)
+        for entry in manifest["prelude"]:
+            if "stdlib" in entry["sources"]:
+                self.assertTrue(entry["provenance"])
+                for source in entry["provenance"]:
+                    self.assertIn(source["module"], closure)
+                    self.assertTrue(source["path"].startswith("lib/"))
+                    self.assertGreater(source["line"], 0)
+        for item in closure.values():
+            self.assertTrue(item["path"].startswith("lib/"))
+            for exported in item["exports"]:
+                self.assertTrue(exported["name"])
+                self.assertGreater(exported["line"], 0)
+                self.assertTrue(exported["definition_origin"])
+
+        stream_null = next(entry for entry in manifest["prelude"]
+                           if entry["name"] == "stream-null")
+        self.assertEqual("value", stream_null["binding_category"])
+        self.assertIn("core.streams:lib/core/streams.esk#stream-null",
+                      stream_null["binding_identity"])
+        stream_origin = stream_null["provenance"][0]
+        self.assertEqual(58, stream_origin["definition_origin"]["line"])
+        self.assertEqual("stream-null",
+                         stream_origin["resolved_binding_origin"]["name"])
+
+        sys.path.insert(0, str(REPO / "scripts/p8"))
+        import five_way_surface
+        present, _, _, _, native_prelude = five_way_surface.collect_manifest(str(REPO))
+        vm_only = next(entry["name"] for entry in manifest["prelude"]
+                       if entry["sources"] == ["vm_bootstrap"])
+        stdlib_only = next(entry["name"] for entry in manifest["prelude"]
+                           if entry["sources"] == ["stdlib"])
+        closure_only = next(entry["name"] for entry in manifest["prelude"]
+                            if entry["sources"] == ["stdlib_closure_presence"])
+        self.assertNotIn(vm_only, native_prelude)
+        self.assertIn(vm_only, present)
+        self.assertIn(stdlib_only, native_prelude)
+        self.assertIn(closure_only, present)
+        self.assertNotIn(closure_only, native_prelude)
+
+
+if __name__ == "__main__":
+    unittest.main()

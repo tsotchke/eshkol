@@ -1,0 +1,295 @@
+;;; core.synthesis.deduce -- deductive splitting for example-based synthesis.
+;;;
+;;; Deduction turns one synthesis problem into smaller ones by inverting the
+;;; semantics of an operator on the examples (a witness function), and hands
+;;; the sub-problems to the enumerator:
+;;;
+;;;   strings  FlashFill (Gulwani, POPL 2011): an output string is a
+;;;            concatenation of constant strings and substrings of an input
+;;;            whose end points are position expressions (absolute, from the
+;;;            end, or the start/end of the k-th token of a character class).
+;;;            The atoms consistent with EVERY example are found jointly: an
+;;;            atom is proposed from the first example and kept only if it
+;;;            produces the next piece of every other example's output, and a
+;;;            cheapest path through the resulting joint graph of output
+;;;            positions is the program.
+;;;   lists    lambda-squared style (Feser, Chaudhuri, Dillig, PLDI 2015):
+;;;            an output as long as an input list is a map, whose body is
+;;;            synthesised from per-element examples; an output that is a
+;;;            subsequence of the input is a filter, whose predicate is
+;;;            synthesised from per-element keep/drop examples; filter-then-map
+;;;            composes the two.
+;;;
+;;; syn-synthesize runs a bounded enumeration first, then the deductions that
+;;; apply to the goal type, then a wider enumeration. Every returned program is
+;;; re-checked against all examples with syn-consistent?.
+;;;
+;;; Design: ADR-0052. Reference: docs/reference/stdlib/synthesis.md.
+
+(require stdlib)
+(require core.synthesis.dsl)
+(require core.synthesis.enumerate)
+
+(provide syn-synthesize syn-flashfill syn-deduce-map syn-deduce-filter syn-deduce-filter-map
+         syn-position-expressions syn-string-classes)
+
+(define (syn-opt2 options key default)
+  (let ((hit (assq key options))) (if hit (cdr hit) default)))
+(define (syn-index-of x l)
+  (let loop ((l l) (i 0)) (cond ((null? l) #f) ((eq? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (syn-fresh-var vars)
+  (let loop ((cands '(e el elt e1 e2 e3)))
+    (if (memq (car cands) vars) (loop (cdr cands)) (car cands))))
+
+;; ---------------------------------------------------------------------------
+;; FlashFill
+;; ---------------------------------------------------------------------------
+(define syn-string-classes
+  (list 'alpha 'upper 'lower 'digit 'alnum 'space
+        (list 'char #\@) (list 'char #\.) (list 'char #\,) (list 'char #\-) (list 'char #\/)
+        (list 'char #\() (list 'char #\)) (list 'char #\_) (list 'char #\:)))
+
+;; Position expressions denoting position p of s, most general first:
+;; token boundaries, then from-the-end, then absolute.
+(define (syn-position-expressions s p)
+  (let* ((n (string-length s))
+         (tok (apply append
+                (map (lambda (cls)
+                       (let* ((toks (syn-tokens s cls)) (m (length toks)))
+                         (let loop ((ts toks) (k 1) (acc '()))
+                           (if (null? ts) (reverse acc)
+                               (loop (cdr ts) (+ k 1)
+                                     (append (if (= (cdr (car ts)) p)
+                                                 (list (list 'tok cls (- k (+ m 1)) 'end) (list 'tok cls k 'end)) '())
+                                             (if (= (car (car ts)) p)
+                                                 (list (list 'tok cls k 'start) (list 'tok cls (- k (+ m 1)) 'start)) '())
+                                             acc))))))
+                     syn-string-classes))))
+    (append tok (list (list 'end (- n p)) p))))
+
+(define (syn-pos-rank p) (cond ((integer? p) 3) ((eq? (car p) 'end) 2) (else 1)))
+
+(define (syn-string-prefix-at? piece s i)
+  (let ((k (string-length piece)))
+    (and (<= (+ i k) (string-length s)) (string=? piece (substring s i (+ i k))))))
+
+;; occurrences of piece in s (start indices)
+(define (syn-occurrences piece s)
+  (let ((k (string-length piece)) (n (string-length s)))
+    (let loop ((i (- n k)) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (if (string=? piece (substring s i (+ i k))) (cons i acc) acc))))))
+
+;; spec: string goal; vars of type str are the sources. Returns a syn-result
+;; (method 'flashfill) or a failed result.
+(define (syn-flashfill spec . options-arg)
+  (let* ((options (if (null? options-arg) '() (car options-arg)))
+         (max-states (syn-opt2 options 'max-states 4000))
+         (vars (syn-spec-vars spec)) (types (syn-spec-types spec))
+         (exs (syn-spec-examples spec))
+         (outs (map cdr exs))
+         (envs (map (lambda (ex) (map cons vars (car ex))) exs))
+         (svars (let loop ((vs vars) (ts types) (acc '()))
+                  (if (null? vs) (reverse acc) (loop (cdr vs) (cdr ts) (if (eq? (car ts) 'str) (cons (car vs) acc) acc)))))
+         (evaluated 0))
+    (define (atom-text atom env)
+      (if (string? atom) atom (syn-eval atom env)))
+    ;; edges from a joint state: list of (atom cost . next-state)
+    (define (edges state)
+      (let* ((o1 (car outs)) (i1 (car state)) (n1 (string-length o1)) (env1 (car envs)))
+        (let jloop ((j (+ i1 1)) (acc '()))
+          (if (> j n1) acc
+              (let* ((piece (substring o1 i1 j))
+                     (const-atom piece)
+                     (cands
+                      (append
+                       (list (cons const-atom (+ 1.0 (string-length piece))))
+                       (apply append
+                         (map (lambda (v)
+                                (let ((src (cdr (assq v env1))))
+                                  (apply append
+                                    (map (lambda (l)
+                                           (let ((p1s (syn-position-expressions src l))
+                                                 (p2s (syn-position-expressions src (+ l (string-length piece)))))
+                                             (apply append
+                                               (map (lambda (p1)
+                                                      (map (lambda (p2)
+                                                             (cons (list 'syn-substr v (list 'quote p1) (list 'quote p2))
+                                                                   (+ 0.6 (* 0.15 (+ (syn-pos-rank p1) (syn-pos-rank p2))))))
+                                                           p2s))
+                                                    p1s))))
+                                         (syn-occurrences piece src)))))
+                              svars)))))
+                ;; keep the atoms that produce the next piece of every output
+                (jloop (+ j 1)
+                       (append
+                        (let cl ((cs cands) (acc2 '()))
+                          (if (null? cs) acc2
+                              (let next ((os (cdr outs)) (es (cdr envs)) (is (cdr state)) (nexts (list j)))
+                                (if (null? os)
+                                    (cl (cdr cs) (cons (cons (car (car cs)) (cons (cdr (car cs)) (reverse nexts))) acc2))
+                                    (let ((txt (begin (set! evaluated (+ evaluated 1)) (atom-text (car (car cs)) (car es)))))
+                                      (if (and (string? txt) (> (string-length txt) 0)
+                                               (syn-string-prefix-at? txt (car os) (car is)))
+                                          (next (cdr os) (cdr es) (cdr is) (cons (+ (car is) (string-length txt)) nexts))
+                                          (cl (cdr cs) acc2)))))))
+                        acc)))))))
+    ;; uniform-cost search over joint states
+    (let* ((start (map (lambda (o) 0) outs))
+           (goal (map string-length outs))
+           (best (make-hash-table)))
+      (hash-table-set! best start (cons 0.0 '()))
+      (let search ((frontier (list (cons 0.0 start))) (expanded 0))
+        (cond ((or (null? frontier) (> expanded max-states))
+               (syn-make-result #f #f #f evaluated expanded 'flashfill))
+              (else
+               ;; pop the cheapest state
+               (let* ((top (let pick ((f (cdr frontier)) (b (car frontier))) (if (null? f) b (pick (cdr f) (if (< (car (car f)) (car b)) (car f) b)))))
+                      (rest (let drop ((f frontier)) (if (eq? (car f) top) (cdr f) (cons (car f) (drop (cdr f))))))
+                      (state (cdr top)) (cost (car top))
+                      (rec (hash-table-ref/default best state #f)))
+                 (cond ((< (car rec) cost) (search rest expanded))
+                       ((equal? state goal)
+                        (let* ((atoms (reverse (cdr rec)))
+                               (prog (if (= (length atoms) 1) (car atoms) (cons 'string-append atoms))))
+                          (syn-make-result #t prog (length atoms) evaluated expanded 'flashfill)))
+                       (else
+                        (let relax ((es (edges state)) (fr rest))
+                          (if (null? es) (search fr (+ expanded 1))
+                              (let* ((e (car es)) (atom (car e)) (c (+ cost (cadr e))) (nxt (cddr e))
+                                     (old (hash-table-ref/default best nxt #f)))
+                                (if (or (not old) (< c (car old)))
+                                    (begin (hash-table-set! best nxt (cons c (cons atom (cdr rec))))
+                                           (relax (cdr es) (cons (cons c nxt) fr)))
+                                    (relax (cdr es) fr))))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; List deductions
+;; ---------------------------------------------------------------------------
+;; Per-element sub-specification: element variable e plus every int variable.
+(define (syn-element-spec spec elements-of goal-type)
+  ;; elements-of : example -> list of (element . target)
+  (let* ((vars (syn-spec-vars spec)) (types (syn-spec-types spec))
+         (e (syn-fresh-var vars))
+         (ivars (let loop ((vs vars) (ts types) (acc '()))
+                  (if (null? vs) (reverse acc) (loop (cdr vs) (cdr ts) (if (eq? (car ts) 'int) (cons (car vs) acc) acc)))))
+         (rows (apply append
+                 (map (lambda (ex)
+                        (let ((ivals (map (lambda (v) (list-ref (car ex) (syn-index-of v vars))) ivars)))
+                          (map (lambda (pair) (cons (cons (car pair) ivals) (cdr pair))) (elements-of ex))))
+                      (syn-spec-examples spec))))
+         (dedup (let loop ((rs rows) (acc '()))
+                  (cond ((null? rs) (reverse acc))
+                        ((assoc (car (car rs)) acc)
+                         (if (equal? (cdr (assoc (car (car rs)) acc)) (cdr (car rs))) (loop (cdr rs) acc) 'inconsistent))
+                        (else (loop (cdr rs) (cons (car rs) acc)))))))
+    (if (or (eq? dedup 'inconsistent) (null? dedup)) #f
+        (cons e (syn-spec (cons e ivars) (cons 'int (map (lambda (v) 'int) ivars)) dedup goal-type)))))
+
+(define (syn-list-vars spec)
+  (let loop ((vs (syn-spec-vars spec)) (ts (syn-spec-types spec)) (acc '()))
+    (if (null? vs) (reverse acc) (loop (cdr vs) (cdr ts) (if (eq? (car ts) 'list) (cons (car vs) acc) acc)))))
+
+(define (syn-input-of spec ex v) (list-ref (car ex) (syn-index-of v (syn-spec-vars spec))))
+
+(define (syn-sub-enumerate sub lib options)
+  (syn-enumerate sub lib (list (cons 'max-cost (syn-opt2 options 'body-max-cost 6))
+                               (cons 'max-evaluated (syn-opt2 options 'body-max-evaluated 60000)))))
+
+;; map: |out| = |xs| on every example.
+(define (syn-deduce-map spec lib . options-arg)
+  (let ((options (if (null? options-arg) '() (car options-arg))))
+    (let try ((lvs (syn-list-vars spec)) (evaluated 0))
+      (if (null? lvs) (syn-make-result #f #f #f evaluated 0 'map)
+          (let ((v (car lvs)))
+            (if (not (let all ((exs (syn-spec-examples spec)))
+                       (or (null? exs)
+                           (and (list? (cdr (car exs)))
+                                (= (length (cdr (car exs))) (length (syn-input-of spec (car exs) v)))
+                                (all (cdr exs))))))
+                (try (cdr lvs) evaluated)
+                (let ((sub (syn-element-spec spec (lambda (ex) (map cons (syn-input-of spec ex v) (cdr ex))) 'int)))
+                  (if (not sub) (try (cdr lvs) evaluated)
+                      (let ((r (syn-sub-enumerate (cdr sub) lib options)))
+                        (if (syn-result-found? r)
+                            (syn-make-result #t (list 'syn-map (list 'lambda (list (car sub)) (syn-result-program r)) v)
+                                             (+ 1 (syn-result-cost r)) (+ evaluated (syn-result-evaluated r)) (syn-result-kept r) 'map)
+                            (try (cdr lvs) (+ evaluated (syn-result-evaluated r)))))))))))))
+
+;; keep/drop labels for out as a subsequence of xs (leftmost matching), or #f
+(define (syn-subsequence-labels xs out)
+  (let loop ((xs xs) (out out) (acc '()))
+    (cond ((null? xs) (if (null? out) (reverse acc) #f))
+          ((and (pair? out) (equal? (car xs) (car out))) (loop (cdr xs) (cdr out) (cons (cons (car xs) #t) acc)))
+          (else (loop (cdr xs) out (cons (cons (car xs) #f) acc))))))
+
+(define (syn-deduce-filter spec lib . options-arg)
+  (let ((options (if (null? options-arg) '() (car options-arg))))
+    (let try ((lvs (syn-list-vars spec)) (evaluated 0))
+      (if (null? lvs) (syn-make-result #f #f #f evaluated 0 'filter)
+          (let* ((v (car lvs))
+                 (labels (map (lambda (ex) (and (list? (cdr ex)) (syn-subsequence-labels (syn-input-of spec ex v) (cdr ex))))
+                              (syn-spec-examples spec))))
+            (if (memq #f labels) (try (cdr lvs) evaluated)
+                (let ((sub (syn-element-spec spec (lambda (ex) (syn-subsequence-labels (syn-input-of spec ex v) (cdr ex))) 'bool)))
+                  (if (not sub) (try (cdr lvs) evaluated)
+                      (let ((r (syn-sub-enumerate (cdr sub) lib options)))
+                        (if (syn-result-found? r)
+                            (syn-make-result #t (list 'syn-filter (list 'lambda (list (car sub)) (syn-result-program r)) v)
+                                             (+ 1 (syn-result-cost r)) (+ evaluated (syn-result-evaluated r)) (syn-result-kept r) 'filter)
+                            (try (cdr lvs) (+ evaluated (syn-result-evaluated r)))))))))))))
+
+;; filter by a library predicate, then map: the predicate is chosen among the
+;; library's int->bool components; the map body is synthesised.
+(define (syn-deduce-filter-map spec lib . options-arg)
+  (let ((options (if (null? options-arg) '() (car options-arg)))
+        (preds (filter (lambda (c) (eq? (syn-comp-ret c) 'int->bool)) lib)))
+    (let try-v ((lvs (syn-list-vars spec)) (evaluated 0))
+      (if (null? lvs) (syn-make-result #f #f #f evaluated 0 'filter-map)
+          (let ((v (car lvs)))
+            (let try-p ((ps preds) (evaluated evaluated))
+              (if (null? ps) (try-v (cdr lvs) evaluated)
+                  (let* ((p ((syn-comp-impl (car ps))))
+                         (kept (lambda (ex) (filter (lambda (x) (eq? (p x) #t)) (syn-input-of spec ex v)))))
+                    (if (not (let all ((exs (syn-spec-examples spec)))
+                               (or (null? exs)
+                                   (and (list? (cdr (car exs))) (= (length (cdr (car exs))) (length (kept (car exs))))
+                                        (all (cdr exs))))))
+                        (try-p (cdr ps) evaluated)
+                        (let ((sub (syn-element-spec spec (lambda (ex) (map cons (kept ex) (cdr ex))) 'int)))
+                          (if (not sub) (try-p (cdr ps) evaluated)
+                              (let ((r (syn-sub-enumerate (cdr sub) lib options)))
+                                (if (syn-result-found? r)
+                                    (syn-make-result #t (list 'syn-map (list 'lambda (list (car sub)) (syn-result-program r))
+                                                              (list 'syn-filter (syn-comp-term (car ps)) v))
+                                                     (+ 2 (syn-result-cost r)) (+ evaluated (syn-result-evaluated r)) (syn-result-kept r)
+                                                     'filter-map)
+                                    (try-p (cdr ps) (+ evaluated (syn-result-evaluated r))))))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Driver
+;; ---------------------------------------------------------------------------
+;; options: max-cost / max-evaluated for the final enumeration, quick-cost /
+;; quick-evaluated for the first one, body-max-cost / body-max-evaluated for
+;; deduced sub-problems, max-states for FlashFill, deduction (default #t;
+;; #f runs the two enumerations only, for measuring what deduction adds).
+(define (syn-synthesize spec . rest)
+  (let* ((lib (if (and (pair? rest) (pair? (car rest)) (syn-comp? (car (car rest)))) (car rest) (syn-default-library)))
+         (options (cond ((null? rest) '()) ((and (pair? (car rest)) (syn-comp? (car (car rest)))) (if (null? (cdr rest)) '() (cadr rest))) (else (car rest))))
+         (goal (syn-spec-goal spec))
+         (deduction (syn-opt2 options 'deduction #t))
+         (spent 0))
+    (define (done r)
+      (if (and (syn-result-found? r) (syn-consistent? (syn-result-program r) spec))
+          (syn-make-result #t (syn-result-program r) (syn-result-cost r) (+ spent (syn-result-evaluated r))
+                           (syn-result-kept r) (syn-result-method r))
+          (begin (set! spent (+ spent (syn-result-evaluated r))) #f)))
+    (or (done (syn-enumerate spec lib (list (cons 'max-cost (syn-opt2 options 'quick-cost 5))
+                                            (cons 'max-evaluated (syn-opt2 options 'quick-evaluated 20000)))))
+        (and deduction (eq? goal 'str) (memq 'str (syn-spec-types spec)) (done (syn-flashfill spec options)))
+        (and deduction (eq? goal 'list) (memq 'list (syn-spec-types spec))
+             (or (done (syn-deduce-map spec lib options))
+                 (done (syn-deduce-filter spec lib options))
+                 (done (syn-deduce-filter-map spec lib options))))
+        (done (syn-enumerate spec lib (list (cons 'max-cost (syn-opt2 options 'max-cost 8))
+                                            (cons 'max-evaluated (syn-opt2 options 'max-evaluated 200000)))))
+        (syn-make-result #f #f #f spent 0 'none))))

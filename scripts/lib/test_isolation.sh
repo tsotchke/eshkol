@@ -97,7 +97,7 @@ seconds = float(sys.argv[1])
 argv = sys.argv[2:]
 is_windows = os.name == "nt"
 
-def kill_tree(force):
+def kill_tree(force=False, signum=signal.SIGTERM):
     if is_windows:
         try:
             subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
@@ -106,9 +106,29 @@ def kill_tree(force):
             pass
         return
     try:
-        os.killpg(child.pid, signal.SIGKILL if force else signal.SIGTERM)
+        os.killpg(child.pid, signal.SIGKILL if force else signum)
     except ProcessLookupError:
         pass
+
+def forward_signal(signum, _frame):
+    # The caller may itself be cancelled by a disk guard or CI. Forward the
+    # same signal to the owned process group, then reap it before exiting.
+    # Prevent nested delivery while waiting or escalating.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    kill_tree(signum=signum)
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        kill_tree(True)
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    # The leader may exit promptly while a grandchild ignores TERM. Always
+    # clear the owned group after the grace period, even when wait() succeeded.
+    kill_tree(True)
+    raise SystemExit(128 + signum)
 
 try:
     child = subprocess.Popen(
@@ -119,6 +139,8 @@ try:
 except OSError as exc:
     print(f"test_isolation: cannot execute timeout child: {exc}", file=sys.stderr)
     raise SystemExit(127)
+for handled_signal in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(handled_signal, forward_signal)
 try:
     result = child.wait(timeout=seconds)
     raise SystemExit(128 + (-result) if result < 0 else result)
@@ -132,6 +154,8 @@ except subprocess.TimeoutExpired:
             child.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
+    # A reaped leader does not imply its descendants exited.
+    kill_tree(True)
     raise SystemExit(124)
 PY
 }
@@ -469,11 +493,16 @@ eshkol_test_pin_toolchain() {
 
     # eshkol-run discovers stdlib.o/stdlib.bc and libeshkol-runtime.a relative
     # to its own location before it looks at ./build, so copying them alongside
-    # keeps the pinned compiler self-sufficient for both JIT and AOT.
+    # keeps the pinned compiler self-sufficient for both JIT and AOT. Also link
+    # the repository's lib/ tree at $pinned/lib so build-identity-verified
+    # stdlib module resolution finds every .esk source via bin/lib.
     for name in $ESHKOL_TEST_PIN_ARTIFACTS; do
         [ -f "$build_dir/$name" ] || continue
         cp -p -- "$build_dir/$name" "$pinned/$name" 2>/dev/null || true
     done
+    if [ -d "$ESHKOL_TEST_REPO_ROOT/lib" ] && [ ! -e "$pinned/lib" ]; then
+        ln -s "$ESHKOL_TEST_REPO_ROOT/lib" "$pinned/lib" 2>/dev/null || true
+    fi
 
     [ -x "$pinned/eshkol-run" ] \
         || eshkol_test_isolation_fail "failed to pin eshkol-run from $build_dir"

@@ -1,0 +1,418 @@
+;;; ml.autograd -- dense matrix layers on the reverse-mode tape (core.ad.tape).
+;;;
+;;; Usage: (require ml.autograd)
+;;;
+;;; A tape node in core.ad.tape holds a number or a flat vector of numbers. This
+;;; module gives such a node a matrix shape and records matrix operations on the
+;;; tape with exact, hand-derived backward rules (record-op!), so a loss built
+;;; from them is differentiated in one reverse sweep whose cost is a constant
+;;; multiple of the forward pass. Nothing here uses finite differences.
+;;;
+;;; Host matrices (parameters, data) are #(agm rows cols data) with `data` a
+;;; flat row-major vector. A tape matrix is #(agt node rows cols).
+;;;
+;;;   (define W (ag-random 3 2 0.5 17))           ; host parameter
+;;;   (ag-train-step! (list W) opt
+;;;     (lambda (t ps) (ag-sum t (ag-matmul t X (car ps)))))
+;;;
+;;; The graph layers of ml.gnn, the neural scorer of core.synthesis.neural and
+;;; the proof-step scorer of core.synthesis.prover are written on this module.
+;;; Design: ADR-0052 (docs/design/adr/0052-program-synthesis.md).
+
+(require stdlib)
+(require core.ad.tape)
+
+(provide ag-matrix ag-matrix? ag-rows ag-cols ag-data ag-ref ag-set! ag-zeros ag-random
+         ag-from-rows ag-to-rows ag-copy ag-lcg-next ag-lcg-uniform
+         ag-param ag-const ag-node ag-trows ag-tcols ag-tdata ag-wrap ag-value ag-scalar-value
+         ag-matmul ag-add ag-sub ag-add-bias ag-hadamard ag-scale ag-relu ag-leaky-relu
+         ag-tanh ag-sigmoid ag-concat-cols ag-sum ag-mean-rows ag-spmm ag-dot-rows
+         ag-softmax-xent ag-sigmoid-bce ag-scalar-add ag-scalar-scale ag-l2
+         ag-row-softmax ag-argmax-rows
+         ag-adam ag-adam-step! ag-train-step! ag-loss-and-gradients)
+
+;; ---------------------------------------------------------------------------
+;; Host matrices
+;; ---------------------------------------------------------------------------
+(define (ag-matrix rows cols data) (vector 'agm rows cols data))
+(define (ag-matrix? m) (and (vector? m) (= (vector-length m) 4) (eq? (vector-ref m 0) 'agm)))
+(define (ag-rows m) (vector-ref m 1))
+(define (ag-cols m) (vector-ref m 2))
+(define (ag-data m) (vector-ref m 3))
+(define (ag-ref m i j) (vector-ref (ag-data m) (+ (* i (ag-cols m)) j)))
+(define (ag-set! m i j x) (vector-set! (ag-data m) (+ (* i (ag-cols m)) j) x))
+(define (ag-zeros rows cols) (ag-matrix rows cols (make-vector (* rows cols) 0.0)))
+(define (ag-copy m)
+  (let* ((n (vector-length (ag-data m))) (d (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! d i (vector-ref (ag-data m) i)) (loop (+ i 1)))))
+    (ag-matrix (ag-rows m) (ag-cols m) d)))
+
+;; Deterministic linear congruential generator: state -> next state, and a
+;; uniform draw in [0,1). Every random choice in the synthesis and graph
+;; libraries goes through it, so runs are reproducible on every engine.
+(define (ag-lcg-next s) (modulo (+ (* s 1103515245) 12345) 2147483648))
+(define (ag-lcg-uniform s) (/ (exact->inexact (modulo (quotient s 16) 1000000)) 1000000.0))
+
+;; Uniform(-scale, scale) initialisation from a seed.
+(define (ag-random rows cols scale seed)
+  (let* ((n (* rows cols)) (d (make-vector n 0.0)))
+    (let loop ((i 0) (s (ag-lcg-next (+ seed 7919))))
+      (if (< i n)
+          (begin (vector-set! d i (* scale (- (* 2.0 (ag-lcg-uniform s)) 1.0)))
+                 (loop (+ i 1) (ag-lcg-next s)))))
+    (ag-matrix rows cols d)))
+
+(define (ag-from-rows rows)
+  (let* ((r (length rows)) (c (if (null? rows) 0 (length (car rows)))) (m (ag-zeros r c)))
+    (let loop ((i 0) (rs rows))
+      (if (pair? rs)
+          (begin (let jl ((j 0) (xs (car rs)))
+                   (if (pair? xs) (begin (ag-set! m i j (exact->inexact (car xs))) (jl (+ j 1) (cdr xs)))))
+                 (loop (+ i 1) (cdr rs)))))
+    m))
+
+(define (ag-to-rows m)
+  (let rl ((i (- (ag-rows m) 1)) (acc '()))
+    (if (< i 0) acc
+        (rl (- i 1) (cons (let cl ((j (- (ag-cols m) 1)) (row '()))
+                            (if (< j 0) row (cl (- j 1) (cons (ag-ref m i j) row))))
+                          acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Tape matrices
+;; ---------------------------------------------------------------------------
+(define (ag-wrap node rows cols) (vector 'agt node rows cols))
+(define (ag-node tm) (vector-ref tm 1))
+(define (ag-trows tm) (vector-ref tm 2))
+(define (ag-tcols tm) (vector-ref tm 3))
+(define (ag-tdata tm) (node-value (ag-node tm)))
+(define (ag-param t m) (ag-wrap (tape-input t (ag-data m)) (ag-rows m) (ag-cols m)))
+(define (ag-const t m) (ag-wrap (tape-const t (ag-data m)) (ag-rows m) (ag-cols m)))
+(define (ag-value tm) (ag-matrix (ag-trows tm) (ag-tcols tm) (ag-tdata tm)))
+(define (ag-scalar-value n) (node-value n))
+
+(define (ag-vec n) (make-vector n 0.0))
+(define (ag-check-same who a b)
+  (if (not (and (= (ag-trows a) (ag-trows b)) (= (ag-tcols a) (ag-tcols b))))
+      (error (string-append who ": shape mismatch"))))
+
+(define (ag-record t ins out rows cols backward)
+  (ag-wrap (record-op! t (map ag-node ins) out backward) rows cols))
+
+;; C = A B   (m x k)(k x n).  dA = dC B^T,  dB = A^T dC.
+(define (ag-matmul t A B)
+  (let ((m (ag-trows A)) (k (ag-tcols A)) (n (ag-tcols B)) (a (ag-tdata A)) (b (ag-tdata B)))
+    (if (not (= k (ag-trows B))) (error "ag-matmul: inner dimensions differ"))
+    (let ((c (ag-vec (* m n))))
+      (let il ((i 0))
+        (if (< i m)
+            (begin
+              (let pl ((p 0))
+                (if (< p k)
+                    (let ((aip (vector-ref a (+ (* i k) p))))
+                      (if (not (= aip 0.0))
+                          (let jl ((j 0))
+                            (if (< j n)
+                                (let ((ci (+ (* i n) j)))
+                                  (vector-set! c ci (+ (vector-ref c ci) (* aip (vector-ref b (+ (* p n) j)))))
+                                  (jl (+ j 1))))))
+                      (pl (+ p 1)))))
+              (il (+ i 1)))))
+      (ag-record t (list A B) c m n
+        (lambda (g)
+          (let ((da (ag-vec (* m k))) (db (ag-vec (* k n))))
+            (let il ((i 0))
+              (if (< i m)
+                  (begin
+                    (let jl ((j 0))
+                      (if (< j n)
+                          (let ((gij (vector-ref g (+ (* i n) j))))
+                            (if (not (= gij 0.0))
+                                (let pl ((p 0))
+                                  (if (< p k)
+                                      (let ((ai (+ (* i k) p)) (bi (+ (* p n) j)))
+                                        (vector-set! da ai (+ (vector-ref da ai) (* gij (vector-ref b bi))))
+                                        (vector-set! db bi (+ (vector-ref db bi) (* gij (vector-ref a ai))))
+                                        (pl (+ p 1))))))
+                            (jl (+ j 1)))))
+                    (il (+ i 1)))))
+            (list da db)))))))
+
+(define (ag-elementwise2 t who A B f dfa dfb)
+  (ag-check-same who A B)
+  (let* ((a (ag-tdata A)) (b (ag-tdata B)) (n (vector-length a)) (c (ag-vec n)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! c i (f (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    (ag-record t (list A B) c (ag-trows A) (ag-tcols A)
+      (lambda (g)
+        (let ((ga (ag-vec n)) (gb (ag-vec n)))
+          (let loop ((i 0))
+            (if (< i n)
+                (let ((gi (vector-ref g i)) (ai (vector-ref a i)) (bi (vector-ref b i)))
+                  (vector-set! ga i (* gi (dfa ai bi)))
+                  (vector-set! gb i (* gi (dfb ai bi)))
+                  (loop (+ i 1)))))
+          (list ga gb))))))
+
+(define (ag-add t A B) (ag-elementwise2 t "ag-add" A B + (lambda (a b) 1.0) (lambda (a b) 1.0)))
+(define (ag-sub t A B) (ag-elementwise2 t "ag-sub" A B - (lambda (a b) 1.0) (lambda (a b) -1.0)))
+(define (ag-hadamard t A B) (ag-elementwise2 t "ag-hadamard" A B * (lambda (a b) b) (lambda (a b) a)))
+
+;; A (m x n) + bias row b (1 x n) broadcast over the rows.
+(define (ag-add-bias t A b)
+  (let* ((m (ag-trows A)) (n (ag-tcols A)) (a (ag-tdata A)) (bv (ag-tdata b)) (c (ag-vec (* m n))))
+    (if (not (and (= (ag-trows b) 1) (= (ag-tcols b) n))) (error "ag-add-bias: bias must be 1 x cols"))
+    (let il ((i 0))
+      (if (< i m)
+          (begin (let jl ((j 0))
+                   (if (< j n) (begin (vector-set! c (+ (* i n) j) (+ (vector-ref a (+ (* i n) j)) (vector-ref bv j)))
+                                      (jl (+ j 1)))))
+                 (il (+ i 1)))))
+    (ag-record t (list A b) c m n
+      (lambda (g)
+        (let ((gb (ag-vec n)))
+          (let il ((i 0))
+            (if (< i m)
+                (begin (let jl ((j 0))
+                         (if (< j n) (begin (vector-set! gb j (+ (vector-ref gb j) (vector-ref g (+ (* i n) j))))
+                                            (jl (+ j 1)))))
+                       (il (+ i 1)))))
+          (list g gb))))))
+
+(define (ag-unary t A f df)
+  (let* ((a (ag-tdata A)) (n (vector-length a)) (c (ag-vec n)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! c i (f (vector-ref a i))) (loop (+ i 1)))))
+    (ag-record t (list A) c (ag-trows A) (ag-tcols A)
+      (lambda (g)
+        (let ((ga (ag-vec n)))
+          (let loop ((i 0))
+            (if (< i n) (begin (vector-set! ga i (* (vector-ref g i) (df (vector-ref a i) (vector-ref c i))))
+                               (loop (+ i 1)))))
+          (list ga))))))
+
+(define (ag-scale t A s) (ag-unary t A (lambda (x) (* s x)) (lambda (x y) s)))
+(define (ag-relu t A) (ag-unary t A (lambda (x) (if (> x 0.0) x 0.0)) (lambda (x y) (if (> x 0.0) 1.0 0.0))))
+(define (ag-leaky-relu t A alpha)
+  (ag-unary t A (lambda (x) (if (> x 0.0) x (* alpha x))) (lambda (x y) (if (> x 0.0) 1.0 alpha))))
+(define (ag-tanh t A) (ag-unary t A tanh (lambda (x y) (- 1.0 (* y y)))))
+(define (ag-sigmoid-scalar x) (if (>= x 0.0) (/ 1.0 (+ 1.0 (exp (- x)))) (let ((e (exp x))) (/ e (+ 1.0 e)))))
+(define (ag-sigmoid t A) (ag-unary t A ag-sigmoid-scalar (lambda (x y) (* y (- 1.0 y)))))
+
+;; [A | B] column concatenation of two matrices with the same row count.
+(define (ag-concat-cols t A B)
+  (let* ((m (ag-trows A)) (p (ag-tcols A)) (q (ag-tcols B)) (n (+ p q))
+         (a (ag-tdata A)) (b (ag-tdata B)) (c (ag-vec (* m n))))
+    (if (not (= m (ag-trows B))) (error "ag-concat-cols: row counts differ"))
+    (let il ((i 0))
+      (if (< i m)
+          (begin
+            (let jl ((j 0)) (if (< j p) (begin (vector-set! c (+ (* i n) j) (vector-ref a (+ (* i p) j))) (jl (+ j 1)))))
+            (let jl ((j 0)) (if (< j q) (begin (vector-set! c (+ (* i n) p j) (vector-ref b (+ (* i q) j))) (jl (+ j 1)))))
+            (il (+ i 1)))))
+    (ag-record t (list A B) c m n
+      (lambda (g)
+        (let ((ga (ag-vec (* m p))) (gb (ag-vec (* m q))))
+          (let il ((i 0))
+            (if (< i m)
+                (begin
+                  (let jl ((j 0)) (if (< j p) (begin (vector-set! ga (+ (* i p) j) (vector-ref g (+ (* i n) j))) (jl (+ j 1)))))
+                  (let jl ((j 0)) (if (< j q) (begin (vector-set! gb (+ (* i q) j) (vector-ref g (+ (* i n) p j))) (jl (+ j 1)))))
+                  (il (+ i 1)))))
+          (list ga gb))))))
+
+;; Sum of all entries -> scalar node.
+(define (ag-sum t A)
+  (let* ((a (ag-tdata A)) (n (vector-length a)))
+    (record-op! t (list (ag-node A))
+      (let loop ((i 0) (s 0.0)) (if (< i n) (loop (+ i 1) (+ s (vector-ref a i))) s))
+      (lambda (g) (list (make-vector n g))))))
+
+;; Mean over rows -> 1 x n (graph-level readout).
+(define (ag-mean-rows t A)
+  (let* ((m (ag-trows A)) (n (ag-tcols A)) (a (ag-tdata A)) (c (ag-vec n)) (inv (/ 1.0 m)))
+    (let il ((i 0))
+      (if (< i m)
+          (begin (let jl ((j 0)) (if (< j n) (begin (vector-set! c j (+ (vector-ref c j) (* inv (vector-ref a (+ (* i n) j))))) (jl (+ j 1)))))
+                 (il (+ i 1)))))
+    (ag-record t (list A) c 1 n
+      (lambda (g)
+        (let ((ga (ag-vec (* m n))))
+          (let il ((i 0))
+            (if (< i m)
+                (begin (let jl ((j 0)) (if (< j n) (begin (vector-set! ga (+ (* i n) j) (* inv (vector-ref g j))) (jl (+ j 1)))))
+                       (il (+ i 1)))))
+          (list ga))))))
+
+;; Row-wise dot product of two m x n matrices -> m x 1.
+(define (ag-dot-rows t A B)
+  (ag-check-same "ag-dot-rows" A B)
+  (let* ((m (ag-trows A)) (n (ag-tcols A)) (a (ag-tdata A)) (b (ag-tdata B)) (c (ag-vec m)))
+    (let il ((i 0))
+      (if (< i m)
+          (begin (vector-set! c i (let jl ((j 0) (s 0.0)) (if (< j n) (jl (+ j 1) (+ s (* (vector-ref a (+ (* i n) j)) (vector-ref b (+ (* i n) j))))) s)))
+                 (il (+ i 1)))))
+    (ag-record t (list A B) c m 1
+      (lambda (g)
+        (let ((ga (ag-vec (* m n))) (gb (ag-vec (* m n))))
+          (let il ((i 0))
+            (if (< i m)
+                (let ((gi (vector-ref g i)))
+                  (let jl ((j 0))
+                    (if (< j n)
+                        (let ((k (+ (* i n) j)))
+                          (vector-set! ga k (* gi (vector-ref b k)))
+                          (vector-set! gb k (* gi (vector-ref a k)))
+                          (jl (+ j 1)))))
+                  (il (+ i 1)))))
+          (list ga gb))))))
+
+;; Constant sparse matrix S (rows x A.rows, entries (i j w)) times A.
+;; Used for normalised graph propagation; dA = S^T dC.
+(define (ag-spmm t S-rows entries A)
+  (let* ((n (ag-tcols A)) (a (ag-tdata A)) (c (ag-vec (* S-rows n))))
+    (for-each (lambda (e)
+                (let ((i (car e)) (j (cadr e)) (w (caddr e)))
+                  (let jl ((q 0))
+                    (if (< q n)
+                        (begin (vector-set! c (+ (* i n) q) (+ (vector-ref c (+ (* i n) q)) (* w (vector-ref a (+ (* j n) q)))))
+                               (jl (+ q 1)))))))
+              entries)
+    (ag-record t (list A) c S-rows n
+      (lambda (g)
+        (let ((ga (ag-vec (vector-length a))))
+          (for-each (lambda (e)
+                      (let ((i (car e)) (j (cadr e)) (w (caddr e)))
+                        (let jl ((q 0))
+                          (if (< q n)
+                              (begin (vector-set! ga (+ (* j n) q) (+ (vector-ref ga (+ (* j n) q)) (* w (vector-ref g (+ (* i n) q)))))
+                                     (jl (+ q 1)))))))
+                    entries)
+          (list ga))))))
+
+;; Scalar-node helpers.
+(define (ag-scalar-add t a b) (tape-add t a b))
+(define (ag-scalar-scale t a s) (tape-mul t a (tape-const t s)))
+
+;; Sum of squares of all entries (weight decay).
+(define (ag-l2 t A)
+  (let* ((a (ag-tdata A)) (n (vector-length a)))
+    (record-op! t (list (ag-node A))
+      (let loop ((i 0) (s 0.0)) (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref a i)))) s))
+      (lambda (g) (let ((ga (ag-vec n)))
+                    (let loop ((i 0)) (if (< i n) (begin (vector-set! ga i (* 2.0 g (vector-ref a i))) (loop (+ i 1)))))
+                    (list ga))))))
+
+;; Host-side row softmax (for reading predictions).
+(define (ag-row-softmax m)
+  (let* ((r (ag-rows m)) (c (ag-cols m)) (out (ag-zeros r c)))
+    (let il ((i 0))
+      (if (< i r)
+          (let* ((mx (let jl ((j 0) (mx -1.0e300)) (if (< j c) (jl (+ j 1) (max mx (ag-ref m i j))) mx)))
+                 (z (let jl ((j 0) (s 0.0)) (if (< j c) (jl (+ j 1) (+ s (exp (- (ag-ref m i j) mx)))) s))))
+            (let jl ((j 0)) (if (< j c) (begin (ag-set! out i j (/ (exp (- (ag-ref m i j) mx)) z)) (jl (+ j 1)))))
+            (il (+ i 1)))))
+    out))
+
+(define (ag-argmax-rows m)
+  (let rl ((i (- (ag-rows m) 1)) (acc '()))
+    (if (< i 0) acc
+        (rl (- i 1)
+            (cons (let jl ((j 1) (best 0))
+                    (if (< j (ag-cols m)) (jl (+ j 1) (if (> (ag-ref m i j) (ag-ref m i best)) j best)) best))
+                  acc)))))
+
+;; Mean softmax cross-entropy over the rows whose label is an integer class
+;; (rows labelled #f are unlabelled and contribute nothing).
+;; d logits_ij = (softmax_ij - [j = y_i]) / N.
+(define (ag-softmax-xent t L labels)
+  (let* ((m (ag-trows L)) (c (ag-tcols L)) (x (ag-tdata L))
+         (lab (list->vector labels))
+         (count (let loop ((i 0) (k 0)) (if (< i m) (loop (+ i 1) (if (vector-ref lab i) (+ k 1) k)) k)))
+         (p (ag-vec (* m c))))
+    (if (= count 0) (error "ag-softmax-xent: no labelled rows"))
+    (let il ((i 0) (loss 0.0))
+      (if (< i m)
+          (let* ((mx (let jl ((j 0) (mx -1.0e300)) (if (< j c) (jl (+ j 1) (max mx (vector-ref x (+ (* i c) j)))) mx)))
+                 (z (let jl ((j 0) (s 0.0)) (if (< j c) (jl (+ j 1) (+ s (exp (- (vector-ref x (+ (* i c) j)) mx)))) s))))
+            (let jl ((j 0)) (if (< j c) (begin (vector-set! p (+ (* i c) j) (/ (exp (- (vector-ref x (+ (* i c) j)) mx)) z)) (jl (+ j 1)))))
+            (il (+ i 1)
+                (if (vector-ref lab i)
+                    (- loss (- (- (vector-ref x (+ (* i c) (vector-ref lab i))) mx) (log z)))
+                    loss)))
+          (record-op! t (list (ag-node L)) (/ loss count)
+            (lambda (g)
+              (let ((gl (ag-vec (* m c))) (s (/ g count)))
+                (let il ((i 0))
+                  (if (< i m)
+                      (begin
+                        (if (vector-ref lab i)
+                            (let jl ((j 0))
+                              (if (< j c)
+                                  (begin (vector-set! gl (+ (* i c) j)
+                                                      (* s (- (vector-ref p (+ (* i c) j)) (if (= j (vector-ref lab i)) 1.0 0.0))))
+                                         (jl (+ j 1))))))
+                        (il (+ i 1)))))
+                (list gl))))))))
+
+;; Mean sigmoid binary cross-entropy between logits Z and 0/1 targets (host
+;; matrix of the same shape), computed in the overflow-free form
+;; max(z,0) - z y + log(1 + exp(-|z|)).  d z = (sigmoid(z) - y) / N.
+(define (ag-sigmoid-bce t Z Y)
+  (let* ((z (ag-tdata Z)) (y (ag-data Y)) (n (vector-length z)))
+    (record-op! t (list (ag-node Z))
+      (/ (let loop ((i 0) (s 0.0))
+           (if (< i n)
+               (let ((zi (vector-ref z i)) (yi (vector-ref y i)))
+                 (loop (+ i 1) (+ s (- (max zi 0.0) (* zi yi)) (log (+ 1.0 (exp (- (abs zi))))))))
+               s))
+         n)
+      (lambda (g)
+        (let ((gz (ag-vec n)))
+          (let loop ((i 0))
+            (if (< i n)
+                (begin (vector-set! gz i (/ (* g (- (ag-sigmoid-scalar (vector-ref z i)) (vector-ref y i))) n))
+                       (loop (+ i 1)))))
+          (list gz))))))
+
+;; ---------------------------------------------------------------------------
+;; Training
+;; ---------------------------------------------------------------------------
+;; Run BUILD on a fresh tape with every host parameter wrapped as an input
+;; node; return (loss . gradient-vectors) with the gradients in parameter order.
+(define (ag-loss-and-gradients params build)
+  (with-tape "ml.autograd"
+    (lambda ()
+      (let* ((t (current-tape))
+             (ps (map (lambda (p) (ag-param t p)) params))
+             (loss (build t ps)))
+        (cons (node-value loss) (tape-gradient t loss (map ag-node ps)))))))
+
+;; Adam (Kingma and Ba, 2015) over a list of host matrices, updated in place.
+(define (ag-adam params lr)
+  (vector lr 0.9 0.999 1.0e-8 0
+          (map (lambda (p) (make-vector (vector-length (ag-data p)) 0.0)) params)
+          (map (lambda (p) (make-vector (vector-length (ag-data p)) 0.0)) params)
+          params))
+
+(define (ag-adam-step! opt grads)
+  (let* ((lr (vector-ref opt 0)) (b1 (vector-ref opt 1)) (b2 (vector-ref opt 2)) (eps (vector-ref opt 3))
+         (step (+ 1 (vector-ref opt 4)))
+         (c1 (- 1.0 (expt b1 step))) (c2 (- 1.0 (expt b2 step))))
+    (vector-set! opt 4 step)
+    (let loop ((ps (vector-ref opt 7)) (gs grads) (ms (vector-ref opt 5)) (vs (vector-ref opt 6)))
+      (if (pair? ps)
+          (let* ((d (ag-data (car ps))) (g (car gs)) (m (car ms)) (v (car vs)) (n (vector-length d)))
+            (let il ((i 0))
+              (if (< i n)
+                  (let* ((gi (vector-ref g i))
+                         (mi (+ (* b1 (vector-ref m i)) (* (- 1.0 b1) gi)))
+                         (vi (+ (* b2 (vector-ref v i)) (* (- 1.0 b2) gi gi))))
+                    (vector-set! m i mi) (vector-set! v i vi)
+                    (vector-set! d i (- (vector-ref d i) (/ (* lr (/ mi c1)) (+ (sqrt (/ vi c2)) eps))))
+                    (il (+ i 1)))))
+            (loop (cdr ps) (cdr gs) (cdr ms) (cdr vs)))))))
+
+;; One optimisation step; returns the loss before the update.
+(define (ag-train-step! params opt build)
+  (let ((lg (ag-loss-and-gradients params build)))
+    (ag-adam-step! opt (cdr lg))
+    (car lg)))

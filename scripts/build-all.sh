@@ -13,7 +13,7 @@
 #   --macos-only      Only build macOS target
 #   --homebrew-only   Only test Homebrew formula
 #   --skip-tests      Skip running tests
-#   --version VER     Set version (default: 1.0.0)
+#   --version VER     Set version (default: CMake project release)
 #
 # Copyright (C) tsotchke
 # SPDX-License-Identifier: MIT
@@ -29,7 +29,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-VERSION="${ESHKOL_VERSION:-1.0.0}"
+VERSION="${ESHKOL_VERSION:-$(python3 "$(dirname "$0")/release_target.py" --package-version)}"
 BUILD_LINUX=true
 BUILD_MACOS=true
 TEST_HOMEBREW=true

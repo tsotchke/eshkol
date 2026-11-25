@@ -35,6 +35,7 @@ inline constexpr const char* getenv_symbol = "eshkol_getenv";
 inline constexpr const char* setenv_symbol = "eshkol_setenv";
 inline constexpr const char* unsetenv_symbol = "eshkol_unsetenv";
 inline constexpr const char* usleep_symbol = "eshkol_usleep";
+inline constexpr const char* shell_command_symbol = "eshkol_shell_command";
 inline constexpr const char* fopen_symbol = "eshkol_fopen";
 inline constexpr const char* fputs_symbol = "eshkol_fputs";
 inline constexpr const char* access_symbol = "eshkol_access";
@@ -244,32 +245,86 @@ int eshkol_stat(const char* path, void* buf);
 void* eshkol_opendir(const char* path);
 
 /**
- * @brief Resets the capability runtime to its default state: policy
- *        inactive and the allow-list cleared, so eshkol_capability_runtime_allows()
- *        permits everything.
+ * @brief Deactivates the capability policy, so
+ *        eshkol_capability_runtime_allows() permits everything again.
+ *
+ * Refused while a policy is active: a policy that the code it governs can
+ * remove is not a policy. With no policy installed this is a no-op that
+ * succeeds.
+ *
+ * @return 1 when there is no policy left, 0 when an active policy refused.
  * @note Thread-safe.
  */
-void eshkol_capability_runtime_clear();
+int eshkol_capability_runtime_clear();
 
 /**
- * @brief Activates capability enforcement and clears any previously
- *        installed allow-list, in preparation for a fresh set of
- *        eshkol_capability_runtime_allow() calls.
+ * @brief Drops any active policy, for the host that owns the process.
+ *
+ * The reset an embedder needs after running a guest computation under a
+ * policy, and that a test harness needs between cases. No Eshkol program can
+ * reach it: naming it in an `(extern ...)` declaration is refused at compile
+ * time along with the policy's other entry points.
+ * @note Thread-safe.
+ */
+void eshkol_capability_runtime_host_reset();
+
+/**
+ * @brief Installs a policy from a whole set of names, in one call.
+ *
+ * The way a program installs a policy, and a single call on purpose: a policy
+ * is never active with its set still being assembled, so there is no window in
+ * which a stray grant could widen it. When a policy is already active the new
+ * set is intersected with it, so an install only ever takes away. The whole
+ * operation happens under one lock.
+ *
+ * @param names Granted capability names separated by spaces, e.g.
+ *        "file-read network". NULL or empty grants nothing.
+ * @return 1 once the policy is in force.
+ * @note Thread-safe.
+ */
+int eshkol_capability_runtime_install(const char* names);
+
+/**
+ * @brief Opens a staged install, for a host embedding Eshkol.
+ *
+ * For an embedder that builds its allow-list as it goes: begin, then one
+ * eshkol_capability_runtime_allow() per name, then
+ * eshkol_capability_runtime_end_install(). A program's own code never reaches
+ * it — it installs through eshkol_capability_runtime_install(), and the staged
+ * entry points are refused in an `(extern ...)` declaration and absent from
+ * the bytecode VM's table.
+ *
+ * While the install is open the policy is active with nothing granted, so a
+ * concurrent check fails closed. On an already-active policy the current set
+ * becomes the ceiling the staged names are intersected with.
  * @note Thread-safe.
  */
 void eshkol_capability_runtime_begin_install();
 
 /**
- * @brief Grants a capability, adding it to the active allow-list.
+ * @brief Closes a staged install, settling the set.
  *
- * Has no effect if the capability policy is not active (i.e. this must be
- * called after eshkol_capability_runtime_begin_install()).
- *
- * @param capability Capability name to grant (e.g. "file-read",
- *        "file-write", "env-read", "env-write"). NULL or empty is ignored.
+ * Afterwards eshkol_capability_runtime_allow() grants nothing; the only way to
+ * change the policy is another install, which can only narrow.
  * @note Thread-safe.
  */
-void eshkol_capability_runtime_allow(const char* capability);
+void eshkol_capability_runtime_end_install();
+
+/**
+ * @brief Grants a capability in the staged install that is currently open.
+ *
+ * Refused unless a staged install is open (see
+ * eshkol_capability_runtime_begin_install()).
+ *
+ * @param capability Capability name to grant (e.g. "file-read",
+ *        "file-write", "env-read", "env-write"). NULL or empty is refused,
+ *        and so is a name the policy being narrowed did not itself grant.
+ * @return 1 when the capability was granted; 0 when the grant was refused,
+ *         which is what happens whenever no staged install is open — a
+ *         settled policy cannot be widened by a stray call.
+ * @note Thread-safe.
+ */
+int eshkol_capability_runtime_allow(const char* capability);
 
 /**
  * @brief Reports whether capability enforcement is currently active.
@@ -331,6 +386,60 @@ void eshkol_capability_runtime_deny(const char* capability);
  * @return 1 when the capability is granted; 0 after recording the denial.
  */
 int eshkol_capability_require(const char* capability);
+
+/**
+ * @brief Name the first capability an fopen()-style mode string needs and is
+ *        not granted.
+ *
+ * Same mode reading as eshkol_capability_runtime_allows_file_mode(), but
+ * reports *which* capability is missing so a caller can name it in an error.
+ *
+ * @param mode fopen()-style mode string. NULL or empty is treated as
+ *        requiring "file-read".
+ * @return "file-read" or "file-write" naming the first missing capability, or
+ *         NULL when the mode is fully permitted.
+ */
+const char* eshkol_capability_runtime_file_mode_missing(const char* mode);
+
+/**
+ * @brief The gate at a capability sink: permit the operation, or raise a
+ *        catchable Eshkol error naming the capability.
+ *
+ * This is the enforcing counterpart to eshkol_capability_require(), for sinks
+ * whose only correct answer to a denial is a raise rather than a sentinel
+ * return value — process creation, shell execution, socket creation and
+ * dynamic library loading all fall in that class, since every return value
+ * they could produce is also a legitimate one.
+ *
+ * With no policy installed this returns immediately and the program behaves
+ * exactly as it did before capabilities existed. Under an active policy that
+ * does not grant @p capability it raises ESHKOL_EXCEPTION_ERROR with the
+ * message "capability denied: <capability> (<operation>)", which `guard`
+ * catches like any other error; an unhandled raise ends the program the same
+ * way an unhandled `(error ...)` does, rather than continuing into the sink.
+ *
+ * @param capability Capability name the sink requires, e.g. "subprocess".
+ *        NULL requires nothing and returns.
+ * @param operation  The operation to name in the message, e.g.
+ *        "process-spawn". NULL is reported as the capability name alone.
+ */
+void eshkol_capability_enforce(const char* capability, const char* operation);
+
+/**
+ * @brief Run @p command through the host command interpreter, under the
+ *        "shell" capability.
+ *
+ * The runtime entry point `(system cmd)` lowers to on every backend, so the
+ * capability gate sits here once rather than in each code generator. With no
+ * policy installed it is libc system(); under a policy that does not grant
+ * "shell" it raises a catchable capability-denied error and the command never
+ * runs.
+ *
+ * @param command Command line for the host interpreter. NULL reports a -1
+ *        exit status without consulting the policy, since nothing runs.
+ * @return The host interpreter's exit status, as libc system() reports it.
+ */
+int eshkol_shell_command(const char* command);
 
 }
 

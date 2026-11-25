@@ -1,0 +1,40 @@
+;; runST-style encapsulation with a rank-2 type (ADR-0046): state threads
+;; are indexed by a type variable s that run-st quantifies, so a reference
+;; created inside one run cannot be returned from it (see
+;; reject/runst_escape_reject.esk for the rejected program).
+;; ENGINES: jit aot vm
+;; EXPECT-SCHEME: run-st : (forall (a) (-> (forall (s) (-> (st s) a)) a))
+;; EXPECT-SCHEME: sum-to : (-> number number)
+;; EXPECT-OUTPUT: 55
+;; EXPECT-OUTPUT: 120
+(require stdlib)
+
+(define (st-new (tok : (st s)) (v : a)) : (st-ref s a) (vector v))
+(define (st-get (tok : (st s)) (r : (st-ref s a))) : a (vector-ref r 0))
+(define (st-set! (tok : (st s)) (r : (st-ref s a)) (v : a)) : null
+  (vector-set! r 0 v)
+  '())
+(define (run-st (action : (forall (s) (-> (st s) a)))) : a
+  (action (vector 'st-token)))
+
+(define (sum-to (n : number)) : number
+  (run-st (lambda (tok)
+            (let ((acc (st-new tok 0)))
+              (let loop ((i 1))
+                (if (> i n)
+                    (st-get tok acc)
+                    (begin
+                      (st-set! tok acc (+ (st-get tok acc) i))
+                      (loop (+ i 1)))))))))
+
+(define (factorial n)
+  (run-st (lambda (tok)
+            (let ((acc (st-new tok 1)))
+              (let loop ((i 2))
+                (if (> i n)
+                    (st-get tok acc)
+                    (begin (st-set! tok acc (* (st-get tok acc) i))
+                           (loop (+ i 1)))))))))
+
+(display (sum-to 10)) (newline)
+(display (factorial 5)) (newline)

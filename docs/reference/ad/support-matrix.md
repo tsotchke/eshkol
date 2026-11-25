@@ -120,7 +120,11 @@ to the same pass ([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrie
 | Passes of any order at any depth, through the evaluation point or a captured variable | Exact |
 | Exact evaluation points | Exact results, by the numeric tower's contagion |
 | Complex evaluation points (holomorphic derivatives) | Exact, nested with `derivative-n` and `taylor` too |
-| `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is a level of the enclosing passes; a nested `jacobian` is a tensor of tagged numbers) |
+| `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is forward columns, a level of the enclosing passes; a nested `jacobian` or vector `gradient` is a tensor of tagged numbers) |
+| Reverse over reverse over reverse, to any depth | Exact |
+| An outermost `gradient`/`jacobian` over an inner pass that captures a value it computed | Exact (taken as forward columns, [ADR-0057](../../design/adr/0057-nested-differentiation-in-every-mode.md)) |
+| A curried `gradient` under a reverse pass, at a point computed from that pass's variables | Exact (linearised against each tape-node component) |
+| More than 65536 passes in one process | Exact (perturbation tags are 64-bit and never reused) |
 
 Verified on this build:
 
@@ -142,11 +146,11 @@ Verified on this build:
 (display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
 ```
 ```
-1
-192
+1.0
+192.0
 2
-216
-2
+216.0
+2.0
 (0 12 24)
 ```
 
@@ -158,7 +162,11 @@ through the point, exact seeds, and the perturbation-confusion controls) and
 (the captured-variable matrix) and
 [`tests/ad/nested_operator_levels_test.esk`](../../../tests/ad/nested_operator_levels_test.esk)
 (`gradient`, `hessian`, `jacobian` and deep `derivative` inside live passes),
-on the JIT and AOT lanes.
+on the JIT and AOT lanes, and
+[`tests/ad/nested_depth_matrix_test.esk`](../../../tests/ad/nested_depth_matrix_test.esk)
+(depth 4 in every mode, mixed forward and reverse, exact Taylor coefficients,
+perturbation-confusion controls to depth 4, and more than 65536 passes) on the
+JIT, AOT and the VM.
 
 ---
 
@@ -185,20 +193,20 @@ Verified on this build:
 ```scheme
 ;; ESH-0078 — inline and named forms now agree
 (define (L z) (* z (* z z)))
-(gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18
-(gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18
+(gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18.0
+(gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18.0
 
 ;; ESH-0096 — vector-param gradient-of-gradient
 (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
-          (vector 2.0))                                       ;; => #(12)
+          (vector 2.0))                                       ;; => #(12.0)
 
 ;; ESH-0095 — second-order operator at a tensor point
 (hessian (lambda (v) (let ((x (vref v 0)) (y (vref v 1))) (+ (* x x) (* x y))))
-         (tensor 1.0 2.0))                                    ;; => #((2 1) (1 0))
+         (tensor 1.0 2.0))                                    ;; => #((2.0 1.0) (1.0 0.0))
 
 ;; ESH-0072 / ESH-0097 — local capture under a reverse-mode operator
 (define (mk a) (gradient (lambda (x) (* a x x)) 3.0))
-(mk 2.0)                                                      ;; => 12
+(mk 2.0)                                                      ;; => 12.0
 ```
 
 ---

@@ -1,0 +1,6 @@
+(require core.threads)
+;; A thread body may not capture a handle: it would cross a thread boundary.
+(define in (open-input-file "strict-thread.txt"))
+(define t (make-thread (lambda () (read-line in))))
+(thread-join t)
+(close-port in)

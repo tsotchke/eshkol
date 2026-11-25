@@ -1,0 +1,38 @@
+;;; A settled policy cannot be widened, by any route a program has.
+;;;
+;;; The attempt here is the one a program can actually compile: install a second
+;;; policy naming a capability the first withheld. Reaching the runtime's staged
+;;; grant by name is refused when the program compiles, so it has its own case
+;;; (capability_raw_allow_negative.esk) rather than a branch in this one.
+;;;
+;;; What this asserts is the property, not the spelling of any failure: the
+;;; capability stays denied and the sink stays shut.
+(require stdlib)
+(require core.capabilities)
+
+(define marker (getenv "ESHKOL_CAP_WIDEN_MARKER"))
+
+(define (attempt thunk)
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (begin (thunk) "returned")))
+
+(capability-install-policy! (list 'file-read))
+
+
+
+;; A second install naming what the first withheld.
+(display "second-install:")
+(display (attempt (lambda () (capability-install-policy! (list 'file-read 'shell 'network)))))
+(newline)
+
+(display "shell-after-second-install:")
+(display (if (capability-allowed? 'shell) "GRANTED" "denied"))
+(newline)
+
+;; And the sink itself, which is the only thing that really matters.
+(display "shell-sink:")
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((rc (system (string-append "printf widened > '" marker "'"))))
+      (string-append "ran:" (number->string rc)))))
+(newline)

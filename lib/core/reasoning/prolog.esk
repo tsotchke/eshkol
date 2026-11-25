@@ -1,0 +1,864 @@
+;;; core.reasoning.prolog -- goal-directed proof search (SLD resolution).
+;;;
+;;; Usage: (require core.reasoning.prolog)
+;;;
+;;; Programs are written in the consciousness engine's term language: a term
+;;; is a symbol, number, string, boolean, character, vector, the empty list or
+;;; a list (functor arg ...), and `?x` (or any symbol spelled with a leading
+;;; `?`, as `logic-var?` decides) is a logic variable. Lists and compound
+;;; terms are the same cons structure, so `(?h . ?t)` matches `(1 2 3)`,
+;;; exactly as the engine's `unify` treats them.
+;;;
+;;;   (define db (make-prolog))
+;;;   (prolog-consult! db
+;;;     '((parent tom bob) (parent bob ann)
+;;;       (<- (ancestor ?x ?y) (parent ?x ?y))
+;;;       (<- (ancestor ?x ?y) (parent ?x ?z) (ancestor ?z ?y))))
+;;;   (map (lambda (s) (walk '?who s)) (prolog-query db '(ancestor tom ?who)))
+;;;   ;; => (bob ann)
+;;;
+;;; Clauses: a fact is a term; a rule is (<- head goal ...).
+;;;
+;;; Resolution is depth-first SLD with chronological backtracking over a
+;;; binding trail, first-argument clause indexing, and last-alternative choice
+;;; point elimination. Control: !, (and G ...), (or G ...), (if C T [E]),
+;;; (not G), (call G A ...), (once G), (findall T G L), (forall C A).
+;;; Arithmetic is exact (Eshkol's numeric tower): (is X E), num=, num/=, <, >,
+;;; =<, <=, >=. Tabled predicates (prolog-table!) are evaluated by linear
+;;; tabling (Zhou & Sato): a tabled call computes its answer table to a
+;;; fixed point over the strongly connected component of tabled calls it
+;;; belongs to, so left-recursive definitions terminate with the complete
+;;; answer set. Negation is negation as failure; negating a goal whose table
+;;; is still being computed is reported as a non-stratified program.
+;;;
+;;; Answers are consciousness-engine substitutions built with `unify`, so
+;;; `(walk '?x answer)` reads a binding; `prolog-query-terms` returns the
+;;; instantiated goals instead. A knowledge base made with `make-kb` can be
+;;; attached: goals on predicates with no clauses are answered by `kb-query`.
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051.
+;;; Sources: R. Kowalski, "Predicate Logic as Programming Language" (1974);
+;;; J. W. Lloyd, "Foundations of Logic Programming" (1987); W. F. Clocksin,
+;;; C. S. Mellish, "Programming in Prolog"; N.-F. Zhou, T. Sato, Y.-D. Shen,
+;;; "Linear tabling strategies and optimizations", TPLP 8(1) (2008);
+;;; W. Chen, D. S. Warren, "Tabled evaluation with delaying for general logic
+;;; programs", JACM 43(1) (1996).
+
+(require stdlib)
+
+(provide make-prolog prolog? prolog-add! prolog-consult! prolog-retract-all!
+         prolog-table! prolog-attach-kb! prolog-define-builtin! prolog-define-function!
+         prolog-set-unknown! prolog-dynamic!
+         prolog-query prolog-query-terms prolog-solve prolog-prove? prolog-count
+         prolog-first prolog-inferences prolog-reset-inferences! prolog-table-answers)
+
+;; ---------------------------------------------------------------------------
+;; Engine terms: variables, templates, trail
+;; ---------------------------------------------------------------------------
+
+;; An engine variable is #(tag binding id); binding = tag means unbound.
+(define pl-var-tag (list 'prolog-variable))
+;; A clause template slot is #(tag k): the k-th variable of the clause.
+(define pl-tok-tag (list 'prolog-template-slot))
+;; A canonical (variant) variable is #(tag k).
+(define pl-canon-tag (list 'prolog-canonical-variable))
+(define pl-unset (list 'prolog-unset))
+(define pl-var-counter 0)
+
+(define (pl-fresh)
+  (set! pl-var-counter (+ pl-var-counter 1))
+  (vector pl-var-tag pl-var-tag pl-var-counter))
+(define (pl-var? t)
+  (and (vector? t) (= (vector-length t) 3) (eq? (vector-ref t 0) pl-var-tag)))
+(define (pl-tok? t)
+  (and (vector? t) (= (vector-length t) 2) (eq? (vector-ref t 0) pl-tok-tag)))
+(define (pl-canon? t)
+  (and (vector? t) (= (vector-length t) 2) (eq? (vector-ref t 0) pl-canon-tag)))
+
+(define (pl-deref t)
+  (if (pl-var? t)
+      (let ((b (vector-ref t 1)))
+        (if (eq? b pl-var-tag) t (pl-deref b)))
+      t))
+
+;; Database record slots.
+(define pl-db-tag 'prolog-database-v1)
+(define (pl-trail db) (vector-ref db 2))
+(define (pl-bind! db v x)
+  (vector-set! v 1 x)
+  (vector-set! db 2 (cons v (vector-ref db 2))))
+(define (pl-undo! db mark)
+  (let loop ((tr (vector-ref db 2)))
+    (if (eq? tr mark)
+        (vector-set! db 2 mark)
+        (begin (vector-set! (car tr) 1 pl-var-tag) (loop (cdr tr))))))
+
+(define (pl-atomic=? a b)
+  (or (eqv? a b)
+      (and (string? a) (string? b) (string=? a b))
+      (and (vector? a) (vector? b) (equal? a b))))
+
+(define (pl-unify db a b)
+  (let ((a (pl-deref a)) (b (pl-deref b)))
+    (cond ((eq? a b) #t)
+          ((pl-var? a) (pl-bind! db a b) #t)
+          ((pl-var? b) (pl-bind! db b a) #t)
+          ((pair? a)
+           (and (pair? b) (pl-unify db (car a) (car b)) (pl-unify db (cdr a) (cdr b))))
+          (else (pl-atomic=? a b)))))
+
+(define (pl-occurs? v t)
+  (let ((t (pl-deref t)))
+    (cond ((eq? v t) #t)
+          ((pair? t) (or (pl-occurs? v (car t)) (pl-occurs? v (cdr t))))
+          (else #f))))
+
+(define (pl-unify-oc db a b)
+  (let ((a (pl-deref a)) (b (pl-deref b)))
+    (cond ((eq? a b) #t)
+          ((pl-var? a) (if (pl-occurs? a b) #f (begin (pl-bind! db a b) #t)))
+          ((pl-var? b) (if (pl-occurs? b a) #f (begin (pl-bind! db b a) #t)))
+          ((pair? a)
+           (and (pair? b) (pl-unify-oc db (car a) (car b)) (pl-unify-oc db (cdr a) (cdr b))))
+          (else (pl-atomic=? a b)))))
+
+;; Fully dereferenced copy; unbound variables stay as themselves.
+(define (pl-resolve t)
+  (let ((t (pl-deref t)))
+    (if (pair? t) (cons (pl-resolve (car t)) (pl-resolve (cdr t))) t)))
+
+;; Copy with fresh variables (consistent renaming).
+(define (pl-copy t)
+  (let ((map '()))
+    (define (walk t)
+      (let ((t (pl-deref t)))
+        (cond ((pair? t) (cons (walk (car t)) (walk (cdr t))))
+              ((pl-var? t)
+               (let ((hit (assq t map)))
+                 (if hit (cdr hit)
+                     (let ((v (pl-fresh))) (set! map (cons (cons t v) map)) v))))
+              (else t))))
+    (walk t)))
+
+;; Canonical variant form: unbound variables numbered in order of first
+;; occurrence. Two terms are variants exactly when their forms are equal?.
+(define (pl-variant t)
+  (let ((map '()) (n 0))
+    (define (walk t)
+      (let ((t (pl-deref t)))
+        (cond ((pair? t) (cons (walk (car t)) (walk (cdr t))))
+              ((pl-var? t)
+               (let ((hit (assq t map)))
+                 (if hit (cdr hit)
+                     (let ((c (vector pl-canon-tag n)))
+                       (set! n (+ n 1)) (set! map (cons (cons t c) map)) c))))
+              (else t))))
+    (walk t)))
+
+;; Instantiate a canonical form with fresh variables.
+(define (pl-from-variant t)
+  (let ((map '()))
+    (define (walk t)
+      (cond ((pair? t) (cons (walk (car t)) (walk (cdr t))))
+            ((pl-canon? t)
+             (let ((hit (assv (vector-ref t 1) map)))
+               (if hit (cdr hit)
+                   (let ((v (pl-fresh))) (set! map (cons (cons (vector-ref t 1) v) map)) v))))
+            (else t)))
+    (walk t)))
+
+;; Engine term -> datum: unbound variables become `?_G<n>` logic variables.
+(define (pl-datum t)
+  (let ((t (pl-deref t)))
+    (cond ((pair? t) (cons (pl-datum (car t)) (pl-datum (cdr t))))
+          ((pl-var? t) (string->symbol (string-append "?_G" (number->string (vector-ref t 2)))))
+          (else t))))
+
+;; Datum -> engine term, mapping each logic variable to one engine variable.
+;; `?_` is anonymous: every occurrence is a distinct variable. Returns
+;; (term . alist) where alist maps the datum's variables to engine variables.
+(define pl-anonymous '?_)
+(define (pl-is-source-var? x) (and (not (pl-var? x)) (logic-var? x)))
+(define (pl-import datum)
+  (let ((map '()))
+    (define (walk d)
+      (cond ((pair? d) (cons (walk (car d)) (walk (cdr d))))
+            ((pl-var? d) d)
+            ((pl-is-source-var? d)
+             (if (eq? d pl-anonymous) (pl-fresh)
+                 (let ((hit (assoc d map)))
+                   (if hit (cdr hit)
+                       (let ((v (pl-fresh))) (set! map (cons (cons d v) map)) v)))))
+            (else d)))
+    (let ((t (walk datum))) (cons t (reverse map)))))
+
+;; ---------------------------------------------------------------------------
+;; Database, predicates, clauses
+;; ---------------------------------------------------------------------------
+
+;; db: #(tag preds trail tables inferences kbs unknown depth min-dep answers)
+;; pred: #(name arity clauses kind proc tabled? library? defined?)
+;;   kind: user | det | nondet | control
+;; clause: #(head-template body nvars first-key)
+;;   body: list of (template . pred-or-#f)
+(define pl-no-dep 1000000000000)
+(define (prolog? x) (and (vector? x) (= (vector-length x) 10) (eq? (vector-ref x 0) pl-db-tag)))
+(define (pl-check db)
+  (if (not (prolog? db)) (error "prolog: expected a database made by make-prolog")))
+
+(define (pl-pred db name arity)
+  (let* ((key (cons name arity)) (preds (vector-ref db 1)) (p (hash-ref preds key #f)))
+    (if p p
+        (let ((p (vector name arity '() 'user #f #f #f #f)))
+          (hash-set! preds key p) p))))
+(define (pl-lookup db name arity) (hash-ref (vector-ref db 1) (cons name arity) #f))
+
+(define (pl-list-length x)
+  (let loop ((x x) (n 0))
+    (cond ((null? x) n) ((pair? x) (loop (cdr x) (+ n 1))) (else -1))))
+
+;; First-argument key: #f matches anything, pl-pair-key any compound,
+;; otherwise the atomic value itself.
+(define pl-pair-key (list 'prolog-compound-key))
+(define (pl-template-key t)
+  (cond ((pl-tok? t) #f) ((pair? t) pl-pair-key) (else t)))
+(define (pl-goal-key x)
+  (let ((x (pl-deref x)))
+    (cond ((pl-var? x) #f) ((pair? x) pl-pair-key) (else x))))
+(define (pl-keys-compatible? ck gk)
+  (or (eq? ck #f) (eq? gk #f)
+      (if (eq? ck pl-pair-key) (eq? gk pl-pair-key)
+          (and (not (eq? gk pl-pair-key)) (pl-atomic=? ck gk)))))
+(define (pl-next-match cands gk)
+  (cond ((null? cands) '())
+        ((pl-keys-compatible? (vector-ref (car cands) 3) gk) cands)
+        (else (pl-next-match (cdr cands) gk))))
+
+;; Compile a clause datum (or a runtime term) into a template clause.
+(define (pl-compile db source)
+  (let* ((rule? (and (pair? source) (eq? (car source) '<-)))
+         (head (if rule? (cadr source) source))
+         (body (if rule? (cddr source) '()))
+         (vars '()) (n 0))
+    (define (slot-for key)
+      (let ((hit (assoc key vars)))
+        (if hit (cdr hit)
+            (let ((tok (vector pl-tok-tag n)))
+              (set! n (+ n 1)) (set! vars (cons (cons key tok) vars)) tok))))
+    (define (walk d)
+      (let ((d (pl-deref d)))
+        (cond ((pair? d) (cons (walk (car d)) (walk (cdr d))))
+              ((pl-var? d) (slot-for d))
+              ((pl-is-source-var? d)
+               (if (eq? d pl-anonymous)
+                   (let ((tok (vector pl-tok-tag n))) (set! n (+ n 1)) tok)
+                   (slot-for d)))
+              (else d))))
+    (let ((h (walk head)))
+      (if (not (or (symbol? h) (and (pair? h) (symbol? (car h)) (>= (pl-list-length h) 1))))
+          (error "prolog: clause head must be an atom or a compound term" (pl-datum head)))
+      (let* ((goals (map (lambda (g) (walk g)) body))
+             (compiled (map (lambda (g)
+                              (cons g (if (and (pair? g) (symbol? (car g)) (>= (pl-list-length g) 1))
+                                          (pl-pred db (car g) (- (pl-list-length g) 1))
+                                          (if (symbol? g) (pl-pred db g 0) #f))))
+                            goals))
+             (args (if (pair? h) (cdr h) '()))
+             (key (if (pair? args) (pl-template-key (car args)) #f)))
+        (list (if (pair? h) (car h) h) (if (pair? h) (length args) 0)
+              (vector h compiled n key))))))
+
+(define (pl-add-clause! db source front?)
+  (let* ((c (pl-compile db source)) (p (pl-pred db (car c) (cadr c))))
+    (if (not (eq? (vector-ref p 3) 'user))
+        (error "prolog: cannot add clauses to a built-in predicate" (car c) (cadr c)))
+    (if (vector-ref p 6)
+        (begin (vector-set! p 2 '()) (vector-set! p 6 #f)))
+    (vector-set! p 7 #t)
+    (vector-set! p 2 (if front? (cons (caddr c) (vector-ref p 2))
+                         (append (vector-ref p 2) (list (caddr c)))))))
+
+(define (prolog-add! db clause) (pl-check db) (pl-add-clause! db clause #f) db)
+(define (prolog-consult! db clauses)
+  (pl-check db)
+  (for-each (lambda (c) (pl-add-clause! db c #f)) clauses)
+  db)
+(define (prolog-retract-all! db name arity)
+  (pl-check db)
+  (let ((p (pl-pred db name arity)))
+    (if (eq? (vector-ref p 3) 'user)
+        (begin (vector-set! p 2 '()) (vector-set! p 6 #f) (vector-set! p 7 #t))))
+  db)
+;; Declare a predicate whose clauses are added at run time (assertz); a call
+;; to it before any clause exists fails instead of reporting it unknown.
+(define (prolog-dynamic! db name arity)
+  (pl-check db)
+  (vector-set! (pl-pred db name arity) 7 #t)
+  db)
+(define (prolog-table! db name arity)
+  (pl-check db)
+  (let ((p (pl-pred db name arity))) (vector-set! p 5 #t) (vector-set! p 7 #t))
+  db)
+(define (prolog-attach-kb! db kb)
+  (pl-check db)
+  (if (not (kb? kb)) (error "prolog-attach-kb!: expected a knowledge base made by make-kb"))
+  (vector-set! db 5 (append (vector-ref db 5) (list kb)))
+  db)
+(define (prolog-set-unknown! db mode)
+  (pl-check db)
+  (if (not (memq mode '(error fail))) (error "prolog-set-unknown!: mode is 'error or 'fail"))
+  (vector-set! db 6 mode) db)
+(define (prolog-inferences db) (pl-check db) (vector-ref db 4))
+(define (prolog-reset-inferences! db) (pl-check db) (vector-set! db 4 0) db)
+
+;; Host predicates. A deterministic builtin receives the resolved argument
+;; datums and returns true or false. A function of arity n receives the
+;; first n-1 resolved arguments and its result is unified with the last.
+(define (pl-define-native! db name arity kind proc)
+  (let ((p (pl-pred db name arity)))
+    (vector-set! p 3 kind) (vector-set! p 4 proc) (vector-set! p 2 '()) (vector-set! p 6 #f)
+    (vector-set! p 7 #t)))
+(define (prolog-define-builtin! db name arity proc)
+  (pl-check db)
+  (pl-define-native! db name arity 'det
+    (lambda (db args) (if (apply proc (map pl-datum args)) #t #f)))
+  db)
+(define (prolog-define-function! db name arity proc)
+  (pl-check db)
+  (if (< arity 1) (error "prolog-define-function!: arity counts the result argument"))
+  (pl-define-native! db name arity 'det
+    (lambda (db args)
+      (let loop ((as args) (ins '()))
+        (if (null? (cdr as))
+            (pl-unify db (car as) (apply proc (reverse ins)))
+            (loop (cdr as) (cons (pl-datum (car as)) ins))))))
+  db)
+
+;; ---------------------------------------------------------------------------
+;; Template matching and instantiation
+;; ---------------------------------------------------------------------------
+
+(define (pl-inst t frame)
+  (cond ((pair? t) (cons (pl-inst (car t) frame) (pl-inst (cdr t) frame)))
+        ((pl-tok? t)
+         (let* ((k (vector-ref t 1)) (v (vector-ref frame k)))
+           (if (eq? v pl-unset)
+               (let ((nv (pl-fresh))) (vector-set! frame k nv) nv)
+               v)))
+        (else t)))
+
+(define (pl-match db t x frame)
+  (cond ((pl-tok? t)
+         (let* ((k (vector-ref t 1)) (v (vector-ref frame k)))
+           (if (eq? v pl-unset) (begin (vector-set! frame k x) #t) (pl-unify db v x))))
+        ((pair? t)
+         (let ((x (pl-deref x)))
+           (cond ((pair? x) (and (pl-match db (car t) (car x) frame) (pl-match db (cdr t) (cdr x) frame)))
+                 ((pl-var? x) (pl-bind! db x (pl-inst t frame)) #t)
+                 (else #f))))
+        (else
+         (let ((x (pl-deref x)))
+           (if (pl-var? x) (begin (pl-bind! db x t) #t) (pl-atomic=? t x))))))
+
+(define (pl-push-body body frame cb rest)
+  (if (null? body) rest
+      (cons (vector (pl-inst (car (car body)) frame) cb (cdr (car body)))
+            (pl-push-body (cdr body) frame cb rest))))
+
+(define (pl-push-goals goals cb rest)
+  (if (null? goals) rest
+      (cons (vector (car goals) cb #f) (pl-push-goals (cdr goals) cb rest))))
+
+;; ---------------------------------------------------------------------------
+;; The resolution machine
+;; ---------------------------------------------------------------------------
+;; cont:  list of frames #(goal cut-barrier pred) -- pred is a pred record,
+;;        #f (look it up) or 'raw (a tabled predicate evaluated by clauses).
+;; stack: list of choice points #(index kind trail-mark goal data cont key).
+
+(define (pl-height stack) (if (null? stack) 0 (+ 1 (vector-ref (car stack) 0))))
+(define (pl-cut stack cb)
+  (if (and (pair? stack) (>= (vector-ref (car stack) 0) cb)) (pl-cut (cdr stack) cb) stack))
+
+;; Returns (cont . stack); cont is #f when the head did not match.
+(define (pl-try-clauses db goal cands rest stack gk)
+  (let* ((h (pl-height stack)) (clause (car cands))
+         (next (pl-next-match (cdr cands) gk))
+         (stack2 (if (null? next) stack
+                     (cons (vector h 'clauses (vector-ref db 2) goal next rest gk) stack)))
+         (frame (make-vector (vector-ref clause 2) pl-unset))
+         (head (vector-ref clause 0)))
+    (vector-set! db 4 (+ (vector-ref db 4) 1))
+    (if (if (pair? head) (pl-match db (cdr head) (if (pair? goal) (cdr goal) '()) frame) #t)
+        (cons (pl-push-body (vector-ref clause 1) frame h rest) stack2)
+        (cons #f stack2))))
+
+;; Unify goal with successive answer terms.
+(define (pl-try-answers db goal answers rest stack)
+  (let* ((h (pl-height stack))
+         (stack2 (if (null? (cdr answers)) stack
+                     (cons (vector h 'answers (vector-ref db 2) goal (cdr answers) rest #f) stack))))
+    (if (pl-unify db goal (car answers))
+        (cons rest stack2)
+        (cons #f stack2))))
+
+;; Run CONT to its solutions. ON-SOLUTION is called at each solution and
+;; returns true to ask for the next one. Returns #t when ON-SOLUTION stopped
+;; the search, #f when the search space is exhausted. Bindings of the
+;; solution at which the search stopped are left on the trail.
+(define (pl-run db cont on-solution)
+  (let loop ((cont cont) (stack '()) (failing #f))
+    (cond
+      (failing
+       (if (null? stack) #f
+           (let* ((cp (car stack)) (below (cdr stack)) (kind (vector-ref cp 1)))
+             (pl-undo! db (vector-ref cp 2))
+             (cond
+               ((eq? kind 'alt) (loop (vector-ref cp 5) below #f))
+               ((eq? kind 'clauses)
+                (let ((r (pl-try-clauses db (vector-ref cp 3) (vector-ref cp 4)
+                                         (vector-ref cp 5) below (vector-ref cp 6))))
+                  (if (eq? (car r) #f) (loop '() (cdr r) #t) (loop (car r) (cdr r) #f))))
+               (else
+                (let ((r (pl-try-answers db (vector-ref cp 3) (vector-ref cp 4) (vector-ref cp 5) below)))
+                  (if (eq? (car r) #f) (loop '() (cdr r) #t) (loop (car r) (cdr r) #f))))))))
+      ((null? cont)
+       (if (on-solution) (loop '() stack #t) #t))
+      (else
+       (let* ((fr (car cont)) (goal (pl-deref (vector-ref fr 0))) (cb (vector-ref fr 1))
+              (rest (cdr cont)) (hint (vector-ref fr 2)))
+         (if (pl-var? goal) (error "prolog: a goal is an unbound variable (instantiation error)"))
+         (if (not (or (symbol? goal) (pair? goal)))
+             (error "prolog: a goal must be an atom or a compound term" (pl-datum goal)))
+         (let* ((name (if (pair? goal) (car goal) goal))
+                (args (if (pair? goal) (cdr goal) '()))
+                (raw? (eq? hint 'raw))
+                (pred (cond ((and hint (not raw?)) hint)
+                            ((symbol? name) (pl-lookup db name (pl-list-length args)))
+                            (else (error "prolog: a goal functor must be a symbol" (pl-datum goal)))))
+                (kind (if pred (vector-ref pred 3) 'missing)))
+           (cond
+             ;; ---- user predicates --------------------------------------
+             ((and (eq? kind 'user) (or (pair? (vector-ref pred 2)) (vector-ref pred 5)))
+              (if (and (vector-ref pred 5) (not raw?))
+                  (let ((answers (pl-table-call db pred goal)))
+                    (if (null? answers) (loop '() stack #t)
+                        (let ((r (pl-try-answers db goal answers rest stack)))
+                          (if (eq? (car r) #f) (loop '() (cdr r) #t) (loop (car r) (cdr r) #f)))))
+                  (let* ((gk (if (pair? args) (pl-goal-key (car args)) #f))
+                         (cands (pl-next-match (vector-ref pred 2) gk)))
+                    (if (null? cands) (loop '() stack #t)
+                        (let ((r (pl-try-clauses db goal cands rest stack gk)))
+                          (if (eq? (car r) #f) (loop '() (cdr r) #t) (loop (car r) (cdr r) #f)))))))
+             ((eq? kind 'det)
+              (if ((vector-ref pred 4) db args) (loop rest stack #f) (loop '() stack #t)))
+             ((eq? kind 'nondet)
+              (let ((answers ((vector-ref pred 4) db goal)))
+                (if (null? answers) (loop '() stack #t)
+                    (let ((r (pl-try-answers db goal answers rest stack)))
+                      (if (eq? (car r) #f) (loop '() (cdr r) #t) (loop (car r) (cdr r) #f))))))
+             ;; ---- control --------------------------------------------
+             ((eq? kind 'control)
+              (let ((op (vector-ref pred 4)))
+                (cond
+                  ((eq? op 'true) (loop rest stack #f))
+                  ((eq? op 'fail) (loop '() stack #t))
+                  ((eq? op 'cut) (loop rest (pl-cut stack cb) #f))
+                  ((eq? op 'and) (loop (pl-push-goals args cb rest) stack #f))
+                  ((eq? op 'or)
+                   (cond ((null? args) (loop '() stack #t))
+                         ((null? (cdr args)) (loop (cons (vector (car args) cb #f) rest) stack #f))
+                         (else
+                          (let* ((alt-goal (if (null? (cddr args)) (cadr args) (cons 'or (cdr args))))
+                                 (cp (vector (pl-height stack) 'alt (vector-ref db 2) #f #f
+                                             (cons (vector alt-goal cb #f) rest) #f)))
+                            (loop (cons (vector (car args) cb #f) rest) (cons cp stack) #f)))))
+                  ((eq? op 'if)
+                   (let ((mark (vector-ref db 2)))
+                     (if (pl-run db (list (vector (car args) 0 #f)) (lambda () #f))
+                         (loop (cons (vector (cadr args) cb #f) rest) stack #f)
+                         (begin
+                           (pl-undo! db mark)
+                           (if (pair? (cddr args))
+                               (loop (cons (vector (caddr args) cb #f) rest) stack #f)
+                               (loop '() stack #t))))))
+                  ((eq? op 'once)
+                   (if (pl-run db (list (vector (car args) 0 #f)) (lambda () #f))
+                       (loop rest stack #f)
+                       (loop '() stack #t)))
+                  ((eq? op 'not)
+                   (if (pl-naf-holds? db (car args)) (loop rest stack #f) (loop '() stack #t)))
+                  ((eq? op 'call)
+                   (let* ((g (pl-deref (car args))) (extra (cdr args))
+                          (g2 (cond ((null? extra) g)
+                                    ((pair? g) (append g extra))
+                                    (else (cons g extra)))))
+                     (loop (cons (vector g2 (pl-height stack) #f) rest) stack #f)))
+                  ((eq? op 'findall)
+                   (let ((results (pl-findall db (car args) (cadr args))))
+                     (if (pl-unify db (caddr args) results) (loop rest stack #f) (loop '() stack #t))))
+                  ((eq? op 'forall)
+                   (if (pl-naf-holds? db (list 'and (car args) (list 'not (cadr args))))
+                       (loop rest stack #f) (loop '() stack #t)))
+                  (else (error "prolog: unknown control construct" op)))))
+             ;; ---- predicates without clauses -------------------------
+             (else
+              (let ((answers (if (pair? (vector-ref db 5)) (pl-kb-answers db goal) #f)))
+                (cond ((pair? answers)
+                       (let ((r (pl-try-answers db goal answers rest stack)))
+                         (if (eq? (car r) #f) (loop '() (cdr r) #t) (loop (car r) (cdr r) #f))))
+                      ((or answers (eq? (vector-ref db 6) 'fail) (and pred (vector-ref pred 7)))
+                       (loop '() stack #t))
+                      (else
+                       (error "prolog: unknown predicate" name (pl-list-length args)))))))))))))
+
+;; All solutions of GOAL (an engine term), as copies of TEMPLATE.
+(define (pl-findall db template goal)
+  (let ((mark (vector-ref db 2)) (out '()))
+    (pl-run db (list (vector goal 0 #f))
+            (lambda () (set! out (cons (pl-copy (pl-resolve template)) out)) #t))
+    (pl-undo! db mark)
+    (reverse out)))
+
+;; Negation as failure. A negated goal that consumed answers of a table
+;; still under evaluation would read an incomplete table.
+(define (pl-naf-holds? db goal)
+  (let ((mark (vector-ref db 2)) (saved (vector-ref db 8)))
+    (vector-set! db 8 pl-no-dep)
+    (let ((found (pl-run db (list (vector goal 0 #f)) (lambda () #f))))
+      (pl-undo! db mark)
+      (let ((dep (vector-ref db 8)))
+        (vector-set! db 8 (min saved dep))
+        (if (< dep pl-no-dep)
+            (error "prolog: negation over a table that is still being evaluated; the program is not stratified"
+                   (pl-datum goal)))
+        (not found)))))
+
+;; ---------------------------------------------------------------------------
+;; Tabling (linear tabling)
+;; ---------------------------------------------------------------------------
+;; table: #(status answers-list answer-set depth)
+;;   status: complete | evaluating | incomplete
+
+(define (pl-table-call db pred goal)
+  (let* ((key (pl-variant goal)) (tables (vector-ref db 3)) (tbl (hash-ref tables key #f)))
+    (cond
+      ((and tbl (eq? (vector-ref tbl 0) 'complete))
+       (map pl-from-variant (reverse (vector-ref tbl 1))))
+      ((and tbl (eq? (vector-ref tbl 0) 'evaluating))
+       (vector-set! db 8 (min (vector-ref db 8) (vector-ref tbl 3)))
+       (map pl-from-variant (reverse (vector-ref tbl 1))))
+      (else
+       (let* ((depth (+ (vector-ref db 7) 1))
+              (tbl (or tbl (let ((t (vector 'evaluating '() (make-hash-table) depth)))
+                             (hash-set! tables key t) t)))
+              (outer-dep (vector-ref db 8)))
+         (vector-set! db 7 depth)
+         (vector-set! tbl 0 'evaluating)
+         (vector-set! tbl 3 depth)
+         (let iterate ((dep pl-no-dep))
+           (let ((before (vector-ref db 9)) (mark (vector-ref db 2)) (call (pl-copy goal)))
+             (vector-set! db 8 pl-no-dep)
+             (pl-run db (list (vector call 0 'raw))
+                     (lambda ()
+                       (let ((ans (pl-variant call)) (set (vector-ref tbl 2)))
+                         (if (not (hash-ref set ans #f))
+                             (begin (hash-set! set ans #t)
+                                    (vector-set! tbl 1 (cons ans (vector-ref tbl 1)))
+                                    (vector-set! db 9 (+ (vector-ref db 9) 1)))))
+                       #t))
+             (pl-undo! db mark)
+             (let ((dep2 (min dep (vector-ref db 8))))
+               (if (> (vector-ref db 9) before)
+                   (iterate dep2)
+                   (begin
+                     (vector-set! db 7 (- depth 1))
+                     (vector-set! tbl 0 (if (< dep2 depth) 'incomplete 'complete))
+                     (vector-set! db 8 (if (< dep2 depth) (min outer-dep dep2) outer-dep))
+                     (map pl-from-variant (reverse (vector-ref tbl 1)))))))))))))
+
+;; The answers recorded for a tabled goal (datums), evaluating it if needed.
+(define (prolog-table-answers db goal)
+  (pl-check db)
+  (let* ((t (car (pl-import goal))) (g (pl-deref t))
+         (name (if (pair? g) (car g) g)) (arity (if (pair? g) (length (cdr g)) 0))
+         (pred (pl-lookup db name arity)))
+    (if (not (and pred (vector-ref pred 5))) (error "prolog-table-answers: not a tabled predicate" name arity))
+    (map pl-datum (pl-table-call db pred t))))
+
+;; ---------------------------------------------------------------------------
+;; Knowledge-base bridge: answer a goal with kb-query on attached KBs
+;; ---------------------------------------------------------------------------
+
+(define (pl-kb-answers db goal)
+  (let ((names '()) (n 0))
+    (define (pattern t)
+      (let ((t (pl-deref t)))
+        (cond ((pair? t) (cons (pattern (car t)) (pattern (cdr t))))
+              ((pl-var? t)
+               (let ((hit (assq t names)))
+                 (if hit (cdr hit)
+                     (let ((s (string->symbol (string-append "?_kb" (number->string n)))))
+                       (set! n (+ n 1)) (set! names (cons (cons t s) names)) s))))
+              (else t))))
+    (define (rebuild p s)
+      (cond ((pair? p) (cons (rebuild (car p) s) (rebuild (cdr p) s)))
+            ((and (symbol? p) (logic-var? p))
+             (let ((w (walk p s))) (if (eq? w p) (pl-fresh) w)))
+            (else p)))
+    (let ((pat (pattern goal)))
+      (if (not (pair? pat)) '()
+          (let loop ((kbs (vector-ref db 5)) (out '()))
+            (if (null? kbs) (reverse out)
+                (loop (cdr kbs)
+                      (let inner ((subs (kb-query (car kbs) pat)) (out out))
+                        (if (null? subs) out
+                            (inner (cdr subs) (cons (rebuild pat (car subs)) out)))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Built-in predicates
+;; ---------------------------------------------------------------------------
+
+(define (pl-eval db e)
+  (let ((e (pl-deref e)))
+    (cond
+      ((number? e) e)
+      ((pl-var? e) (error "prolog: arithmetic on an unbound variable (instantiation error)"))
+      ((eq? e 'pi) (* 4 (atan 1.0)))
+      ((pair? e)
+       (let ((op (car e)) (xs (map (lambda (a) (pl-eval db a)) (cdr e))))
+         (cond
+           ((eq? op '+) (apply + xs))
+           ((eq? op '-) (apply - xs))
+           ((eq? op '*) (apply * xs))
+           ((eq? op '/) (apply / xs))
+           ((eq? op '//) (quotient (car xs) (cadr xs)))
+           ((eq? op 'mod) (modulo (car xs) (cadr xs)))
+           ((eq? op 'rem) (remainder (car xs) (cadr xs)))
+           ((eq? op 'abs) (abs (car xs)))
+           ((eq? op 'min) (apply min xs))
+           ((eq? op 'max) (apply max xs))
+           ((eq? op 'gcd) (gcd (car xs) (cadr xs)))
+           ((or (eq? op 'expt) (eq? op '**) (eq? op '^)) (expt (car xs) (cadr xs)))
+           ((eq? op 'sqrt) (sqrt (car xs)))
+           ((eq? op 'exp) (exp (car xs)))
+           ((eq? op 'log) (log (car xs)))
+           ((eq? op 'sin) (sin (car xs)))
+           ((eq? op 'cos) (cos (car xs)))
+           ((eq? op 'atan) (atan (car xs)))
+           ((eq? op 'floor) (exact (floor (car xs))))
+           ((eq? op 'ceiling) (exact (ceiling (car xs))))
+           ((eq? op 'round) (exact (round (car xs))))
+           ((eq? op 'truncate) (exact (truncate (car xs))))
+           ((eq? op 'float) (exact->inexact (car xs)))
+           (else (error "prolog: unknown arithmetic function" op)))))
+      (else (error "prolog: not an arithmetic expression" (pl-datum e))))))
+
+(define (pl-identical? a b)
+  (let ((a (pl-deref a)) (b (pl-deref b)))
+    (cond ((eq? a b) #t)
+          ((or (pl-var? a) (pl-var? b)) #f)
+          ((pair? a) (and (pair? b) (pl-identical? (car a) (car b)) (pl-identical? (cdr a) (cdr b))))
+          (else (pl-atomic=? a b)))))
+
+(define (pl-ground? t)
+  (let ((t (pl-deref t)))
+    (cond ((pl-var? t) #f) ((pair? t) (and (pl-ground? (car t)) (pl-ground? (cdr t)))) (else #t))))
+
+(define (pl-test db x) (if x #t #f))
+
+(define (pl-install-builtins! db)
+  (define (det name arity proc) (pl-define-native! db name arity 'det proc))
+  (define (ctl name arity op) (pl-define-native! db name arity 'control op))
+  (ctl 'true 0 'true) (ctl 'fail 0 'fail) (ctl 'false 0 'fail) (ctl '! 0 'cut)
+  (let loop ((k 0))
+    (if (<= k 8)
+        (begin (ctl 'and k 'and) (ctl 'or k 'or) (loop (+ k 1)))))
+  (ctl 'if 2 'if) (ctl 'if 3 'if) (ctl 'once 1 'once) (ctl 'not 1 'not)
+  (let loop ((k 1)) (if (<= k 8) (begin (ctl 'call k 'call) (loop (+ k 1)))))
+  (ctl 'findall 3 'findall) (ctl 'forall 2 'forall)
+  ;; unification and comparison
+  (det '= 2 (lambda (db a) (pl-unify db (car a) (cadr a))))
+  (det 'unify-with-occurs-check 2 (lambda (db a) (pl-unify-oc db (car a) (cadr a))))
+  (det '/= 2 (lambda (db a)
+               (let ((mark (vector-ref db 2)))
+                 (let ((r (pl-unify db (car a) (cadr a)))) (pl-undo! db mark) (not r)))))
+  (det '== 2 (lambda (db a) (pl-identical? (car a) (cadr a))))
+  (det '/== 2 (lambda (db a) (not (pl-identical? (car a) (cadr a)))))
+  ;; arithmetic
+  (det 'is 2 (lambda (db a) (pl-unify db (car a) (pl-eval db (cadr a)))))
+  (det 'num= 2 (lambda (db a) (= (pl-eval db (car a)) (pl-eval db (cadr a)))))
+  (det 'num/= 2 (lambda (db a) (not (= (pl-eval db (car a)) (pl-eval db (cadr a))))))
+  (det '< 2 (lambda (db a) (< (pl-eval db (car a)) (pl-eval db (cadr a)))))
+  (det '> 2 (lambda (db a) (> (pl-eval db (car a)) (pl-eval db (cadr a)))))
+  (det '=< 2 (lambda (db a) (<= (pl-eval db (car a)) (pl-eval db (cadr a)))))
+  (det '<= 2 (lambda (db a) (<= (pl-eval db (car a)) (pl-eval db (cadr a)))))
+  (det '>= 2 (lambda (db a) (>= (pl-eval db (car a)) (pl-eval db (cadr a)))))
+  (det 'succ 2 (lambda (db a)
+                 (let ((x (pl-deref (car a))))
+                   (if (pl-var? x)
+                       (let ((y (pl-eval db (cadr a)))) (and (> y 0) (pl-unify db x (- y 1))))
+                       (pl-unify db (cadr a) (+ (pl-eval db x) 1))))))
+  ;; type tests
+  (det 'var 1 (lambda (db a) (pl-var? (pl-deref (car a)))))
+  (det 'nonvar 1 (lambda (db a) (not (pl-var? (pl-deref (car a))))))
+  (det 'atom 1 (lambda (db a) (let ((x (pl-deref (car a)))) (or (symbol? x) (null? x)))))
+  (det 'number 1 (lambda (db a) (number? (pl-deref (car a)))))
+  (det 'integer 1 (lambda (db a) (let ((x (pl-deref (car a)))) (and (number? x) (exact? x) (integer? x)))))
+  (det 'string 1 (lambda (db a) (string? (pl-deref (car a)))))
+  (det 'atomic 1 (lambda (db a) (let ((x (pl-deref (car a)))) (not (or (pl-var? x) (pair? x))))))
+  (det 'compound 1 (lambda (db a) (pair? (pl-deref (car a)))))
+  (det 'is-list 1 (lambda (db a) (>= (pl-list-length (pl-resolve (car a))) 0)))
+  (det 'ground 1 (lambda (db a) (pl-ground? (car a))))
+  ;; term construction
+  (det 'copy-term 2 (lambda (db a) (pl-unify db (cadr a) (pl-copy (car a)))))
+  (det 'functor 3
+       (lambda (db a)
+         (let ((t (pl-deref (car a))))
+           (cond ((pair? t) (and (pl-unify db (cadr a) (car t))
+                                 (pl-unify db (caddr a) (pl-list-length (cdr t)))))
+                 ((pl-var? t)
+                  (let ((f (pl-deref (cadr a))) (n (pl-eval db (caddr a))))
+                    (pl-unify db t (if (= n 0) f
+                                       (cons f (let mk ((k n)) (if (= k 0) '() (cons (pl-fresh) (mk (- k 1))))))))))
+                 (else (and (pl-unify db (cadr a) t) (pl-unify db (caddr a) 0)))))))
+  (det 'arg 3
+       (lambda (db a)
+         (let ((n (pl-eval db (car a))) (t (pl-deref (cadr a))))
+           (and (pair? t) (>= n 1) (<= n (pl-list-length (cdr t)))
+                (pl-unify db (caddr a) (list-ref (cdr t) (- n 1)))))))
+  (det '=.. 2
+       (lambda (db a)
+         (let ((t (pl-deref (car a))))
+           (cond ((pair? t) (pl-unify db (cadr a) t))
+                 ((pl-var? t)
+                  (let ((l (pl-resolve (cadr a))))
+                    (pl-unify db t (if (and (pair? l) (null? (cdr l))) (car l) l))))
+                 (else (pl-unify db (cadr a) (list t)))))))
+  (det 'length 2
+       (lambda (db a)
+         (let* ((l (pl-resolve (car a))) (n (pl-list-length l)))
+           (if (>= n 0) (pl-unify db (cadr a) n)
+               (let ((k (pl-deref (cadr a))))
+                 (if (not (and (integer? k) (>= k 0)))
+                     (error "prolog: length/2 needs a proper list or a length"))
+                 (pl-unify db (car a) (let mk ((i k)) (if (= i 0) '() (cons (pl-fresh) (mk (- i 1)))))))))))
+  ;; output
+  (det 'write 1 (lambda (db a) (display (pl-datum (car a))) #t))
+  (det 'nl 0 (lambda (db a) (newline) #t))
+  ;; dynamic database (logical update view: a running call keeps its clause list)
+  (det 'assertz 1 (lambda (db a) (pl-add-clause! db (pl-resolve (car a)) #f) #t))
+  (det 'assert 1 (lambda (db a) (pl-add-clause! db (pl-resolve (car a)) #f) #t))
+  (det 'asserta 1 (lambda (db a) (pl-add-clause! db (pl-resolve (car a)) #t) #t))
+  (det 'retract 1 (lambda (db a) (pl-retract! db (car a))))
+  ;; nondeterministic: between/3
+  (pl-define-native! db 'between 3 'nondet
+    (lambda (db goal)
+      (let* ((args (cdr goal)) (lo (pl-eval db (car args))) (hi (pl-eval db (cadr args)))
+             (x (pl-deref (caddr args))))
+        (if (pl-var? x)
+            (let mk ((i hi) (out '()))
+              (if (< i lo) out (mk (- i 1) (cons (list 'between lo hi i) out))))
+            (if (and (integer? x) (<= lo x) (<= x hi)) (list (list 'between lo hi x)) '()))))))
+
+;; retract: remove the first clause whose (head . body) unifies.
+(define (pl-retract! db term)
+  (let* ((t (pl-deref term))
+         (rule? (and (pair? t) (eq? (car t) '<-)))
+         (head (pl-deref (if rule? (cadr t) t)))
+         (body (if rule? (cddr t) '()))
+         (name (if (pair? head) (car head) head))
+         (arity (if (pair? head) (pl-list-length (cdr head)) 0))
+         (pred (pl-lookup db name arity)))
+    (if (not (and pred (eq? (vector-ref pred 3) 'user))) #f
+        (let loop ((cs (vector-ref pred 2)) (kept '()))
+          (if (null? cs) #f
+              (let* ((c (car cs)) (frame (make-vector (vector-ref c 2) pl-unset))
+                     (h (pl-inst (vector-ref c 0) frame))
+                     (b (map (lambda (g) (pl-inst (car g) frame)) (vector-ref c 1)))
+                     (mark (vector-ref db 2)))
+                (if (and (pl-unify db head h) (pl-unify db body b))
+                    (begin (vector-set! pred 2 (append (reverse kept) (cdr cs))) #t)
+                    (begin (pl-undo! db mark) (loop (cdr cs) (cons c kept))))))))))
+
+;; Library predicates, replaced by a user definition of the same name/arity.
+(define pl-library
+  '((append () ?l ?l)
+    (<- (append (?h . ?t) ?l (?h . ?r)) (append ?t ?l ?r))
+    (<- (member ?x (?x . ?_)))
+    (<- (member ?x (?_ . ?t)) (member ?x ?t))
+    (<- (memberchk ?x ?l) (once (member ?x ?l)))
+    (<- (reverse ?l ?r) (reverse-acc ?l () ?r))
+    (reverse-acc () ?a ?a)
+    (<- (reverse-acc (?h . ?t) ?a ?r) (reverse-acc ?t (?h . ?a) ?r))
+    (<- (select ?x (?x . ?t) ?t))
+    (<- (select ?x (?h . ?t) (?h . ?r)) (select ?x ?t ?r))
+    (permutation () ())
+    (<- (permutation ?l (?h . ?t)) (select ?h ?l ?r) (permutation ?r ?t))
+    (<- (last (?x) ?x) !)
+    (<- (last (?_ . ?t) ?x) (last ?t ?x))
+    (<- (nth0 ?i ?l ?x) (nth-from 0 ?i ?l ?x))
+    (<- (nth1 ?i ?l ?x) (nth-from 1 ?i ?l ?x))
+    (<- (nth-from ?b ?b (?x . ?_) ?x))
+    (<- (nth-from ?b ?i (?_ . ?t) ?x) (is ?b1 (+ ?b 1)) (nth-from ?b1 ?i ?t ?x))
+    (sum-list () 0)
+    (<- (sum-list (?h . ?t) ?s) (sum-list ?t ?s0) (is ?s (+ ?h ?s0)))))
+
+(define (make-prolog)
+  (let ((db (vector pl-db-tag (make-hash-table) '() (make-hash-table) 0 '() 'error 0 pl-no-dep 0)))
+    (pl-install-builtins! db)
+    (for-each (lambda (c) (pl-add-clause! db c #f)) pl-library)
+    (hash-for-each-pred db (lambda (p) (if (and (eq? (vector-ref p 3) 'user) (pair? (vector-ref p 2)))
+                                           (vector-set! p 6 #t))))
+    db))
+
+(define (hash-for-each-pred db f)
+  (for-each (lambda (k) (f (hash-ref (vector-ref db 1) k #f))) (hash-keys (vector-ref db 1))))
+
+;; ---------------------------------------------------------------------------
+;; Queries
+;; ---------------------------------------------------------------------------
+
+;; Run GOAL (a datum); call (proc vars-alist) at each solution while it
+;; returns true. vars-alist maps the goal's variables to engine variables.
+(define (pl-query db goal limit proc)
+  (pl-check db)
+  (let* ((imp (pl-import goal)) (term (car imp)) (vars (cdr imp))
+         (mark (vector-ref db 2)) (count 0))
+    (pl-run db (list (vector term 0 #f))
+            (lambda ()
+              (set! count (+ count 1))
+              (and (proc term vars) (or (not limit) (< count limit)))))
+    (pl-undo! db mark)
+    count))
+
+(define (pl-answer-substitution vars)
+  (let loop ((vs vars) (s (make-substitution)))
+    (if (null? vs) s
+        (let ((s2 (unify (car (car vs)) (pl-datum (cdr (car vs))) s)))
+          (loop (cdr vs) (if s2 s2 s))))))
+
+(define (pl-limit-of opt) (if (null? opt) #f (car opt)))
+
+;; List of substitutions binding the goal's variables, one per solution.
+(define (prolog-query db goal . opt)
+  (let ((out '()))
+    (pl-query db goal (pl-limit-of opt)
+              (lambda (term vars) (set! out (cons (pl-answer-substitution vars) out)) #t))
+    (reverse out)))
+
+;; List of instantiated goals, one per solution.
+(define (prolog-query-terms db goal . opt)
+  (let ((out '()))
+    (pl-query db goal (pl-limit-of opt)
+              (lambda (term vars) (set! out (cons (pl-datum term) out)) #t))
+    (reverse out)))
+
+;; Stream solutions: (proc instantiated-goal) returns true for the next one.
+(define (prolog-solve db goal proc)
+  (pl-query db goal #f (lambda (term vars) (proc (pl-datum term)))))
+
+(define (prolog-first db goal)
+  (let ((r (prolog-query-terms db goal 1))) (if (null? r) #f (car r))))
+(define (prolog-prove? db goal) (if (prolog-first db goal) #t #f))
+(define (prolog-count db goal) (pl-query db goal #f (lambda (term vars) #t)))

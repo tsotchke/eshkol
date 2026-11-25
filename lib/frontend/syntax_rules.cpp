@@ -9,6 +9,8 @@
  * source the bytecode VM compiles.
  */
 #include <eshkol/frontend/syntax_rules.h>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/logger.h>
 #include <eshkol/frontend/syntax_rules_core.h>
 
 #include <memory>
@@ -37,9 +39,28 @@ eshkol_syn_kind kind_of(SyntaxDatum::Kind kind) {
 /** Convert; `origin` keeps the datum so atoms and positions come back intact.
  *  An atom's key includes its token type, so `1` never matches `"1"`. */
 eshkol_syn* to_syn(const SyntaxDatum& datum) {
+    /* Natively recursive; same reasoning as rename_in(). Returning nullptr is
+     * the conversion's own failure signal, which every caller already acts
+     * on by abandoning the expansion. */
+    if (!eshkol_stack_headroom_ok()) {
+        eshkol_error("macro syntax nested too deeply to convert");
+        return nullptr;
+    }
     std::string text = datum.text;
-    if (datum.kind == SyntaxDatum::Kind::Atom)
-        text = std::to_string(datum.token_type) + ":" + datum.text;
+    if (datum.kind == SyntaxDatum::Kind::Atom) {
+        text = std::to_string(datum.token_type);
+        for (const auto& span : datum.interpolations) {
+            text += "/" + std::to_string(span.start) + "-" + std::to_string(span.end);
+        }
+        text += ":";
+        // The shared matcher compares C strings. Encode all literal bytes,
+        // including NUL, independently of the lexer's interpolation ranges.
+        constexpr char hex[] = "0123456789abcdef";
+        for (unsigned char byte : datum.text) {
+            text += hex[byte >> 4];
+            text += hex[byte & 15];
+        }
+    }
     eshkol_syn* node = eshkol_syn_new(kind_of(datum.kind), text.c_str(), &datum);
     if (!node) return nullptr;
     node->dotted = datum.dotted ? 1 : 0;
@@ -55,9 +76,16 @@ eshkol_syn* to_syn(const SyntaxDatum& datum) {
 SyntaxDatum from_syn(const eshkol_syn* node) {
     const auto* origin = static_cast<const SyntaxDatum*>(node->origin);
     SyntaxDatum datum;
+    /* Natively recursive; same reasoning as to_syn(). An empty datum is what
+     * the expansion path treats as "nothing came back". */
+    if (!eshkol_stack_headroom_ok()) {
+        eshkol_error("macro expansion nested too deeply to convert back");
+        return datum;
+    }
     if (origin) {
         datum.token_type = origin->token_type;
         datum.verbatim = origin->verbatim;
+        datum.interpolations = origin->interpolations;
         datum.line = origin->line;
         datum.column = origin->column;
         datum.text = origin->text;

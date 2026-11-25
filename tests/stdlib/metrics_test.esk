@@ -63,7 +63,7 @@
                            "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"0.1\"} 1"))
   (check "renders histogram cumulative bucket"
          (string-contains? rendered
-                           "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"1\"} 2"))
+                           "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"1.0\"} 2"))
   (check "renders histogram infinity bucket"
          (string-contains? rendered
                            "eshkol_request_duration_seconds_bucket{path=\"/tool\",method=\"POST\",le=\"+Inf\"} 3"))

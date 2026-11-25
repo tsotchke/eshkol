@@ -11,7 +11,7 @@
 (provide hamming-window hann-window blackman-window kaiser-window
          apply-window
          convolve fast-convolve
-         fir-filter iir-filter
+         fir-filter iir-filter apply-filter
          butterworth-lowpass butterworth-highpass butterworth-bandpass
          frequency-response)
 
@@ -321,11 +321,18 @@
                   result))))
       (loop 0))))
 
+(define (filter-normalized-cutoff cutoff rate)
+  (cond ((null? rate) cutoff)
+        ((and (null? (cdr rate)) (> (car rate) 0)
+              (> cutoff 0) (< (* 2 cutoff) (car rate)))
+         (/ (* 2.0 cutoff) (car rate)))
+        (else (error "expected a positive cutoff below Nyquist and one sample rate"))))
+
 ;; butterworth-lowpass: Design Nth-order Butterworth lowpass filter
 ;; cutoff: normalized cutoff frequency (0 to 1, where 1 = Nyquist)
 ;; Returns (b-coeffs . a-coeffs)
-(define (butterworth-lowpass order cutoff)
-  (let* ((wc (* 3.141592653589793 cutoff))
+(define (butterworth-lowpass order cutoff . rate)
+  (let* ((wc (* 3.141592653589793 (filter-normalized-cutoff cutoff rate)))
          (T (* 2.0 (tan (/ wc 2.0))))
          ;; Get analog prototype poles and transform to z-plane
          (s-poles (butterworth-poles order))
@@ -366,33 +373,30 @@
 
 ;; butterworth-highpass: Design Nth-order Butterworth highpass filter
 ;; Uses lowpass-to-highpass transform: z -> -z
-(define (butterworth-highpass order cutoff)
-  (let* ((lp (butterworth-lowpass order (- 1.0 cutoff)))
-         (b-lp (car lp))
-         (a-lp (cdr lp))
-         (nb (vector-length b-lp))
-         (b-hp (make-vector nb 0.0)))
-    ;; Negate alternate b coefficients for HP transform
-    (letrec ((loop (lambda (i)
-              (if (< i nb)
-                  (begin
-                    (vector-set! b-hp i
-                      (if (odd? i)
-                          (- (vref b-lp i))
-                          (vref b-lp i)))
-                    (loop (+ i 1)))
-                  #t))))
-      (loop 0))
-    (cons b-hp a-lp)))
+(define (butterworth-highpass order cutoff . rate)
+  (let* ((normalized (filter-normalized-cutoff cutoff rate))
+         (filter (butterworth-lowpass order (- 1.0 normalized)))
+         (b (car filter))
+         (a (cdr filter)))
+    ;; Substituting -z negates every odd coefficient in both polynomials.
+    (let loop ((i 1))
+      (if (< i (vector-length b))
+          (begin
+            (vector-set! b i (- (vref b i)))
+            (vector-set! a i (- (vref a i)))
+            (loop (+ i 2)))
+          filter))))
 
-;; butterworth-bandpass: Design Nth-order Butterworth bandpass filter
-;; low-cutoff, high-cutoff: normalized frequencies (0 to 1)
-;; Cascades lowpass and highpass
-(define (butterworth-bandpass order low-cutoff high-cutoff)
-  (let* ((lp (butterworth-lowpass order high-cutoff))
-         (hp (butterworth-highpass order low-cutoff)))
-    ;; Return both filter pairs for cascade application
-    (list lp hp)))
+(define (butterworth-bandpass order low-cutoff high-cutoff . rate)
+  (if (>= low-cutoff high-cutoff) (error "expected increasing band edges")
+      (list (butterworth-lowpass order (filter-normalized-cutoff high-cutoff rate))
+            (butterworth-highpass order (filter-normalized-cutoff low-cutoff rate)))))
+
+;; Single designs are coefficient pairs. Bandpass designs contain two stages.
+(define (apply-filter coefficients signal)
+  (if (pair? (car coefficients))
+      (apply-filter (cadr coefficients) (apply-filter (car coefficients) signal))
+      (iir-filter (car coefficients) (cdr coefficients) signal)))
 
 ;;; ============================================================
 ;;; Frequency Response

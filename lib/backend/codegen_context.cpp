@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/noreturn_blocks.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>  // HEAP_SUBTYPE_SYMBOL, etc.
 #include "../core/arena_memory.h"  // eshkol_slot_store_status_t, tensor dtypes
@@ -101,12 +102,18 @@ void CodegenContext::emitSlotStoreStatusCheck(llvm::Value* status, const char* w
                "(a tensor-backed vector holds real numbers only)");
     llvm::Value* container_msg = builder_.CreateGlobalString(
         name + ": operand is not a vector or tensor");
+    llvm::Value* inexact_msg = builder_.CreateGlobalString(
+        name + ": an exact tensor holds exact numbers only, and this value is inexact; "
+               "store an exact value, or convert the tensor with (tensor-cast t 'f64)");
     llvm::Value* is_bounds = builder_.CreateICmpEQ(status,
         llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_BOUNDS));
     llvm::Value* is_value = builder_.CreateICmpEQ(status,
         llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_VALUE));
+    llvm::Value* is_inexact = builder_.CreateICmpEQ(status,
+        llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_INEXACT));
     llvm::Value* message = builder_.CreateSelect(is_bounds, bounds_msg,
-        builder_.CreateSelect(is_value, value_msg, container_msg));
+        builder_.CreateSelect(is_value, value_msg,
+            builder_.CreateSelect(is_inexact, inexact_msg, container_msg)));
     emitRaiseWithMessagePtr(message);
 
     builder_.SetInsertPoint(ok_bb);
@@ -133,6 +140,33 @@ void CodegenContext::emitTensorFill(llvm::Value* tensor_ptr, llvm::Value* tagged
         "eshkol_tensor_fill_slots",
         llvm::FunctionType::get(int32Type(), {ptrType(), ptrType()}, false));
     emitSlotStoreStatusCheck(builder_.CreateCall(fill, {tensor_ptr, val_slot}, "tfill_status"), who);
+}
+
+llvm::Value* CodegenContext::emitDtypeHasTaggedSlots(llvm::Value* dtype) {
+    auto is = [&](uint64_t code) {
+        return builder_.CreateICmpEQ(dtype, llvm::ConstantInt::get(int64Type(), code));
+    };
+    return builder_.CreateOr(
+        builder_.CreateOr(is(ESHKOL_TENSOR_DTYPE_DUAL), is(ESHKOL_TENSOR_DTYPE_BOXED)),
+        is(ESHKOL_TENSOR_DTYPE_EXACT), "dtype_tagged_slots");
+}
+
+llvm::Value* CodegenContext::emitDtypeIsTaggedNumeric(llvm::Value* dtype) {
+    auto is = [&](uint64_t code) {
+        return builder_.CreateICmpEQ(dtype, llvm::ConstantInt::get(int64Type(), code));
+    };
+    return builder_.CreateOr(is(ESHKOL_TENSOR_DTYPE_DUAL), is(ESHKOL_TENSOR_DTYPE_EXACT),
+                             "dtype_tagged_numeric");
+}
+
+llvm::Value* CodegenContext::emitTensorHasTaggedSlots(llvm::Value* tensor_ptr) {
+    return emitDtypeHasTaggedSlots(builder_.CreateLoad(int64Type(),
+        builder_.CreateStructGEP(tensorType(), tensor_ptr, 4), "tensor_dtype"));
+}
+
+llvm::Value* CodegenContext::emitTensorIsTaggedNumeric(llvm::Value* tensor_ptr) {
+    return emitDtypeIsTaggedNumeric(builder_.CreateLoad(int64Type(),
+        builder_.CreateStructGEP(tensorType(), tensor_ptr, 4), "tensor_dtype"));
 }
 
 void CodegenContext::emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
@@ -210,6 +244,10 @@ void CodegenContext::emitConstructorAllocationCheck(llvm::Value* pointer) {
 // on lookupFunction("printf")/("exit") compiled to a bare `unreachable`, which
 // let LLVM delete the guarding branch outright. These two helpers are the single
 // implementation every codegen module uses to close a guard's failure block.
+
+llvm::BasicBlock* CodegenContext::continueAfterNoReturn(const char* name) {
+    return eshkol::continueAfterNoReturn(builder_, name);
+}
 
 void CodegenContext::emitRaise(const char* message) {
     llvm::Value* msg = builder_.CreateGlobalString(message ? message : "runtime error");

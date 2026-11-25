@@ -1,0 +1,517 @@
+;;; core.quantum.optimize -- semantics-preserving rewriting of quantum
+;;; circuits: gate fusion, commutation-aware cancellation, phase folding by
+;;; sum-over-paths parities, and ZX-calculus resynthesis of small Clifford+T
+;;; windows. Every pass maps a qcircuit to a qcircuit with the same unitary up
+;;; to a global phase, and never returns a circuit of higher cost.
+;;;
+;;; Usage: (require core.quantum.optimize)
+;;;   (qopt-optimize c)                                the full pipeline
+;;;   (qopt-optimize c '((zx . #t) (window . 3) (verify . #t)))
+;;;   (qopt-fuse c) (qopt-cancel c) (qopt-phase-fold c) (qopt-zx-resynthesize c)
+;;;   (qopt-report c (qopt-optimize c))                stats before and after
+;;;
+;;; Representation: circuits and gates are those of core.quantum.circuit
+;;; (#(qcircuit n gates), gates (NAME wire ... [angle])). Angles are reals or
+;;; parameter references #(qparam k c); two references merge only when they
+;;; name the same parameter k (the coefficients add), and a reference never
+;;; merges with a number. A cost is the list (two-qubit-count t-count
+;;; gate-count), compared lexicographically.
+;;;
+;;; One-qubit gates are read as rotations about an axis:
+;;;   Z axis: Z S Sdg T Tdg (P p) = diag(1, e^{i pi p}),  RZ(th) = e^{-i th/2} P(th/pi)
+;;;   X axis: X = XP(1), (XP p) = H P(p) H,               RX(th) = e^{-i th/2} XP(th/pi)
+;;;   Y axis: Y = i RY(pi),                               RY(th)
+;;; so two gates about one axis on one wire compose to one gate of that axis:
+;;; exact phases add exactly (the result named Z, S, Sdg, T, Tdg or P after
+;;; reduction mod 2, and removed at 0), rotation angles add, and a phase p
+;;; meeting a rotation becomes the rotation th + pi p (the difference is a
+;;; global phase). A rotation by a multiple of 2 pi is -1 or 1 times the
+;;; identity and is removed; for binary64 angles "a multiple" means within
+;;; 1e-14 max(1, |th|).
+;;;
+;;; Commutation rules used by qopt-cancel (qopt-commute?), each sound:
+;;;   1. gates on disjoint wires commute;
+;;;   2. a gate commutes with itself;
+;;;   3. diagonal gates (Z S Sdg T Tdg P RZ CZ RZZ CCZ) commute with each other;
+;;;   4. "X-type" gates -- sum_x |x><x|_C (x) F_x(X_t) with control set C and
+;;;      target t: X, XP, RX (C empty), CNOT, CCX -- commute with each other
+;;;      when neither target lies in the other's control set (both are block
+;;;      diagonal on the shared control wires and functions of X on a shared
+;;;      target); this covers CNOTs sharing only a control or only a target,
+;;;      and X, XP, RX on the target of a CNOT or CCX;
+;;;   5. a diagonal gate commutes with an X-type gate whose target it does not
+;;;      touch (it is diagonal on the controls, which the X-type gate only
+;;;      reads): a phase on the control of a CNOT, CZ(c, x) or RZZ(c, x) with
+;;;      x not the target;
+;;;   6. Y and RY on one wire commute (functions of Y);
+;;;   7. SWAP(a, b) commutes with a gate invariant under exchanging a and b:
+;;;      SWAP, CZ, RZZ on {a, b}, CCZ containing a and b, CCX controlled by a
+;;;      and b.
+;;; Each rule is checked by exact unitary equality in
+;;; tests/stdlib/quantum_optimize_test.esk.
+;;;
+;;; Phase folding: a sum-over-paths reading of the circuit gives each wire, at
+;;; each point, an affine Boolean function of path variables -- the input bits,
+;;; plus one fresh variable per wire each time a gate other than X, CNOT, SWAP
+;;; or a diagonal gate acts on it. A Z-axis gate of phase p on a wire holding
+;;; f contributes the factor e^{i pi p f}; the amplitude is the product of all
+;;; factors, so phase gates on equal functions merge at the first occurrence
+;;; (a function f + 1 contributes e^{i pi p} e^{-i pi p f}: the phase is
+;;; negated, up to a global phase). This is the phase folding of M. Amy,
+;;; D. Maslov, M. Mosca, "Polynomial-time T-depth optimization of Clifford+T
+;;; circuits via matroid partitioning", IEEE TCAD 33 (2014), extended across
+;;; Hadamard gates by path variables as in M. Amy, "Towards large-scale
+;;; functional verification of universal quantum circuits", QPL 2018; in the
+;;; ZX-calculus it is the fusion of phase gadgets.
+;;;
+;;; ZX-calculus resynthesis of Clifford+T windows: windows of consecutive
+;;; Clifford+T gates (one and two qubits) on at most `window` wires go through
+;;; core.monoidal.zx (circuit->zx, zx-simplify); when the simplified graph is
+;;; in frontier form -- every spider a Z spider on exactly one input and one
+;;; output, spiders joined by Hadamard edges -- it is read back as
+;;; H layer ; phases ; one CZ per Hadamard edge ; H layer ; wire permutation,
+;;; and replaces the window only when qcircuit-equivalent-exact? proves it
+;;; equal up to a global phase and its cost is lower. General circuit
+;;; extraction from graph-like diagrams (M. Backens, H. Miller-Bakewell,
+;;; G. de Felice, L. Lobski, J. van de Wetering, "There and back again: a
+;;; circuit extraction tale", Quantum 5, 2021) is Planned for v1.4.1.
+;;;
+;;; Sources: M. A. Nielsen, I. L. Chuang, "Quantum Computation and Quantum
+;;; Information" (2010), ch. 4; Y. Nam, N. J. Ross, Y. Su, A. M. Childs,
+;;; D. Maslov, "Automated optimization of large quantum circuits with
+;;; continuous parameters", npj Quantum Information 4 (2018) (gate
+;;; cancellation and rotation merging); the two Amy papers above;
+;;; R. Duncan, A. Kissinger, S. Perdrix, J. van de Wetering, "Graph-theoretic
+;;; simplification of quantum circuits with the ZX-calculus", Quantum 4
+;;; (2020); ADR-0041 (core.monoidal.zx); ADR-0048.
+
+(require stdlib)
+(require core.quantum.circuit)
+(require core.monoidal.zx)
+
+(provide qopt-fuse qopt-cancel qopt-phase-fold qopt-zx-resynthesize qopt-optimize qopt-report
+         qopt-cost qopt-cost<? qopt-commute? qopt-merge qopt-zx-extract)
+
+;; ---------------------------------------------------------------------------
+;; Angles and one-qubit axes
+;; ---------------------------------------------------------------------------
+
+(define qo-pi 3.141592653589793)
+(define (qo-num? a) (and (number? a) (real? a)))
+(define (qo-mod x m) (- x (* m (floor (/ x m)))))
+(define (qo-near-multiple? x m)
+  (let ((r (qo-mod x m)) (tol (* 1e-14 (max 1.0 (abs x)))))
+    (or (<= r tol) (<= (- m r) tol))))
+
+;; the sum of two angles, or #f when they do not combine (a qparam with a
+;; number, or qparams naming different parameters)
+(define (qo-angle-add a b)
+  (cond ((and (qparam? a) (qparam? b))
+         (if (= (qparam-index a) (qparam-index b))
+             (qparam (qparam-index a) (+ (qparam-coefficient a) (qparam-coefficient b)))
+             #f))
+        ((and (qo-num? a) (qo-num? b)) (+ a b))
+        (else #f)))
+
+;; a phase p (in units of pi) is the identity when p = 0 mod 2
+(define (qo-phase-zero? p)
+  (cond ((qparam? p) (= 0 (qparam-coefficient p)))
+        ((not (qo-num? p)) #f)
+        ((exact? p) (= 0 (qo-mod p 2)))
+        (else (qo-near-multiple? p 2))))
+;; a rotation angle th (radians) is +-identity when th = 0 mod 2 pi
+(define (qo-rot-zero? th)
+  (cond ((qparam? th) (= 0 (qparam-coefficient th)))
+        ((not (qo-num? th)) #f)
+        ((exact? th) (= 0 th))
+        (else (qo-near-multiple? th (* 2 qo-pi)))))
+
+;; the gates (zero or one) of the phase p about axis on wire w, canonically named
+(define (qo-phase-gates axis w p)
+  (if (qo-phase-zero? p) '()
+      (let ((q (if (qo-num? p) (qo-mod p 2) p)))
+        (list
+         (case axis
+           ((z) (if (and (qo-num? q) (exact? q))
+                    (cond ((= q 1) (list 'Z w)) ((= q (/ 1 2)) (list 'S w)) ((= q (/ 3 2)) (list 'Sdg w))
+                          ((= q (/ 1 4)) (list 'T w)) ((= q (/ 7 4)) (list 'Tdg w)) (else (list 'P w q)))
+                    (list 'P w q)))
+           ((x) (if (and (qo-num? q) (exact? q) (= q 1)) (list 'X w) (list 'XP w q)))
+           (else (if (and (qo-num? q) (exact? q) (= q 1)) (list 'Y w) (list 'RY w (* qo-pi q)))))))))
+(define (qo-rot-gates axis w th)
+  (if (qo-rot-zero? th) '()
+      (list (list (case axis ((z) 'RZ) ((x) 'RX) (else 'RY)) w th))))
+
+;; a one-qubit gate as (axis kind value): kind phase (value in units of pi)
+;; or rot (value in radians); #f for H and multi-qubit gates
+(define (qo-axis g)
+  (case (car g)
+    ((Z) (list 'z 'phase 1)) ((S) (list 'z 'phase (/ 1 2))) ((Sdg) (list 'z 'phase (/ -1 2)))
+    ((T) (list 'z 'phase (/ 1 4))) ((Tdg) (list 'z 'phase (/ -1 4))) ((P) (list 'z 'phase (caddr g)))
+    ((RZ) (list 'z 'rot (caddr g)))
+    ((X) (list 'x 'phase 1)) ((XP) (list 'x 'phase (caddr g))) ((RX) (list 'x 'rot (caddr g)))
+    ((Y) (list 'y 'phase 1)) ((RY) (list 'y 'rot (caddr g)))
+    (else #f)))
+
+;; merge results are (merged . gates) -- gates equal to h ; g up to a global
+;; phase, zero or one of them -- or #f
+(define (qo-merged gates) (cons 'merged gates))
+(define (qo-merge-axis a1 a2 w)
+  (let ((ax (car a1)) (k1 (cadr a1)) (v1 (caddr a1)) (k2 (cadr a2)) (v2 (caddr a2)))
+    (cond ((not (eq? ax (car a2))) #f)
+          ((eq? k1 k2)
+           (let ((v (qo-angle-add v1 v2)))
+             (if v (qo-merged (if (eq? k1 'phase) (qo-phase-gates ax w v) (qo-rot-gates ax w v))) #f)))
+          ;; a phase p is the rotation pi p up to a global phase
+          ((and (qo-num? v1) (qo-num? v2))
+           (qo-merged (qo-rot-gates ax w (if (eq? k1 'rot) (+ v1 (* qo-pi v2)) (+ (* qo-pi v1) v2)))))
+          (else #f))))
+
+(define (qo-trivial? g)
+  (let ((ax (qo-axis g)))
+    (cond (ax (if (eq? (cadr ax) 'phase) (qo-phase-zero? (caddr ax)) (qo-rot-zero? (caddr ax))))
+          ((eq? (car g) 'RZZ) (qo-rot-zero? (cadddr g)))
+          (else #f))))
+
+(define (qo-same-set? a b) (and (= (length a) (length b)) (qo-subset? a b)))
+(define (qo-subset? a b) (or (null? a) (and (memv (car a) b) (qo-subset? (cdr a) b))))
+(define (qo-disjoint? a b) (or (null? a) (and (not (memv (car a) b)) (qo-disjoint? (cdr a) b))))
+(define (qo-union a b) (cond ((null? b) a) ((memv (car b) a) (qo-union a (cdr b))) (else (qo-union (append a (list (car b))) (cdr b)))))
+
+;; h then g are inverse to each other (wire order of symmetric gates ignored)
+(define (qo-inverse-pair? h g)
+  (and (eq? (car h) (car g))
+       (case (car g)
+         ((H CNOT) (equal? h g))
+         ((CZ SWAP CCZ) (qo-same-set? (qgate-wires h) (qgate-wires g)))
+         ((CCX) (and (= (cadddr h) (cadddr g)) (qo-same-set? (list (cadr h) (caddr h)) (list (cadr g) (caddr g)))))
+         (else #f))))
+
+;; h then g as one gate or none: (merged . gates), or #f
+(define (qopt-merge h g)
+  (let ((ah (qo-axis h)) (ag (qo-axis g)))
+    (cond ((and ah ag) (if (= (cadr h) (cadr g)) (qo-merge-axis ah ag (cadr h)) #f))
+          ((and (eq? (car h) 'RZZ) (eq? (car g) 'RZZ) (qo-same-set? (qgate-wires h) (qgate-wires g)))
+           (let ((v (qo-angle-add (cadddr h) (cadddr g))))
+             (if v (qo-merged (if (qo-rot-zero? v) '() (list (list 'RZZ (cadr h) (caddr h) v)))) #f)))
+          ((qo-inverse-pair? h g) (qo-merged '()))
+          (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; Commutation (the rules of the header, numbered as there)
+;; ---------------------------------------------------------------------------
+
+;; X-type gates as (controls . target)
+(define (qo-xtype g)
+  (case (car g)
+    ((X XP RX) (cons '() (cadr g)))
+    ((CNOT) (cons (list (cadr g)) (caddr g)))
+    ((CCX) (cons (list (cadr g) (caddr g)) (cadddr g)))
+    (else #f)))
+(define (qo-swap-invariant? s g)
+  (let ((ab (qgate-wires s)) (ws (qgate-wires g)))
+    (case (car g)
+      ((SWAP CZ RZZ) (qo-same-set? ab ws))
+      ((CCZ) (qo-subset? ab ws))
+      ((CCX) (qo-same-set? ab (list (cadr g) (caddr g))))
+      (else #f))))
+(define (qopt-commute? g h)
+  (let ((wg (qgate-wires g)) (wh (qgate-wires h)))
+    (cond ((qo-disjoint? wg wh) #t)                                        ; 1
+          ((equal? g h) #t)                                                ; 2
+          ((and (qgate-diagonal? g) (qgate-diagonal? h)) #t)               ; 3
+          (else
+           (let ((xg (qo-xtype g)) (xh (qo-xtype h)))
+             (cond ((and xg xh) (and (not (memv (cdr xg) (car xh))) (not (memv (cdr xh) (car xg))))) ; 4
+                   ((and xg (qgate-diagonal? h)) (not (memv (cdr xg) wh)))  ; 5
+                   ((and xh (qgate-diagonal? g)) (not (memv (cdr xh) wg)))  ; 5
+                   ((and (memq (car g) '(Y RY)) (memq (car h) '(Y RY))) #t) ; 6
+                   ((eq? (car g) 'SWAP) (qo-swap-invariant? g h))           ; 7
+                   ((eq? (car h) 'SWAP) (qo-swap-invariant? h g))           ; 7
+                   (else #f)))))))
+
+;; ---------------------------------------------------------------------------
+;; Cost
+;; ---------------------------------------------------------------------------
+
+(define (qopt-cost c) (list (qcircuit-two-qubit-count c) (qcircuit-t-count c) (qcircuit-gate-count c)))
+(define (qopt-cost<? a b)
+  (cond ((null? a) #f) ((< (car a) (car b)) #t) ((> (car a) (car b)) #f) (else (qopt-cost<? (cdr a) (cdr b)))))
+(define (qo-live-slots slots count)
+  (let loop ((i (- count 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (let ((g (vector-ref slots i))) (if g (cons g acc) acc))))))
+
+;; ---------------------------------------------------------------------------
+;; Fusion: a gate merges with the gate just before it on its wires
+;; ---------------------------------------------------------------------------
+
+;; Each wire keeps a stack of the output slots on it; when a merge removes a
+;; gate the stacks pop, so the gate before it becomes adjacent again
+;; (T X X T fuses to S). Adjacent inverse pairs (H H, CNOT CNOT, ...) and
+;; rotations by a multiple of 2 pi (phases by a multiple of 2) also go.
+(define (qopt-fuse c)
+  (let* ((n (qcircuit-width c)) (gs (qcircuit-gates c)) (N (max 1 (length gs)))
+         (slots (make-vector N #f)) (stacks (make-vector (max 1 n) '())) (count 0))
+    (for-each
+     (lambda (g)
+       (let* ((ws (qgate-wires g))
+              (tops (map (lambda (w) (let ((s (vector-ref stacks w))) (if (null? s) #f (car s)))) ws))
+              (t (car tops))
+              (m (and t (qo-all-eqv? t tops) (qopt-merge (vector-ref slots t) g))))
+         (cond
+          ((qo-trivial? g) #f)
+          (m
+             (if (null? (cdr m))
+                 (begin (vector-set! slots t #f)
+                        (for-each (lambda (w) (vector-set! stacks w (cdr (vector-ref stacks w)))) ws))
+                 (vector-set! slots t (cadr m))))
+          (else (vector-set! slots count g)
+                (for-each (lambda (w) (vector-set! stacks w (cons count (vector-ref stacks w)))) ws)
+                (set! count (+ count 1))))))
+     gs)
+    (make-qcircuit n (qo-live-slots slots count))))
+(define (qo-all-eqv? x xs) (or (null? xs) (and (eqv? x (car xs)) (qo-all-eqv? x (cdr xs)))))
+
+;; ---------------------------------------------------------------------------
+;; Commutation-aware cancellation
+;; ---------------------------------------------------------------------------
+
+;; For each gate g, scan the output backwards over gates that commute with g
+;; (qopt-commute?); the first gate h that merges with g (an inverse, or a
+;; rotation about the same axis) absorbs it: g commutes past everything after
+;; h, so h ; g may be replaced by their merge in h's place.
+(define (qopt-cancel c)
+  (let* ((n (qcircuit-width c)) (gs (qcircuit-gates c)) (N (max 1 (length gs)))
+         (slots (make-vector N #f)) (count 0))
+    (for-each
+     (lambda (g)
+       (let scan ((j (if (qo-trivial? g) -2 (- count 1))))
+         (cond
+          ((= j -2) #f)
+          ((< j 0)
+           (vector-set! slots count g) (set! count (+ count 1)))
+          (else
+           (let ((h (vector-ref slots j)))
+             (if (not h) (scan (- j 1))
+                 (let ((m (qopt-merge h g)))
+                   (cond (m (vector-set! slots j (if (null? (cdr m)) #f (cadr m))))
+                         ((qopt-commute? h g) (scan (- j 1)))
+                         (else (vector-set! slots count g) (set! count (+ count 1)))))))))))
+     gs)
+    (make-qcircuit n (qo-live-slots slots count))))
+
+;; ---------------------------------------------------------------------------
+;; Phase folding over sum-over-paths parities
+;; ---------------------------------------------------------------------------
+
+;; symmetric difference of two ascending lists of variable numbers
+(define (qo-xor-vars a b)
+  (cond ((null? a) b) ((null? b) a)
+        ((= (car a) (car b)) (qo-xor-vars (cdr a) (cdr b)))
+        ((< (car a) (car b)) (cons (car a) (qo-xor-vars (cdr a) b)))
+        (else (cons (car b) (qo-xor-vars a (cdr b))))))
+(define (qo-retarget g w) (cons (car g) (cons w (cddr g))))
+
+;; A wire holds (vars . k): the parity of the variables in vars, plus k mod 2.
+;; table maps a variable set to the slots of the phase gates applied to it.
+(define (qopt-phase-fold c)
+  (let* ((n (qcircuit-width c)) (gs (qcircuit-gates c)) (N (max 1 (length gs)))
+         (slots (make-vector N #f)) (slot-k (make-vector N 0))
+         (wires (make-vector (max 1 n) #f)) (fresh n) (count 0) (table '()))
+    (define (emit! g) (vector-set! slots count g) (set! count (+ count 1)) (- count 1))
+    ;; merge g (on a wire holding vars + k) into an earlier phase gate on vars
+    (define (fold! slots-on k g)
+      (cond ((null? slots-on) #f)
+            ((not (vector-ref slots (car slots-on))) (fold! (cdr slots-on) k g))
+            (else
+             (let* ((s (car slots-on)) (h (vector-ref slots s))
+                    ;; phase p on f + 1 is e^{i pi p} times phase -p on f
+                    (g1 (qo-retarget (if (= k (vector-ref slot-k s)) g (qgate-inverse g)) (cadr h)))
+                    (m (qopt-merge h g1)))
+               (if m
+                   (begin (vector-set! slots s (if (null? (cdr m)) #f (cadr m))) #t)
+                   (fold! (cdr slots-on) k g))))))
+    (do ((i 0 (+ i 1))) ((= i n)) (vector-set! wires i (cons (list i) 0)))
+    (for-each
+     (lambda (g)
+       (let ((ax (qo-axis g)) (name (car g)))
+         (cond ((and ax (eq? (car ax) 'z))
+                (let* ((f (vector-ref wires (cadr g))) (vars (car f)) (k (cdr f)) (entry (assoc vars table)))
+                  (if (not (and (pair? vars) entry (fold! (cdr entry) k g)))
+                      (let ((s (emit! g)))
+                        (vector-set! slot-k s k)
+                        (if entry (set-cdr! entry (append (cdr entry) (list s)))
+                            (set! table (cons (list vars s) table)))))))
+               ((eq? name 'X)
+                (let ((f (vector-ref wires (cadr g)))) (vector-set! wires (cadr g) (cons (car f) (- 1 (cdr f)))) (emit! g)))
+               ((eq? name 'CNOT)
+                (let ((fc (vector-ref wires (cadr g))) (ft (vector-ref wires (caddr g))))
+                  (vector-set! wires (caddr g) (cons (qo-xor-vars (car ft) (car fc)) (modulo (+ (cdr ft) (cdr fc)) 2)))
+                  (emit! g)))
+               ((eq? name 'SWAP)
+                (let ((fa (vector-ref wires (cadr g))))
+                  (vector-set! wires (cadr g) (vector-ref wires (caddr g)))
+                  (vector-set! wires (caddr g) fa)
+                  (emit! g)))
+               ;; CZ, RZZ, CCZ: diagonal, the wires keep their values
+               ((qgate-diagonal? g) (emit! g))
+               ;; any other gate: fresh path variables on its wires
+               (else (for-each (lambda (w) (vector-set! wires w (cons (list fresh) 0)) (set! fresh (+ fresh 1)))
+                               (qgate-wires g))
+                     (emit! g)))))
+     gs)
+    (make-qcircuit n (qo-live-slots slots count))))
+
+;; ---------------------------------------------------------------------------
+;; ZX-calculus resynthesis of Clifford+T windows
+;; ---------------------------------------------------------------------------
+
+(define (qo-index-of x xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((eqv? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (qo-every? p xs) (or (null? xs) (and (p (car xs)) (qo-every? p (cdr xs)))))
+
+;; the gates of a frontier-form graph-like diagram on m wires, or #f:
+;; [H on inputs with a Hadamard boundary edge] [the spider phases]
+;; [CZ per spider-spider edge] [H on outputs with a Hadamard boundary edge]
+;; [SWAPs moving input i to its output]
+(define (qopt-zx-extract g m)
+  (let* ((ins (zx-inputs g)) (outs (zx-outputs g)) (spiders (zx-spiders g))
+         (boundary? (lambda (id) (eq? 'B (zx-node-kind g id)))))
+    (and (= m (length ins)) (= m (length outs))
+         (qo-every? (lambda (nd) (memq (vector-ref nd 1) '(Z B))) (zx-nodes g))
+         (zx-graph-like? g)
+         (qo-every? (lambda (id) (= 1 (length (zx-incident g id)))) (append ins outs))
+         (let ((wire-of (map (lambda (v) (cons v #f)) spiders))
+               (perm (make-vector m #f)) (in-h (make-vector m #f)) (out-h (make-vector m #f)) (seen (make-vector m #f)))
+           ;; each spider: one input edge, one output edge, other edges Hadamard to spiders
+           (and (qo-every?
+                 (lambda (v)
+                   (let* ((inc (zx-incident g v))
+                          (bs (filter (lambda (e) (boundary? (if (= (vector-ref e 1) v) (vector-ref e 2) (vector-ref e 1)))) inc))
+                          (bn (map (lambda (e) (if (= (vector-ref e 1) v) (vector-ref e 2) (vector-ref e 1))) bs)))
+                     (and (= 2 (length bs))
+                          (= 1 (length (filter (lambda (b) (memv b ins)) bn)))
+                          (= 1 (length (filter (lambda (b) (memv b outs)) bn)))
+                          (qo-every? (lambda (e) (or (memq e bs) (eq? 'hadamard (vector-ref e 3)))) inc))))
+                 spiders)
+                ;; follow each input to its output
+                (qo-every?
+                 (lambda (i)
+                   (let* ((b (list-ref ins i)) (e (car (zx-incident g b)))
+                          (o (if (= (vector-ref e 1) b) (vector-ref e 2) (vector-ref e 1)))
+                          (had (eq? 'hadamard (vector-ref e 3))))
+                     (if (boundary? o)
+                         (let ((j (qo-index-of o outs)))
+                           (and j (not (vector-ref seen j))
+                                (begin (vector-set! seen j #t) (vector-set! perm i j) (vector-set! in-h i had) #t)))
+                         (let* ((oe (car (filter (lambda (f) (let ((x (if (= (vector-ref f 1) o) (vector-ref f 2) (vector-ref f 1))))
+                                                               (memv x outs)))
+                                                 (zx-incident g o))))
+                                (ob (if (= (vector-ref oe 1) o) (vector-ref oe 2) (vector-ref oe 1)))
+                                (j (qo-index-of ob outs)))
+                           (and j (not (vector-ref seen j))
+                                (begin (vector-set! seen j #t) (vector-set! perm i j) (vector-set! in-h i had)
+                                       (vector-set! out-h i (eq? 'hadamard (vector-ref oe 3)))
+                                       (set-cdr! (assv o wire-of) i) #t))))))
+                 (iota m))
+                (qo-every? (lambda (p) (number? (cdr p))) wire-of)
+                (let* ((w (lambda (v) (cdr (assv v wire-of))))
+                       (hs (lambda (flags) (apply append (map (lambda (i) (if (vector-ref flags i) (list (list 'H i)) '())) (iota m)))))
+                       (phases (apply append (map (lambda (v) (qo-phase-gates 'z (w v) (zx-node-phase g v))) spiders)))
+                       (czs (map (lambda (e) (list 'CZ (w (vector-ref e 1)) (w (vector-ref e 2))))
+                                 (filter (lambda (e) (and (not (boundary? (vector-ref e 1))) (not (boundary? (vector-ref e 2))))) (zx-edges g)))))
+                  (append (hs in-h) phases czs (hs out-h) (qcircuit-permutation-gates perm))))))))
+
+(define (qo-window-eligible? g) (and (qgate-clifford+t? g) (<= (qgate-arity g) 2)))
+
+;; the window starting at the first gate of gs: (members . others), members
+;; acting on at most k wires, others the remaining gates of gs in order. A gate
+;; skipped because it is disjoint from the window blocks its wires, so every
+;; skipped gate is disjoint from the whole window and commutes with it.
+(define (qo-take-window gs k maxlen)
+  (let loop ((rest (cdr gs)) (W (qgate-wires (car gs))) (blocked '()) (members (list (car gs))) (others '()))
+    (if (null? rest) (cons (reverse members) (reverse others))
+        (let* ((h (car rest)) (hw (qgate-wires h)))
+          (cond ((qo-disjoint? hw W) (loop (cdr rest) W (append hw blocked) members (cons h others)))
+                ((and (qo-window-eligible? h) (qo-disjoint? hw blocked)
+                      (<= (length (qo-union W hw)) k) (< (length members) maxlen))
+                 (loop (cdr rest) (qo-union W hw) blocked (cons h members) others))
+                (else (cons (reverse members) (append (reverse others) rest))))))))
+
+(define (qo-sort-ints xs)
+  (let ins ((l xs) (acc '()))
+    (if (null? l) acc
+        (ins (cdr l) (let put ((a acc)) (cond ((null? a) (list (car l))) ((< (car l) (car a)) (cons (car l) a)) (else (cons (car a) (put (cdr a))))))))))
+
+;; the replacement gates for a window on circuit width n, or #f
+(define (qo-resynthesize-window members n)
+  (let* ((W (qo-sort-ints (apply append (map qgate-wires members)))) (W (qo-dedupe W)) (m (length W))
+         (local (qcircuit-remap (make-qcircuit n members) (lambda (w) (qo-index-of w W)) m))
+         (r (circuit->zx m (qcircuit->exact-gates local)))
+         (s (zx-simplify (car r)))
+         (ex (qopt-zx-extract (car s) m)))
+    (and ex
+         (let ((cand (make-qcircuit m ex)))
+           (and (qopt-cost<? (qopt-cost cand) (qopt-cost local))
+                (qcircuit-equivalent-exact? local cand)
+                (qcircuit-gates (qcircuit-remap cand (list->vector W) n)))))))
+(define (qo-dedupe xs) (cond ((null? xs) '()) ((memv (car xs) (cdr xs)) (qo-dedupe (cdr xs))) (else (cons (car xs) (qo-dedupe (cdr xs))))))
+
+(define (qo-options rest) (if (and (pair? rest) (list? (car rest))) (car rest) '()))
+(define (qo-option opts key default) (let ((p (assq key opts))) (if p (cdr p) default)))
+
+;; options: (window . k) wires per window (3), (window-gates . g) gates per window (16)
+(define (qopt-zx-resynthesize c . rest)
+  (let* ((opts (qo-options rest)) (k (qo-option opts 'window 3)) (maxlen (qo-option opts 'window-gates 16))
+         (n (qcircuit-width c)))
+    (let loop ((gs (qcircuit-gates c)) (acc '()))
+      (cond ((null? gs) (make-qcircuit n (reverse acc)))
+            ((not (qo-window-eligible? (car gs))) (loop (cdr gs) (cons (car gs) acc)))
+            (else
+             (let* ((w (qo-take-window gs k maxlen)) (members (car w))
+                    (r (and (>= (length members) 2) (qo-resynthesize-window members n))))
+               (if r
+                   (loop (cdr w) (append (reverse r) acc))
+                   (loop (cdr gs) (cons (car gs) acc)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Pipeline
+;; ---------------------------------------------------------------------------
+
+;; equal up to a global phase: exactly for exact circuits, in binary64
+;; otherwise; a parametric circuit is compared at one fixed parameter vector
+(define (qo-equivalent? a b)
+  (if (or (qcircuit-parametric? a) (qcircuit-parametric? b))
+      (let* ((k (max (qcircuit-parameter-count a) (qcircuit-parameter-count b)))
+             (th (list->vector (map (lambda (i) (+ 0.37 (* 0.61 i))) (iota k)))))
+        (qcircuit-equivalent-float? (qcircuit-bind a th) (qcircuit-bind b th)))
+      (qcircuit-equivalent? a b)))
+
+;; options (an association list): (zx . #t) (phase-fold . #t) (window . 3)
+;; (window-gates . 16) (rounds . 8) (verify . #f); with (verify . #t) every
+;; pass result is compared with its input and an error names a pass that
+;; changed the unitary
+(define (qopt-optimize c . rest)
+  (let* ((opts (qo-options rest))
+         (zx? (qo-option opts 'zx #t)) (fold? (qo-option opts 'phase-fold #t))
+         (verify? (qo-option opts 'verify #f)) (rounds (qo-option opts 'rounds 8))
+         (zx-opts (list (cons 'window (qo-option opts 'window 3)) (cons 'window-gates (qo-option opts 'window-gates 16))))
+         (run (lambda (name pass x)
+                (let ((y (pass x)))
+                  (if (and verify? (not (qo-equivalent? x y)))
+                      (error "core.quantum.optimize: a pass changed the circuit's unitary" name))
+                  y))))
+    (let loop ((c c) (i 0))
+      (let* ((d (run 'fuse qopt-fuse c))
+             (d (run 'cancel qopt-cancel d))
+             (d (if fold? (run 'phase-fold qopt-phase-fold d) d))
+             (d (run 'fuse qopt-fuse d))
+             (d (run 'cancel qopt-cancel d))
+             (d (if zx? (run 'zx-resynthesize (lambda (x) (qopt-zx-resynthesize x zx-opts)) d) d)))
+        (cond ((not (qopt-cost<? (qopt-cost d) (qopt-cost c))) c)
+              ((>= (+ i 1) rounds) d)
+              (else (loop d (+ i 1))))))))
+
+;; ((gates before after) (two-qubit before after) (t-count before after) (depth before after))
+(define (qopt-report before after)
+  (let ((sb (qcircuit-stats before)) (sa (qcircuit-stats after)))
+    (map (lambda (k) (list k (cdr (assq k sb)) (cdr (assq k sa)))) '(gates two-qubit t-count depth))))

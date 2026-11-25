@@ -1,0 +1,7 @@
+;; The standalone VM must explicitly reject the Unix-socket ABI until an
+;; adapter exists (ipc-unix-pending; see
+;; Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md, "VM needs
+;; matching adapters or an explicit unsupported result").
+(require stdlib)
+(require "./unix_socket_stream_vm_bridge.esk")
+(display "unix-socket ABI unexpectedly admitted") (newline)

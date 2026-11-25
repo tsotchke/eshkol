@@ -1,0 +1,16 @@
+;;; Shared real target: the coupled two-neuron polynomial Hawkes generator.
+;;; Copyright (c) 2026 Richard Hoekstra. SPDX-License-Identifier: MIT
+(define (sc-degree n d)
+  (if (= n 1) (list (list d))
+      (let loop ((i 0) (out '()))
+        (if (> i d) out (loop (+ i 1)
+          (append out (map (lambda (tail) (cons i tail)) (sc-degree (- n 1) (- d i)))))))))
+(define sc-basis (append (sc-degree 4 0) (sc-degree 4 1) (sc-degree 4 2)))
+(define (sc-hawkes queries)
+  (list '(variables x1 x2 n1 n2) '(parameters w) (cons 'basis sc-basis)
+    '(drift (* -2 x1) (* -3 x2) 0 0)
+    '(jumps ((+ 1/2 x1) ((+ x1 w) (+ x2 1/4) (+ n1 1) n2))
+            ((+ 2/3 x2) ((+ x1 1/3) (+ x2 w) n1 (+ n2 1))))
+    (cons 'observations queries)))
+(define sc-mean-source (sc-hawkes '(n1)))
+(define sc-covariance-source (sc-hawkes '(n1 n2 (* n1 n2))))

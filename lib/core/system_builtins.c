@@ -21,6 +21,8 @@ extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
 #include "model_io_atomic.h"
 #include "eshkol/eshkol.h"
+#include "eshkol/core/http_syntax.h"
+#include "eshkol/core/websocket_handshake.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -55,6 +57,7 @@ extern size_t arena_get_used_memory(const void* a);
 #endif
 #else
 #include <windows.h>
+#include <wchar.h>
 #include <direct.h>
 #include <process.h>
 #include <sys/stat.h>
@@ -120,6 +123,11 @@ extern int64_t eshkol_string_byte_length(const char* s);
 extern int eshkol_capability_runtime_allows(const char* capability);
 extern void eshkol_capability_runtime_deny(const char* capability);
 extern int eshkol_capability_require(const char* capability);
+/* The enforcing gate for sinks whose every possible return value is also a
+ * legitimate one — process creation, shell execution, socket creation. Raises
+ * a catchable capability-denied error naming the capability and the operation;
+ * returns normally when the capability is granted or no policy is installed. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
 /* ESH-0228: raise a proper R7RS type error (formats "Type error in <proc>:
  * expected <type>" and terminates via ESHKOL_EXCEPTION_TYPE_ERROR). Declared
  * here rather than via runtime.h, which pulls in the C++/C23 tagged-value
@@ -247,6 +255,26 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
  *  filesystem mutation, network access, etc). */
 static int sys_require_capability(const char* capability) {
     return eshkol_capability_require(capability);
+}
+
+/* The runtime's catchable-error entry (lib/core/runtime_errors_hosted.cpp,
+ * linked in the same archive as this file). Raises an R7RS condition the
+ * program's own handler can take; it does not return. The first parameter is
+ * eshkol_exception_type_t, spelled `int` here for the reason given at the
+ * event-loop section's own forward declaration of the same symbol: runtime.h
+ * pulls in tagged-value typedefs this C11 TU does not use.
+ * ESHKOL_EXCEPTION_ERROR is 0. */
+extern void eshkol_runtime_fatal(int type, const char* fmt, ...);
+#define SYS_PROTOCOL_EXC_ERROR 0
+
+/** Refuse a network operation because one of its fields does not fit the
+ *  protocol grammar, naming the operation and the field. The refusal happens
+ *  before any byte of the request reaches a socket, and it is an ordinary
+ *  Eshkol error, so a program can catch it and choose what to do. */
+static void sys_protocol_refusal(const char* operation, const char* field) {
+    eshkol_runtime_fatal(SYS_PROTOCOL_EXC_ERROR,
+                         "%s: %s does not fit the protocol grammar",
+                         operation, field);
 }
 
 /** Extract an int64 from a tagged value, truncating a double via cast if
@@ -1477,11 +1505,213 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
  * Process Management
  * ═══════════════════════════════════════════════════════════════════ */
 
+#if defined(_WIN32)
+/** Reentrant strtok, so a tokenising loop can run inside another one. The
+ *  Windows environment block needs exactly that: each parent entry is checked
+ *  against the overlay's names, and the overlay is itself a token list. */
+static char* sys_strtok_r(char* str, const char* delim, char** saveptr) {
+    return strtok_s(str, delim, saveptr);
+}
+
+/* ── The processes this runtime started, on Windows ───────────────────
+ *
+ * CreateProcess hands back a handle that keeps the process object alive after
+ * the child exits, which is what makes its exit status readable. A pid alone
+ * does not: once the last handle is gone the id can be reused, so re-opening
+ * by id can fail, or reach a different process entirely. The handle is
+ * therefore kept here until `(process-wait pid)` collects the child, and
+ * released then. The table is bounded; past the bound the spawn still happens
+ * and the wait falls back to opening by id.
+ */
+#define SYS_WIN_CHILD_CAPACITY 256
+
+typedef struct {
+    DWORD pid;
+    HANDLE handle;
+} sys_win_child_t;
+
+static sys_win_child_t g_sys_win_children[SYS_WIN_CHILD_CAPACITY];
+static int g_sys_win_children_count = 0;
+static CRITICAL_SECTION g_sys_win_children_lock;
+static INIT_ONCE g_sys_win_children_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK sys_win_children_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once; (void)param; (void)ctx;
+    InitializeCriticalSection(&g_sys_win_children_lock);
+    return TRUE;
+}
+
+static void sys_win_children_lock(void) {
+    InitOnceExecuteOnce(&g_sys_win_children_once, sys_win_children_init, NULL, NULL);
+    EnterCriticalSection(&g_sys_win_children_lock);
+}
+
+/** Keep the handle CreateProcess returned, so the child's exit status stays
+ *  readable and its id cannot be reused underneath us. Closes the handle
+ *  rather than dropping it when the table is full. */
+static void sys_win_child_record(DWORD pid, HANDLE handle) {
+    if (!handle || handle == INVALID_HANDLE_VALUE) return;
+    sys_win_children_lock();
+    for (int i = 0; i < g_sys_win_children_count; i++) {
+        if (g_sys_win_children[i].pid == pid) {
+            CloseHandle(g_sys_win_children[i].handle);
+            g_sys_win_children[i].handle = handle;
+            LeaveCriticalSection(&g_sys_win_children_lock);
+            return;
+        }
+    }
+    if (g_sys_win_children_count < SYS_WIN_CHILD_CAPACITY) {
+        g_sys_win_children[g_sys_win_children_count].pid = pid;
+        g_sys_win_children[g_sys_win_children_count].handle = handle;
+        g_sys_win_children_count++;
+        LeaveCriticalSection(&g_sys_win_children_lock);
+        return;
+    }
+    LeaveCriticalSection(&g_sys_win_children_lock);
+    CloseHandle(handle);
+}
+
+/** Take the handle held for @p pid, removing its entry. The caller owns the
+ *  handle and closes it. NULL when the runtime holds none. */
+static HANDLE sys_win_child_take(DWORD pid) {
+    HANDLE handle = NULL;
+    sys_win_children_lock();
+    for (int i = 0; i < g_sys_win_children_count; i++) {
+        if (g_sys_win_children[i].pid == pid) {
+            handle = g_sys_win_children[i].handle;
+            g_sys_win_children[i] = g_sys_win_children[g_sys_win_children_count - 1];
+            g_sys_win_children_count--;
+            break;
+        }
+    }
+    LeaveCriticalSection(&g_sys_win_children_lock);
+    return handle;
+}
+#endif
+
+/* ── Children spawned through the raw builtin surface ─────────────────
+ *
+ * `(process-spawn ...)`, `(process-spawn-pty ...)` and `(fork)` hand the
+ * program a bare pid. The agent subprocess layer wraps each child in a handle
+ * it waits on and destroys, but a program using the raw builtins directly has
+ * no such owner, so the runtime keeps the book itself: every child it creates
+ * is recorded here with the pty master descriptor that belongs to it, and the
+ * entry is retired when `(process-wait ...)` collects the child.
+ *
+ * At shutdown the runtime walks what is left: any descriptor it still holds is
+ * closed and any child still running is asked to stop and then collected, so a
+ * program's children and their descriptors do not outlive it. The table is
+ * bounded; past the bound the runtime still spawns, it just stops recording,
+ * and the program's own `(process-wait ...)` remains the primary path.
+ *
+ * POSIX only. The Windows branch of `(process-spawn ...)` closes both handles
+ * CreateProcess hands back and re-opens the process by pid when waiting, so
+ * there is nothing to retain there.
+ */
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#include <pthread.h>
+
+#define SYS_CHILD_TABLE_CAPACITY 256
+
+typedef struct {
+    pid_t pid;        /* > 0 while the slot is in use */
+    int master_fd;    /* pty master descriptor, or -1 */
+} sys_child_entry_t;
+
+static sys_child_entry_t g_sys_children[SYS_CHILD_TABLE_CAPACITY];
+static int g_sys_children_count = 0;
+static pthread_mutex_t g_sys_children_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_sys_children_hook_installed = 0;
+
+extern uint32_t eshkol_register_shutdown_hook(int (*hook)(void*, int), void* context,
+                                              const char* name);
+
+/** Release what the runtime still holds for the children it created: close any
+ *  pseudo-terminal descriptor it owns, and collect a child that has already
+ *  exited so it does not outlive the program as a zombie.
+ *
+ *  It does not signal a child and it does not wait on one. A program that ends
+ *  while a child it started is still running leaves that child running, which
+ *  is what a program does today and what a program that daemonizes or starts a
+ *  long-lived server depends on. Collecting is WNOHANG for the same reason:
+ *  exit must not depend on when a child chooses to finish. Registered as a
+ *  shutdown hook the first time a child is recorded. */
+static int sys_children_release_all(void* context, int reason) {
+    (void)context;
+    (void)reason;
+    sys_child_entry_t pending[SYS_CHILD_TABLE_CAPACITY];
+    int count = 0;
+
+    pthread_mutex_lock(&g_sys_children_mutex);
+    for (int i = 0; i < g_sys_children_count; i++) {
+        pending[count++] = g_sys_children[i];
+    }
+    g_sys_children_count = 0;
+    pthread_mutex_unlock(&g_sys_children_mutex);
+
+    for (int i = 0; i < count; i++) {
+        if (pending[i].master_fd >= 0) close(pending[i].master_fd);
+        if (pending[i].pid <= 0) continue;
+        int status = 0;
+        (void)waitpid(pending[i].pid, &status, WNOHANG);
+    }
+    return 0;
+}
+
+/** Record a child this runtime created, together with the pty master
+ *  descriptor it owns (-1 when the child has no pty). */
+static void sys_child_record(pid_t pid, int master_fd) {
+    if (pid <= 0) return;
+    pthread_mutex_lock(&g_sys_children_mutex);
+    if (!g_sys_children_hook_installed) {
+        g_sys_children_hook_installed = 1;
+        (void)eshkol_register_shutdown_hook(sys_children_release_all, NULL,
+                                            "process-children");
+    }
+    for (int i = 0; i < g_sys_children_count; i++) {
+        if (g_sys_children[i].pid == pid) {
+            g_sys_children[i].master_fd = master_fd;
+            pthread_mutex_unlock(&g_sys_children_mutex);
+            return;
+        }
+    }
+    if (g_sys_children_count < SYS_CHILD_TABLE_CAPACITY) {
+        g_sys_children[g_sys_children_count].pid = pid;
+        g_sys_children[g_sys_children_count].master_fd = master_fd;
+        g_sys_children_count++;
+    }
+    pthread_mutex_unlock(&g_sys_children_mutex);
+}
+
+/** Retire a child's entry once the program has collected it. The pty
+ *  descriptor is left to the program, which received it from
+ *  `(process-spawn-pty ...)` and closes it with `(socket-close ...)`. */
+static void sys_child_forget(pid_t pid) {
+    if (pid <= 0) return;
+    pthread_mutex_lock(&g_sys_children_mutex);
+    for (int i = 0; i < g_sys_children_count; i++) {
+        if (g_sys_children[i].pid == pid) {
+            g_sys_children[i] = g_sys_children[g_sys_children_count - 1];
+            g_sys_children_count--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_sys_children_mutex);
+}
+#else
+/** No-op on platforms without the POSIX child surface. */
+static void sys_child_record(int pid, int master_fd) { (void)pid; (void)master_fd; }
+/** No-op on platforms without the POSIX child surface. */
+static void sys_child_forget(int pid) { (void)pid; }
+#endif
+
 /** Implements `(fork)`: forks the process, returning the child PID to the
  *  parent and 0 to the child (POSIX only; returns #f where unavailable). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fork_v(void) {
+    eshkol_capability_enforce("subprocess", "fork");
 #if !defined(_WIN32)
     pid_t pid = fork();
+    if (pid > 0) sys_child_record(pid, -1);
     if (pid >= 0) return sys_make_int64((int64_t)pid);
 #endif
     return sys_make_bool(0);
@@ -1516,6 +1746,7 @@ static int sys_execv_argv_from_list(eshkol_sysbuiltin_value_t list,
  *  argument vector (POSIX execv). Only returns — as #f — if the exec fails. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_t path_val,
                                                          eshkol_sysbuiltin_value_t argv_val) {
+    eshkol_capability_enforce("subprocess", "execv");
     const char* path = sys_extract_string(path_val);
     if (!path || !*path) return sys_make_bool(0);
 #if !defined(_WIN32)
@@ -1540,6 +1771,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_
  *  failure. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuiltin_value_t cmd_val,
                                                         eshkol_sysbuiltin_value_t args_val) {
+    eshkol_capability_enforce("subprocess", "process-spawn");
+    eshkol_capability_enforce("shell", "process-spawn");
     const char* cmd = sys_extract_string(cmd_val);
     const char* env_str = sys_extract_string(args_val); /* optional: env var "KEY=VAL" */
     if (!cmd) return sys_make_int64(-1);
@@ -1563,6 +1796,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
         _exit(127);
     }
     if (pid < 0) return sys_make_int64(-1);
+    sys_child_record(pid, -1);
     return sys_make_int64((int64_t)pid);
 #else
     /* Windows process creation via CreateProcess + cmd /c */
@@ -1576,25 +1810,129 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
     char cmdline[32768];
     snprintf(cmdline, sizeof(cmdline), "cmd /c %s", cmd);
 
-    /* Set environment if provided */
+    /* The child's environment is built as a block and handed to
+     * CreateProcessA, so the overlay applies to the child and to nothing else.
+     * The parent's own environment is left exactly as it was, which matches
+     * the POSIX branch above, where each KEY=VAL lands inside the forked
+     * child.
+     *
+     * Windows resolves a name to the FIRST matching entry in the block, so an
+     * overlay entry appended after the parent's copy of the same name would
+     * never be seen. A parent entry whose name the overlay also sets is
+     * therefore skipped while copying, and the overlay's value is the only one
+     * in the block — which is what the POSIX branch does, where the child's
+     * putenv replaces outright. Names are compared case-insensitively, the way
+     * the environment itself compares them.
+     *
+     * NULL for lpEnvironment means "inherit the parent's", so a spawn with no
+     * overlay needs no block at all. */
+    char* child_env = NULL;
+    char* env_copy = NULL;
     if (env_str && strlen(env_str) > 0) {
-        /* putenv each KEY=VAL pair before creating child */
-        char* env_copy = _strdup(env_str);
-        if (env_copy) {
-            char* pair = strtok(env_copy, " ");
-            while (pair) {
-                _putenv(pair);
-                pair = strtok(NULL, " ");
+        LPWCH parent_env_w = GetEnvironmentStringsW();
+        size_t parent_len = 0;
+        if (parent_env_w) {
+            for (const wchar_t* w = parent_env_w; *w; w += wcslen(w) + 1) {
+                int need = WideCharToMultiByte(CP_ACP, 0, w, -1, NULL, 0, NULL, NULL);
+                if (need > 0) parent_len += (size_t)need;
             }
-            free(env_copy);
+            parent_len += 2; /* trailing block terminator headroom */
         }
+
+        size_t overlay_len = strlen(env_str) + 2;
+        size_t block_size = parent_len + overlay_len;
+        child_env = (char*)malloc(block_size);
+        env_copy = _strdup(env_str);
+        char* overlay_names = _strdup(env_str);
+        if (!child_env || !env_copy || !overlay_names) {
+            if (parent_env_w) FreeEnvironmentStringsW(parent_env_w);
+            free(child_env);
+            free(env_copy);
+            free(overlay_names);
+            return sys_make_int64(-1);
+        }
+
+        size_t offset = 0;
+        if (parent_env_w) {
+            for (const wchar_t* w = parent_env_w; *w; w += wcslen(w) + 1) {
+                int need = WideCharToMultiByte(CP_ACP, 0, w, -1, NULL, 0, NULL, NULL);
+                if (need <= 1) continue;
+                char stack_entry[512];
+                char* heap_entry = NULL;
+                char* entry = stack_entry;
+                if ((size_t)need > sizeof(stack_entry)) {
+                    heap_entry = (char*)malloc((size_t)need);
+                    if (!heap_entry) continue;
+                    entry = heap_entry;
+                }
+                int written = WideCharToMultiByte(CP_ACP, 0, w, -1, entry, need, NULL, NULL);
+                if (written <= 1) {
+                    free(heap_entry);
+                    continue;
+                }
+                /* Skip a parent entry the overlay also sets. An entry with no
+                 * '=' has no name to match and is copied as it stands. */
+                const char* equals = strchr(entry, '=');
+                int overridden = 0;
+                if (equals && equals != entry) {
+                    size_t name_len = (size_t)(equals - entry);
+                    char* saved = NULL;
+                    strcpy(overlay_names, env_str);
+                    for (char* pair = sys_strtok_r(overlay_names, " ", &saved);
+                         pair; pair = sys_strtok_r(NULL, " ", &saved)) {
+                        const char* pair_equals = strchr(pair, '=');
+                        if (!pair_equals) continue;
+                        size_t pair_name_len = (size_t)(pair_equals - pair);
+                        if (pair_name_len == name_len &&
+                            _strnicmp(pair, entry, name_len) == 0) {
+                            overridden = 1;
+                            break;
+                        }
+                    }
+                }
+                if (!overridden) {
+                    size_t entry_len = strlen(entry);
+                    if (offset + entry_len + 2 <= block_size) {
+                        memcpy(child_env + offset, entry, entry_len);
+                        offset += entry_len;
+                        child_env[offset++] = '\0';
+                    }
+                }
+                free(heap_entry);
+            }
+            FreeEnvironmentStringsW(parent_env_w);
+        }
+        free(overlay_names);
+
+        char* saved_pair = NULL;
+        for (char* pair = sys_strtok_r(env_copy, " ", &saved_pair);
+             pair; pair = sys_strtok_r(NULL, " ", &saved_pair)) {
+            size_t pair_len = strlen(pair);
+            if (pair_len > 0 && offset + pair_len + 2 <= block_size) {
+                memcpy(child_env + offset, pair, pair_len);
+                offset += pair_len;
+                child_env[offset++] = '\0';
+            }
+        }
+        /* An environment block is a run of NUL-terminated entries closed by a
+         * further NUL. With no entries at all that is two NULs, not one. */
+        if (offset == 0) child_env[offset++] = '\0';
+        child_env[offset++] = '\0';
+        free(env_copy);
     }
 
-    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                                  child_env, NULL, &si, &pi);
+    free(child_env);
+    if (!created) {
         return sys_make_int64(-1);
     }
+    /* The thread handle is not needed. The process handle is: it keeps the
+     * process object alive after the child exits, so `(process-wait pid)` can
+     * still read the exit status and cannot reach a reused id. It is released
+     * when that wait collects the child. */
     CloseHandle(pi.hThread);
-    /* Return process ID — the handle is stored implicitly via the PID */
+    sys_win_child_record(pi.dwProcessId, pi.hProcess);
     return sys_make_int64((int64_t)pi.dwProcessId);
 #endif
 }
@@ -1607,12 +1945,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_wait_v(eshkol_sysbuiltin
 #ifndef _WIN32
     int status = 0;
     if (waitpid((pid_t)pid, &status, 0) < 0) return sys_make_int64(-1);
+    sys_child_forget((pid_t)pid);
     if (WIFEXITED(status)) return sys_make_int64(WEXITSTATUS(status));
     if (WIFSIGNALED(status)) return sys_make_int64(128 + WTERMSIG(status));
     return sys_make_int64(-1);
 #else
-    /* Windows process wait via OpenProcess + WaitForSingleObject */
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    /* The handle this runtime kept when it started the child, if it is one of
+     * ours: it holds the process object open, so the exit status is still
+     * there to read and the id cannot have been reused. A pid from elsewhere
+     * is opened by id, as before. */
+    HANDLE hProcess = sys_win_child_take((DWORD)pid);
+    if (!hProcess) {
+        hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    }
     if (!hProcess) return sys_make_int64(-1);
     WaitForSingleObject(hProcess, INFINITE);
     DWORD exit_code = 0;
@@ -1797,6 +2142,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkstemp_v(eshkol_sysbuiltin_valu
  *  @p pid_val (POSIX kill). Returns #t on success (no-op #f on Windows). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_v(eshkol_sysbuiltin_value_t pid_val,
                                                                 eshkol_sysbuiltin_value_t sig_val) {
+    eshkol_capability_enforce("subprocess", "process-kill");
     int64_t pid = (int64_t)pid_val.data;
     int64_t sig = (int64_t)sig_val.data;
 #ifndef _WIN32
@@ -2033,6 +2379,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_pid_v(void) {
  *  pid_val to @p pgid_val (POSIX setpgid). Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_setpgid_v(eshkol_sysbuiltin_value_t pid_val,
                                                                     eshkol_sysbuiltin_value_t pgid_val) {
+    eshkol_capability_enforce("subprocess", "process-setpgid");
     int64_t pid = (int64_t)pid_val.data;
     int64_t pgid = (int64_t)pgid_val.data;
 #ifndef _WIN32
@@ -2048,6 +2395,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_setpgid_v(eshkol_sysbuil
  *  the single process if the group send fails. Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbuiltin_value_t pid_val,
                                                                      eshkol_sysbuiltin_value_t sig_val) {
+    eshkol_capability_enforce("subprocess", "process-kill-tree");
     int64_t pid = (int64_t)pid_val.data;
     int64_t sig = (int64_t)sig_val.data;
 #ifndef _WIN32
@@ -2068,28 +2416,48 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbu
 #endif
 }
 
-/** Implements `(process-spawn-pty cmd)`: spawns @p cmd_val under a newly
- *  allocated pseudo-terminal (forkpty) so it behaves as if attached to a
- *  real TTY, and returns the child PID (-1 on failure). POSIX only. */
+/** Implements `(process-spawn-pty cmd)`: runs @p cmd_val under the system
+ *  shell in a child attached to a fresh pseudo-terminal, and returns the pair
+ *  `(pid . master-fd)` — the same shape the bytecode VM returns — so the
+ *  program owns the master descriptor and can read the child's output through
+ *  it and close it with `(socket-close ...)`. The child leads its own process
+ *  group, so `(process-kill-tree ...)` reaches it and its descendants.
+ *  Returns #f on failure, and on platforms without a pseudo-terminal — the
+ *  same value the bytecode VM returns, so the two engines answer alike.
+ *  Requires the `subprocess` and `shell` capabilities. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbuiltin_value_t cmd_val) {
-    /* PTY spawn — allocate a pseudo-terminal for interactive processes */
+    eshkol_capability_enforce("subprocess", "process-spawn-pty");
+    eshkol_capability_enforce("shell", "process-spawn-pty");
     const char* cmd = sys_extract_string(cmd_val);
-    if (!cmd) return sys_make_int64(-1);
+    if (!cmd) return sys_make_bool(0);
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
-    int master_fd;
+    int master_fd = -1;
     pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
-    if (pid < 0) return sys_make_int64(-1);
+    if (pid < 0) return sys_make_bool(0);
     if (pid == 0) {
-        /* Child: exec the command via shell */
+        /* Child: lead a new process group, then exec the command via shell */
+        (void)setpgid(0, 0);
         execlp("/bin/sh", "sh", "-c", cmd, (char*)NULL);
         _exit(127);
     }
-    /* Parent: return master fd (can read/write to it) */
-    /* Pack as cons pair: (pid . master-fd) */
-    /* For simplicity, return just the pid — the master_fd is tracked internally */
-    return sys_make_int64((int64_t)pid);
+    if (master_fd < 0) {
+        (void)kill(pid, SIGTERM);
+        (void)waitpid(pid, NULL, 0);
+        return sys_make_bool(0);
+    }
+    (void)setpgid(pid, pid);
+    eshkol_sysbuiltin_value_t handle = sys_make_pair(sys_make_int64((int64_t)pid),
+                                                     sys_make_int64((int64_t)master_fd));
+    if (handle.type == SYS_TYPE_NULL) {
+        close(master_fd);
+        (void)kill(pid, SIGTERM);
+        (void)waitpid(pid, NULL, 0);
+        return sys_make_bool(0);
+    }
+    sys_child_record(pid, master_fd);
+    return handle;
 #else
-    return sys_make_int64(-1);
+    return sys_make_bool(0);
 #endif
 }
 
@@ -2137,6 +2505,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
  *  Unix-domain socket at @p path_val and returns its file descriptor, or #f
  *  on failure. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_unix_socket_connect_v(eshkol_sysbuiltin_value_t path_val) {
+    eshkol_capability_enforce("network", "unix-socket-connect");
     const char* path = sys_extract_string(path_val);
     if (!path || !*path) return sys_make_bool(0);
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
@@ -3092,24 +3461,22 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
 /** Fill @p out with @p len cryptographically-random bytes from /dev/urandom,
  *  falling back to rand() seeded from time/address if that is unavailable.
  *  Returns 1. */
+/* The bytes behind `(uuid-v4)` and every other value whose worth rests on
+ * being unguessable. They come from the operating system's cryptographic
+ * source on every platform (SecRandomCopyBytes, BCryptGenRandom, RAND_bytes,
+ * /dev/urandom) and from nowhere else: when that source cannot be read the
+ * answer is a refusal, not a value a clock could have produced. The seeded
+ * generator behind `(random)` stays what it is — a reproducible stream for
+ * simulation and replay — and has no part in this path. */
 static int sys_random_bytes(unsigned char* out, size_t len) {
-    if (!out) return 0;
-#ifndef _WIN32
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        size_t pos = 0;
-        while (pos < len) {
-            ssize_t n = read(fd, out + pos, len - pos);
-            if (n <= 0) break;
-            pos += (size_t)n;
-        }
-        close(fd);
-        if (pos == len) return 1;
-    }
+    if (!out || len == 0) return 0;
+#if defined(__EMSCRIPTEN__)
+    /* A browser bundle without the native core CSPRNG refuses rather than
+     * substituting a stream a clock could have produced. */
+    return 0;
+#else
+    return eshkol_random_bytes((char*)out, len) == 0;
 #endif
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
-    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
-    return 1;
 }
 
 /** Implements `(uuid-v4)`: generates a random RFC 4122 version-4 UUID (with
@@ -3148,100 +3515,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_constant_time_equal_v(
     return sys_make_bool(diff == 0);
 }
 
-typedef struct {
-    uint32_t h[8];
-    uint64_t bit_len;
-    unsigned char buf[64];
-    size_t buf_len;
-} SysSha256;
-
-static uint32_t sys_sha256_rotr(uint32_t x, int n) {
-    return (x >> n) | (x << (32 - n));
-}
-
-static void sys_sha256_transform(SysSha256* ctx, const unsigned char block[64]) {
-    static const uint32_t k[64] = {
-        0x428a2f98U,0x71374491U,0xb5c0fbcfU,0xe9b5dba5U,0x3956c25bU,0x59f111f1U,0x923f82a4U,0xab1c5ed5U,
-        0xd807aa98U,0x12835b01U,0x243185beU,0x550c7dc3U,0x72be5d74U,0x80deb1feU,0x9bdc06a7U,0xc19bf174U,
-        0xe49b69c1U,0xefbe4786U,0x0fc19dc6U,0x240ca1ccU,0x2de92c6fU,0x4a7484aaU,0x5cb0a9dcU,0x76f988daU,
-        0x983e5152U,0xa831c66dU,0xb00327c8U,0xbf597fc7U,0xc6e00bf3U,0xd5a79147U,0x06ca6351U,0x14292967U,
-        0x27b70a85U,0x2e1b2138U,0x4d2c6dfcU,0x53380d13U,0x650a7354U,0x766a0abbU,0x81c2c92eU,0x92722c85U,
-        0xa2bfe8a1U,0xa81a664bU,0xc24b8b70U,0xc76c51a3U,0xd192e819U,0xd6990624U,0xf40e3585U,0x106aa070U,
-        0x19a4c116U,0x1e376c08U,0x2748774cU,0x34b0bcb5U,0x391c0cb3U,0x4ed8aa4aU,0x5b9cca4fU,0x682e6ff3U,
-        0x748f82eeU,0x78a5636fU,0x84c87814U,0x8cc70208U,0x90befffaU,0xa4506cebU,0xbef9a3f7U,0xc67178f2U
-    };
-    uint32_t w[64];
-    for (int i = 0; i < 16; i++) {
-        w[i] = ((uint32_t)block[i * 4] << 24) |
-               ((uint32_t)block[i * 4 + 1] << 16) |
-               ((uint32_t)block[i * 4 + 2] << 8) |
-               (uint32_t)block[i * 4 + 3];
-    }
-    for (int i = 16; i < 64; i++) {
-        uint32_t s0 = sys_sha256_rotr(w[i - 15], 7) ^ sys_sha256_rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-        uint32_t s1 = sys_sha256_rotr(w[i - 2], 17) ^ sys_sha256_rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-    uint32_t a = ctx->h[0], b = ctx->h[1], c = ctx->h[2], d = ctx->h[3];
-    uint32_t e = ctx->h[4], f = ctx->h[5], g = ctx->h[6], h = ctx->h[7];
-    for (int i = 0; i < 64; i++) {
-        uint32_t S1 = sys_sha256_rotr(e, 6) ^ sys_sha256_rotr(e, 11) ^ sys_sha256_rotr(e, 25);
-        uint32_t ch = (e & f) ^ ((~e) & g);
-        uint32_t temp1 = h + S1 + ch + k[i] + w[i];
-        uint32_t S0 = sys_sha256_rotr(a, 2) ^ sys_sha256_rotr(a, 13) ^ sys_sha256_rotr(a, 22);
-        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-        uint32_t temp2 = S0 + maj;
-        h = g; g = f; f = e; e = d + temp1;
-        d = c; c = b; b = a; a = temp1 + temp2;
-    }
-    ctx->h[0] += a; ctx->h[1] += b; ctx->h[2] += c; ctx->h[3] += d;
-    ctx->h[4] += e; ctx->h[5] += f; ctx->h[6] += g; ctx->h[7] += h;
-}
-
-static void sys_sha256_init(SysSha256* ctx) {
-    static const uint32_t init[8] = {
-        0x6a09e667U,0xbb67ae85U,0x3c6ef372U,0xa54ff53aU,
-        0x510e527fU,0x9b05688cU,0x1f83d9abU,0x5be0cd19U
-    };
-    memcpy(ctx->h, init, sizeof(init));
-    ctx->bit_len = 0;
-    ctx->buf_len = 0;
-}
-
-static void sys_sha256_update(SysSha256* ctx, const unsigned char* data, size_t len) {
-    ctx->bit_len += (uint64_t)len * 8U;
-    while (len > 0) {
-        size_t n = 64 - ctx->buf_len;
-        if (n > len) n = len;
-        memcpy(ctx->buf + ctx->buf_len, data, n);
-        ctx->buf_len += n;
-        data += n;
-        len -= n;
-        if (ctx->buf_len == 64) {
-            sys_sha256_transform(ctx, ctx->buf);
-            ctx->buf_len = 0;
-        }
-    }
-}
-
-static void sys_sha256_final(SysSha256* ctx, unsigned char out[32]) {
-    ctx->buf[ctx->buf_len++] = 0x80;
-    if (ctx->buf_len > 56) {
-        while (ctx->buf_len < 64) ctx->buf[ctx->buf_len++] = 0;
-        sys_sha256_transform(ctx, ctx->buf);
-        ctx->buf_len = 0;
-    }
-    while (ctx->buf_len < 56) ctx->buf[ctx->buf_len++] = 0;
-    for (int i = 7; i >= 0; i--)
-        ctx->buf[ctx->buf_len++] = (unsigned char)((ctx->bit_len >> (i * 8)) & 0xFF);
-    sys_sha256_transform(ctx, ctx->buf);
-    for (int i = 0; i < 8; i++) {
-        out[i * 4] = (unsigned char)(ctx->h[i] >> 24);
-        out[i * 4 + 1] = (unsigned char)(ctx->h[i] >> 16);
-        out[i * 4 + 2] = (unsigned char)(ctx->h[i] >> 8);
-        out[i * 4 + 3] = (unsigned char)ctx->h[i];
-    }
-}
+#include "sha256_internal.h"
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_sha256_file_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
@@ -4333,6 +4607,7 @@ static int sys_http_server_store(int listen_fd, int port) {
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_create_v(eshkol_sysbuiltin_value_t port_val) {
+    eshkol_capability_enforce("network", "http-server-create");
 #if !defined(_WIN32)
     int requested_port = (int)sys_extract_int64(port_val);
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -4545,6 +4820,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
     eshkol_sysbuiltin_value_t headers_val,
     eshkol_sysbuiltin_value_t body_val,
     eshkol_sysbuiltin_value_t timeout_val) {
+    eshkol_capability_enforce("network", "http-request");
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     const char* method = sys_extract_string(method_val);
     const char* url = sys_extract_string(url_val);
@@ -4555,26 +4831,44 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
     int port = 80;
     int timeout_ms = (int)sys_extract_int64(timeout_val);
     if (timeout_ms <= 0) timeout_ms = 30000;
+    /* The request line and the header block are decided before a socket
+     * exists. A method that is not a token, a target that is not one of the
+     * four request-target forms, or a header line carrying a control byte or
+     * a line break is an error the program catches, naming the field. */
+    const char* offending =
+        eshkol_http_request_offending_field(method, NULL, headers);
+    if (offending) sys_protocol_refusal("http-request", offending);
     if (!method || !*method ||
         !sys_http_request_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
         return sys_make_bool(0);
+    if (!eshkol_http_valid_request_target(path))
+        sys_protocol_refusal("http-request", "request-target");
+    if (!eshkol_http_valid_authority(host))
+        sys_protocol_refusal("http-request", "Host header");
+
+    /* Re-render the caller's header block from the validated parse, with
+     * canonical CRLF endings, so the bytes written to the socket are the
+     * lines the grammar admitted rather than the caller's own bytes. */
+    char rendered_headers[4096];
+    size_t rendered_len = 0;
+    if (!eshkol_http_render_header_block(headers, rendered_headers,
+                                         sizeof(rendered_headers), &rendered_len))
+        sys_protocol_refusal("http-request", "header");
 
     int fd = sys_http_request_connect(host, port, timeout_ms);
     if (fd < 0) return sys_make_bool(0);
 
     const char* body_data = body ? body : "";
     size_t body_len = body ? strlen(body) : 0;
-    const char* extra_headers = headers ? headers : "";
     char header[8192];
     int hlen = snprintf(header, sizeof(header),
                         "%s %s HTTP/1.1\r\n"
                         "Host: %s\r\n"
                         "Connection: close\r\n"
-                        "%s%s"
+                        "%s"
                         "Content-Length: %lld\r\n\r\n",
                         method, path, host,
-                        extra_headers,
-                        extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                        rendered_headers,
                         (long long)body_len);
     int ok = hlen > 0 && hlen < (int)sizeof(header);
     if (ok) ok = send(fd, header, (size_t)hlen, 0) == hlen;
@@ -4582,32 +4876,74 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
         ok = send(fd, body_data, body_len, 0) == (ssize_t)body_len;
 
     if (ok) {
-        int cap = 65536;
-        char* response = (char*)malloc((size_t)cap + 1);
+        size_t cap = 65536;
+        size_t total = 0;
+        int oversized = 0;
+        char* response = (char*)malloc(cap + 1);
         if (response) {
-            int total = 0;
-            while (total < cap) {
-                ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
+            for (;;) {
+                if (total == cap) {
+                    if (cap >= ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES) {
+                        char probe = 0;
+                        ssize_t extra = recv(fd, &probe, 1, 0);
+                        if (extra > 0) oversized = 1;
+                        break;
+                    }
+                    size_t next_cap = cap * 2;
+                    if (next_cap > ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES)
+                        next_cap = ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES;
+                    char* grown = (char*)realloc(response, next_cap + 1);
+                    if (!grown) {
+                        free(response);
+                        response = NULL;
+                        break;
+                    }
+                    response = grown;
+                    cap = next_cap;
+                }
+                ssize_t n = recv(fd, response + total, cap - total, 0);
                 if (n <= 0) break;
-                total += (int)n;
+                total += (size_t)n;
+            }
+            close(fd);
+            if (!response) return sys_make_bool(0);
+            if (oversized) {
+                free(response);
+                sys_protocol_refusal("http-request", "oversized HTTP response");
             }
             response[total] = '\0';
-            close(fd);
-            int status = 0;
-            (void)sscanf(response, "HTTP/%*s %d", &status);
-            char* body_start = strstr(response, "\r\n\r\n");
-            int header_len = total;
-            int body_offset = total;
-            if (body_start) {
-                body_start += 4;
-                body_offset = (int)(body_start - response);
-                header_len = body_offset - 4;
-            } else {
-                body_start = response + total;
+            eshkol_http_parsed_response_t parsed;
+            const char* resp_offending = NULL;
+            if (!eshkol_http_parse_response(response, total, &parsed, &resp_offending)) {
+                free(response);
+                sys_protocol_refusal("http-request",
+                                     resp_offending ? resp_offending : "response");
+            }
+            const char* body_ptr = response + parsed.body_offset;
+            size_t body_len = parsed.body_length;
+            char* decoded = NULL;
+            if (parsed.is_chunked) {
+                decoded = (char*)malloc(parsed.body_length + 1);
+                if (!decoded) {
+                    free(response);
+                    return sys_make_bool(0);
+                }
+                size_t decoded_len = 0;
+                if (!eshkol_http_decode_chunked(body_ptr, parsed.body_length,
+                                                decoded, parsed.body_length,
+                                                &decoded_len)) {
+                    free(decoded);
+                    free(response);
+                    sys_protocol_refusal("http-request", "chunked response body");
+                }
+                decoded[decoded_len] = '\0';
+                body_ptr = decoded;
+                body_len = decoded_len;
             }
             eshkol_sysbuiltin_value_t result =
-                sys_http_response_value(status, response, (size_t)header_len,
-                                        body_start, (size_t)(total - body_offset));
+                sys_http_response_value(parsed.status, response, parsed.header_length,
+                                        body_ptr, body_len);
+            free(decoded);
             free(response);
             return result;
         }
@@ -4623,6 +4959,12 @@ typedef struct {
     int active;
     int fd;
     int closed;
+    /* An open fragment sequence: the data opcode the sequence began with and
+     * the bytes gathered so far. RFC 6455 section 5.4 delivers a message only
+     * once FIN arrives, so a fragment is never surfaced as a whole frame. */
+    int fragment_opcode;
+    char* fragment_data;
+    size_t fragment_length;
 } SysWebSocketClient;
 
 static SysWebSocketClient g_sys_websocket_clients[16];
@@ -4674,43 +5016,73 @@ static int sys_ws_send_all(int fd, const void* data, size_t len) {
 #endif
 }
 
+/* RFC 6455 section 5.3: a client frame carries a masking key drawn fresh for
+ * that frame and a payload masked with it. The key comes from the operating
+ * system's cryptographic source; when that source cannot be read the frame is
+ * not sent, because an all-zero or guessable key is the thing masking exists
+ * to prevent. */
 static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
-    int hlen = 0;
-    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
-    if (len < 126) {
-        header[hlen++] = (unsigned char)(0x80 | len);
-    } else if (len <= 65535) {
-        header[hlen++] = 0x80 | 126;
-        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
-        header[hlen++] = (unsigned char)(len & 0xff);
-    } else {
-        header[hlen++] = 0x80 | 127;
-        for (int i = 7; i >= 0; i--)
-            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
+    int hlen;
+    unsigned char mask[4];
+    if (!eshkol_ws_generate_mask(mask)) return 0;
+    hlen = eshkol_ws_write_frame_header(header, opcode, len, mask);
+    if (!sys_ws_send_all(fd, header, (size_t)hlen)) return 0;
+    if (len == 0) return 1;
+
+    const unsigned char* payload = (const unsigned char*)data;
+    unsigned char chunk[4096];
+    size_t offset = 0;
+    while (offset < len) {
+        size_t span = len - offset;
+        if (span > sizeof(chunk)) span = sizeof(chunk);
+        memcpy(chunk, payload + offset, span);
+        /* The key index follows the payload offset, not the chunk's, so a
+         * payload larger than one chunk is masked correctly. */
+        eshkol_ws_mask_payload(chunk, span, offset, mask);
+        if (!sys_ws_send_all(fd, chunk, span)) return 0;
+        offset += span;
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
-    memcpy(header + hlen, mask, sizeof(mask));
-    hlen += 4;
-    return sys_ws_send_all(fd, header, (size_t)hlen) &&
-           (len == 0 || sys_ws_send_all(fd, data, len));
+    return 1;
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
     eshkol_sysbuiltin_value_t url_val,
     eshkol_sysbuiltin_value_t headers_val) {
+    eshkol_capability_enforce("network", "websocket-connect");
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     const char* url = sys_extract_string(url_val);
     const char* headers = sys_extract_string(headers_val);
     char host[256];
     char path[2048];
     int port = 80;
+    /* Caller-supplied headers and the URL-derived target and authority are
+     * decided against the grammar before a socket exists. */
+    const char* offending =
+        eshkol_http_request_offending_field_ex("GET", NULL, headers, 1);
+    if (offending) sys_protocol_refusal("websocket-connect", offending);
     if (!sys_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
         return sys_make_bool(0);
+    if (!eshkol_http_valid_request_target(path))
+        sys_protocol_refusal("websocket-connect", "request-target");
+    if (!eshkol_http_valid_authority(host))
+        sys_protocol_refusal("websocket-connect", "Host header");
+
+    char rendered_headers[2048];
+    if (!eshkol_http_render_header_block(headers, rendered_headers,
+                                         sizeof(rendered_headers), NULL))
+        sys_protocol_refusal("websocket-connect", "header");
+
+    /* One key per handshake, from the operating system's cryptographic
+     * source. Without it there is nothing to check the server's answer
+     * against, so the connection is not attempted. */
+    char ws_key[ESHKOL_WS_KEY_CAPACITY];
+    if (!eshkol_ws_generate_key(ws_key, sizeof(ws_key)))
+        sys_protocol_refusal("websocket-connect", "Sec-WebSocket-Key source");
+
     int fd = sys_http_request_connect(host, port, 5000);
     if (fd < 0) return sys_make_bool(0);
 
-    const char* extra_headers = headers ? headers : "";
     char request[4096];
     int n = snprintf(request, sizeof(request),
                      "GET %s HTTP/1.1\r\n"
@@ -4718,18 +5090,20 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
                      "Upgrade: websocket\r\n"
                      "Connection: Upgrade\r\n"
                      "Sec-WebSocket-Version: 13\r\n"
-                     "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
-                     "%s%s"
+                     "Sec-WebSocket-Key: %s\r\n"
+                     "%s"
                      "\r\n",
-                     path, host, extra_headers,
-                     extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                     path, host, ws_key, rendered_headers);
     if (n > 0 && n < (int)sizeof(request) && sys_ws_send_all(fd, request, (size_t)n)) {
         char response[4096];
         ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
         if (r > 0) {
             response[r] = '\0';
-            if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
-                strstr(response, " 101\n")) {
+            /* RFC 6455 section 4.1: the handshake completes only on 101 with
+             * Upgrade and Connection naming the upgrade, and with
+             * Sec-WebSocket-Accept equal to the value derived from the key
+             * this connection sent. Anything else leaves the socket closed. */
+            if (eshkol_ws_handshake_refusal(response, (size_t)r, ws_key) == NULL) {
                 int handle = sys_ws_store(fd);
                 if (handle > 0) return sys_make_int64((int64_t)handle);
             }
@@ -4762,6 +5136,41 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_send_binary_v(
                                            data, strlen(data)));
 }
 
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+/**
+ * @brief Fails the connection: reports the close code, then closes.
+ *
+ * RFC 6455 section 7.1.7 fails a connection by sending a Close frame with the
+ * code and closing the socket. Returning while the stream sits mid-frame is
+ * what must not happen: a later read would parse attacker-chosen payload
+ * bytes as a frame header, putting the frame type and length under the peer's
+ * control. Any gathered fragment is released with the connection.
+ *
+ * @param handle     WebSocket handle, already validated.
+ * @param close_code Close code to report, or 0 to close without one.
+ * @return False, the value every refusal on this path returns.
+ */
+static eshkol_sysbuiltin_value_t sys_ws_fail_connection(int handle,
+                                                        int close_code) {
+    SysWebSocketClient* client = &g_sys_websocket_clients[handle];
+    if (close_code > 0) {
+        unsigned char body[2];
+        body[0] = (unsigned char)((close_code >> 8) & 0xff);
+        body[1] = (unsigned char)(close_code & 0xff);
+        (void)sys_ws_send_frame(client->fd, 8, (const char*)body, 2);
+    }
+    if (client->fragment_data) {
+        free(client->fragment_data);
+        client->fragment_data = NULL;
+    }
+    client->fragment_length = 0;
+    client->fragment_opcode = 0;
+    close(client->fd);
+    client->closed = 1;
+    return sys_make_bool(0);
+}
+#endif
+
 static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_receive_v(
     eshkol_sysbuiltin_value_t ws_val,
     eshkol_sysbuiltin_value_t timeout_val) {
@@ -4779,43 +5188,102 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_receive_v(
         return sys_make_bool(0);
 
     unsigned char hdr[2];
-    if (recv(fd, hdr, 2, MSG_WAITALL) != 2) return sys_make_bool(0);
+    if (recv(fd, hdr, 2, MSG_WAITALL) != 2)
+        return sys_ws_fail_connection(handle, 0);
+    int fin = (hdr[0] & 0x80) != 0;
     int opcode = hdr[0] & 0x0f;
-    int masked = hdr[1] & 0x80;
     uint64_t len = hdr[1] & 0x7f;
     if (len == 126) {
         unsigned char ext[2];
-        if (recv(fd, ext, 2, MSG_WAITALL) != 2) return sys_make_bool(0);
+        if (recv(fd, ext, 2, MSG_WAITALL) != 2)
+            return sys_ws_fail_connection(handle, 0);
         len = ((uint64_t)ext[0] << 8) | ext[1];
     } else if (len == 127) {
         unsigned char ext[8];
-        if (recv(fd, ext, 8, MSG_WAITALL) != 8) return sys_make_bool(0);
+        if (recv(fd, ext, 8, MSG_WAITALL) != 8)
+            return sys_ws_fail_connection(handle, 0);
         len = 0;
         for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
-    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) return sys_make_bool(0);
-    if (len > 65536) return sys_make_bool(0);
+
+    /* Judged before a byte of payload is read, and any refusal fails the
+     * connection rather than returning with the stream mid-frame. */
+    {
+        const int in_fragment =
+            g_sys_websocket_clients[handle].fragment_opcode != 0;
+        const eshkol_ws_frame_verdict verdict =
+            eshkol_ws_examine_frame(hdr[0], hdr[1], len, in_fragment);
+        if (verdict != ESHKOL_WS_FRAME_OK)
+            return sys_ws_fail_connection(handle,
+                                          eshkol_ws_frame_close_code(verdict));
+    }
 
     char* payload = (char*)malloc((size_t)len + 1);
-    if (!payload) return sys_make_bool(0);
-    if (recv(fd, payload, (size_t)len, MSG_WAITALL) != (ssize_t)len) {
+    if (!payload) return sys_ws_fail_connection(handle, 1011);
+    if (len > 0 && recv(fd, payload, (size_t)len, MSG_WAITALL) != (ssize_t)len) {
         free(payload);
-        return sys_make_bool(0);
-    }
-    if (masked) {
-        for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
+        return sys_ws_fail_connection(handle, 0);
     }
     payload[len] = '\0';
-    const char* type = opcode == 1 ? "text" :
-                       opcode == 2 ? "binary" :
-                       opcode == 9 ? "ping" :
-                       opcode == 8 ? "close" : "unknown";
-    if (opcode == 8) g_sys_websocket_clients[handle].closed = 1;
-    eshkol_sysbuiltin_value_t result =
-        sys_make_pair(sys_make_string(type), sys_make_string_len(payload, (size_t)len));
-    free(payload);
-    return result;
+
+    /* A control frame is answered or reported immediately; it never joins a
+     * fragment sequence (RFC 6455 section 5.5 allows one to arrive inside
+     * one). A ping is answered with the pong the RFC requires. */
+    if (opcode & 0x08) {
+        const char* control_type = opcode == 9 ? "ping" :
+                                   opcode == 10 ? "pong" :
+                                   opcode == 8 ? "close" : "unknown";
+        if (opcode == 9) (void)sys_ws_send_frame(fd, 10, payload, (size_t)len);
+        if (opcode == 8) g_sys_websocket_clients[handle].closed = 1;
+        eshkol_sysbuiltin_value_t control = sys_make_pair(
+            sys_make_string(control_type),
+            sys_make_string_len(payload, (size_t)len));
+        free(payload);
+        return control;
+    }
+
+    /* A data frame: gather it, and surface a message only on FIN. */
+    {
+        SysWebSocketClient* client = &g_sys_websocket_clients[handle];
+        const int message_opcode =
+            opcode == 0 ? client->fragment_opcode : opcode;
+        size_t total = client->fragment_length + (size_t)len;
+        char* gathered;
+        if (total > eshkol_ws_max_frame_bytes()) {
+            free(payload);
+            return sys_ws_fail_connection(handle, 1009);
+        }
+        gathered = (char*)realloc(client->fragment_data, total + 1);
+        if (!gathered) {
+            free(payload);
+            return sys_ws_fail_connection(handle, 1011);
+        }
+        if (len > 0) memcpy(gathered + client->fragment_length, payload, (size_t)len);
+        gathered[total] = '\0';
+        free(payload);
+        client->fragment_data = gathered;
+        client->fragment_length = total;
+        if (!fin) {
+            client->fragment_opcode = message_opcode;
+            return sys_make_bool(0);
+        }
+        client->fragment_opcode = 0;
+        client->fragment_data = NULL;
+        client->fragment_length = 0;
+        if (message_opcode == 1 && !eshkol_ws_valid_utf8(gathered, total)) {
+            free(gathered);
+            /* Section 8.1: a text message that is not UTF-8 fails the
+             * connection, with the 1007 the RFC names for it. */
+            return sys_ws_fail_connection(handle, 1007);
+        }
+        {
+            eshkol_sysbuiltin_value_t result = sys_make_pair(
+                sys_make_string(message_opcode == 1 ? "text" : "binary"),
+                sys_make_string_len(gathered, total));
+            free(gathered);
+            return result;
+        }
+    }
 #else
     (void)ws_val; (void)timeout_val;
     return sys_make_bool(0);
@@ -4828,6 +5296,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_close_v(eshkol_sysbuil
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     (void)sys_ws_send_frame(g_sys_websocket_clients[handle].fd, 8, "", 0);
     close(g_sys_websocket_clients[handle].fd);
+    if (g_sys_websocket_clients[handle].fragment_data)
+        free(g_sys_websocket_clients[handle].fragment_data);
 #endif
     memset(&g_sys_websocket_clients[handle], 0, sizeof(g_sys_websocket_clients[handle]));
     return sys_make_bool(1);

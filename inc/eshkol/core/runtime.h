@@ -22,6 +22,13 @@
 extern "C" {
 #endif
 
+/* Internal LLVM runtime entry point for the checked tensor-inverse kernel.
+ * This is a compiler/runtime ABI symbol, not a user-facing FFI/API function. */
+int32_t eshkol_tensor_inverse_checked_abi(const void* input_bits,
+                                          double* work,
+                                          void* output_bits,
+                                          int64_t n);
+
 /* Forward declaration for tagged-value helpers that need it.
  * Full definition lives in inc/eshkol/eshkol.h. */
 typedef struct eshkol_tagged_value eshkol_tagged_value_t;
@@ -631,6 +638,8 @@ void eshkol_language_coverage_vm_call_hash(uint32_t name_hash);
  * manifest with collision rejection, exactly as for a validated call.
  */
 void eshkol_language_coverage_vm_form_hash(uint32_t name_hash);
+/** Record a binding-origin read, distinct from invocation evidence. */
+void eshkol_language_coverage_vm_read_hash(uint32_t binding_hash);
 /** Flush a pending opt-in language-coverage batch before exec/early exit. */
 void eshkol_language_coverage_flush(void);
 

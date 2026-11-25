@@ -855,7 +855,7 @@ builder-&gt;CreateStore(new_counter, counter_ptr);
 <p><strong>Block Capture After IR-Generating Calls:</strong> Any function that may create basic blocks (e.g., <code>extractDoubleFromTagged</code>, <code>packDoubleToTaggedValue</code>, <code>isHeapSubtype</code>) can shift the builder’s insert point. Code that creates PHI nodes or conditional branches must capture the actual exit block with <code>builder-&gt;GetInsertBlock()</code> after such calls, not before.</p>
 <hr />
 <h2 id="jit-compilation-repl">JIT Compilation (REPL)</h2>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,831 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,894 lines)</p>
 <p>The REPL uses <strong>LLVM’s LLJIT</strong> (via OrcJIT v2) for interactive execution.</p>
 <h3 id="jit-architecture">JIT Architecture</h3>
 <pre><code>User Input: &quot;(+ 1 2)&quot;
