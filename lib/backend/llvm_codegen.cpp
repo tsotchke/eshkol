@@ -4414,6 +4414,9 @@ void EshkolLLVMCodeGen::finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t 
             }
         }
 
+        // Resolve tail-transfer forwarders before shared-library or freestanding
+        // export wrappers rename top-level definitions to internal ABI symbols.
+        finalizeTailTransferThunks();
         emitSharedLibraryExportWrappers(asts, num_asts);
         emitFreestandingScalarExportWrappers(asts, num_asts);
     }
@@ -27595,7 +27598,16 @@ void EshkolLLVMCodeGen::finalizeTailTransferThunks() {
             std::string name = body->getName().str();
             const size_t suffix_len = std::strlen(kTailBodySuffix);
             if (name.size() <= suffix_len) continue;
-            Function* target = module->getFunction(name.substr(0, name.size() - suffix_len));
+            std::string base_name = name.substr(0, name.size() - suffix_len);
+            Function* target = module->getFunction(base_name);
+            if (!target || target->getFunctionType() != body->getFunctionType()) {
+                Function* internal_target =
+                    module->getFunction(sharedLibraryImplSymbolName(base_name));
+                if (internal_target &&
+                    internal_target->getFunctionType() == body->getFunctionType()) {
+                    target = internal_target;
+                }
+            }
             if (!target || target->getFunctionType() != body->getFunctionType()) {
                 // Nothing to forward to. Leaving the declaration would fail the
                 // link; an explicit trap is the loud form of "the compiler lost

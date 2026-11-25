@@ -174,6 +174,10 @@ cat > "$WORK/abi_module.esk" <<'ESK'
 (define (abi-real) 3.5)
 (define (abi-text) "eshkol-abi")
 (define (abi-add a b) (+ a b))
+(define (abi-tail-leaf x) (+ x 1))
+(define (abi-tail-call x) (abi-tail-leaf x))
+(define (abi-even-step n) (if (= n 0) 1 (abi-odd-step (- n 1))))
+(define (abi-odd-step n) (if (= n 0) 0 (abi-even-step (- n 1))))
 ESK
 
 # ── the C harness ─────────────────────────────────────────────────────────────
@@ -284,6 +288,8 @@ int main(int argc, char** argv) {
     tv_t (*abi_real)(void)  = (tv_t (*)(void))need(handle, "abi-real");
     tv_t (*abi_text)(void)  = (tv_t (*)(void))need(handle, "abi-text");
     tv_t (*abi_add)(tv_t, tv_t) = (tv_t (*)(tv_t, tv_t))need(handle, "abi-add");
+    tv_t (*abi_tail_call)(tv_t) = (tv_t (*)(tv_t))need(handle, "abi-tail-call");
+    tv_t (*abi_even_step)(tv_t) = (tv_t (*)(tv_t))need(handle, "abi-even-step");
     if (failures) return 2;
 
     printf("  returns:\n");
@@ -299,6 +305,11 @@ int main(int argc, char** argv) {
                                        eshkol_make_int64(-7, true)), 993);
     expect_int("add(0,777)", abi_add(eshkol_make_int64(0, true),
                                      eshkol_make_int64(777, true)), 777);
+
+    printf("  exported tail transfer:\n");
+    expect_int("tail-call(41)", abi_tail_call(eshkol_make_int64(41, true)), 42);
+    expect_int("even-step(50000)", abi_even_step(eshkol_make_int64(50000, true)), 1);
+    expect_int("even-step(50001)", abi_even_step(eshkol_make_int64(50001, true)), 0);
 
     /* NEGATIVE DIRECTION -- see the header comment. The unwrapped body still
      * speaks Eshkol's internal first-class-struct convention, so a C caller
@@ -479,6 +490,16 @@ def main(path):
            EXACT_FLAG, lambda t: t.data.int_val == 993, 993)
     expect("add(0,777)", add(make_int(0), make_int(777)), VALUE_INT64,
            EXACT_FLAG, lambda t: t.data.int_val == 777, 777)
+
+    print("  exported tail transfer:")
+    tail_call = fn("abi-tail-call", (Tagged,))
+    even_step = fn("abi-even-step", (Tagged,))
+    expect("tail-call(41)", tail_call(make_int(41)), VALUE_INT64,
+           EXACT_FLAG, lambda t: t.data.int_val == 42, 42)
+    expect("even-step(50000)", even_step(make_int(50000)), VALUE_INT64,
+           EXACT_FLAG, lambda t: t.data.int_val == 1, 1)
+    expect("even-step(50001)", even_step(make_int(50001)), VALUE_INT64,
+           EXACT_FLAG, lambda t: t.data.int_val == 0, 0)
 
     # Negative direction: the unwrapped internal-convention symbol must not be
     # usable from here as if it were the export. Same hazard as the C harness,
