@@ -10663,6 +10663,32 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_self_host.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u6_native_self_host_test.cpp")
+        add_library(eshkol-os-self-host STATIC lib/core/os_self_host.c)
+        target_include_directories(eshkol-os-self-host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-self-host PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-self-host PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_u6_native_self_host_test tests/toolchain/os_u6_native_self_host_test.cpp)
+        target_compile_features(os_u6_native_self_host_test PRIVATE cxx_std_17)
+        target_link_libraries(os_u6_native_self_host_test PRIVATE eshkol-os-self-host eshkol-os-vm-shell)
+        add_dependencies(os_u6_native_self_host_test eshkol-os-self-host eshkol-os-vm-shell)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u6_native_self_host_test
+                COMMAND os_u6_native_self_host_test "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-self-host>
+            )
+        else()
+            add_test(
+                NAME os_u6_native_self_host_test
+                COMMAND os_u6_native_self_host_test "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-self-host>
+            )
+        endif()
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)
