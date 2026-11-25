@@ -10,6 +10,10 @@
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -60,12 +64,11 @@
 #endif
 
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+__attribute__((weak)) int eshkol_capability_runtime_is_active(void) { return 0; }
 #ifdef __APPLE__
-extern int eshkol_capability_runtime_is_active(void) __attribute__((weak_import));
 extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak_import));
 extern void eshkol_capability_enforce(const char* capability, const char* operation) __attribute__((weak_import));
 #else
-extern int eshkol_capability_runtime_is_active(void) __attribute__((weak));
 extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak));
 extern void eshkol_capability_enforce(const char* capability, const char* operation) __attribute__((weak));
 #endif

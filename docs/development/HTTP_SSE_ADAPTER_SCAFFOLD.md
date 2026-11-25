@@ -1,3 +1,13 @@
+---
+kind: explanation
+status: current
+owner-area: runtime
+since: v1.3.6-evolve
+sources:
+  - inc/eshkol/agent_http_sse_adapter.h
+  - lib/agent/c/agent_http_server.c
+  - tests/agent/http_sse_adapter_scaffold_test.c
+---
 # Accepted-HTTP-Connection Ownership Adapter and SSE Scaffold
 
 Base revision: `667c382d5f2e8a992c4c6e9053d734110c987773` (shared explicit-loop resource leases, PR #926).

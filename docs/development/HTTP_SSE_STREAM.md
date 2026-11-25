@@ -1,3 +1,13 @@
+---
+kind: explanation
+status: current
+owner-area: runtime
+since: v1.3.6-evolve
+sources:
+  - lib/agent/http_sse.esk
+  - lib/agent/c/agent_http_sse_stream.c
+  - tests/agent/http_sse_stream_test.c
+---
 # Scoped HTTP SSE streams
 
 The bounded SSE writer builds on the accepted-connection adapter at `dc38e82e939a73967d7a72994b182cc421abe3ed` and the shared lease revision `667c382d5f2e8a992c4c6e9053d734110c987773`. [Base approval](https://github.com/tsotchke/eshkol/pull/926#issuecomment-7095401085)
