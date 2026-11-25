@@ -4709,8 +4709,12 @@ static int eshkol_run_main(int argc, char **argv)
             resolved.profile->backend == eshkol::profile::Backend::Native;
         vm_only_profile = resolved.vm_only;
         embedded_vm_profile = resolved.embedded_vm;
+        const bool freestanding_kernel_profile =
+            resolved.profile &&
+            resolved.profile->id == eshkol::profile::ExecutionProfile::FreestandingKernelNative;
         eshkol_set_target(resolved.target_triple);
         eshkol_set_freestanding_codegen(freestanding_native_profile ? 1 : 0);
+        eshkol_set_freestanding_kernel_codegen(freestanding_kernel_profile ? 1 : 0);
     }
 
     // ─── --shared-lib: which artifact? ─────────────────────────────────────

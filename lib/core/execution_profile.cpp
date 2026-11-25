@@ -261,8 +261,10 @@ constexpr const char* kRv32imacFeatures = "+m,+a,+c,+zmmul,+zaamo,+zalrsc,+zca,+
 constexpr const char* kRv64imacFeatures = "+m,+a,+c,+zmmul,+zaamo,+zalrsc,+zca,+relax";
 constexpr const char* kRv64gcFeatures =
     "+m,+a,+f,+d,+c,+zicsr,+zifencei,+zmmul,+zaamo,+zalrsc,+zca,+zcd,+relax";
+constexpr const char* kX86_64KernelFeatures =
+    "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,+soft-float";
 
-constexpr std::array<EmbeddedTarget, 12> kEmbeddedTargets = {{
+constexpr std::array<EmbeddedTarget, 14> kEmbeddedTargets = {{
     // ARM Cortex-M4 (ARMv7E-M, Thumb-2), software floating point.
     {"thumbv7em-none-eabi", "thumbv7em-unknown-none-eabi", "cortex-m4",
      kCortexM4SoftFeatures, "aapcs", FloatAbi::Soft, CodeModel::Default, "armv7e-m"},
@@ -293,6 +295,11 @@ constexpr std::array<EmbeddedTarget, 12> kEmbeddedTargets = {{
     // RISC-V 64-bit without hardware floating point: RV64IMAC, lp64.
     {"riscv64imac-unknown-none-elf", "riscv64-unknown-none-elf", "generic-rv64",
      kRv64imacFeatures, "lp64", FloatAbi::Default, CodeModel::Medium, "rv64imac"},
+    // x86-64 bare-metal kernel profile: soft-float, SIMD/x87 disabled, small code model (default).
+    {"x86_64-unknown-none", "x86_64-unknown-none-elf", "x86-64",
+     kX86_64KernelFeatures, "", FloatAbi::Soft, CodeModel::Default, "x86-64"},
+    {"x86_64-unknown-none-elf", "x86_64-unknown-none-elf", "x86-64",
+     kX86_64KernelFeatures, "", FloatAbi::Soft, CodeModel::Default, "x86-64"},
 }};
 
 }  // namespace

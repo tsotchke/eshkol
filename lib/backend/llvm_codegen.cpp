@@ -117,6 +117,7 @@ bool eshkol_lld_on_path() {
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 #include <eshkol/backend/llvm_codegen.h>
 #include <eshkol/util/continuation_task.h>
+#include <llvm/IR/InlineAsm.h>
 
 namespace {
 
@@ -1387,6 +1388,7 @@ namespace {
     std::string g_cached_cpu_name;
     std::string g_cached_features;
     bool g_freestanding_codegen = false;
+    bool g_freestanding_kernel_codegen = false;
 
     /* SHARED-LIBRARY EXPORT ABI (--shared-lib, linked-library flavour)
      *
@@ -1757,6 +1759,29 @@ void EshkolLLVMCodeGen::applyDefineFunctionAttributes(const decltype(((eshkol_op
         if (def.is_no_return) {
             function->addFnAttr(Attribute::NoReturn);
         }
+        if (def.is_naked) {
+            function->addFnAttr(Attribute::Naked);
+            naked_functions_.insert(function);
+        }
+        if (def.is_interrupt) {
+            function->addFnAttr(Attribute::NoRedZone);
+            function->addFnAttr(Attribute::NoImplicitFloat);
+            function->addFnAttr("eshkol.interrupt", "true");
+            interrupt_functions_.insert(function);
+            no_alloc_functions_.insert(function);
+        }
+        if (def.is_no_alloc) {
+            function->addFnAttr("eshkol.no-alloc", "true");
+            no_alloc_functions_.insert(function);
+        }
+        if (def.is_arch_hal) {
+            function->addFnAttr("eshkol.arch-hal", "true");
+            arch_hal_functions_.insert(function);
+        }
+        if (def.is_fpu_safe) {
+            function->addFnAttr("eshkol.fpu-safe", "true");
+            fpu_safe_functions_.insert(function);
+        }
     }
 
 void EshkolLLVMCodeGen::applyExternFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->extern_op)& ext,
@@ -1767,6 +1792,10 @@ void EshkolLLVMCodeGen::applyExternFunctionAttributes(const decltype(((eshkol_op
         }
         if (ext.is_no_return) {
             function->addFnAttr(Attribute::NoReturn);
+        }
+        if (ext.is_no_alloc) {
+            function->addFnAttr("eshkol.no-alloc", "true");
+            no_alloc_functions_.insert(function);
         }
     }
 
@@ -1784,12 +1813,14 @@ void EshkolLLVMCodeGen::markFatalCodegenError() {
 
 EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mode,
                        const char* target_triple,
-                       bool is_freestanding_codegen) {
+                       bool is_freestanding_codegen,
+                       bool is_freestanding_kernel_codegen) {
         // Determine target BEFORE any type initialization
         bool is_wasm32 = target_triple &&
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
         freestanding_codegen_ = is_freestanding_codegen;
+        freestanding_kernel_codegen_ = is_freestanding_kernel_codegen;
         shared_library_exports_ = is_library_mode && g_shared_library_exports;
         wasm_codegen_ = is_wasm32;
         fatal_codegen_error_ = false;
@@ -3230,6 +3261,11 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
 
             pruneUnusedFreestandingDeclarations();
             markFreestandingNoUnwind();
+            verifyFreestandingKernelSafety();
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
+                eshkol_error("Failed freestanding kernel/interrupt safety verification");
+                return std::make_pair(nullptr, nullptr);
+            }
 
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
@@ -4520,6 +4556,95 @@ void EshkolLLVMCodeGen::emitFreestandingScalarExportWrappers(const eshkol_ast_t*
             if (def.is_used) markGlobalValueUsed(thunk);
             thunk->addFnAttr(Attribute::NoUnwind);
 
+            if (def.is_no_alloc) {
+                thunk->addFnAttr("eshkol.no-alloc", "true");
+                no_alloc_functions_.insert(thunk);
+            }
+            if (def.is_arch_hal) {
+                thunk->addFnAttr("eshkol.arch-hal", "true");
+                arch_hal_functions_.insert(thunk);
+            }
+            if (def.is_fpu_safe) {
+                thunk->addFnAttr("eshkol.fpu-safe", "true");
+                fpu_safe_functions_.insert(thunk);
+            }
+
+            if (def.is_naked) {
+                if (def.num_params != 0 || !native_ret->isVoidTy()) {
+                    eshkol_error("freestanding :naked export '%s' must take 0 parameters and return null",
+                                 symbol.c_str());
+                    thunk->eraseFromParent();
+                    markFatalCodegenError();
+                    return;
+                }
+                thunk->addFnAttr(Attribute::Naked);
+                thunk->addFnAttr(Attribute::NoRedZone);
+                thunk->addFnAttr(Attribute::NoImplicitFloat);
+                naked_functions_.insert(thunk);
+                if (def.is_no_alloc || freestanding_kernel_codegen_) {
+                    no_alloc_functions_.insert(thunk);
+                }
+
+                IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+                DebugLoc saved_loc = builder->getCurrentDebugLocation();
+                builder->SetCurrentDebugLocation(DebugLoc());
+                builder->SetInsertPoint(BasicBlock::Create(*context, "entry", thunk));
+
+                bool has_asm = false;
+                for (BasicBlock& bb : *impl) {
+                    for (Instruction& inst : bb) {
+                        if (auto* cb = dyn_cast<CallBase>(&inst)) {
+                            if (cb->isInlineAsm() && cb->arg_size() == 0 && cb->getType()->isVoidTy()) {
+                                builder->CreateCall(cb->getFunctionType(), cb->getCalledOperand());
+                                has_asm = true;
+                                continue;
+                            }
+                            eshkol_error(":naked function '%s' may only contain 0-arg void unsafe-asm or target-intrinsic instructions",
+                                         symbol.c_str());
+                            markFatalCodegenError();
+                            builder->restoreIP(saved_point);
+                            builder->SetCurrentDebugLocation(saved_loc);
+                            return;
+                        }
+                    }
+                }
+                if (!has_asm) {
+                    eshkol_error(":naked function '%s' must emit at least one unsafe-asm or target-intrinsic instruction",
+                                 symbol.c_str());
+                    markFatalCodegenError();
+                }
+                if (def.is_no_return) {
+                    builder->CreateUnreachable();
+                } else {
+                    builder->CreateRetVoid();
+                }
+                builder->restoreIP(saved_point);
+                builder->SetCurrentDebugLocation(saved_loc);
+                impl->eraseFromParent();
+                continue;
+            }
+
+            if (def.is_interrupt) {
+                thunk->addFnAttr(Attribute::NoRedZone);
+                thunk->addFnAttr(Attribute::NoImplicitFloat);
+                thunk->addFnAttr("eshkol.interrupt", "true");
+                impl->addFnAttr(Attribute::NoRedZone);
+                impl->addFnAttr(Attribute::NoImplicitFloat);
+                impl->addFnAttr(Attribute::AlwaysInline);
+                interrupt_functions_.insert(thunk);
+                no_alloc_functions_.insert(thunk);
+                const Triple triple(module->getTargetTriple());
+                if (triple.isX86() && native_ret->isVoidTy() &&
+                    def.num_params == 1 && native_params[0]->isPointerTy()) {
+                    thunk->setCallingConv(CallingConv::X86_INTR);
+                    StructType* frame_ty = StructType::get(
+                        *context, {int64_type, int64_type, int64_type, int64_type, int64_type});
+                    thunk->addParamAttr(0, Attribute::getWithByValType(*context, frame_ty));
+                } else if (triple.isRISCV() && native_ret->isVoidTy() && def.num_params == 0) {
+                    thunk->addFnAttr("interrupt", "machine");
+                }
+            }
+
             IRBuilderBase::InsertPoint saved_point = builder->saveIP();
             DebugLoc saved_loc = builder->getCurrentDebugLocation();
             builder->SetCurrentDebugLocation(DebugLoc());
@@ -4755,7 +4880,128 @@ void EshkolLLVMCodeGen::emitSharedLibraryExportWrappers(const eshkol_ast_t* asts
 void EshkolLLVMCodeGen::markFreestandingNoUnwind() {
         if (!freestanding_codegen_) return;
         for (Function& function : *module) {
-            if (!function.isDeclaration()) function.addFnAttr(Attribute::NoUnwind);
+            if (function.isDeclaration()) continue;
+            function.addFnAttr(Attribute::NoUnwind);
+            if (freestanding_kernel_codegen_) {
+                function.addFnAttr(Attribute::NoRedZone);
+                function.addFnAttr(Attribute::NoImplicitFloat);
+            }
+        }
+    }
+
+void EshkolLLVMCodeGen::verifyFreestandingKernelSafety() {
+        if (!freestanding_codegen_ && no_alloc_functions_.empty() && interrupt_functions_.empty()) {
+            return;
+        }
+
+        auto isAllowedNoAllocExternal = [&](const Function* callee) -> bool {
+            if (!callee) return false;
+            if (no_alloc_functions_.count(const_cast<Function*>(callee))) return true;
+            if (callee->hasFnAttribute("eshkol.no-alloc")) return true;
+            const StringRef name = callee->getName();
+            if (name.starts_with("llvm.")) return true;
+            if (name.starts_with("eshkol_board_")) return true;
+            if (name == "memcpy" || name == "memmove" || name == "memset" || name == "memcmp") {
+                return true;
+            }
+            return false;
+        };
+
+        auto isFloatingPointInstruction = [](const Instruction& inst) -> bool {
+            switch (inst.getOpcode()) {
+                case Instruction::FAdd:
+                case Instruction::FSub:
+                case Instruction::FMul:
+                case Instruction::FDiv:
+                case Instruction::FRem:
+                case Instruction::FNeg:
+                case Instruction::FCmp:
+                case Instruction::SIToFP:
+                case Instruction::UIToFP:
+                case Instruction::FPToSI:
+                case Instruction::FPToUI:
+                case Instruction::FPExt:
+                case Instruction::FPTrunc:
+                    return true;
+                default:
+                    return inst.getType() && inst.getType()->isFPOrFPVectorTy();
+            }
+        };
+
+        for (Function& function : *module) {
+            if (function.isDeclaration()) continue;
+            const bool is_isr = interrupt_functions_.count(&function) != 0;
+            const bool is_no_alloc = freestanding_kernel_codegen_ || is_isr ||
+                                     no_alloc_functions_.count(&function) != 0;
+            if (!is_no_alloc) continue;
+
+            const bool is_fpu_safe = fpu_safe_functions_.count(&function) != 0;
+            const bool require_no_fpu = (freestanding_kernel_codegen_ || is_isr) && !is_fpu_safe;
+            const bool is_hal = arch_hal_functions_.count(&function) != 0;
+            const std::string fn_name = function.getName().str();
+
+            for (BasicBlock& bb : function) {
+                for (Instruction& inst : bb) {
+                    if (require_no_fpu && isFloatingPointInstruction(inst)) {
+                        eshkol_error("kernel/interrupt function '%s' uses floating-point operation '%s' without :fpu-safe",
+                                     fn_name.c_str(), inst.getOpcodeName());
+                        markFatalCodegenError();
+                    }
+
+                    auto* cb = dyn_cast<CallBase>(&inst);
+                    if (!cb) continue;
+                    if (cb->isInlineAsm()) continue;
+
+                    Function* callee = cb->getCalledFunction();
+                    if (!callee) {
+                        if (!is_hal) {
+                            eshkol_error("NoAlloc/interrupt function '%s' performs unverified indirect call (only permitted in :arch-hal)",
+                                         fn_name.c_str());
+                            markFatalCodegenError();
+                        }
+                        continue;
+                    }
+
+                    if (callee->getName().starts_with("llvm.")) {
+                        if (require_no_fpu) {
+                            bool touches_fp = callee->getReturnType()->isFPOrFPVectorTy();
+                            for (const Value* arg : cb->args()) {
+                                if (arg->getType()->isFPOrFPVectorTy()) touches_fp = true;
+                            }
+                            if (touches_fp) {
+                                eshkol_error("kernel/interrupt function '%s' calls floating-point intrinsic '%s' without :fpu-safe",
+                                             fn_name.c_str(), callee->getName().str().c_str());
+                                markFatalCodegenError();
+                            }
+                        }
+                        continue;
+                    }
+
+                    if (callee->isDeclaration()) {
+                        if (!isAllowedNoAllocExternal(callee)) {
+                            eshkol_error("NoAlloc/interrupt function '%s' calls forbidden allocating or unverified external symbol '%s'",
+                                         fn_name.c_str(), callee->getName().str().c_str());
+                            markFatalCodegenError();
+                        }
+                        continue;
+                    }
+
+                    const bool callee_no_alloc =
+                        freestanding_kernel_codegen_ ||
+                        no_alloc_functions_.count(callee) != 0 ||
+                        interrupt_functions_.count(callee) != 0;
+                    if (!callee_no_alloc) {
+                        eshkol_error("NoAlloc/interrupt function '%s' calls non-NoAlloc function '%s'",
+                                     fn_name.c_str(), callee->getName().str().c_str());
+                        markFatalCodegenError();
+                    }
+                    if (is_isr && !is_fpu_safe && fpu_safe_functions_.count(callee) != 0) {
+                        eshkol_error("interrupt function '%s' calls :fpu-safe function '%s' without :fpu-safe",
+                                     fn_name.c_str(), callee->getName().str().c_str());
+                        markFatalCodegenError();
+                    }
+                }
+            }
         }
     }
 
@@ -5787,6 +6033,17 @@ ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenTypedASTTask(const eshkol
                         Value* val = (co_await codegenASTTask(ast));
                         if (!val) co_return TypedValue();
                         co_return makeLowLevelTypedValue(val, intrinsic_info->return_type);
+                    }
+                    if (func_name == "unsafe-asm") {
+                        auto asm_info = resolveUnsafeAsmCall(
+                            &ast->operation, "unsafe-asm");
+                        if (!asm_info) {
+                            co_return TypedValue();
+                        }
+
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, asm_info->return_type);
                     }
                     if (func_name == "addr-of") {
                         // SINGLE-EVAL FIX (ESH-0098): recover pointee type without
@@ -8039,6 +8296,257 @@ std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::res
         }
 
         const std::string intrinsic_name = name_ast.str_val.ptr;
+
+        // Typed privileged CPU intrinsics (`eshkol.cpu.*`): architecture-validated,
+        // type-checked lowering to privileged ISA instructions without exposing raw
+        // inline assembly outside `:arch-hal`.
+        if (intrinsic_name.rfind("eshkol.cpu.", 0) == 0) {
+            std::vector<LowLevelValueTypeInfo> arg_types;
+            for (size_t i = 2; i + 1 < op->call_op.num_vars; i += 2) {
+                auto arg_type = resolveLowLevelTypeInfo(
+                    &op->call_op.variables[i], builtin_name, "argument", false);
+                if (!arg_type) {
+                    return std::nullopt;
+                }
+                arg_types.push_back(*arg_type);
+            }
+
+            const Triple triple(module->getTargetTriple());
+            const bool is_x86_64 = triple.isX86() && triple.isArch64Bit();
+            const bool is_aarch64 = triple.isAArch64();
+            const bool is_arm = triple.isARM() || triple.isThumb();
+            const bool is_riscv = triple.isRISCV();
+
+            auto is_u8  = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(8); };
+            auto is_u16 = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(16); };
+            auto is_u32 = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(32); };
+            auto is_u64 = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(64); };
+            auto is_usize_or_u64 = [](const LowLevelValueTypeInfo& t) {
+                return !t.is_null && !t.is_pointer && !t.is_signed_integer &&
+                       (t.llvm_type->isIntegerTy(32) || t.llvm_type->isIntegerTy(64));
+            };
+
+            TargetIntrinsicCallInfo info;
+            info.return_type = *return_type;
+            info.arg_types = std::move(arg_types);
+            info.is_inline_asm = true;
+            info.asm_has_side_effects = true;
+
+            if (intrinsic_name == "eshkol.cpu.wfi" || intrinsic_name == "eshkol.cpu.hlt") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "hlt";
+                    info.asm_constraints = "~{memory}";
+                } else if (is_aarch64 || is_arm || is_riscv) {
+                    info.asm_template = "wfi";
+                    info.asm_constraints = "~{memory}";
+                } else {
+                    eshkol_error("%s '%s' is not supported on target '%s'", builtin_name, intrinsic_name.c_str(), triple.str().c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.pause") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "pause";
+                } else if (is_aarch64 || is_arm) {
+                    info.asm_template = "yield";
+                } else if (is_riscv) {
+                    info.asm_template = "nop";
+                } else {
+                    info.asm_template = "";
+                }
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.irq-disable" || intrinsic_name == "eshkol.cpu.cli") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "cli";
+                } else if (is_aarch64) {
+                    info.asm_template = "msr daifset, #2";
+                } else if (is_arm) {
+                    info.asm_template = "cpsid i";
+                } else if (is_riscv) {
+                    info.asm_template = "csrci mstatus, 8";
+                } else {
+                    eshkol_error("%s '%s' is not supported on target '%s'", builtin_name, intrinsic_name.c_str(), triple.str().c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.irq-enable" || intrinsic_name == "eshkol.cpu.sti") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "sti";
+                } else if (is_aarch64) {
+                    info.asm_template = "msr daifclr, #2";
+                } else if (is_arm) {
+                    info.asm_template = "cpsie i";
+                } else if (is_riscv) {
+                    info.asm_template = "csrsi mstatus, 8";
+                } else {
+                    eshkol_error("%s '%s' is not supported on target '%s'", builtin_name, intrinsic_name.c_str(), triple.str().c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.inb" || intrinsic_name == "eshkol.cpu.inw" || intrinsic_name == "eshkol.cpu.inl") {
+                if (!is_x86_64) {
+                    eshkol_error("%s '%s' is only valid on x86_64 targets", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const bool ok_ret = (intrinsic_name == "eshkol.cpu.inb" && is_u8(*return_type)) ||
+                                    (intrinsic_name == "eshkol.cpu.inw" && is_u16(*return_type)) ||
+                                    (intrinsic_name == "eshkol.cpu.inl" && is_u32(*return_type));
+                if (!ok_ret || info.arg_types.size() != 1 || !is_u16(info.arg_types[0])) {
+                    eshkol_error("%s '%s' requires port u16 and matching scalar return type", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.inb") ? "inb $1, $0"
+                                  : (intrinsic_name == "eshkol.cpu.inw") ? "inw $1, $0"
+                                                                         : "inl $1, $0";
+                info.asm_constraints = "={ax},N{dx},~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.outb" || intrinsic_name == "eshkol.cpu.outw" || intrinsic_name == "eshkol.cpu.outl") {
+                if (!is_x86_64) {
+                    eshkol_error("%s '%s' is only valid on x86_64 targets", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const bool ok_val = info.arg_types.size() == 2 && is_u16(info.arg_types[0]) &&
+                                    ((intrinsic_name == "eshkol.cpu.outb" && is_u8(info.arg_types[1])) ||
+                                     (intrinsic_name == "eshkol.cpu.outw" && is_u16(info.arg_types[1])) ||
+                                     (intrinsic_name == "eshkol.cpu.outl" && is_u32(info.arg_types[1])));
+                if (!return_type->is_null || !ok_val) {
+                    eshkol_error("%s '%s' requires signature (null u16 <val>)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.outb") ? "outb $1, $0"
+                                  : (intrinsic_name == "eshkol.cpu.outw") ? "outw $1, $0"
+                                                                          : "outl $1, $0";
+                info.asm_constraints = "N{dx},{ax},~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.read-cr0" || intrinsic_name == "eshkol.cpu.read-cr2" || intrinsic_name == "eshkol.cpu.read-cr3") {
+                if (!is_x86_64 || !is_u64(*return_type) || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires x86_64 target and signature (u64)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const char* cr = (intrinsic_name == "eshkol.cpu.read-cr0") ? "%cr0"
+                               : (intrinsic_name == "eshkol.cpu.read-cr2") ? "%cr2" : "%cr3";
+                info.asm_template = std::string("movq ") + cr + ", $0";
+                info.asm_constraints = "=r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.write-cr3") {
+                if (!is_x86_64 || !return_type->is_null || info.arg_types.size() != 1 || !is_u64(info.arg_types[0])) {
+                    eshkol_error("%s 'eshkol.cpu.write-cr3' requires x86_64 target and signature (null u64)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "movq $0, %cr3";
+                info.asm_constraints = "r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.invlpg") {
+                if (!is_x86_64 || !return_type->is_null || info.arg_types.size() != 1 || !info.arg_types[0].is_pointer) {
+                    eshkol_error("%s 'eshkol.cpu.invlpg' requires x86_64 target and signature (null ptr)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "invlpg ($0)";
+                info.asm_constraints = "r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.csrr-mstatus" || intrinsic_name == "eshkol.cpu.csrr-mcause" || intrinsic_name == "eshkol.cpu.csrr-mepc") {
+                if (!is_riscv || !is_usize_or_u64(*return_type) || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires RISC-V target and unsigned integer return", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const char* csr = (intrinsic_name == "eshkol.cpu.csrr-mstatus") ? "mstatus"
+                                : (intrinsic_name == "eshkol.cpu.csrr-mcause")  ? "mcause" : "mepc";
+                info.asm_template = std::string("csrr $0, ") + csr;
+                info.asm_constraints = "=r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.csrw-mstatus") {
+                if (!is_riscv || !return_type->is_null || info.arg_types.size() != 1 || !is_usize_or_u64(info.arg_types[0])) {
+                    eshkol_error("%s 'eshkol.cpu.csrw-mstatus' requires RISC-V target and signature (null u32/u64)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "csrw mstatus, $0";
+                info.asm_constraints = "r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.sfence-vma") {
+                if (!is_riscv || !return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s 'eshkol.cpu.sfence-vma' requires RISC-V target and signature (null)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "sfence.vma zero, zero";
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.mrs-currentel" || intrinsic_name == "eshkol.cpu.mrs-cntpct") {
+                if (!is_aarch64 || !is_u64(*return_type) || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires AArch64 target and signature (u64)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.mrs-currentel")
+                    ? "mrs $0, CurrentEL" : "mrs $0, cntpct_el0";
+                info.asm_constraints = "=r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.tlbi-vmalle1" || intrinsic_name == "eshkol.cpu.dsb-sy" || intrinsic_name == "eshkol.cpu.isb") {
+                if (!(is_aarch64 || (is_arm && intrinsic_name != "eshkol.cpu.tlbi-vmalle1")) ||
+                    !return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires ARM/AArch64 target and signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.tlbi-vmalle1") ? "tlbi vmalle1"
+                                  : (intrinsic_name == "eshkol.cpu.dsb-sy")       ? "dsb sy" : "isb";
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+
+            eshkol_error("%s received unknown privileged CPU intrinsic '%s'", builtin_name, intrinsic_name.c_str());
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
         Intrinsic::ID intrinsic_id = Intrinsic::lookupIntrinsicID(intrinsic_name);
         if (intrinsic_id == Intrinsic::not_intrinsic) {
             eshkol_error("%s received unknown LLVM intrinsic '%s'",
@@ -8089,7 +8597,85 @@ std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::res
             return std::nullopt;
         }
 
-        return TargetIntrinsicCallInfo{*return_type, std::move(arg_types), declaration};
+        return TargetIntrinsicCallInfo{*return_type, std::move(arg_types), declaration, false, "", "", true};
+    }
+
+std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::resolveUnsafeAsmCall(
+        const eshkol_operations_t* op, const char* builtin_name) {
+        if (!current_function_is_arch_hal_) {
+            const std::string owner = current_function ? current_function->getName().str() : "<top-level>";
+            eshkol_error("%s is restricted to :arch-hal functions (rejected in '%s')",
+                         builtin_name, owner.c_str());
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        if (!op || op->call_op.num_vars < 3) {
+            eshkol_error("%s requires a return type, assembly template string, constraints string, and zero or more typed arguments",
+                         builtin_name);
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        if (((op->call_op.num_vars - 3) % 2) != 0) {
+            eshkol_error("%s requires argument type/value pairs after the constraints string",
+                         builtin_name);
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        auto return_type = resolveLowLevelTypeInfo(
+            &op->call_op.variables[0], builtin_name, "return", true);
+        if (!return_type) {
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        const eshkol_ast_t& tmpl_ast = op->call_op.variables[1];
+        const eshkol_ast_t& cons_ast = op->call_op.variables[2];
+        if (tmpl_ast.type != ESHKOL_STRING || !tmpl_ast.str_val.ptr ||
+            cons_ast.type != ESHKOL_STRING || !cons_ast.str_val.ptr) {
+            eshkol_error("%s expects string literals for assembly template and constraints",
+                         builtin_name);
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        std::vector<LowLevelValueTypeInfo> arg_types;
+        for (size_t i = 3; i + 1 < op->call_op.num_vars; i += 2) {
+            auto arg_type = resolveLowLevelTypeInfo(
+                &op->call_op.variables[i], builtin_name, "argument", false);
+            if (!arg_type) {
+                markFatalCodegenError();
+                return std::nullopt;
+            }
+            arg_types.push_back(*arg_type);
+        }
+
+        TargetIntrinsicCallInfo info;
+        info.return_type = *return_type;
+        info.arg_types = std::move(arg_types);
+        info.declaration = nullptr;
+        info.is_inline_asm = true;
+        info.asm_template = tmpl_ast.str_val.ptr;
+        info.asm_constraints = cons_ast.str_val.ptr;
+        info.asm_has_side_effects = true;
+        return info;
+    }
+
+CallInst* EshkolLLVMCodeGen::emitLowLevelInlineAsmCall(
+        const TargetIntrinsicCallInfo& info,
+        ArrayRef<Type*> arg_types,
+        ArrayRef<Value*> args,
+        const char* name) {
+        FunctionType* asm_fn_type = FunctionType::get(
+            info.return_type.llvm_type, arg_types, false);
+        InlineAsm* ia = InlineAsm::get(
+            asm_fn_type,
+            info.asm_template,
+            info.asm_constraints,
+            info.asm_has_side_effects);
+        return builder->CreateCall(asm_fn_type, ia, args, name);
     }
 
 std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
@@ -11286,7 +11872,11 @@ Value* EshkolLLVMCodeGen::codegenFunctionDefinition(const eshkol_ast_t* ast) {
 
         // Set current function
         Function* prev_function = current_function;
+        bool prev_arch_hal = current_function_is_arch_hal_;
+        bool prev_naked = current_function_is_naked_;
         current_function = function;
+        current_function_is_arch_hal_ = (op->define_op.is_arch_hal != 0);
+        current_function_is_naked_ = (op->define_op.is_naked != 0);
         
         // GLOBAL ARENA FIX: No per-function arena initialization needed
         // All functions share the global arena initialized in main
@@ -11751,6 +12341,8 @@ Value* EshkolLLVMCodeGen::codegenFunctionDefinition(const eshkol_ast_t* ast) {
         symbol_table[std::string(func_name) + "_func"] = function;
         
         current_function = prev_function;
+        current_function_is_arch_hal_ = prev_arch_hal;
+        current_function_is_naked_ = prev_naked;
 
         // Record the AST->name memoization unconditionally: it pins nothing
         // (a plain std::map used for AD/gradient name resolution) and must be
@@ -13860,30 +14452,43 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
             rmw->setName(result_name);
             co_return rmw;
         }
-        if (func_name == "target-intrinsic") {
-            auto intrinsic_info = resolveTargetIntrinsicCall(op, "target-intrinsic");
+        if (func_name == "target-intrinsic" || func_name == "unsafe-asm") {
+            const bool is_unsafe_asm = (func_name == "unsafe-asm");
+            auto intrinsic_info = is_unsafe_asm
+                ? resolveUnsafeAsmCall(op, "unsafe-asm")
+                : resolveTargetIntrinsicCall(op, "target-intrinsic");
             if (!intrinsic_info) {
                 co_return nullptr;
             }
 
+            const size_t first_arg_val_idx = is_unsafe_asm ? 4 : 3;
             SmallVector<Value*, 8> call_args;
+            SmallVector<Type*, 8> call_arg_types;
             for (size_t i = 0; i < intrinsic_info->arg_types.size(); ++i) {
-                TypedValue arg_tv = (co_await codegenTypedASTTask(&op->call_op.variables[3 + (i * 2)]));
+                TypedValue arg_tv = (co_await codegenTypedASTTask(&op->call_op.variables[first_arg_val_idx + (i * 2)]));
                 if (!arg_tv.llvm_value) {
                     co_return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
                 }
 
                 Value* raw_arg = coerceValueToLowLevelScalar(
-                    arg_tv, intrinsic_info->arg_types[i], "target-intrinsic");
+                    arg_tv, intrinsic_info->arg_types[i], func_name.c_str());
                 if (!raw_arg) {
                     co_return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
                 }
                 call_args.push_back(raw_arg);
+                call_arg_types.push_back(intrinsic_info->arg_types[i].llvm_type);
             }
 
-            CallInst* call = builder->CreateCall(
-                intrinsic_info->declaration, call_args,
-                intrinsic_info->return_type.is_null ? "" : "target_intrinsic");
+            CallInst* call = nullptr;
+            if (intrinsic_info->is_inline_asm) {
+                call = emitLowLevelInlineAsmCall(
+                    *intrinsic_info, call_arg_types, call_args,
+                    intrinsic_info->return_type.is_null ? "" : (is_unsafe_asm ? "unsafe_asm" : "cpu_intrinsic"));
+            } else {
+                call = builder->CreateCall(
+                    intrinsic_info->declaration, call_args,
+                    intrinsic_info->return_type.is_null ? "" : "target_intrinsic");
+            }
 
             if (intrinsic_info->return_type.is_null) {
                 co_return packNullToTaggedValue();
@@ -13894,7 +14499,7 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
             if (!call->getType()->isIntegerTy(64)) {
                 co_return builder->CreateIntCast(
                     call, int64_type, intrinsic_info->return_type.is_signed_integer,
-                    "target_intrinsic_value");
+                    is_unsafe_asm ? "unsafe_asm_value" : "target_intrinsic_value");
             }
             co_return call;
         }
@@ -26857,7 +27462,12 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
 
         // Who wrote this declaration decides whether the `ffi` capability
         // applies to it, and whether it may name the policy at all.
+        // Freestanding and standalone WASM targets have no hosted capability
+        // runtime (`eshkol_capability_enforce`), so they bind directly while
+        // still rejecting attempts to declare policy entry points.
         const bool extern_is_program_own = externIsProgramOwn();
+        const bool wrap_with_ffi_gate =
+            extern_is_program_own && !freestanding_codegen_ && !wasm_codegen_;
         if (extern_is_program_own && externNamesThePolicy(real_func_name)) {
             eshkol_error_at(
                 g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
@@ -26897,7 +27507,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         if (Function* existing_func = module->getFunction(real_func_name)) {
             // Function already exists - use the existing declaration
             applyExternFunctionAttributes(op->extern_op, existing_func);
-            function_table[func_name] = extern_is_program_own
+            function_table[func_name] = wrap_with_ffi_gate
                 ? externFfiGateWrapper(existing_func, real_func_name)
                 : existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
@@ -26940,7 +27550,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         auto ft_it = function_table.find(func_name);
         if (ft_it != function_table.end() && ft_it->second) {
             applyExternFunctionAttributes(op->extern_op, ft_it->second);
-            if (extern_is_program_own &&
+            if (wrap_with_ffi_gate &&
                 !ft_it->second->getName().starts_with("__eshkol_ffi_gate.")) {
                 function_table[func_name] =
                     externFfiGateWrapper(ft_it->second, real_func_name);
@@ -26951,7 +27561,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
 
         // Map type strings to LLVM types
         auto mapStringToType = [this](const char* type_str) -> Type* {
-            if (strcmp(type_str, "void") == 0) return void_type;
+            if (strcmp(type_str, "void") == 0 || strcmp(type_str, "null") == 0) return void_type;
             if (strcmp(type_str, "int") == 0) return int32_type;
             if (strcmp(type_str, "long") == 0) return int64_type;
             if (strcmp(type_str, "float") == 0) return Type::getFloatTy(*context);
@@ -26960,9 +27570,14 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
                 return PointerType::getUnqual(*context);
             }
             if (strcmp(type_str, "...") == 0) return nullptr;
-            // WASM-specific types
-            if (strcmp(type_str, "i32") == 0) return int32_type;
-            if (strcmp(type_str, "i64") == 0) return int64_type;
+            // Fixed-width machine scalar types (freestanding / FFI / WASM)
+            if (strcmp(type_str, "u8") == 0 || strcmp(type_str, "i8") == 0) return int8_type;
+            if (strcmp(type_str, "u16") == 0 || strcmp(type_str, "i16") == 0) return int16_type;
+            if (strcmp(type_str, "u32") == 0 || strcmp(type_str, "i32") == 0) return int32_type;
+            if (strcmp(type_str, "u64") == 0 || strcmp(type_str, "i64") == 0) return int64_type;
+            if (strcmp(type_str, "usize") == 0 || strcmp(type_str, "isize") == 0) {
+                return module->getDataLayout().getIntPtrType(*context);
+            }
             if (strcmp(type_str, "f32") == 0) return Type::getFloatTy(*context);
             if (strcmp(type_str, "f64") == 0) return double_type;
             // `void*` is accepted as a friendlier alias for `ptr` — a C
@@ -27033,7 +27648,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         // Add to function table using the given name so it can be called by
         // that name. A program's own declaration is bound to the `ffi` gate
         // wrapper rather than to the symbol, so every call site passes the gate.
-        function_table[func_name] = extern_is_program_own
+        function_table[func_name] = wrap_with_ffi_gate
             ? externFfiGateWrapper(extern_func, real_func_name)
             : extern_func;
 
@@ -27118,7 +27733,7 @@ Value* EshkolLLVMCodeGen::codegenSchemeReportEnvironment(const eshkol_operations
             "atomic-load", "atomic-store!", "atomic-exchange!",
             "atomic-compare-exchange!",
             "atomic-fetch-add!", "atomic-fetch-sub!", "atomic-fetch-and!",
-            "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic",
+            "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic", "unsafe-asm",
             "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
@@ -45188,6 +45803,14 @@ int eshkol_get_freestanding_codegen(void) {
     return g_freestanding_codegen ? 1 : 0;
 }
 
+void eshkol_set_freestanding_kernel_codegen(int enabled) {
+    g_freestanding_kernel_codegen = (enabled != 0);
+}
+
+int eshkol_get_freestanding_kernel_codegen(void) {
+    return g_freestanding_kernel_codegen ? 1 : 0;
+}
+
 void eshkol_set_shared_library_exports(int enabled) {
     g_shared_library_exports = (enabled != 0);
 }
@@ -45202,7 +45825,7 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
     } flush_language_coverage;
     try {
         EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
-                                  g_freestanding_codegen);
+                                  g_freestanding_codegen, g_freestanding_kernel_codegen);
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -45253,7 +45876,7 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
 
     try {
         EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
-                                  g_freestanding_codegen);
+                                  g_freestanding_codegen, g_freestanding_kernel_codegen);
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -45278,7 +45901,7 @@ LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t n
     } flush_language_coverage;
     try {
         EshkolLLVMCodeGen codegen(module_name, true, g_codegen_target_triple,
-                                  g_freestanding_codegen);  // library mode
+                                  g_freestanding_codegen, g_freestanding_kernel_codegen);  // library mode
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {

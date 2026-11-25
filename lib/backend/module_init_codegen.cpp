@@ -119,6 +119,7 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         function_return_types["atomic-fetch-or!"] = BuiltinTypes::Value;
         function_return_types["atomic-fetch-xor!"] = BuiltinTypes::Value;
         function_return_types["target-intrinsic"] = BuiltinTypes::Value;
+        function_return_types["unsafe-asm"] = BuiltinTypes::Value;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
         function_return_types["addr-of"] = BuiltinTypes::Pointer;

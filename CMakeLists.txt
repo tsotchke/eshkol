@@ -10554,6 +10554,23 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u1_kernel_abi_test.cpp")
+        add_executable(os_u1_kernel_abi_test tests/toolchain/os_u1_kernel_abi_test.cpp)
+        target_compile_features(os_u1_kernel_abi_test PRIVATE cxx_std_17)
+        add_dependencies(os_u1_kernel_abi_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u1_kernel_abi_test
+                COMMAND os_u1_kernel_abi_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+            )
+        else()
+            add_test(
+                NAME os_u1_kernel_abi_test
+                COMMAND os_u1_kernel_abi_test $<TARGET_FILE:eshkol-run>
+            )
+        endif()
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)

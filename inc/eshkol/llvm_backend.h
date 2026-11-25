@@ -145,6 +145,19 @@ void eshkol_set_freestanding_codegen(int enabled);
 int eshkol_get_freestanding_codegen(void);
 
 /*
+ * Enable kernel-mode freestanding codegen policy (no-red-zone, no-implicit-float,
+ * static NoAlloc/NoFPU enforcement across every function in the module).
+ * Must be set before eshkol_generate_llvm_ir*().
+ */
+void eshkol_set_freestanding_kernel_codegen(int enabled);
+
+/**
+ * @brief Query whether kernel-mode freestanding codegen policy is enabled.
+ * @return Non-zero if kernel freestanding codegen is enabled, 0 otherwise.
+ */
+int eshkol_get_freestanding_kernel_codegen(void);
+
+/*
  * Emit platform-C-ABI export thunks for the next generated LIBRARY module.
  * Must be set before eshkol_generate_llvm_ir_library().
  *
@@ -415,6 +428,8 @@ void eshkol_repl_clear_last_value(void);
 #define eshkol_get_optimization_level() (0)
 #define eshkol_set_freestanding_codegen(enabled) do {} while(0)
 #define eshkol_get_freestanding_codegen() (0)
+#define eshkol_set_freestanding_kernel_codegen(enabled) do {} while(0)
+#define eshkol_get_freestanding_kernel_codegen() (0)
 #define eshkol_set_shared_library_exports(enabled) do {} while(0)
 #define eshkol_get_shared_library_exports() (0)
 #define eshkol_dump_llvm_ir_to_file(module, filename) (-1)

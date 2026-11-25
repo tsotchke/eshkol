@@ -33,6 +33,7 @@ TARGETS=(
   "aarch64-unknown-none|qemu-virt-aarch64|--target=aarch64-none-elf|ELF64|AArch64|0x0||qemu-system-aarch64 -M virt -cpu cortex-a53 -semihosting"
   "riscv32imac-unknown-none-elf|qemu-virt-riscv|--target=riscv32-unknown-elf -march=rv32imac -mabi=ilp32 -mcmodel=medany|ELF32|RISC-V|0x1|arch: rv32i2p1_m2p0_a2p1_c2p0|qemu-system-riscv32 -M virt -bios none"
   "riscv64gc-unknown-none-elf|qemu-virt-riscv|--target=riscv64-unknown-elf -march=rv64gc -mabi=lp64d -mcmodel=medany|ELF64|RISC-V|0x5|arch: rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0|qemu-system-riscv64 -M virt -bios none"
+  "x86_64-unknown-none|qemu-pc-x86_64|--target=x86_64-unknown-none-elf -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=small|ELF64|Advanced Micro Devices X86-64|0x0||qemu-system-x86_64 -M pc -no-reboot -icount shift=auto -device isa-debug-exit,iobase=0xf4,iosize=0x04"
 )
 
 tool() {
@@ -103,8 +104,14 @@ cmd_check() {
     mkdir -p "$dir"
 
     local obj="$dir/fib_checksum.o" elf="$dir/fib_checksum.elf"
-    (cd "$dir" && "$eshkol_run" --profile freestanding-mcu-native --target "$target" \
-        -o "$obj" "$src/tests/embedded/fib_checksum.esk") > "$dir/compile.log" 2>&1 ||
+    local src_esk="$src/tests/embedded/fib_checksum.esk"
+    local prof="freestanding-mcu-native"
+    if [ "$target" = "x86_64-unknown-none" ]; then
+      src_esk="$src/tests/embedded/fib_checksum_x86_64.esk"
+      prof="freestanding-kernel-native"
+    fi
+    (cd "$dir" && "$eshkol_run" --profile "$prof" --target "$target" \
+        -o "$obj" "$src_esk") > "$dir/compile.log" 2>&1 ||
       { cat "$dir/compile.log"; fail "$target: eshkol-run compile"; }
     if grep -q "is not a recognized" "$dir/compile.log"; then
       cat "$dir/compile.log"; fail "$target: compiler used a CPU/feature foreign to the target"
@@ -163,8 +170,12 @@ cmd_check() {
         echo "$out" > "$dir/qemu.log"
         echo "$out" | grep -q "$EXPECTED_LINE" ||
           { echo "$out"; fail "$target: console line missing under $qbin"; }
-        [ "$rc" -eq 0 ] || { echo "$out"; fail "$target: exit status $rc under $qbin"; }
-        echo "PASS qemu $target: '$EXPECTED_LINE' exit 0"
+        local expected_rc=0
+        if [ "$target" = "x86_64-unknown-none" ]; then
+          expected_rc=1
+        fi
+        [ "$rc" -eq "$expected_rc" ] || { echo "$out"; fail "$target: exit status $rc (expected $expected_rc) under $qbin"; }
+        echo "PASS qemu $target: '$EXPECTED_LINE' exit $rc"
         ran_qemu=$((ran_qemu + 1))
       fi
     fi
