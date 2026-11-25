@@ -68,16 +68,17 @@ typedef struct eshkol_fact {
 #define FACT_ARGS(f) ((eshkol_tagged_value_t*)((uint8_t*)(f) + sizeof(eshkol_fact_t)))
 
 /*
- * Knowledge base: growable array of fact pointers.
+ * Knowledge base: growable array of fact pointers plus optional arena-backed
+ * predicate hash index (populated once num_facts reaches the index threshold).
  * Layout: [eshkol_object_header_t][eshkol_knowledge_base_t]
  *
- * Uses arena allocation — when full, allocates new larger array and copies.
- * v1.2 will add predicate indexing for O(1) lookup.
+ * num_facts stays at offset 0 for direct runtime inspection.
  */
 typedef struct eshkol_knowledge_base {
     uint32_t num_facts;
     uint32_t capacity;
     eshkol_fact_t** facts;    /* Arena-allocated array of fact pointers */
+    void* pred_index;         /* Optional arena-allocated predicate index (NULL when small/evacuated) */
 } eshkol_knowledge_base_t;
 
 #ifdef __cplusplus

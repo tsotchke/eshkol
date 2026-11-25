@@ -379,6 +379,7 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         // Noesis requirements
         function_return_types["fg-marginal"] = BuiltinTypes::Value;
         function_return_types["fg-entropy"] = BuiltinTypes::Value;
+        function_return_types["free-energy-bethe"] = BuiltinTypes::Value;
         function_return_types["kb-retract!"] = BuiltinTypes::Boolean;
         // Consciousness engine
         function_return_types["make-substitution"] = BuiltinTypes::Value;

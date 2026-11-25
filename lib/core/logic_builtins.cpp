@@ -196,6 +196,7 @@ void eshkol_kb_retract_tagged(arena_t* arena,
             kb->facts[j] = kb->facts[j + 1];
         }
         kb->num_facts--;
+        kb->pred_index = nullptr;
         found = true;
         break;
     }

@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3137/7256 public symbols documented (43.2%), 4119 undocumented.
+**Coverage:** 3139/7259 public symbols documented (43.2%), 4120 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -48,7 +48,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1368/3310 symbols documented.
+1369/3311 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -87,7 +87,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/riemannian_core.h`](backend/riemannian_core.md) | 115 | 50 |
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 75 | 57 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 289 | 275 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 290 | 276 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 57 | 49 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
@@ -134,7 +134,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-459/949 symbols documented.
+460/951 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -157,7 +157,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
-| [`core/inference.h`](core/inference.md) | 19 | 7 |
+| [`core/inference.h`](core/inference.md) | 21 | 8 |
 | [`core/introspection.h`](core/introspection.md) | 32 | 31 |
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/linear_solve_portable.h`](core/linear_solve_portable.md) | 1 | 1 |

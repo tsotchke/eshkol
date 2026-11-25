@@ -1,0 +1,69 @@
+;;; CE-0 Cross-Engine Parity Test: Bethe Free Energy + Indexed KB + Long Vars
+;;; Runs across JIT, AOT, and Bytecode VM.
+
+(define checks 0)
+(define (check label ok)
+  (set! checks (+ checks 1))
+  (if (not ok)
+      (begin
+        (display "FAIL: ")
+        (display label)
+        (newline)
+        (exit 1))))
+
+(define (near? a b tol)
+  (< (abs (- a b)) tol))
+
+;; 1. Bethe free energy on a correlated 2-variable unnormalized factor
+;;    w = [1.8, 0.2, 0.1, 1.5], Z = 3.6, -ln(Z) = -1.2809338454620642
+(define fg1 (make-factor-graph 2 #(2 2)))
+(fg-add-factor! fg1 #(0 1) (vector (log 1.8) (log 0.2) (log 0.1) (log 1.5)))
+(fg-infer! fg1 30)
+(define fb1 (free-energy-bethe fg1 #()))
+(define fm1 (free-energy fg1 #()))
+(define exact1 (- (log 3.6)))
+(check "bethe-single-exact" (near? fb1 exact1 1e-9))
+(check "bethe-differs-from-mf" (> (abs (- fm1 exact1)) 0.05))
+
+;; 2. Bethe free energy on a 3-variable correlated chain X -- Y -- Z
+;;    w1 = [0.9, 0.1, 0.2, 0.8], w2 = [0.7, 0.3, 0.15, 0.85]
+;;    Z = sum_{x,y,z} w1(x,y)*w2(y,z) = (0.9+0.2)*(0.7+0.3) + (0.1+0.8)*(0.15+0.85) = 1.1 + 0.9 = 2.0
+(define fg2 (make-factor-graph 3 #(2 2 2)))
+(fg-add-factor! fg2 #(0 1) (vector (log 0.9) (log 0.1) (log 0.2) (log 0.8)))
+(fg-add-factor! fg2 #(1 2) (vector (log 0.7) (log 0.3) (log 0.15) (log 0.85)))
+(fg-infer! fg2 40)
+(define fb2 (free-energy-bethe fg2 #()))
+(define exact2 (- (log 2.0)))
+(check "bethe-chain-exact" (near? fb2 exact2 1e-9))
+
+;; 3. Indexed KB past the 32-fact threshold + retract invalidation
+(define kb (make-kb))
+(let loop ((i 0))
+  (if (< i 60)
+      (begin
+        (kb-assert! kb (make-fact 'alpha i (* i 2)))
+        (kb-assert! kb (make-fact 'beta i (+ i 100)))
+        (loop (+ i 1)))))
+(define alpha-hits (kb-query kb (make-fact 'alpha 7 ?val)))
+(check "indexed-kb-alpha-hit-count" (= (length alpha-hits) 1))
+(check "indexed-kb-alpha-hit-val" (= (walk ?val (car alpha-hits)) 14))
+(define beta-hits (kb-query kb (make-fact 'beta 55 ?val)))
+(check "indexed-kb-beta-hit-count" (= (length beta-hits) 1))
+(check "indexed-kb-beta-hit-val" (= (walk ?val (car beta-hits)) 155))
+
+;; Retract (alpha 7 14) and verify index invalidation
+(check "indexed-kb-retract" (kb-retract! kb (make-fact 'alpha 7 14)))
+(check "indexed-kb-after-retract" (= (length (kb-query kb (make-fact 'alpha 7 ?val))) 0))
+
+;; 4. Long logic variables beyond 63 chars stay distinct
+(define u-long (unify ?ce0_very_long_variable_name_exceeding_sixty_three_characters_prefix_alpha
+                      101
+                      (make-substitution)))
+(define u-long2 (unify ?ce0_very_long_variable_name_exceeding_sixty_three_characters_prefix_beta
+                       202
+                       u-long))
+(check "long-var-a-value" (= (walk ?ce0_very_long_variable_name_exceeding_sixty_three_characters_prefix_alpha u-long2) 101))
+(check "long-var-b-value" (= (walk ?ce0_very_long_variable_name_exceeding_sixty_three_characters_prefix_beta u-long2) 202))
+
+(display "CE-0 PARITY checks: ") (display checks) (newline)
+(display "CE-0 PARITY RESULT: PASS") (newline)

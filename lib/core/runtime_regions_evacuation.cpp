@@ -1101,7 +1101,10 @@ static void evac_drain(EvacState& st) {
             case EVAC_KNOWLEDGE_BASE: {
                 // Layout [hdr][struct]; facts[] is a separate raw arena array of
                 // FACT data pointers (capacity slots, num_facts used).
+                // pred_index is an optional derived arena hash index; clearing it
+                // on evacuation keeps the evacuated KB poison-safe.
                 auto* kb = (eshkol_knowledge_base_t*)nd;
+                kb->pred_index = nullptr;
                 if (kb->facts && st.owns(kb->facts))
                     kb->facts = (eshkol_fact_t**)evac_raw(
                         st, kb->facts, (size_t)kb->capacity * sizeof(eshkol_fact_t*));

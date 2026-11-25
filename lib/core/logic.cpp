@@ -15,171 +15,113 @@
 #include <string.h>
 #include <stdlib.h>
 #include <atomic>
+#include <deque>
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
 /* eshkol_fprint_double (R7RS flonum external representation +inf.0/-inf.0/
  * +nan.0) is declared in <eshkol/eshkol.h>, included above. */
 
-/* ===== Logic Variable Registry ===== */
+/* ===== Logic Variable Registry (Dynamic, Unbounded, O(1) Lookup) ===== */
 
-/* Global variable name registry. Thread-safe via mutex (protects g_var_names array)
- * and atomic counter (g_var_count). The mutex serializes find+register in
- * eshkol_make_logic_var and reads in eshkol_logic_var_name. */
-static const char* g_var_names[LOGIC_VAR_MAX];
+/* Global variable name registry. Thread-safe via mutex (protects the dynamic
+ * vector and hash index) and atomic counter (g_var_count). Strings live in a
+ * pointer-stable deque so names are never truncated and existing C-string
+ * pointers remain valid across growth. */
+static std::vector<const char*> g_var_names;
+static std::unordered_map<std::string_view, uint64_t> g_var_name_to_id;
+static std::deque<std::string> g_var_name_storage;
 static std::atomic<uint64_t> g_var_count{0};
 static std::mutex g_var_mutex;
 
-/* Map from name to var_id for deduplication */
-static uint64_t find_var_by_name(const char* name) {
-    for (uint64_t i = 0; i < g_var_count; i++) {
-        if (g_var_names[i] && strcmp(g_var_names[i], name) == 0) {
-            return i;
-        }
-    }
-    return UINT64_MAX; /* not found */
-}
-
-/* Static string pool for logic variable names — avoids malloc leak. */
-static char g_var_name_pool[LOGIC_VAR_MAX * 64]; /* 64 chars per name max */
-static std::atomic<size_t> g_var_name_pool_offset{0};
-
 /* ═══════════════════════════════════════════════════════════════════
- * Predicate Interning — all fact predicates go through this table
- * so pointer equality works in unification (critical for kb-load).
+ * Predicate Interning — dynamic unbounded hash-interned table so
+ * pointer equality works in unification without fixed pool limits.
  * ═══════════════════════════════════════════════════════════════════ */
-static constexpr size_t PRED_POOL_SIZE = 64 * 1024;  /* 64KB for predicate strings */
-static constexpr size_t PRED_TABLE_SIZE = 1024;       /* max distinct predicates */
-static char g_pred_pool[PRED_POOL_SIZE];
-static std::atomic<size_t> g_pred_pool_offset{0};
-static const char* g_pred_table[PRED_TABLE_SIZE];
-static std::atomic<size_t> g_pred_count{0};
+static std::unordered_map<std::string_view, const char*> g_pred_table;
+static std::deque<std::string> g_pred_storage;
 static std::mutex g_pred_mutex;
 
 /* Reset the logic-variable + predicate interning tables. Wired to
  * reset-tests! and exposed for embedders that need test isolation
  * between REPL sessions. Not thread-safe by design — call from the
  * main thread between test batches, not while logic ops are in
- * flight. Covers audit #194 pattern where (reset-tests!) left stale
- * g_var_names / g_pred_table entries across runs, causing cross-
- * contaminated logic-variable IDs and predicate pointer identity. */
+ * flight. Storage deques are retained so any lingering C-string
+ * pointers from prior batches never dangle. */
 extern "C" void eshkol_logic_registry_reset(void) {
     {
         std::lock_guard<std::mutex> lk(g_pred_mutex);
-        for (size_t i = 0; i < PRED_TABLE_SIZE; i++) g_pred_table[i] = nullptr;
-        g_pred_count.store(0, std::memory_order_release);
-        g_pred_pool_offset.store(0, std::memory_order_release);
-        /* Intentional: we don't memset the pool itself because readers
-         * hold pointers into it; those pointers will just get
-         * overwritten cleanly on the next interning pass. */
+        g_pred_table.clear();
     }
-    for (size_t i = 0; i < LOGIC_VAR_MAX; i++) g_var_names[i] = nullptr;
-    g_var_count.store(0, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(g_var_mutex);
+        g_var_names.clear();
+        g_var_name_to_id.clear();
+        g_var_count.store(0, std::memory_order_release);
+    }
 }
 
 /**
  * @brief Intern @p name into the global predicate string pool, returning a stable pointer.
  *
- * Scans the existing predicate table for a matching string (under
- * g_pred_mutex) and returns its interned pointer if found; otherwise copies
- * @p name into the pool and registers a new table entry. Interning lets fact
- * predicates be compared by pointer equality in eshkol_unify(). Returns
- * @p name unchanged (as a defensive fallback) if the table or pool is full.
+ * Performs O(1) hash lookup (under g_pred_mutex) and returns the existing
+ * interned pointer if found; otherwise stores a full-length copy in the
+ * pointer-stable deque and registers it in the hash table.
  */
 extern "C" const char* eshkol_intern_predicate(const char* name) {
     if (!name) return nullptr;
-    size_t len = strlen(name);
+    std::string_view key(name);
 
-    /* Check if already interned (lock for table scan) */
     std::lock_guard<std::mutex> lock(g_pred_mutex);
-    size_t count = g_pred_count.load(std::memory_order_acquire);
-    for (size_t i = 0; i < count; i++) {
-        if (g_pred_table[i] && strcmp(g_pred_table[i], name) == 0) {
-            return g_pred_table[i];
-        }
+    auto it = g_pred_table.find(key);
+    if (it != g_pred_table.end()) {
+        return it->second;
     }
 
-    /* Not found — intern into pool */
-    if (count >= PRED_TABLE_SIZE) {
-        eshkol_error("predicate table full (%zu predicates)", count);
-        return name;  /* fallback — strcmp will catch it */
-    }
-    size_t needed = len + 1;
-    size_t offset = g_pred_pool_offset.load(std::memory_order_relaxed);
-    if (offset + needed > PRED_POOL_SIZE) {
-        eshkol_error("predicate pool exhausted (%zu bytes)", offset);
-        return name;
-    }
-    g_pred_pool_offset.store(offset + needed, std::memory_order_release);
-    memcpy(g_pred_pool + offset, name, needed);
-    g_pred_table[count] = g_pred_pool + offset;
-    g_pred_count.store(count + 1, std::memory_order_release);
-    return g_pred_pool + offset;
-}
-
-/** Copy @p name (truncated to 63 chars) into the static logic-variable name
- *  pool using a lock-free atomic bump allocator, returning the stable interned
- *  pointer; returns a static "<pool-exhausted>" placeholder if the pool is full. */
-static const char* intern_var_name(const char* name) {
-    size_t len = strlen(name);
-    if (len >= 63) len = 63; /* truncate to fit pool slot */
-    size_t needed = len + 1;
-    size_t offset = g_var_name_pool_offset.load(std::memory_order_relaxed);
-    do {
-        if (offset + needed > sizeof(g_var_name_pool)) {
-            eshkol_error("logic variable name pool exhausted");
-            return "<pool-exhausted>"; /* safe static string, not dangling caller ptr */
-        }
-    } while (!g_var_name_pool_offset.compare_exchange_weak(
-                 offset, offset + needed,
-                 std::memory_order_acq_rel, std::memory_order_relaxed));
-    memcpy(g_var_name_pool + offset, name, len);
-    g_var_name_pool[offset + len] = '\0';
-    return g_var_name_pool + offset;
+    g_pred_storage.emplace_back(name);
+    const std::string& stored = g_pred_storage.back();
+    const char* ptr = stored.c_str();
+    g_pred_table.emplace(std::string_view(stored), ptr);
+    return ptr;
 }
 
 /**
  * @brief Create or look up a logic variable by name, returning its stable var_id.
  *
- * Holds g_var_mutex for the duration of the find-or-register check so
- * concurrent callers never race to register the same name twice. Returns the
- * existing id if @p name was already registered, otherwise interns the name
- * and assigns the next id from the atomic g_var_count counter.
+ * Holds g_var_mutex for the duration of the O(1) lookup-or-register step so
+ * concurrent callers never race to register the same name twice. Supports
+ * arbitrarily many variables and arbitrarily long names without truncation.
  *
  * @param name Variable name (e.g. "x" for `?x`); must be non-NULL.
- * @return Unique var_id, or UINT64_MAX if @p name is NULL or the variable limit is exceeded.
+ * @return Unique var_id, or UINT64_MAX if @p name is NULL.
  */
 extern "C" uint64_t eshkol_make_logic_var(const char* name) {
     if (!name) return UINT64_MAX;
+    std::string_view key(name);
 
-    /* Lock to protect g_var_names[] array access (find + register must be atomic) */
     std::lock_guard<std::mutex> lock(g_var_mutex);
-
-    /* Check if already registered */
-    uint64_t existing = find_var_by_name(name);
-    if (existing != UINT64_MAX) return existing;
-
-    /* Register new variable */
-    uint64_t count = g_var_count.load();
-    if (count >= LOGIC_VAR_MAX) {
-        eshkol_error("logic variable limit exceeded (%d)", LOGIC_VAR_MAX);
-        return UINT64_MAX;
+    auto it = g_var_name_to_id.find(key);
+    if (it != g_var_name_to_id.end()) {
+        return it->second;
     }
 
-    uint64_t id = g_var_count.fetch_add(1);
-    if (id >= LOGIC_VAR_MAX) {
-        /* Another thread beat us past the limit */
-        eshkol_error("logic variable limit exceeded (%d)", LOGIC_VAR_MAX);
-        return UINT64_MAX;
-    }
-
-    g_var_names[id] = intern_var_name(name);
+    uint64_t id = static_cast<uint64_t>(g_var_names.size());
+    g_var_name_storage.emplace_back(name);
+    const std::string& stored = g_var_name_storage.back();
+    const char* ptr = stored.c_str();
+    g_var_names.push_back(ptr);
+    g_var_name_to_id.emplace(std::string_view(stored), id);
+    g_var_count.store(id + 1, std::memory_order_release);
     return id;
 }
 
 /** Look up the registered name for @p var_id, or NULL if out of range. */
 extern "C" const char* eshkol_logic_var_name(uint64_t var_id) {
-    if (var_id >= g_var_count) return NULL;
     std::lock_guard<std::mutex> lock(g_var_mutex);
+    if (var_id >= g_var_names.size()) return NULL;
     return g_var_names[var_id];
 }
 
@@ -850,6 +792,122 @@ extern "C" const eshkol_fact_t* eshkol_fact_operand(
 /* ===== Knowledge Base ===== */
 
 #define KB_INITIAL_CAPACITY 16
+#define KB_INDEX_THRESHOLD  32
+#define KB_INDEX_INIT_BUCKETS 64
+
+typedef struct kb_pred_bucket {
+    uint64_t predicate;    /* 0 = empty slot */
+    uint32_t count;
+    uint32_t capacity;
+    uint32_t* indices;     /* ascending fact indices into kb->facts[] */
+} kb_pred_bucket_t;
+
+typedef struct kb_pred_index {
+    uint32_t num_buckets;  /* power of two */
+    uint32_t used_buckets;
+    kb_pred_bucket_t* buckets;
+} kb_pred_index_t;
+
+static inline uint64_t kb_hash_pred(uint64_t pred) {
+    pred ^= pred >> 33;
+    pred *= 0xff51afd7ed558ccdULL;
+    pred ^= pred >> 33;
+    pred *= 0xc4ceb9fe1a85ec53ULL;
+    pred ^= pred >> 33;
+    return pred;
+}
+
+static kb_pred_index_t* kb_index_create(arena_t* arena, uint32_t num_buckets) {
+    kb_pred_index_t* idx = (kb_pred_index_t*)arena_allocate_aligned(
+        arena, sizeof(kb_pred_index_t), 8);
+    if (!idx) return NULL;
+    kb_pred_bucket_t* buckets = (kb_pred_bucket_t*)arena_allocate_aligned(
+        arena, (size_t)num_buckets * sizeof(kb_pred_bucket_t), 8);
+    if (!buckets) return NULL;
+    memset(buckets, 0, (size_t)num_buckets * sizeof(kb_pred_bucket_t));
+    idx->num_buckets = num_buckets;
+    idx->used_buckets = 0;
+    idx->buckets = buckets;
+    return idx;
+}
+
+static bool kb_index_rehash(arena_t* arena, kb_pred_index_t* idx, uint32_t new_buckets) {
+    kb_pred_bucket_t* nb = (kb_pred_bucket_t*)arena_allocate_aligned(
+        arena, (size_t)new_buckets * sizeof(kb_pred_bucket_t), 8);
+    if (!nb) return false;
+    memset(nb, 0, (size_t)new_buckets * sizeof(kb_pred_bucket_t));
+    uint32_t mask = new_buckets - 1;
+    for (uint32_t i = 0; i < idx->num_buckets; i++) {
+        if (idx->buckets[i].predicate == 0) continue;
+        uint32_t slot = (uint32_t)(kb_hash_pred(idx->buckets[i].predicate) & mask);
+        while (nb[slot].predicate != 0) slot = (slot + 1) & mask;
+        nb[slot] = idx->buckets[i];
+    }
+    idx->buckets = nb;
+    idx->num_buckets = new_buckets;
+    return true;
+}
+
+static void kb_index_insert(arena_t* arena, kb_pred_index_t* idx,
+                            uint64_t pred, uint32_t fact_idx) {
+    if (!arena || !idx || pred == 0) return;
+    if ((idx->used_buckets + 1) * 10 >= idx->num_buckets * 7) {
+        if (!kb_index_rehash(arena, idx, idx->num_buckets * 2)) return;
+    }
+    uint32_t mask = idx->num_buckets - 1;
+    uint32_t slot = (uint32_t)(kb_hash_pred(pred) & mask);
+    while (idx->buckets[slot].predicate != 0 &&
+           idx->buckets[slot].predicate != pred) {
+        slot = (slot + 1) & mask;
+    }
+    kb_pred_bucket_t* b = &idx->buckets[slot];
+    if (b->predicate == 0) {
+        b->predicate = pred;
+        b->count = 0;
+        b->capacity = 8;
+        b->indices = (uint32_t*)arena_allocate_aligned(
+            arena, b->capacity * sizeof(uint32_t), 8);
+        if (!b->indices) {
+            b->predicate = 0;
+            b->capacity = 0;
+            return;
+        }
+        idx->used_buckets++;
+    } else if (b->count >= b->capacity) {
+        uint32_t new_cap = b->capacity * 2;
+        uint32_t* ni = (uint32_t*)arena_allocate_aligned(
+            arena, (size_t)new_cap * sizeof(uint32_t), 8);
+        if (!ni) return;
+        memcpy(ni, b->indices, (size_t)b->count * sizeof(uint32_t));
+        b->indices = ni;
+        b->capacity = new_cap;
+    }
+    b->indices[b->count++] = fact_idx;
+}
+
+static const kb_pred_bucket_t* kb_index_find(const kb_pred_index_t* idx, uint64_t pred) {
+    if (!idx || !idx->buckets || pred == 0) return NULL;
+    uint32_t mask = idx->num_buckets - 1;
+    uint32_t slot = (uint32_t)(kb_hash_pred(pred) & mask);
+    for (uint32_t probe = 0; probe < idx->num_buckets; probe++) {
+        const kb_pred_bucket_t* b = &idx->buckets[slot];
+        if (b->predicate == 0) return NULL;
+        if (b->predicate == pred) return b;
+        slot = (slot + 1) & mask;
+    }
+    return NULL;
+}
+
+static void kb_build_index(arena_t* arena, eshkol_knowledge_base_t* kb) {
+    kb_pred_index_t* idx = kb_index_create(arena, KB_INDEX_INIT_BUCKETS);
+    if (!idx) return;
+    for (uint32_t i = 0; i < kb->num_facts; i++) {
+        if (kb->facts[i] && kb->facts[i]->predicate != 0) {
+            kb_index_insert(arena, idx, kb->facts[i]->predicate, i);
+        }
+    }
+    kb->pred_index = idx;
+}
 
 /** Create an empty knowledge base with an initial fact-array capacity of KB_INITIAL_CAPACITY. */
 extern "C" eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
@@ -862,6 +920,7 @@ extern "C" eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
     kb->capacity = KB_INITIAL_CAPACITY;
     kb->facts = (eshkol_fact_t**)arena_allocate_aligned(
         arena, KB_INITIAL_CAPACITY * sizeof(eshkol_fact_t*), 8);
+    kb->pred_index = NULL;
 
     if (!kb->facts) {
         kb->capacity = 0;
@@ -872,8 +931,9 @@ extern "C" eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
 }
 
 /**
- * @brief Append @p fact to @p kb's fact array, growing (doubling) the array if at capacity.
- * @param arena Arena used to reallocate the fact array when it grows.
+ * @brief Append @p fact to @p kb's fact array, growing (doubling) the array if at capacity,
+ *        and maintaining the O(1) predicate hash index once num_facts >= KB_INDEX_THRESHOLD.
+ * @param arena Arena used to reallocate the fact array / index when needed.
  * @param kb Knowledge base to mutate; no-op if NULL, along with any other NULL argument.
  * @param fact Fact to append.
  */
@@ -892,22 +952,24 @@ extern "C" void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
         kb->capacity = new_capacity;
     }
 
-    kb->facts[kb->num_facts++] = (eshkol_fact_t*)fact;
+    uint32_t fact_idx = kb->num_facts++;
+    kb->facts[fact_idx] = (eshkol_fact_t*)fact;
+
+    if (kb->pred_index) {
+        if (fact->predicate != 0) {
+            kb_index_insert(arena, (kb_pred_index_t*)kb->pred_index, fact->predicate, fact_idx);
+        }
+    } else if (kb->num_facts >= KB_INDEX_THRESHOLD) {
+        kb_build_index(arena, kb);
+    }
 }
 
 /**
  * @brief Query @p kb for all facts unifying with @p pattern (exact arity match).
  *
- * For each fact in @p kb whose predicate (when both are set) and arity match
- * @p pattern, attempts to unify each argument pair starting from
- * @p initial_subst (or a fresh empty substitution if NULL). Every successful
- * unification's resulting substitution is prepended to a cons list.
- *
- * @param arena Arena for substitutions and cons cells built during the query.
- * @param kb Knowledge base to search.
- * @param pattern Fact pattern to match against (predicate 0 matches any).
- * @param initial_subst Starting substitution, or NULL for empty.
- * @return Cons list of matching substitutions (tagged HEAP_PTR values), or tagged NULL if none/invalid input.
+ * Uses the predicate hash index when available and @p pattern->predicate is
+ * non-zero for O(bucket_size) lookup, falling back to full scan for wildcard
+ * predicates or small/unindexed KBs. Always emits results in KB insertion order.
  */
 extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
     const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
@@ -926,14 +988,20 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
         base_subst = empty;
     }
 
-    /* Scan the KB backwards and prepend, so the result list comes out in KB
-     * INSERTION order — the same order the bytecode VM's fid 512 produces.
-     * (Scanning forwards and prepending, as this did before, reversed it and
-     * put the two engines' result lists in opposite orders.) */
+    /* Scan candidate facts backwards and prepend, so the result list comes out
+     * in KB insertion order — matching the bytecode VM. */
     eshkol_tagged_value_t result_list = null_val;
 
-    for (uint32_t k = kb->num_facts; k-- > 0; ) {
-        uint32_t i = k;
+    const kb_pred_bucket_t* bucket = NULL;
+    bool use_index = (kb->pred_index != NULL && pattern->predicate != 0);
+    if (use_index) {
+        bucket = kb_index_find((const kb_pred_index_t*)kb->pred_index, pattern->predicate);
+        if (!bucket) return result_list;
+    }
+
+    uint32_t n_candidates = use_index ? bucket->count : kb->num_facts;
+    for (uint32_t k = n_candidates; k-- > 0; ) {
+        uint32_t i = use_index ? bucket->indices[k] : k;
         const eshkol_fact_t* fact = kb->facts[i];
 
         /* Quick check: predicate must match */
@@ -960,23 +1028,18 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
         }
 
         if (success && subst) {
-            /* Create a cons cell: (subst . result_list) */
-            /* Cons cell layout: [header][car (tagged_value)][cdr (tagged_value)] */
             size_t cons_size = 2 * sizeof(eshkol_tagged_value_t);
             void* cons_data = arena_allocate_with_header(arena, cons_size, HEAP_SUBTYPE_CONS, 0);
             if (cons_data) {
                 eshkol_tagged_value_t* car = (eshkol_tagged_value_t*)cons_data;
                 eshkol_tagged_value_t* cdr = car + 1;
 
-                /* Car = the successful substitution */
                 memset(car, 0, sizeof(*car));
                 car->type = ESHKOL_VALUE_HEAP_PTR;
                 car->data.ptr_val = (uint64_t)subst;
 
-                /* Cdr = rest of list */
                 *cdr = result_list;
 
-                /* Update result list head */
                 memset(&result_list, 0, sizeof(result_list));
                 result_list.type = ESHKOL_VALUE_HEAP_PTR;
                 result_list.data.ptr_val = (uint64_t)cons_data;
@@ -988,10 +1051,7 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
 }
 
 /* Prefix variant: pattern arity must be <= fact arity. Unifies only the
- * first pattern->arity argument pairs. Extra fact arguments are ignored.
- * Motivation: KBs with mixed or provenance-extended arities where callers
- * want "match any fact whose head+prefix matches" without enumerating
- * arities. Strict equality semantics preserved in eshkol_kb_query. */
+ * first pattern->arity argument pairs. Extra fact arguments are ignored. */
 extern "C" eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
     const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
     const eshkol_substitution_t* initial_subst) {
@@ -1010,10 +1070,17 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
 
     eshkol_tagged_value_t result_list = null_val;
 
-    /* Backwards + prepend keeps the result in KB insertion order (see
-     * eshkol_kb_query). */
-    for (uint32_t k = kb->num_facts; k-- > 0; ) {
-        const eshkol_fact_t* fact = kb->facts[k];
+    const kb_pred_bucket_t* bucket = NULL;
+    bool use_index = (kb->pred_index != NULL && pattern->predicate != 0);
+    if (use_index) {
+        bucket = kb_index_find((const kb_pred_index_t*)kb->pred_index, pattern->predicate);
+        if (!bucket) return result_list;
+    }
+
+    uint32_t n_candidates = use_index ? bucket->count : kb->num_facts;
+    for (uint32_t k = n_candidates; k-- > 0; ) {
+        uint32_t i = use_index ? bucket->indices[k] : k;
+        const eshkol_fact_t* fact = kb->facts[i];
 
         if (pattern->predicate != 0 && fact->predicate != 0 &&
             pattern->predicate != fact->predicate) {

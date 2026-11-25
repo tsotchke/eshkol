@@ -4290,6 +4290,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     set_tests_properties(string_to_list_runtime_test PROPERTIES TIMEOUT 30)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_substrate_scale_and_bethe_test.cpp")
+    add_executable(ce0_substrate_scale_and_bethe_test
+        tests/logic/ce0_substrate_scale_and_bethe_test.cpp)
+    target_compile_features(ce0_substrate_scale_and_bethe_test PRIVATE cxx_std_17)
+    target_include_directories(ce0_substrate_scale_and_bethe_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce0_substrate_scale_and_bethe_test PRIVATE eshkol-runtime)
+    add_test(NAME ce0_substrate_scale_and_bethe_test COMMAND ce0_substrate_scale_and_bethe_test)
+    set_tests_properties(ce0_substrate_scale_and_bethe_test PROPERTIES TIMEOUT 60)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
     add_executable(ad_tape_zero_gradients_test tests/core/ad_tape_zero_gradients_test.cpp)
     target_compile_features(ad_tape_zero_gradients_test PRIVATE cxx_std_20)
@@ -8515,6 +8527,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         eshkol_add_numeric_test(padding_mask_attention tests/ml/padding_mask_attention.esk jit aot)
         eshkol_add_numeric_test(seeded_tensor_reductions tests/xla/seeded_tensor_reductions.esk jit aot)
         eshkol_add_numeric_test(factor_graph_capacity tests/vm/factor_graph_capacity.esk jit aot vm)
+        add_test(NAME ce0_bethe_and_kb_parity_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_bethe_and_kb_parity_test.esk"
+                -L${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME ce0_bethe_and_kb_parity_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ce0_bethe_and_kb_parity_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_bethe_and_kb_parity_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ce0_bethe_and_kb_parity_aot'")
+        add_test(NAME ce0_bethe_and_kb_parity_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_bethe_and_kb_parity_test.esk")
+        set_tests_properties(ce0_bethe_and_kb_parity_jit PROPERTIES ENVIRONMENT "ESHKOL_JIT_CACHE=0")
+        set_tests_properties(ce0_bethe_and_kb_parity_jit ce0_bethe_and_kb_parity_aot ce0_bethe_and_kb_parity_vm
+            PROPERTIES TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "CE-0 PARITY RESULT: PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
         eshkol_add_numeric_test(exact_integer_boundaries tests/ad/exact_integer_boundaries.esk jit aot vm)
         eshkol_add_numeric_test(exact_zero_quotients tests/ad/exact_zero_quotients.esk jit aot vm)
         eshkol_add_numeric_test(variable_power_slope tests/ad/variable_power_slope.esk jit aot vm)

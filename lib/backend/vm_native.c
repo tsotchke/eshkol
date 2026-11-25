@@ -4524,11 +4524,15 @@ static int vm_logic_var_id_of(VM* vm, Value value, uint64_t* out_id) {
     if (len < 2 || text[0] != '?') return 0;
 
     if (out_id) {
-        char name[64];
-        int n = len < (int)sizeof(name) - 1 ? len : (int)sizeof(name) - 1;
-        memcpy(name, text, (size_t)n);
-        name[n] = '\0';
+        char stack_buf[128];
+        char* name = (len < (int)sizeof(stack_buf))
+            ? stack_buf
+            : (char*)malloc((size_t)len + 1);
+        if (!name) return 0;
+        memcpy(name, text, (size_t)len);
+        name[len] = '\0';
         *out_id = vm_make_logic_var(name);
+        if (name != stack_buf) free(name);
     }
     return 1;
 }
@@ -13667,6 +13671,53 @@ tensor_inverse_done:
         vm_push(vm, FLOAT_VAL(0.0));
         break;
     }
+    case 528: { /* free-energy-bethe(fg, observations) */
+        Value obs = vm_pop(vm), fg_val = vm_pop(vm);
+        if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
+            VmFactorGraph* fg = (VmFactorGraph*)vm->heap.objects[fg_val.as.ptr]->opaque.ptr;
+            if (fg) {
+                const double* obs_data = NULL;
+                int n_vals = 0;
+
+                int is_pair_list = 0;
+                if (obs.type == VAL_PAIR && is_valid_heap_ptr(vm, obs.as.ptr))
+                    is_pair_list = (vm->heap.objects[obs.as.ptr]->cons.car.type == VAL_PAIR);
+
+                if (is_pair_list) {
+                    int n_pairs = vm_tensor_collection_len(vm, obs);
+                    if (n_pairs > 0) {
+                        double* flat = (double*)vm_alloc(&vm->heap.regions,
+                            (size_t)n_pairs * 2 * sizeof(double));
+                        if (flat) {
+                            Value cur = obs;
+                            while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+                                Value pair = vm->heap.objects[cur.as.ptr]->cons.car;
+                                if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+                                    n_vals + 1 < n_pairs * 2) {
+                                    Value car = vm->heap.objects[pair.as.ptr]->cons.car;
+                                    Value cdr = vm->heap.objects[pair.as.ptr]->cons.cdr;
+                                    if (cdr.type == VAL_PAIR && is_valid_heap_ptr(vm, cdr.as.ptr))
+                                        cdr = vm->heap.objects[cdr.as.ptr]->cons.car;
+                                    flat[n_vals++] = as_number_vm(vm, car);
+                                    flat[n_vals++] = as_number_vm(vm, cdr);
+                                }
+                                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+                            }
+                            obs_data = flat;
+                        }
+                    }
+                } else {
+                    obs_data = vm_fg_seq_doubles(vm, obs, &n_vals);
+                }
+
+                double fe = vm_free_energy_bethe(fg, obs_data, n_vals / 2);
+                vm_push(vm, FLOAT_VAL(fe));
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(0.0));
+        break;
+    }
     case 526: { /* expected-free-energy(fg, action_var, action_state) */
         Value state = vm_pop(vm), var = vm_pop(vm), fg_val = vm_pop(vm);
         if (is_heap_type(vm, fg_val, HEAP_FACTOR_GRAPH)) {
@@ -20401,6 +20452,7 @@ tensor_inverse_done:
                         vm_values_equal_deep(vm, stored_datum, target_datum, 0)) {
                         kb->facts[i] = kb->facts[kb->n_facts - 1];
                         kb->n_facts--;
+                        kb->pred_index = NULL;
                         vm_push(vm, BOOL_VAL(1));
                         goto done_1801;
                     }
