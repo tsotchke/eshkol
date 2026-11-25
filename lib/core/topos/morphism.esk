@@ -1,0 +1,361 @@
+;;; core.topos.morphism -- functors, adjunctions, and geometric morphisms
+;;; between finite sheaf and presheaf topoi (built on core.topos), including
+;;; the Sierpinski topos adjoint quadruple (Pi -| Disc -| Gamma -| coDisc).
+;;;
+;;; Usage: (require core.topos.morphism)
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.topos)
+
+(provide
+  make-topos-functor topos-functor? topos-functor-name
+  topos-functor-source topos-functor-target
+  topos-functor-object topos-functor-arrow
+  topos-morphism-compose topos-morphism-id topos-morphism-iso?
+  topos-equalizer-type topos-preserves-finite-limits-violations
+  make-topos-adjunction topos-adjunction? topos-adjunction-left topos-adjunction-right
+  topos-adjunction-transpose topos-adjunction-cotranspose
+  topos-adjunction-violations
+  make-geometric-morphism geometric-morphism? geometric-morphism-name
+  geometric-morphism-source geometric-morphism-target
+  geometric-morphism-inverse-image geometric-morphism-direct-image
+  geometric-morphism-adjunction geometric-morphism-violations
+  sierpinski-topos-quadruple)
+
+;; ===========================================================================
+;; Private helpers (prefix tm-)
+;; ===========================================================================
+
+(define (tm-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (tm-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (tm-all? p (cdr xs))) (else #f)))
+(define (tm-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (tm-any? p (cdr xs)))))
+
+;; Morphisms in core.topos are vectors: stage c -> vector of target element indices.
+(define (topos-morphism-id T X)
+  (let ((n (category-object-count (topos-category T))))
+    (list->vector (map (lambda (c) (list->vector (tm-range (topos-type-size X c)))) (tm-range n)))))
+
+(define (topos-morphism-compose T g f)
+  (let ((n (category-object-count (topos-category T))))
+    (list->vector
+     (map (lambda (c)
+            (let* ((fc (vector-ref f c)) (gc (vector-ref g c)) (m (vector-length fc))
+                   (out (make-vector m 0)))
+              (let loop ((i 0))
+                (if (< i m) (begin (vector-set! out i (vector-ref gc (vector-ref fc i))) (loop (+ i 1))) out))))
+          (tm-range n)))))
+
+;; Check whether morphism phi : A -> B is a natural isomorphism (bijective at every stage).
+(define (topos-morphism-iso? T A B phi)
+  (let ((n (category-object-count (topos-category T))))
+    (tm-all?
+     (lambda (c)
+       (let ((na (topos-type-size A c)) (nb (topos-type-size B c)) (fc (vector-ref phi c)))
+         (and (= na nb)
+              (= (vector-length fc) na)
+              (tm-all? (lambda (j)
+                         (= 1 (length (filter (lambda (i) (= (vector-ref fc i) j)) (tm-range na)))))
+                       (tm-range nb)))))
+     (tm-range n))))
+
+;; Equalizer of parallel morphisms u, v : A => B in a finite topos T.
+;; Returns (list eq-type incl-morphism).
+(define (topos-equalizer-type T A B u v)
+  (let* ((C (topos-category T)) (n (category-object-count C))
+         (keep (list->vector
+                (map (lambda (c)
+                       (filter (lambda (i) (= (vector-ref (vector-ref u c) i)
+                                              (vector-ref (vector-ref v c) i)))
+                               (tm-range (topos-type-size A c))))
+                     (tm-range n))))
+         (elems (map (lambda (c) (map (lambda (i) (topos-type-element A c i)) (vector-ref keep c)))
+                     (tm-range n)))
+         (ps (make-set-presheaf C elems (lambda (a x) (topos-type-restrict A a x))))
+         (E (topos-object T ps))
+         (incl (list->vector (map (lambda (c) (list->vector (vector-ref keep c))) (tm-range n)))))
+    (list E incl)))
+
+;; ===========================================================================
+;; Functors between finite topoi
+;; ===========================================================================
+;;
+;; #(topos-functor name src tgt obj-fn arr-fn)
+;;   obj-fn: (X) -> topos-type in tgt
+;;   arr-fn: (A B phi) -> morphism F(A) -> F(B) in tgt
+
+(define (make-topos-functor name src tgt obj-fn arr-fn)
+  (vector 'topos-functor name src tgt obj-fn arr-fn))
+(define (topos-functor? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'topos-functor)))
+(define (topos-functor-name F) (vector-ref F 1))
+(define (topos-functor-source F) (vector-ref F 2))
+(define (topos-functor-target F) (vector-ref F 3))
+(define (topos-functor-object F X) ((vector-ref F 4) X))
+(define (topos-functor-arrow F A B phi) ((vector-ref F 5) A B phi))
+
+;; Verify finite-limit preservation of a topos functor F : T1 -> T2 on test objects:
+;;   (1) Terminal object: F(1_{T1}) is terminal in T2 (size 1 at every stage);
+;;   (2) Binary products: canonical map <F(pi1), F(pi2)> : F(A x B) -> F(A) x F(B) is an isomorphism;
+;;   (3) Equalizers: for parallel pairs u, v : A => B, F(Eq(u, v)) is isomorphic to Eq(F(u), F(v))
+;;       via the canonical mediating map.
+(define (topos-preserves-finite-limits-violations F test-objects)
+  (let ((T1 (topos-functor-source F)) (T2 (topos-functor-target F)) (out '()))
+    (define (note! v) (set! out (cons v out)))
+    ;; (1) Terminal object
+    (let* ((one1 (topos-terminal T1))
+           (Fone (topos-functor-object F one1))
+           (n2 (category-object-count (topos-category T2))))
+      (if (not (tm-all? (lambda (c) (= 1 (topos-type-size Fone c))) (tm-range n2)))
+          (note! (list 'terminal-not-preserved (map (lambda (c) (topos-type-size Fone c)) (tm-range n2))))))
+    ;; (2) Binary products
+    (let ((n1 (category-object-count (topos-category T1)))
+          (n2 (category-object-count (topos-category T2))))
+      (for-each
+       (lambda (A)
+         (for-each
+          (lambda (B)
+            (let* ((AB (topos-product T1 A B))
+                   (pi1 (list->vector (map (lambda (c)
+                                             (let ((nb (topos-type-size B c)))
+                                               (list->vector (map (lambda (k) (quotient k nb))
+                                                                  (tm-range (topos-type-size AB c))))))
+                                           (tm-range n1))))
+                   (pi2 (list->vector (map (lambda (c)
+                                             (let ((nb (topos-type-size B c)))
+                                               (list->vector (map (lambda (k) (remainder k nb))
+                                                                  (tm-range (topos-type-size AB c))))))
+                                           (tm-range n1))))
+                   (FA (topos-functor-object F A))
+                   (FB (topos-functor-object F B))
+                   (FAB (topos-functor-object F AB))
+                   (FAxFB (topos-product T2 FA FB))
+                   (Fpi1 (topos-functor-arrow F AB A pi1))
+                   (Fpi2 (topos-functor-arrow F AB B pi2))
+                   (pair-map
+                    (list->vector
+                     (map (lambda (c)
+                            (let ((nfb (topos-type-size FB c))
+                                  (m1 (vector-ref Fpi1 c))
+                                  (m2 (vector-ref Fpi2 c)))
+                              (list->vector (map (lambda (k) (+ (* (vector-ref m1 k) nfb) (vector-ref m2 k)))
+                                                 (tm-range (topos-type-size FAB c))))))
+                          (tm-range n2)))))
+              (if (not (topos-morphism-iso? T2 FAB FAxFB pair-map))
+                  (note! (list 'product-not-preserved
+                               (map (lambda (c) (topos-type-size FAB c)) (tm-range n2))
+                               (map (lambda (c) (topos-type-size FAxFB c)) (tm-range n2)))))))
+          test-objects))
+       test-objects))
+    ;; (3) Equalizers on test pairs (bounded to first 4 morphisms per pair for speed)
+    (let ((take4 (lambda (xs) (let loop ((l xs) (k 0) (acc '()))
+                                (if (or (null? l) (= k 4)) (reverse acc) (loop (cdr l) (+ k 1) (cons (car l) acc)))))))
+      (for-each
+       (lambda (A)
+         (for-each
+          (lambda (B)
+            (let ((ms (take4 (topos-morphisms T1 A B)))
+                  (FA (topos-functor-object F A))
+                  (FB (topos-functor-object F B)))
+              (for-each
+               (lambda (u)
+                 (for-each
+                  (lambda (v)
+                    (let* ((eq1 (topos-equalizer-type T1 A B u v))
+                           (E1 (car eq1)) (incl1 (cadr eq1))
+                           (FE1 (topos-functor-object F E1))
+                           (Fincl1 (topos-functor-arrow F E1 A incl1))
+                           (Fu (topos-functor-arrow F A B u))
+                           (Fv (topos-functor-arrow F A B v))
+                           (eq2 (topos-equalizer-type T2 FA FB Fu Fv))
+                           (E2 (car eq2)) (incl2 (cadr eq2))
+                           ;; Find unique factoring map FE1 -> E2
+                           (n2 (category-object-count (topos-category T2)))
+                           (ok-factor
+                            (and (equal? (topos-morphism-compose T2 Fu Fincl1)
+                                         (topos-morphism-compose T2 Fv Fincl1))
+                                 (tm-all? (lambda (c) (= (topos-type-size FE1 c) (topos-type-size E2 c))) (tm-range n2))
+                                 (tm-any? (lambda (h)
+                                            (and (equal? (topos-morphism-compose T2 incl2 h) Fincl1)
+                                                 (topos-morphism-iso? T2 FE1 E2 h)))
+                                          (topos-morphisms T2 FE1 E2)))))
+                      (if (not ok-factor)
+                          (note! (list 'equalizer-not-preserved u v)))))
+                  ms))
+               ms)))
+          test-objects))
+       test-objects))
+    (reverse out)))
+
+;; ===========================================================================
+;; Topos Adjunctions (L -| R) and Geometric Morphisms (f^* -| f_*)
+;; ===========================================================================
+;;
+;; #(topos-adjunction L R transpose cotranspose)
+;;   L : T1 -> T2, R : T2 -> T1
+;;   transpose:   (A B phi) -> Hom_{T1}(A, R B) from phi : L A -> B
+;;   cotranspose: (A B psi) -> Hom_{T2}(L A, B) from psi : A -> R B
+
+(define (make-topos-adjunction L R transpose cotranspose)
+  (vector 'topos-adjunction L R transpose cotranspose))
+(define (topos-adjunction? x) (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'topos-adjunction)))
+(define (topos-adjunction-left A) (vector-ref A 1))
+(define (topos-adjunction-right A) (vector-ref A 2))
+(define (topos-adjunction-transpose A X Y phi) ((vector-ref A 3) X Y phi))
+(define (topos-adjunction-cotranspose A X Y psi) ((vector-ref A 4) X Y psi))
+
+;; Verify exact Hom-set bijection Hom_{T2}(L X, Y) <-> Hom_{T1}(X, R Y) and naturality
+;; on all pairs (X, Y) in (src-objs x tgt-objs).
+(define (topos-adjunction-violations adj src-objs tgt-objs)
+  (let* ((L (topos-adjunction-left adj)) (R (topos-adjunction-right adj))
+         (T1 (topos-functor-source L)) (T2 (topos-functor-target L))
+         (out '()))
+    (define (note! v) (set! out (cons v out)))
+    (for-each
+     (lambda (X)
+       (let ((LX (topos-functor-object L X)))
+         (for-each
+          (lambda (Y)
+            (let* ((RY (topos-functor-object R Y))
+                   (lhs-homs (topos-morphisms T2 LX Y))
+                   (rhs-homs (topos-morphisms T1 X RY)))
+              (if (not (= (length lhs-homs) (length rhs-homs)))
+                  (note! (list 'hom-count-mismatch (length lhs-homs) (length rhs-homs))))
+              (for-each
+               (lambda (phi)
+                 (let ((t (topos-adjunction-transpose adj X Y phi)))
+                   (if (not (member t rhs-homs))
+                       (note! (list 'transpose-not-natural phi t))
+                       (let ((back (topos-adjunction-cotranspose adj X Y t)))
+                         (if (not (equal? back phi))
+                             (note! (list 'cotranspose-transpose-mismatch phi back)))))))
+               lhs-homs)
+              (for-each
+               (lambda (psi)
+                 (let ((ct (topos-adjunction-cotranspose adj X Y psi)))
+                   (if (not (member ct lhs-homs))
+                       (note! (list 'cotranspose-not-natural psi ct))
+                       (let ((back (topos-adjunction-transpose adj X Y ct)))
+                         (if (not (equal? back psi))
+                             (note! (list 'transpose-cotranspose-mismatch psi back)))))))
+               rhs-homs)))
+          tgt-objs)))
+     src-objs)
+    (reverse out)))
+
+;; Geometric morphism f : E -> F consists of f^* : F -> E left adjoint to f_* : E -> F
+;; where f^* preserves finite limits.
+(define (make-geometric-morphism name E F f-star f-lower adj)
+  (vector 'geometric-morphism name E F f-star f-lower adj))
+(define (geometric-morphism? x)
+  (and (vector? x) (= (vector-length x) 7) (eq? (vector-ref x 0) 'geometric-morphism)))
+(define (geometric-morphism-name g) (vector-ref g 1))
+(define (geometric-morphism-source g) (vector-ref g 2))
+(define (geometric-morphism-target g) (vector-ref g 3))
+(define (geometric-morphism-inverse-image g) (vector-ref g 4))
+(define (geometric-morphism-direct-image g) (vector-ref g 5))
+(define (geometric-morphism-adjunction g) (vector-ref g 6))
+
+;; Verify both exact adjunction f^* -| f_* and finite-limit preservation of f^*.
+(define (geometric-morphism-violations g E-objs F-objs)
+  (let* ((f-star (geometric-morphism-inverse-image g))
+         (adj (geometric-morphism-adjunction g))
+         (adj-v (topos-adjunction-violations adj F-objs E-objs))
+         (lim-v (topos-preserves-finite-limits-violations f-star F-objs)))
+    (append (map (lambda (v) (list 'adjunction v)) adj-v)
+            (map (lambda (v) (list 'finite-limits v)) lim-v))))
+
+;; ===========================================================================
+;; Concrete Construction: Sierpinski Topos Adjoint Quadruple
+;;   (Pi -| Disc -| Gamma -| coDisc) : Set^{[1]} <-> Set
+;; ===========================================================================
+;;
+;; Walking arrow I = (0 -> 1); Sierpinski topos E = PSh(I) = Set^{I^op}
+;; (a presheaf X is a restriction map r : X(1) -> X(0)); Set = PSh(pt).
+;;   Pi(X)      = X(0)
+;;   Disc(S)    = (S -id-> S)
+;;   Gamma(X)   = X(1)
+;;   coDisc(S)  = (S -!-> {*})
+
+(define (sierpinski-topos-quadruple)
+  (let* ((pt (poset-category 1 (lambda (x y) #t)))
+         (I (poset-category 2 (lambda (x y) (<= x y))))
+         (TSet (presheaf-topos pt))
+         (TSierp (presheaf-topos I))
+         (Pi (make-topos-functor
+              "Pi" TSierp TSet
+              (lambda (X)
+                (topos-object TSet (make-set-presheaf pt (list (topos-type-elements X 0)) (lambda (a x) x))))
+              (lambda (A B phi) (vector (vector-ref phi 0)))))
+         (Disc (make-topos-functor
+                "Disc" TSet TSierp
+                (lambda (S)
+                  (let ((es (topos-type-elements S 0)))
+                    (topos-object TSierp (make-set-presheaf I (list es es) (lambda (a x) x)))))
+                (lambda (A B phi) (let ((m (vector-ref phi 0))) (vector m m)))))
+         (Gamma (make-topos-functor
+                 "Gamma" TSierp TSet
+                 (lambda (X)
+                   (topos-object TSet (make-set-presheaf pt (list (topos-type-elements X 1)) (lambda (a x) x))))
+                 (lambda (A B phi) (vector (vector-ref phi 1)))))
+         (coDisc (make-topos-functor
+                  "coDisc" TSet TSierp
+                  (lambda (S)
+                    (let ((es (topos-type-elements S 0)))
+                      (topos-object TSierp (make-set-presheaf I (list (list '*) es) (lambda (a x) '*)))))
+                  (lambda (A B phi) (vector (vector 0) (vector-ref phi 0)))))
+         ;; Restriction map r : X(1) -> X(0) as index vector
+         (arrow-01 (car (category-hom I 0 1)))
+         (res-vec (lambda (X)
+                    (let ((n1 (topos-type-size X 1)))
+                      (list->vector
+                       (map (lambda (i)
+                              (topos-type-index X 0 (topos-type-restrict X arrow-01 (topos-type-element X 1 i))))
+                            (tm-range n1))))))
+         ;; (1) Pi -| Disc: Hom_Set(X(0), S) <-> Hom_Sierp(X, Disc(S))
+         (adj-Pi-Disc
+          (make-topos-adjunction
+           Pi Disc
+           (lambda (X S phi)
+             ;; phi : X(0) -> S  ==>  psi_0 = phi_0, psi_1 = phi_0 o r_X
+             (let* ((f0 (vector-ref phi 0)) (rx (res-vec X))
+                    (f1 (list->vector (map (lambda (i) (vector-ref f0 (vector-ref rx i)))
+                                           (tm-range (vector-length rx))))))
+               (vector f0 f1)))
+           (lambda (X S psi) (vector (vector-ref psi 0)))))
+         ;; (2) Disc -| Gamma: Hom_Sierp(Disc(S), X) <-> Hom_Set(S, X(1))
+         (adj-Disc-Gamma
+          (make-topos-adjunction
+           Disc Gamma
+           (lambda (S X phi) (vector (vector-ref phi 1)))
+           (lambda (S X psi)
+             ;; psi : S -> X(1)  ==>  phi_1 = psi_0, phi_0 = r_X o psi_0
+             (let* ((g1 (vector-ref psi 0)) (rx (res-vec X))
+                    (g0 (list->vector (map (lambda (i) (vector-ref rx (vector-ref g1 i)))
+                                           (tm-range (vector-length g1))))))
+               (vector g0 g1)))))
+         ;; (3) Gamma -| coDisc: Hom_Set(X(1), S) <-> Hom_Sierp(X, coDisc(S))
+         (adj-Gamma-coDisc
+          (make-topos-adjunction
+           Gamma coDisc
+           (lambda (X S phi)
+             (let ((f0 (make-vector (topos-type-size X 0) 0)))
+               (vector f0 (vector-ref phi 0))))
+           (lambda (X S psi) (vector (vector-ref psi 1)))))
+         (gm-Pi-Disc (make-geometric-morphism "closed-point (Pi -| Disc)" TSet TSierp Pi Disc adj-Pi-Disc))
+         (gm-Disc-Gamma (make-geometric-morphism "global-sections (Disc -| Gamma)" TSierp TSet Disc Gamma adj-Disc-Gamma))
+         (gm-Gamma-coDisc (make-geometric-morphism "open-point (Gamma -| coDisc)" TSet TSierp Gamma coDisc adj-Gamma-coDisc)))
+    (list (cons 'sierpinski-topos TSierp)
+          (cons 'set-topos TSet)
+          (cons 'arrow-category I)
+          (cons 'point-category pt)
+          (cons 'Pi Pi)
+          (cons 'Disc Disc)
+          (cons 'Gamma Gamma)
+          (cons 'coDisc coDisc)
+          (cons 'adj-Pi-Disc adj-Pi-Disc)
+          (cons 'adj-Disc-Gamma adj-Disc-Gamma)
+          (cons 'adj-Gamma-coDisc adj-Gamma-coDisc)
+          (cons 'gm-Pi-Disc gm-Pi-Disc)
+          (cons 'gm-Disc-Gamma gm-Disc-Gamma)
+          (cons 'gm-Gamma-coDisc gm-Gamma-coDisc))))

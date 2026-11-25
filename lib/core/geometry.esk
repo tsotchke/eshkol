@@ -1,0 +1,15 @@
+;;; core.geometry -- Grothendieckian algebraic geometry as one library.
+;;;
+;;; Usage: (require core.geometry)
+;;;
+;;; Loads:
+;;;   core.geometry.scheme   Zariski sites, structure sheaves via exact ring
+;;;                          localizations, internal locality in the Zariski
+;;;                          topos, affine schemes, glued schemes, and P^1
+;;;   core.topos.morphism    functors, adjunctions, and geometric morphisms
+;;;                          between finite topoi (including Sierpinski topos)
+
+(require core.ring.localization)
+(require core.geometry.scheme)
+(require core.topos.morphism)
+(require core.category.finset_topos)

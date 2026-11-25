@@ -133,11 +133,11 @@ spectral sequence	2	computed	nlab_simplicial_test	-
 crossed module	1	computed	nlab_simplicial_test	-
 crossed module	2	computed	nlab_simplicial_test	-
 Postnikov tower	1	computed	nlab_simplicial_test	-
-Sierpinski topos	2	planned	functors between toposes and their adjunctions (core.category with core.topos)	-
-structure sheaf	1	planned	the Zariski site of a finite ring and its structure sheaf as a library constructor	tests/stdlib/topos_local_ring_test.esk
-local ring	7	planned	the Zariski site of a finite ring (internal locality of its structure sheaf)	tests/stdlib/topos_local_ring_test.esk
-prime spectrum	2	planned	the localization carrier R[1/f] in core.ring	-
-functor of points	3	planned	schemes glued from affine charts	-
+Sierpinski topos	2	computed	scheme_grothendieck_test	-
+structure sheaf	1	computed	scheme_grothendieck_test	-
+local ring	7	computed	scheme_grothendieck_test	-
+prime spectrum	2	computed	scheme_grothendieck_test	-
+functor of points	3	computed	scheme_grothendieck_test	-
 Cech cohomology	3	planned	a statement about infinite (paracompact) spaces	-
 torus	3	planned	topological complexity (a homotopy invariant, not a finite enumeration)	-
 sphere	3	planned	topological complexity (a homotopy invariant, not a finite enumeration)	-
@@ -155,4 +155,4 @@ coskeleton	3	computed	nlab_category_effective_test	-
 adjoint functor	3	computed	nlab_category_effective_test	-
 FinSet	1	computed	nlab_category_effective_test	-
 matrix	1	computed	nlab_category_effective_test	-
-FinSet	2	planned	exponentials and the subobject classifier of the FinSet skeleton as effective-category constructions (core.category.standard)	-
+FinSet	2	computed	scheme_grothendieck_test	-
