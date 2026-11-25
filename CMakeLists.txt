@@ -10728,6 +10728,31 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         )
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/kernel/k_kernel_policy.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel/k_convergence_policy_test.cpp")
+        add_library(eshkol-kernel-policy STATIC
+            lib/kernel/k_kernel_policy.c
+        )
+        target_include_directories(eshkol-kernel-policy PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-kernel-policy PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-kernel-policy PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(kernel_k_convergence_policy_test tests/kernel/k_convergence_policy_test.cpp)
+        target_compile_features(kernel_k_convergence_policy_test PRIVATE cxx_std_20)
+        target_link_libraries(kernel_k_convergence_policy_test PRIVATE
+            eshkol-kernel-policy
+            eshkol-kernel-k3
+            eshkol-kernel-k2
+            eshkol-kernel-k1
+        )
+        add_test(
+            NAME kernel_k_convergence_policy_test
+            COMMAND kernel_k_convergence_policy_test
+        )
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)
