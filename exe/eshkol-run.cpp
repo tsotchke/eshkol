@@ -2234,7 +2234,7 @@ static void print_help(int x = 0)
         "\t--wasm:[-w] = Compiles to WebAssembly (.wasm) format.\n"
         "\t--profile NAME = Use an execution profile.\n"
         "\t    Profiles: hosted-native, hosted-wasm, hosted-vm, freestanding-kernel-native,\n"
-        "\t              freestanding-mcu-native, freestanding-vm, embedded-vm.\n"
+        "\t              freestanding-mcu-native, eshkol-os-user, freestanding-vm, embedded-vm.\n"
         "\t--target TRIPLE = Set the LLVM target triple.\n"
         "\t--emit-eskb:[-B] PATH = Emit a bytecode-VM ESKB module to PATH\n"
         "\t    instead of a native artifact.\n"
@@ -3760,12 +3760,17 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     eshkol::stdlib_partition::classify_stdlib_module(module_name);
                 if (!eshkol::stdlib_partition::partition_allowed_for_profile(
                         partition, g_active_execution_profile)) {
+                    const char* admission_hint =
+                        (g_active_execution_profile ==
+                         eshkol::profile::ExecutionProfile::EshkolOsUser)
+                            ? "profile 'eshkol-os-user' admits 'freestanding-pure', 'os-userspace-oalr', and user modules"
+                            : "freestanding profiles admit only 'freestanding-pure' and user modules";
                     eshkol_error(
-                        "Module '%s' belongs to stdlib partition '%s', which is forbidden under execution profile '%s' "
-                        "(freestanding profiles admit only 'freestanding-pure' and user modules)",
+                        "Module '%s' belongs to stdlib partition '%s', which is forbidden under execution profile '%s' (%s)",
                         module_name.c_str(),
                         eshkol::stdlib_partition::partition_name(partition),
-                        eshkol::profile::get(g_active_execution_profile).name);
+                        eshkol::profile::get(g_active_execution_profile).name,
+                        admission_hint);
                     g_module_load_failed = true;
                     continue;
                 }

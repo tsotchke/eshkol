@@ -111,8 +111,12 @@ inline StdlibPartition classify_stdlib_module(std::string_view module_name) {
         return StdlibPartition::HostedOs;
     }
 
-    // Tier 2: OALR-backed pure language, collections, math, ML, reasoning stdlib.
-    if (matches_exact_or_prefix(key, "core") ||
+    // Tier 2: OALR-backed pure language, collections, math, ML, reasoning,
+    // and native OS capability syscall wrappers (`core.os_cap`). Admitted in
+    // `eshkol-os-user` and hosted profiles; rejected in freestanding kernel/MCU.
+    if (key == "core.os_cap" ||
+        key == "core.os-cap" ||
+        matches_exact_or_prefix(key, "core") ||
         matches_exact_or_prefix(key, "math") ||
         matches_exact_or_prefix(key, "ml") ||
         matches_exact_or_prefix(key, "hott") ||
@@ -133,6 +137,10 @@ inline bool partition_allowed_for_profile(
         case eshkol::profile::ExecutionProfile::FreestandingKernelNative:
         case eshkol::profile::ExecutionProfile::FreestandingMcuNative:
             return partition == StdlibPartition::FreestandingPure ||
+                   partition == StdlibPartition::UserModule;
+        case eshkol::profile::ExecutionProfile::EshkolOsUser:
+            return partition == StdlibPartition::FreestandingPure ||
+                   partition == StdlibPartition::OsUserspaceOalr ||
                    partition == StdlibPartition::UserModule;
         case eshkol::profile::ExecutionProfile::HostedNative:
         case eshkol::profile::ExecutionProfile::HostedWasm:

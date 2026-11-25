@@ -1462,6 +1462,8 @@ namespace {
     // model from that row, so instruction selection, the data layout, ELF
     // e_flags and ARM build attributes always agree.
     constexpr const char* kEmbeddedTargetModuleFlag = "eshkol.embedded-target";
+    constexpr const char* kFreestandingKernelModuleFlag = "eshkol.freestanding-kernel";
+    constexpr const char* kX86_64UserspaceFeatures = "+sse,+sse2";
 
     const eshkol::profile::EmbeddedTarget* embeddedTargetForModule(const Module& m) {
         if (auto* name = dyn_cast_or_null<MDString>(m.getModuleFlag(kEmbeddedTargetModuleFlag))) {
@@ -1470,17 +1472,43 @@ namespace {
         return nullptr;
     }
 
+    bool moduleIsFreestandingKernel(const Module& m) {
+        if (auto* flag = mdconst::dyn_extract_or_null<ConstantInt>(
+                m.getModuleFlag(kFreestandingKernelModuleFlag))) {
+            return !flag->isZero();
+        }
+        return false;
+    }
+
+    bool usesX86_64UserspaceFeatures(const eshkol::profile::EmbeddedTarget& target,
+                                     bool is_kernel) {
+        return !is_kernel &&
+               target.float_abi == eshkol::profile::FloatAbi::Soft &&
+               std::string_view(target.isa) == "x86-64";
+    }
+
+    std::string effectiveEmbeddedTargetFeatures(const eshkol::profile::EmbeddedTarget& target,
+                                                bool is_kernel) {
+        if (usesX86_64UserspaceFeatures(target, is_kernel)) {
+            return kX86_64UserspaceFeatures;
+        }
+        return target.features ? std::string(target.features) : std::string();
+    }
+
     void applyEmbeddedTargetOptions(const eshkol::profile::EmbeddedTarget& target,
-                                    TargetOptions& options) {
-        switch (target.float_abi) {
-            case eshkol::profile::FloatAbi::Soft:
-                options.FloatABIType = FloatABI::Soft;
-                break;
-            case eshkol::profile::FloatAbi::Hard:
-                options.FloatABIType = FloatABI::Hard;
-                break;
-            case eshkol::profile::FloatAbi::Default:
-                break;
+                                    TargetOptions& options,
+                                    bool is_kernel) {
+        if (!usesX86_64UserspaceFeatures(target, is_kernel)) {
+            switch (target.float_abi) {
+                case eshkol::profile::FloatAbi::Soft:
+                    options.FloatABIType = FloatABI::Soft;
+                    break;
+                case eshkol::profile::FloatAbi::Hard:
+                    options.FloatABIType = FloatABI::Hard;
+                    break;
+                case eshkol::profile::FloatAbi::Default:
+                    break;
+            }
         }
         if (target.abi && target.abi[0] != '\0') {
             options.MCOptions.ABIName = target.abi;
@@ -1886,6 +1914,9 @@ EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mo
         Triple target_triple_obj(target_triple_str);
         module->setTargetTriple(target_triple_str);
 #endif
+        if (freestanding_kernel_codegen_) {
+            module->addModuleFlag(Module::Error, kFreestandingKernelModuleFlag, 1u);
+        }
         if (embedded_target) {
             module->addModuleFlag(Module::Error, kEmbeddedTargetModuleFlag,
                                   MDString::get(*context, embedded_target->name));
@@ -1920,8 +1951,8 @@ EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mo
             std::string feature_string;
             if (embedded_target) {
                 cpu_name = embedded_target->cpu;
-                feature_string = embedded_target->features;
-                applyEmbeddedTargetOptions(*embedded_target, options);
+                feature_string = effectiveEmbeddedTargetFeatures(*embedded_target, freestanding_kernel_codegen_);
+                applyEmbeddedTargetOptions(*embedded_target, options, freestanding_kernel_codegen_);
             } else if (target_triple_str == g_cached_target_triple) {
                 cpu_name = g_cached_cpu_name;
                 feature_string = g_cached_features;
@@ -47041,6 +47072,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // instead (see embeddedTargetForModule).
         const eshkol::profile::EmbeddedTarget* embedded_target =
             embeddedTargetForModule(*module);
+        const bool is_kernel_module = moduleIsFreestandingKernel(*module);
         const bool use_large_aarch64_code_model =
             !embedded_target &&
             object_triple.getArch() == Triple::aarch64 && !object_triple.isOSWindows();
@@ -47050,7 +47082,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 
         TargetOptions target_options;
         if (embedded_target) {
-            applyEmbeddedTargetOptions(*embedded_target, target_options);
+            applyEmbeddedTargetOptions(*embedded_target, target_options, is_kernel_module);
             if (embedded_target->code_model == eshkol::profile::CodeModel::Medium) {
                 code_model = llvm::CodeModel::Medium;
             }
@@ -47084,7 +47116,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         const std::string cpu_name = embedded_target ? std::string(embedded_target->cpu)
             : (use_host_cpu_features ? g_cached_cpu_name : std::string("generic"));
         const std::string feature_string = embedded_target
-            ? std::string(embedded_target->features)
+            ? effectiveEmbeddedTargetFeatures(*embedded_target, is_kernel_module)
             : (use_host_cpu_features ? g_cached_features : std::string());
         const Reloc::Model reloc_model = embedded_target ? Reloc::Static : Reloc::PIC_;
         std::unique_ptr<TargetMachine> target_machine(

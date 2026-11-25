@@ -12,12 +12,13 @@ namespace eshkol::profile {
 
 namespace {
 
-constexpr std::array<Info, 7> kProfiles = {{
+constexpr std::array<Info, 8> kProfiles = {{
     {ExecutionProfile::HostedNative, "hosted-native", Backend::Native, true, false, false, false, false, nullptr},
     {ExecutionProfile::HostedWasm, "hosted-wasm", Backend::Wasm, true, false, false, false, false, "wasm32-unknown-unknown"},
     {ExecutionProfile::HostedVm, "hosted-vm", Backend::Vm, true, false, true, false, false, nullptr},
     {ExecutionProfile::FreestandingKernelNative, "freestanding-kernel-native", Backend::Native, false, true, true, true, true, nullptr},
     {ExecutionProfile::FreestandingMcuNative, "freestanding-mcu-native", Backend::Native, false, true, true, true, true, nullptr},
+    {ExecutionProfile::EshkolOsUser, "eshkol-os-user", Backend::Native, false, true, true, true, true, nullptr},
     {ExecutionProfile::FreestandingVm, "freestanding-vm", Backend::Vm, false, true, true, false, true, nullptr},
     {ExecutionProfile::EmbeddedVm, "embedded-vm", Backend::Vm, false, true, true, false, true, nullptr},
 }};
@@ -146,6 +147,7 @@ Resolution resolve(const Selection& selection) {
 
     case ExecutionProfile::FreestandingKernelNative:
     case ExecutionProfile::FreestandingMcuNative:
+    case ExecutionProfile::EshkolOsUser:
         if (selection.eval_mode || selection.run_mode) {
             resolved.error = "--profile ";
             resolved.error += resolved.profile->name;
