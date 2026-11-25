@@ -258,9 +258,8 @@
 ;; Upper bound on reduction steps before declaring divergence.
 (define blc-max-steps 1000000)
 
-(define (blc-eval term)
-  (blc-eval-loop term 0))
-
+;; Legacy stepping also specifies the errors and permissive behavior of
+;; hand-built values outside the three constructor shapes.
 (define (blc-eval-loop term steps)
   (if (> steps blc-max-steps)
       (error "blc-eval: no normal form within step bound" blc-max-steps)
@@ -268,6 +267,105 @@
         (if (car r)
             (blc-eval-loop (cdr r) (+ steps 1))
             term))))
+
+(define (blc-node? t)
+  (and (pair? t) (pair? (cdr t))
+       (cond ((blc-var? t)
+              (and (null? (cddr t)) (integer? (cadr t)) (exact? (cadr t))
+                   (> (cadr t) 0)))
+             ((blc-lam? t) (null? (cddr t)))
+             ((blc-app? t) (and (pair? (cddr t)) (null? (cdddr t))))
+             (else #f))))
+
+;; At entry, stop at the first redex. At a contraction, check the grammar
+;; of the raw operands that the reference shift/substitution would visit,
+;; including a discarded argument. Identical children need only one check.
+(define (blc-inspect t normal-only)
+  (and (blc-node? t)
+       (cond ((blc-var? t) #t)
+             ((blc-lam? t) (blc-inspect (blc-lam-body t) normal-only))
+             (else
+              (let ((f (blc-app-fun t)) (a (blc-app-arg t)))
+                (and (or (not normal-only) (not (blc-lam? f)))
+                     (blc-inspect f normal-only)
+                     (or (eq? f a) (blc-inspect a normal-only))))))))
+
+;; Environment entries are (code . lexical-environment) suspensions or
+;; numeric heads. Bound heads carry their readback level. A negative head
+;; denotes a one-based free index beyond the saved environment.
+(define (blc-binding index env)
+  (cond ((null? env) (- 0 index))
+        ((= index 1) (car env))
+        (else (blc-binding (- index 1) (cdr env)))))
+
+(define (blc-normalize term bound)
+  ;; In seek mode, arguments hold (application environment original?),
+  ;; nearest first. Only applying a lambda spends a contraction. Separating
+  ;; seek, neutral-spine readback and return keeps all three tail-recursive.
+  (let loop ((mode 'seek) (item term) (env '()) (args '()) (depth 0)
+             (original #t) (frames '()) (remaining bound))
+    (cond
+      ((eq? mode 'seek)
+       (cond
+         ((and original (not (blc-node? item))) (blc-eval-loop term 0))
+         ((blc-app? item)
+          (loop 'seek (blc-app-fun item) env (cons (list item env original) args)
+                depth original frames remaining))
+         ((blc-lam? item)
+          (let ((body (blc-lam-body item)))
+            (if (null? args)
+                (loop 'seek body (cons depth env) '() (+ depth 1) original
+                      (cons (cons 'lambda (and original item)) frames) remaining)
+                (let* ((frame (car args)) (arg (blc-app-arg (car frame)))
+                       (saved (cadr frame)))
+                  (cond
+                    ((or (and original (not (blc-inspect body #f)))
+                         (and (caddr frame) (not (blc-inspect arg #f))))
+                     (blc-eval-loop term 0))
+                    ((= remaining 0)
+                     (error "blc-eval: no normal form within step bound" bound))
+                    (else
+                     ;; Forward a variable binding without forcing its code.
+                     (let ((binding (if (blc-var? arg)
+                                        (blc-binding (blc-var-index arg) saved)
+                                        (cons arg saved))))
+                       (loop 'seek body (cons binding env) (cdr args) depth #f
+                             frames (- remaining 1)))))))))
+         (original (loop 'spine item '() args depth #f frames remaining))
+         (else
+          (let ((binding (blc-binding (blc-var-index item) env)))
+            (if (pair? binding)
+                (loop 'seek (car binding) (cdr binding) args depth #f frames remaining)
+                (loop 'spine (blc-var (- depth binding)) '() args depth #f frames remaining))))))
+      ((eq? mode 'spine)
+       (if (null? args)
+           (loop 'return item '() '() depth #f frames remaining)
+           (let* ((frame (car args)) (app (car frame)) (raw (caddr frame)))
+             (loop 'seek (blc-app-arg app) (cadr frame) '() depth raw
+                   (cons (list 'argument (and raw app) item (cdr args) depth) frames)
+                   remaining))))
+      ((null? frames) item)
+      (else
+       ;; A source contraction produces fresh pairs. Outside a contracted
+       ;; subtree, reuse each original pair whose children survived intact.
+       (let ((frame (car frames)) (rest (cdr frames)))
+         (if (eq? (car frame) 'lambda)
+             (let ((old (cdr frame)))
+               (loop 'return (if (and old (eq? (blc-lam-body old) item)) old (blc-lam item))
+                     '() '() depth #f rest remaining))
+             (let* ((old (cadr frame)) (head (caddr frame))
+                    (app (if (and old (eq? head (blc-app-fun old))
+                                  (eq? item (blc-app-arg old)))
+                             old (blc-app head item))))
+               (loop 'spine app '() (list-ref frame 3) (list-ref frame 4)
+                     #f rest remaining))))))))
+
+(define (blc-eval term)
+  (cond ((not (and (integer? blc-max-steps) (exact? blc-max-steps)
+                   (>= blc-max-steps 0)))
+         (blc-eval-loop term 0))
+        ((blc-inspect term #t) term)
+        (else (blc-normalize term blc-max-steps))))
 
 (define (blc-apply program arg)
   (blc-eval (blc-app program arg)))
