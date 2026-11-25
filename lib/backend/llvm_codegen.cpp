@@ -2743,6 +2743,16 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
             preGenerateTopLevelLambdas(asts_to_use, num_asts_to_use);
             eshkol_debug("Pre-generated all top-level lambdas");
 
+            // Step 1.85: Register declarative hardware layouts (`define-layout`)
+            // and evaluate top-level `static-assert` directives BEFORE external
+            // declarations and function bodies so `sizeof`/`alignof`/`offsetof`/
+            // `bit-offset`/`volatile-field-*` resolve across the whole module.
+            registerHardwareLayoutsAndStaticAsserts(asts_to_use, num_asts_to_use);
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
+                eshkol_error("Failed hardware layout registration or static-assert verification");
+                return std::make_pair(nullptr, nullptr);
+            }
+
             // Step 1.9: Process external declarations BEFORE function bodies.
             // This ensures extern functions and variables are registered before
             // user functions reference them.
@@ -6045,6 +6055,32 @@ ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenTypedASTTask(const eshkol
                         if (!val) co_return TypedValue();
                         co_return makeLowLevelTypedValue(val, asm_info->return_type);
                     }
+                    if (func_name == "sizeof" || func_name == "alignof" ||
+                        func_name == "offsetof" || func_name == "bit-offset") {
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_INT64,
+                                         eshkol::hott::BuiltinTypes::USize, true);
+                    }
+                    if (func_name == "field-addr") {
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                                         eshkol::hott::BuiltinTypes::Pointer, true);
+                    }
+                    if (func_name == "field-ref" || func_name == "volatile-field-ref") {
+                        if (ast->operation.call_op.num_vars < 3) {
+                            co_return TypedValue();
+                        }
+                        const HardwareLayoutDef* layout = nullptr;
+                        const HardwareLayoutField* field = lookupLayoutField(
+                            &ast->operation.call_op.variables[0],
+                            &ast->operation.call_op.variables[2],
+                            &layout, func_name.c_str());
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val || !field) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, field->scalar_info);
+                    }
                     if (func_name == "addr-of") {
                         // SINGLE-EVAL FIX (ESH-0098): recover pointee type without
                         // re-generating the operand (codegenAST builds it once).
@@ -8676,6 +8712,652 @@ CallInst* EshkolLLVMCodeGen::emitLowLevelInlineAsmCall(
             info.asm_constraints,
             info.asm_has_side_effects);
         return builder->CreateCall(asm_fn_type, ia, args, name);
+    }
+
+void EshkolLLVMCodeGen::registerHardwareLayoutsAndStaticAsserts(
+        const eshkol_ast_t* asts, size_t num_asts) {
+        if (!asts) return;
+        for (size_t i = 0; i < num_asts; ++i) {
+            if (asts[i].type != ESHKOL_OP || asts[i].operation.op != ESHKOL_CALL_OP) continue;
+            const eshkol_operations_t* op = &asts[i].operation;
+            if (!op->call_op.func || op->call_op.func->type != ESHKOL_VAR ||
+                !op->call_op.func->variable.id) {
+                continue;
+            }
+            const std::string fn = op->call_op.func->variable.id;
+            if (fn == "define-layout") {
+                registerHardwareLayout(op);
+            } else if (fn == "static-assert") {
+                evaluateStaticAssert(op);
+            }
+        }
+    }
+
+bool EshkolLLVMCodeGen::resolveLayoutTypeMetrics(
+        const eshkol_ast_t* type_ast,
+        uint64_t& out_size,
+        uint64_t& out_align,
+        const char* who) const {
+        if (!type_ast) return false;
+        const DataLayout& dl = module->getDataLayout();
+
+        // Fixed inline array: (array <elem-type> <count>)
+        if (type_ast->type == ESHKOL_OP && type_ast->operation.op == ESHKOL_CALL_OP &&
+            type_ast->operation.call_op.func &&
+            type_ast->operation.call_op.func->type == ESHKOL_VAR &&
+            type_ast->operation.call_op.func->variable.id &&
+            std::strcmp(type_ast->operation.call_op.func->variable.id, "array") == 0) {
+            if (type_ast->operation.call_op.num_vars != 2) {
+                eshkol_error("%s: (array <elem-type> <count>) requires 2 arguments", who);
+                return false;
+            }
+            auto count_opt = evaluateConstLayoutExpr(&type_ast->operation.call_op.variables[1], who);
+            if (!count_opt || *count_opt <= 0) {
+                eshkol_error("%s: array count must be a positive compile-time integer", who);
+                return false;
+            }
+            uint64_t elem_size = 0, elem_align = 1;
+            if (!resolveLayoutTypeMetrics(&type_ast->operation.call_op.variables[0],
+                                          elem_size, elem_align, who)) {
+                return false;
+            }
+            out_size = elem_size * static_cast<uint64_t>(*count_opt);
+            out_align = elem_align;
+            return true;
+        }
+
+        if (type_ast->type != ESHKOL_VAR || !type_ast->variable.id) {
+            eshkol_error("%s: expected a machine scalar type, layout name, or (array T N)", who);
+            return false;
+        }
+
+        const std::string tname = type_ast->variable.id;
+        auto it = hardware_layouts_.find(tname);
+        if (it != hardware_layouts_.end()) {
+            out_size = it->second.size;
+            out_align = it->second.alignment;
+            return true;
+        }
+
+        auto scalar = resolveLowLevelTypeInfo(type_ast, who, "layout", false);
+        if (!scalar) return false;
+        if (tname == "usize" || tname == "isize" || scalar->is_pointer) {
+            const uint64_t ptr_sz = dl.getPointerSize();
+            out_size = ptr_sz;
+            out_align = ptr_sz;
+        } else {
+            out_size = dl.getTypeAllocSize(scalar->llvm_type);
+            out_align = dl.getABITypeAlign(scalar->llvm_type).value();
+        }
+        return true;
+    }
+
+bool EshkolLLVMCodeGen::registerHardwareLayout(const eshkol_operations_t* op) {
+        if (!op || op->call_op.num_vars < 2) {
+            eshkol_error("define-layout requires a layout name and at least one field");
+            markFatalCodegenError();
+            return false;
+        }
+        const eshkol_ast_t& name_ast = op->call_op.variables[0];
+        if (name_ast.type != ESHKOL_VAR || !name_ast.variable.id) {
+            eshkol_error("define-layout expects a symbol name as its first argument");
+            markFatalCodegenError();
+            return false;
+        }
+
+        const std::string layout_name = name_ast.variable.id;
+        if (hardware_layouts_.count(layout_name)) {
+            return true; // already registered in Pass 0
+        }
+
+        HardwareLayoutDef def;
+        def.name = layout_name;
+
+        const DataLayout& dl = module->getDataLayout();
+        auto align_up = [](uint64_t v, uint64_t a) -> uint64_t {
+            if (a <= 1) return v;
+            return (v + a - 1) & ~(a - 1);
+        };
+
+        // Parse optional layout modifiers before field descriptors
+        size_t idx = 1;
+        while (idx < op->call_op.num_vars &&
+               op->call_op.variables[idx].type == ESHKOL_VAR &&
+               op->call_op.variables[idx].variable.id &&
+               op->call_op.variables[idx].variable.id[0] == ':') {
+            const std::string mod = op->call_op.variables[idx].variable.id;
+            if (mod == ":repr-c") {
+                idx++;
+            } else if (mod == ":packed") {
+                def.is_packed = true;
+                idx++;
+            } else if (mod == ":side-effect-free-read") {
+                def.side_effect_free_read = true;
+                idx++;
+            } else if (mod == ":align") {
+                if (idx + 1 >= op->call_op.num_vars) {
+                    eshkol_error("define-layout '%s': :align requires a power-of-two integer",
+                                 layout_name.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                auto a_opt = evaluateConstLayoutExpr(&op->call_op.variables[idx + 1], "define-layout");
+                if (!a_opt || *a_opt <= 0 || ((*a_opt & (*a_opt - 1)) != 0)) {
+                    eshkol_error("define-layout '%s': :align must be a positive power-of-two integer",
+                                 layout_name.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                def.explicit_align = static_cast<uint64_t>(*a_opt);
+                idx += 2;
+            } else {
+                eshkol_error("define-layout '%s': unsupported layout modifier '%s'",
+                             layout_name.c_str(), mod.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+        }
+
+        uint64_t cur_offset = 0;
+        uint64_t max_align = 1;
+        bool in_bf = false;
+        uint64_t bf_unit_offset = 0;
+        uint64_t bf_unit_size = 0;
+        uint32_t bf_unit_bits = 0;
+        uint32_t bf_next_bit = 0;
+
+        for (; idx < op->call_op.num_vars; ++idx) {
+            const eshkol_ast_t& f_ast = op->call_op.variables[idx];
+            if (f_ast.type != ESHKOL_OP || f_ast.operation.op != ESHKOL_CALL_OP ||
+                !f_ast.operation.call_op.func ||
+                f_ast.operation.call_op.func->type != ESHKOL_VAR ||
+                !f_ast.operation.call_op.func->variable.id ||
+                f_ast.operation.call_op.num_vars < 1) {
+                eshkol_error("define-layout '%s': each field must be (<name> <type> [:bits N])",
+                             layout_name.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+
+            const std::string fname = f_ast.operation.call_op.func->variable.id;
+            if (def.field_index.count(fname)) {
+                eshkol_error("define-layout '%s': duplicate field '%s'",
+                             layout_name.c_str(), fname.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+
+            HardwareLayoutField field;
+            field.name = fname;
+            const eshkol_ast_t* ftype_ast = &f_ast.operation.call_op.variables[0];
+
+            // Optional `:bits N`
+            if (f_ast.operation.call_op.num_vars == 3) {
+                const eshkol_ast_t& bmod = f_ast.operation.call_op.variables[1];
+                if (bmod.type != ESHKOL_VAR || !bmod.variable.id ||
+                    std::strcmp(bmod.variable.id, ":bits") != 0) {
+                    eshkol_error("define-layout '%s' field '%s': expected ':bits <width>'",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                auto bw_opt = evaluateConstLayoutExpr(&f_ast.operation.call_op.variables[2], "define-layout");
+                if (!bw_opt || *bw_opt <= 0) {
+                    eshkol_error("define-layout '%s' field '%s': :bits width must be a positive integer",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                field.is_bitfield = true;
+                field.bit_width = static_cast<uint32_t>(*bw_opt);
+            } else if (f_ast.operation.call_op.num_vars != 1) {
+                eshkol_error("define-layout '%s' field '%s': invalid field descriptor",
+                             layout_name.c_str(), fname.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+
+            if (field.is_bitfield) {
+                if (ftype_ast->type != ESHKOL_VAR || !ftype_ast->variable.id) {
+                    eshkol_error("define-layout '%s' bitfield '%s' requires an unsigned scalar integer type",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                const std::string tname = ftype_ast->variable.id;
+                auto scalar = resolveLowLevelTypeInfo(ftype_ast, "define-layout", "bitfield", false);
+                if (!scalar || scalar->is_pointer || scalar->is_signed_integer || scalar->is_null) {
+                    eshkol_error("define-layout '%s' bitfield '%s' requires an unsigned integer base type (signed bitfields are rejected for cross-ISA ABI safety)",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                const uint64_t unit_size = (tname == "usize")
+                    ? dl.getPointerSize()
+                    : dl.getTypeAllocSize(scalar->llvm_type);
+                const uint64_t unit_align = (tname == "usize")
+                    ? dl.getPointerSize()
+                    : dl.getABITypeAlign(scalar->llvm_type).value();
+                const uint32_t unit_bits = static_cast<uint32_t>(unit_size * 8);
+                if (field.bit_width > unit_bits) {
+                    eshkol_error("define-layout '%s' bitfield '%s': width %u exceeds storage unit '%s' (%u bits)",
+                                 layout_name.c_str(), fname.c_str(), field.bit_width,
+                                 tname.c_str(), unit_bits);
+                    markFatalCodegenError();
+                    return false;
+                }
+
+                field.type_name = tname;
+                field.scalar_info = *scalar;
+                if (tname == "usize") {
+                    field.scalar_info.llvm_type = dl.getIntPtrType(*context);
+                }
+                field.elem_size = unit_size;
+                field.total_size = unit_size;
+                field.alignment = def.is_packed ? 1 : unit_align;
+
+                if (in_bf && bf_unit_size == unit_size && (bf_next_bit + field.bit_width <= bf_unit_bits)) {
+                    field.byte_offset = bf_unit_offset;
+                    field.bit_offset = bf_next_bit;
+                    bf_next_bit += field.bit_width;
+                } else {
+                    const uint64_t eff_align = def.is_packed ? 1 : unit_align;
+                    bf_unit_offset = align_up(cur_offset, eff_align);
+                    cur_offset = bf_unit_offset + unit_size;
+                    max_align = std::max(max_align, eff_align);
+                    bf_unit_size = unit_size;
+                    bf_unit_bits = unit_bits;
+                    bf_next_bit = field.bit_width;
+                    in_bf = true;
+                    field.byte_offset = bf_unit_offset;
+                    field.bit_offset = 0;
+                }
+            } else {
+                in_bf = false;
+                const eshkol_ast_t* elem_ast = ftype_ast;
+                if (ftype_ast->type == ESHKOL_OP && ftype_ast->operation.op == ESHKOL_CALL_OP &&
+                    ftype_ast->operation.call_op.func &&
+                    ftype_ast->operation.call_op.func->type == ESHKOL_VAR &&
+                    ftype_ast->operation.call_op.func->variable.id &&
+                    std::strcmp(ftype_ast->operation.call_op.func->variable.id, "array") == 0) {
+                    if (ftype_ast->operation.call_op.num_vars != 2) {
+                        eshkol_error("define-layout '%s' field '%s': (array T N) requires 2 arguments",
+                                     layout_name.c_str(), fname.c_str());
+                        markFatalCodegenError();
+                        return false;
+                    }
+                    auto cnt_opt = evaluateConstLayoutExpr(&ftype_ast->operation.call_op.variables[1], "define-layout");
+                    if (!cnt_opt || *cnt_opt <= 0) {
+                        eshkol_error("define-layout '%s' field '%s': array length must be a positive integer",
+                                     layout_name.c_str(), fname.c_str());
+                        markFatalCodegenError();
+                        return false;
+                    }
+                    field.is_array = true;
+                    field.array_count = static_cast<uint64_t>(*cnt_opt);
+                    elem_ast = &ftype_ast->operation.call_op.variables[0];
+                }
+
+                if (elem_ast->type != ESHKOL_VAR || !elem_ast->variable.id) {
+                    eshkol_error("define-layout '%s' field '%s': invalid element type",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                const std::string tname = elem_ast->variable.id;
+                field.type_name = tname;
+
+                uint64_t elem_size = 0, elem_align = 1;
+                auto nested_it = hardware_layouts_.find(tname);
+                if (nested_it != hardware_layouts_.end()) {
+                    field.is_nested_layout = true;
+                    elem_size = nested_it->second.size;
+                    elem_align = nested_it->second.alignment;
+                } else {
+                    auto scalar = resolveLowLevelTypeInfo(elem_ast, "define-layout", "field", false);
+                    if (!scalar) {
+                        markFatalCodegenError();
+                        return false;
+                    }
+                    field.scalar_info = *scalar;
+                    if (tname == "usize" || tname == "isize" || scalar->is_pointer) {
+                        elem_size = dl.getPointerSize();
+                        elem_align = dl.getPointerSize();
+                        if (!scalar->is_pointer) {
+                            field.scalar_info.llvm_type = dl.getIntPtrType(*context);
+                        }
+                    } else {
+                        elem_size = dl.getTypeAllocSize(scalar->llvm_type);
+                        elem_align = dl.getABITypeAlign(scalar->llvm_type).value();
+                    }
+                }
+
+                const uint64_t eff_align = def.is_packed ? 1 : elem_align;
+                cur_offset = align_up(cur_offset, eff_align);
+                field.byte_offset = cur_offset;
+                field.elem_size = elem_size;
+                field.total_size = elem_size * field.array_count;
+                field.alignment = eff_align;
+                cur_offset += field.total_size;
+                max_align = std::max(max_align, eff_align);
+            }
+
+            def.field_index[fname] = def.fields.size();
+            def.fields.push_back(std::move(field));
+        }
+
+        def.alignment = def.is_packed ? 1 : max_align;
+        if (def.explicit_align > 0) {
+            def.alignment = std::max(def.alignment, def.explicit_align);
+        }
+        def.size = align_up(cur_offset, def.alignment);
+        hardware_layouts_[layout_name] = std::move(def);
+        return true;
+    }
+
+std::optional<int64_t> EshkolLLVMCodeGen::evaluateConstLayoutExpr(
+        const eshkol_ast_t* expr, const char* who) const {
+        if (!expr) return std::nullopt;
+        if (expr->type == ESHKOL_INT64) return expr->int64_val;
+        if (expr->type == ESHKOL_BOOL) return expr->int64_val ? 1 : 0;
+
+        if (expr->type != ESHKOL_OP) {
+            eshkol_error("%s: non-constant expression in compile-time layout evaluation", who);
+            return std::nullopt;
+        }
+        const eshkol_operations_t& op = expr->operation;
+
+        if (op.op == ESHKOL_ADD_OP || op.op == ESHKOL_SUB_OP ||
+            op.op == ESHKOL_MUL_OP || op.op == ESHKOL_DIV_OP) {
+            // Legacy binary AST nodes if emitted
+            return std::nullopt;
+        }
+        if (op.op == ESHKOL_AND_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i) {
+                auto v = evaluateConstLayoutExpr(&op.sequence_op.expressions[i], who);
+                if (!v) return std::nullopt;
+                if (*v == 0) return 0;
+            }
+            return 1;
+        }
+        if (op.op == ESHKOL_OR_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i) {
+                auto v = evaluateConstLayoutExpr(&op.sequence_op.expressions[i], who);
+                if (!v) return std::nullopt;
+                if (*v != 0) return 1;
+            }
+            return 0;
+        }
+
+        if (op.op != ESHKOL_CALL_OP || !op.call_op.func ||
+            op.call_op.func->type != ESHKOL_VAR || !op.call_op.func->variable.id) {
+            eshkol_error("%s: unsupported expression in compile-time layout evaluation", who);
+            return std::nullopt;
+        }
+
+        const std::string fn = op.call_op.func->variable.id;
+        if (fn == "sizeof" || fn == "alignof") {
+            if (op.call_op.num_vars != 1) {
+                eshkol_error("%s: %s requires exactly 1 type/layout argument", who, fn.c_str());
+                return std::nullopt;
+            }
+            uint64_t sz = 0, al = 1;
+            if (!resolveLayoutTypeMetrics(&op.call_op.variables[0], sz, al, fn.c_str())) {
+                return std::nullopt;
+            }
+            return static_cast<int64_t>(fn == "sizeof" ? sz : al);
+        }
+        if (fn == "offsetof" || fn == "bit-offset") {
+            if (op.call_op.num_vars != 2 ||
+                op.call_op.variables[0].type != ESHKOL_VAR || !op.call_op.variables[0].variable.id ||
+                op.call_op.variables[1].type != ESHKOL_VAR || !op.call_op.variables[1].variable.id) {
+                eshkol_error("%s: %s requires (<layout> <field>)", who, fn.c_str());
+                return std::nullopt;
+            }
+            auto lit = hardware_layouts_.find(op.call_op.variables[0].variable.id);
+            if (lit == hardware_layouts_.end()) {
+                eshkol_error("%s: unknown layout '%s'", who, op.call_op.variables[0].variable.id);
+                return std::nullopt;
+            }
+            auto fit = lit->second.field_index.find(op.call_op.variables[1].variable.id);
+            if (fit == lit->second.field_index.end()) {
+                eshkol_error("%s: layout '%s' has no field '%s'",
+                             who, op.call_op.variables[0].variable.id,
+                             op.call_op.variables[1].variable.id);
+                return std::nullopt;
+            }
+            const HardwareLayoutField& f = lit->second.fields[fit->second];
+            return static_cast<int64_t>(fn == "offsetof" ? f.byte_offset : f.bit_offset);
+        }
+        if (fn == "not" && op.call_op.num_vars == 1) {
+            auto a = evaluateConstLayoutExpr(&op.call_op.variables[0], who);
+            if (!a) return std::nullopt;
+            return (*a == 0) ? 1 : 0;
+        }
+        if (op.call_op.num_vars == 2) {
+            auto a = evaluateConstLayoutExpr(&op.call_op.variables[0], who);
+            auto b = evaluateConstLayoutExpr(&op.call_op.variables[1], who);
+            if (!a || !b) return std::nullopt;
+            if (fn == "+") return *a + *b;
+            if (fn == "-") return *a - *b;
+            if (fn == "*") return *a * *b;
+            if (fn == "quotient" && *b != 0) return *a / *b;
+            if (fn == "remainder" && *b != 0) return *a % *b;
+            if (fn == "=") return (*a == *b) ? 1 : 0;
+            if (fn == "<") return (*a < *b) ? 1 : 0;
+            if (fn == "<=") return (*a <= *b) ? 1 : 0;
+            if (fn == ">") return (*a > *b) ? 1 : 0;
+            if (fn == ">=") return (*a >= *b) ? 1 : 0;
+        }
+
+        eshkol_error("%s: unsupported compile-time operator '%s'", who, fn.c_str());
+        return std::nullopt;
+    }
+
+bool EshkolLLVMCodeGen::evaluateStaticAssert(const eshkol_operations_t* op) {
+        if (!op || op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+            eshkol_error("static-assert requires 1 boolean condition and optional message string");
+            markFatalCodegenError();
+            return false;
+        }
+        const char* msg = "assertion condition evaluated to false";
+        if (op->call_op.num_vars == 2 &&
+            op->call_op.variables[1].type == ESHKOL_STRING &&
+            op->call_op.variables[1].str_val.ptr) {
+            msg = op->call_op.variables[1].str_val.ptr;
+        }
+        auto val = evaluateConstLayoutExpr(&op->call_op.variables[0], "static-assert");
+        if (!val) {
+            markFatalCodegenError();
+            return false;
+        }
+        if (*val == 0) {
+            eshkol_error("static-assert failed: %s", msg);
+            markFatalCodegenError();
+            return false;
+        }
+        return true;
+    }
+
+const EshkolLLVMCodeGen::HardwareLayoutField* EshkolLLVMCodeGen::lookupLayoutField(
+        const eshkol_ast_t* layout_ast,
+        const eshkol_ast_t* field_ast,
+        const HardwareLayoutDef** out_layout,
+        const char* who) {
+        if (!layout_ast || layout_ast->type != ESHKOL_VAR || !layout_ast->variable.id ||
+            !field_ast || field_ast->type != ESHKOL_VAR || !field_ast->variable.id) {
+            eshkol_error("%s requires symbol names for layout and field", who);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        auto lit = hardware_layouts_.find(layout_ast->variable.id);
+        if (lit == hardware_layouts_.end()) {
+            eshkol_error("%s: unknown layout '%s'", who, layout_ast->variable.id);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        auto fit = lit->second.field_index.find(field_ast->variable.id);
+        if (fit == lit->second.field_index.end()) {
+            eshkol_error("%s: layout '%s' has no field '%s'",
+                         who, layout_ast->variable.id, field_ast->variable.id);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        if (out_layout) *out_layout = &lit->second;
+        return &lit->second.fields[fit->second];
+    }
+
+Value* EshkolLLVMCodeGen::emitLayoutFieldAccess(
+        const eshkol_operations_t* op,
+        bool is_set,
+        bool is_volatile,
+        bool is_addr,
+        const char* who) {
+        if (!op || op->call_op.num_vars < 3) {
+            eshkol_error("%s requires (<layout> <ptr> <field> ...)", who);
+            markFatalCodegenError();
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+        const HardwareLayoutDef* layout = nullptr;
+        const HardwareLayoutField* field = lookupLayoutField(
+            &op->call_op.variables[0], &op->call_op.variables[2], &layout, who);
+        if (!layout || !field) {
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+
+        // Validate arity for array vs non-array
+        const uint64_t expected_vars = is_set
+            ? (field->is_array ? 5 : 4)
+            : (field->is_array ? (is_addr ? 4 : 4) : 3);
+        const bool allow_array_base_addr = is_addr && field->is_array && op->call_op.num_vars == 3;
+        if (op->call_op.num_vars != expected_vars && !allow_array_base_addr) {
+            eshkol_error("%s: wrong argument count for field '%s.%s'",
+                         who, layout->name.c_str(), field->name.c_str());
+            markFatalCodegenError();
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+
+        if (!is_addr && field->is_nested_layout) {
+            eshkol_error("%s: nested layout field '%s.%s' must be addressed with field-addr",
+                         who, layout->name.c_str(), field->name.c_str());
+            markFatalCodegenError();
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+
+        // Tsotchke-chan Invariant #2: volatile RMW on bitfield requires :side-effect-free-read
+        if (is_set && is_volatile && field->is_bitfield && !layout->side_effect_free_read) {
+            eshkol_error("%s on bitfield '%s.%s' requires :side-effect-free-read on layout '%s' "
+                         "(read-modify-write on volatile bitfield may clear read-sensitive hardware flags)",
+                         who, layout->name.c_str(), field->name.c_str(), layout->name.c_str());
+            markFatalCodegenError();
+            return packNullToTaggedValue();
+        }
+
+        // Evaluate base pointer
+        TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+        if (!ptr_tv.llvm_value) {
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+        Value* base_ptr = ptr_tv.llvm_value;
+        if (base_ptr->getType() == tagged_value_type) {
+            Value* raw_i64 = unpackInt64FromTaggedValue(base_ptr);
+            base_ptr = builder->CreateIntToPtr(toIntPtr(raw_i64), ptr_type);
+        } else if (base_ptr->getType()->isIntegerTy()) {
+            base_ptr = builder->CreateIntToPtr(toIntPtr(base_ptr), ptr_type);
+        }
+
+        // Compute exact byte offset (plus index * elem_size for array fields)
+        Type* idx_ty = module->getDataLayout().getIntPtrType(*context);
+        Value* byte_off = ConstantInt::get(idx_ty, field->byte_offset);
+        if (field->is_array && !allow_array_base_addr) {
+            TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[3]);
+            if (!idx_tv.llvm_value) return is_set ? packNullToTaggedValue() : nullptr;
+            Value* raw_idx = idx_tv.llvm_value;
+            if (raw_idx->getType() == tagged_value_type) {
+                raw_idx = unpackInt64FromTaggedValue(raw_idx);
+            }
+            if (raw_idx->getType() != idx_ty) {
+                raw_idx = builder->CreateIntCast(raw_idx, idx_ty, false);
+            }
+            Value* stride = ConstantInt::get(idx_ty, field->elem_size);
+            byte_off = builder->CreateAdd(byte_off, builder->CreateMul(raw_idx, stride));
+        }
+
+        Value* field_ptr = builder->CreateGEP(int8_type, base_ptr, byte_off,
+                                              layout->name + "_" + field->name + "_ptr");
+        if (is_addr) {
+            return field_ptr;
+        }
+
+        Type* scalar_ty = field->scalar_info.llvm_type;
+        const uint64_t access_align_val = layout->is_packed
+            ? 1
+            : std::min<uint64_t>(layout->alignment, std::max<uint64_t>(1, field->alignment));
+        const Align access_align(access_align_val);
+
+        if (!is_set) {
+            LoadInst* loaded = builder->CreateAlignedLoad(
+                scalar_ty, field_ptr, access_align, is_volatile,
+                field->name + "_load");
+            Value* result = loaded;
+            if (field->is_bitfield) {
+                const uint32_t unit_bits = static_cast<uint32_t>(field->elem_size * 8);
+                if (field->bit_offset > 0) {
+                    result = builder->CreateLShr(
+                        result, ConstantInt::get(scalar_ty, field->bit_offset),
+                        field->name + "_shr");
+                }
+                if (field->bit_width < unit_bits) {
+                    const uint64_t mask = (uint64_t{1} << field->bit_width) - 1;
+                    result = builder->CreateAnd(
+                        result, ConstantInt::get(scalar_ty, mask),
+                        field->name + "_mask");
+                }
+            }
+            if (field->scalar_info.is_pointer) {
+                return result;
+            }
+            if (!result->getType()->isIntegerTy(64)) {
+                return builder->CreateIntCast(
+                    result, int64_type, field->scalar_info.is_signed_integer,
+                    field->name + "_ext");
+            }
+            return result;
+        }
+
+        // Field write
+        const size_t val_idx = field->is_array ? 4 : 3;
+        TypedValue val_tv = codegenTypedAST(&op->call_op.variables[val_idx]);
+        if (!val_tv.llvm_value) return packNullToTaggedValue();
+        Value* raw_val = coerceValueToLowLevelScalar(val_tv, field->scalar_info, who);
+        if (!raw_val) return packNullToTaggedValue();
+
+        if (!field->is_bitfield) {
+            builder->CreateAlignedStore(raw_val, field_ptr, access_align, is_volatile);
+            return packNullToTaggedValue();
+        }
+
+        // Bitfield read-modify-write over enclosing unsigned storage unit
+        const uint32_t unit_bits = static_cast<uint32_t>(field->elem_size * 8);
+        const uint64_t mask = (field->bit_width >= 64)
+            ? ~uint64_t{0}
+            : ((uint64_t{1} << field->bit_width) - 1);
+        const uint64_t clear_mask = ~(mask << field->bit_offset);
+        LoadInst* cur_word = builder->CreateAlignedLoad(
+            scalar_ty, field_ptr, access_align, is_volatile,
+            field->name + "_rmw_load");
+        Value* cleared = builder->CreateAnd(
+            cur_word, ConstantInt::get(scalar_ty, clear_mask),
+            field->name + "_rmw_clear");
+        Value* masked_new = (field->bit_width < unit_bits)
+            ? builder->CreateAnd(raw_val, ConstantInt::get(scalar_ty, mask))
+            : raw_val;
+        Value* shifted_new = (field->bit_offset > 0)
+            ? builder->CreateShl(masked_new, ConstantInt::get(scalar_ty, field->bit_offset))
+            : masked_new;
+        Value* updated = builder->CreateOr(cleared, shifted_new, field->name + "_rmw_or");
+        builder->CreateAlignedStore(updated, field_ptr, access_align, is_volatile);
+        return packNullToTaggedValue();
     }
 
 std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
@@ -14502,6 +15184,56 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
                     is_unsafe_asm ? "unsafe_asm_value" : "target_intrinsic_value");
             }
             co_return call;
+        }
+        if (func_name == "define-layout") {
+            registerHardwareLayout(op);
+            co_return packNullToTaggedValue();
+        }
+        if (func_name == "static-assert") {
+            evaluateStaticAssert(op);
+            co_return packNullToTaggedValue();
+        }
+        if (func_name == "sizeof" || func_name == "alignof" ||
+            func_name == "offsetof" || func_name == "bit-offset") {
+            if (func_name == "sizeof" || func_name == "alignof") {
+                if (op->call_op.num_vars != 1) {
+                    eshkol_error("%s requires 1 type/layout argument", func_name.c_str());
+                    markFatalCodegenError();
+                    co_return nullptr;
+                }
+                uint64_t sz = 0, al = 1;
+                if (!resolveLayoutTypeMetrics(&op->call_op.variables[0], sz, al, func_name.c_str())) {
+                    markFatalCodegenError();
+                    co_return nullptr;
+                }
+                co_return ConstantInt::get(int64_type, func_name == "sizeof" ? sz : al);
+            }
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("%s requires (<layout> <field>)", func_name.c_str());
+                markFatalCodegenError();
+                co_return nullptr;
+            }
+            const HardwareLayoutDef* layout = nullptr;
+            const HardwareLayoutField* field = lookupLayoutField(
+                &op->call_op.variables[0], &op->call_op.variables[1], &layout, func_name.c_str());
+            if (!field) co_return nullptr;
+            co_return ConstantInt::get(
+                int64_type, func_name == "offsetof" ? field->byte_offset : field->bit_offset);
+        }
+        if (func_name == "field-addr") {
+            co_return emitLayoutFieldAccess(op, false, false, true, "field-addr");
+        }
+        if (func_name == "field-ref") {
+            co_return emitLayoutFieldAccess(op, false, false, false, "field-ref");
+        }
+        if (func_name == "field-set!") {
+            co_return emitLayoutFieldAccess(op, true, false, false, "field-set!");
+        }
+        if (func_name == "volatile-field-ref") {
+            co_return emitLayoutFieldAccess(op, false, true, false, "volatile-field-ref");
+        }
+        if (func_name == "volatile-field-set!") {
+            co_return emitLayoutFieldAccess(op, true, true, false, "volatile-field-set!");
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
@@ -27734,6 +28466,9 @@ Value* EshkolLLVMCodeGen::codegenSchemeReportEnvironment(const eshkol_operations
             "atomic-compare-exchange!",
             "atomic-fetch-add!", "atomic-fetch-sub!", "atomic-fetch-and!",
             "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic", "unsafe-asm",
+            "define-layout", "static-assert", "sizeof", "alignof", "offsetof",
+            "bit-offset", "field-addr", "field-ref", "field-set!",
+            "volatile-field-ref", "volatile-field-set!",
             "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",

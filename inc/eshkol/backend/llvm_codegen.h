@@ -1448,6 +1448,54 @@ private:
         ArrayRef<Value*> args,
         const char* name);
 
+    struct HardwareLayoutField {
+        std::string name;
+        std::string type_name;
+        bool is_nested_layout = false;
+        bool is_array = false;
+        uint64_t array_count = 1;
+        bool is_bitfield = false;
+        uint32_t bit_width = 0;
+        uint32_t bit_offset = 0;
+        uint64_t byte_offset = 0;
+        uint64_t elem_size = 0;
+        uint64_t total_size = 0;
+        uint64_t alignment = 1;
+        LowLevelValueTypeInfo scalar_info;
+    };
+
+    struct HardwareLayoutDef {
+        std::string name;
+        bool is_packed = false;
+        bool side_effect_free_read = false;
+        uint64_t explicit_align = 0;
+        uint64_t size = 0;
+        uint64_t alignment = 1;
+        std::vector<HardwareLayoutField> fields;
+        std::unordered_map<std::string, size_t> field_index;
+    };
+
+    std::unordered_map<std::string, HardwareLayoutDef> hardware_layouts_;
+
+    void registerHardwareLayoutsAndStaticAsserts(const eshkol_ast_t* asts, size_t num_asts);
+    bool registerHardwareLayout(const eshkol_operations_t* op);
+    bool resolveLayoutTypeMetrics(const eshkol_ast_t* type_ast,
+                                  uint64_t& out_size,
+                                  uint64_t& out_align,
+                                  const char* who) const;
+    std::optional<int64_t> evaluateConstLayoutExpr(const eshkol_ast_t* expr,
+                                                   const char* who) const;
+    bool evaluateStaticAssert(const eshkol_operations_t* op);
+    const HardwareLayoutField* lookupLayoutField(const eshkol_ast_t* layout_ast,
+                                                 const eshkol_ast_t* field_ast,
+                                                 const HardwareLayoutDef** out_layout,
+                                                 const char* who);
+    Value* emitLayoutFieldAccess(const eshkol_operations_t* op,
+                                 bool is_set,
+                                 bool is_volatile,
+                                 bool is_addr,
+                                 const char* who);
+
     std::optional<AtomicOrdering> resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
                                                        const char* builtin_name) const;
 

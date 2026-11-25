@@ -120,6 +120,17 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         function_return_types["atomic-fetch-xor!"] = BuiltinTypes::Value;
         function_return_types["target-intrinsic"] = BuiltinTypes::Value;
         function_return_types["unsafe-asm"] = BuiltinTypes::Value;
+        function_return_types["define-layout"] = BuiltinTypes::Null;
+        function_return_types["static-assert"] = BuiltinTypes::Null;
+        function_return_types["sizeof"] = BuiltinTypes::USize;
+        function_return_types["alignof"] = BuiltinTypes::USize;
+        function_return_types["offsetof"] = BuiltinTypes::USize;
+        function_return_types["bit-offset"] = BuiltinTypes::USize;
+        function_return_types["field-addr"] = BuiltinTypes::Pointer;
+        function_return_types["field-ref"] = BuiltinTypes::Value;
+        function_return_types["field-set!"] = BuiltinTypes::Null;
+        function_return_types["volatile-field-ref"] = BuiltinTypes::Value;
+        function_return_types["volatile-field-set!"] = BuiltinTypes::Null;
         function_return_types["compiler-fence"] = BuiltinTypes::Null;
         function_return_types["memory-fence"] = BuiltinTypes::Null;
         function_return_types["addr-of"] = BuiltinTypes::Pointer;
