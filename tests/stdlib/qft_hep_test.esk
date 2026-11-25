@@ -1,0 +1,357 @@
+;;; qft_hep_test.esk -- Executable verification suite for Pillars M11 & M12
+;;; Covers:
+;;;   - core.physics.aqft        (causal poset, Haag-Kastler Isotony, Einstein
+;;;                               Microcausality, Time-Slice axiom, qubit spin
+;;;                               chain & non-local counterexample, finite
+;;;                               prefactorization algebra unitality/associativity)
+;;;   - core.physics.lattice_qft (2D U(1) & SU(2) Wilson plaquette actions,
+;;;                               gauge invariance, compiler-differentiable
+;;;                               HMC force vs analytic & FD, strong-coupling
+;;;                               plaquette expectation I_1/I_0 vs quadrature)
+;;;   - core.hep.lie             (all simple Lie Cartan matrices A/B/C/D/G2/F4/
+;;;                               E6/E7/E8, determinants, exact root counts up
+;;;                               to E_8=240, Weyl reflections, Killing form,
+;;;                               Coxeter & dual Coxeter numbers)
+;;;   - core.hep.amplitudes      (4D Q[i] spinor-helicity, Schouten identity,
+;;;                               momentum conservation, Mandelstam invariants,
+;;;                               Parke-Taylor vs exact BCFW 4pt/5pt equality,
+;;;                               planar ABHY associahedron mesh relations)
+
+(require stdlib)
+(require core.geometry.gauge)
+(require core.physics.aqft)
+(require core.physics.lattice_qft)
+(require core.hep)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  [PASS] ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  [FAIL] ") (display name) (newline))))
+
+(define (approx= a b tol)
+  (<= (abs (- a b)) tol))
+
+(define (vec-approx= a b tol)
+  (and (= (vector-length a) (vector-length b))
+       (let ((n (vector-length a)))
+         (let loop ((i 0))
+           (cond ((>= i n) #t)
+                 ((approx= (vref a i) (vref b i) tol) (loop (+ i 1)))
+                 (else #f))))))
+
+(define (fd-grad f x eps)
+  (let* ((n (vector-length x))
+         (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((xp (make-vector n 0.0))
+                (xm (make-vector n 0.0)))
+            (let copy ((j 0))
+              (if (< j n)
+                  (let ((xj (vref x j)))
+                    (vector-set! xp j (if (= j i) (+ xj eps) xj))
+                    (vector-set! xm j (if (= j i) (- xj eps) xj))
+                    (copy (+ j 1)))))
+            (vector-set! g i (/ (- (f xp) (f xm)) (* 2.0 eps)))
+            (loop (+ i 1)))
+          g))))
+
+(display "=== Pillar M11: Haag-Kastler AQFT & Factorization Algebras ===") (newline)
+
+(define spin-net (make-spin-chain-aqft-net))
+(define bad-net  (make-nonlocal-counterexample-net))
+(define poset    (aqft-net-poset spin-net))
+
+(check "AQFT spin-chain causal poset is valid partial order"
+       (causal-poset-valid? poset))
+(check "AQFT counterexample: non-transitive relation fails causal-poset-valid?"
+       (not (causal-poset-valid? (make-causal-poset '(a b c) '((a . a) (b . b) (c . c) (a . b) (b . c))))))
+(check "AQFT causal completion of Cauchy slice {L0, R0} equals full spacetime M"
+       (= (length (causal-completion poset '(L0 R0))) 4))
+(check "AQFT spin-chain net satisfies Isotony"
+       (car (aqft-check-isotony spin-net)))
+(check "AQFT spin-chain net satisfies Einstein Microcausality"
+       (car (aqft-check-microcausality spin-net)))
+(check "AQFT spin-chain net satisfies Time-Slice axiom on {L0, R0} and {L1, R1}"
+       (and (car (aqft-check-time-slice spin-net '(L0 R0)))
+            (car (aqft-check-time-slice spin-net '(L1 R1)))))
+
+;; Negative AQFT counterexamples with explicit witnesses
+(let ((mc-bad (aqft-check-microcausality bad-net)))
+  (check "AQFT counterexample: non-local net violates Microcausality with non-zero [a,b] witness"
+         (and (not (car mc-bad))
+              (not (cmat-zero? (list-ref (cdr mc-bad) 4))))))
+(check "AQFT counterexample: non-Cauchy single event {L0} fails Time-Slice axiom"
+       (not (car (aqft-check-time-slice spin-net '(L0)))))
+(let* ((I2 (pauli-i)) (X (pauli-x)) (Z (pauli-z))
+       (II (cmat-kronecker I2 I2))
+       (XI (cmat-kronecker X I2))
+       (iso-bad (make-aqft-net poset (list (cons '(L0) (list II XI))
+                                           (cons '(L0 R0) (list II))))))
+  (check "AQFT counterexample: shrinking local algebra fails Isotony"
+         (not (car (aqft-check-isotony iso-bad)))))
+
+;; Prefactorization Algebras
+(define lc-fa (make-locally-constant-factorization-algebra))
+(define na-fa (make-nonassociative-factorization-counterexample))
+(check "Prefactorization algebra satisfies exact unitality"
+       (car (fact-check-unitality lc-fa)))
+(check "Prefactorization algebra satisfies exact associativity on disjoint opens"
+       (car (fact-check-associativity lc-fa)))
+(check "Prefactorization counterexample: Lie commutator violates associativity"
+       (not (car (fact-check-associativity na-fa))))
+
+(display "=== Pillar M11: 2D U(1) & SU(2) Lattice Gauge Theory & AD HMC ===") (newline)
+
+;; 2D U(1) on 2x2 periodic lattice (4 sites, 8 links)
+(let* ((lx 2) (ly 2) (beta 1.25)
+       (theta (vector 0.3 -0.7 1.1 0.4 -0.5 0.9 0.2 -1.3))
+       (alpha (vector 0.6 -1.1 0.8 -0.4))
+       (f-ad  (u1-hmc-force-ad lx ly beta theta))
+       (f-ana (u1-hmc-force-analytic lx ly beta theta))
+       (f-fd  (let* ((g-fd (fd-grad (lambda (th) (u1-wilson-action lx ly beta th)) theta 1e-6))
+                     (neg (make-vector (vector-length g-fd) 0.0)))
+                (let loop ((i 0))
+                  (if (< i (vector-length g-fd))
+                      (begin (vector-set! neg i (- (vector-ref g-fd i)))
+                             (loop (+ i 1)))
+                      neg)))))
+  (check "2D U(1) Wilson action exact gauge invariance S_W[theta^alpha] = S_W[theta]"
+         (u1-verify-action-gauge-invariance lx ly beta theta alpha 1e-12))
+  (check "2D U(1) counterexample: non-gauge link shift alters Wilson action"
+         (let ((t-bad (vector 1.3 -0.7 1.1 0.4 -0.5 0.9 0.2 -1.3)))
+           (> (abs (- (u1-wilson-action lx ly beta theta)
+                      (u1-wilson-action lx ly beta t-bad)))
+              1e-3)))
+  (check "2D U(1) native-AD HMC force matches exact analytical sin(theta_p) force"
+         (vec-approx= f-ad f-ana 1e-11))
+  (check "2D U(1) native-AD HMC force matches central finite-difference oracle"
+         (vec-approx= f-ad f-fd 1e-5)))
+
+;; Strong-coupling plaquette expectation <cos theta_p> = I_1(beta)/I_0(beta)
+(let* ((sc-02 (u1-strong-coupling-plaquette 0.2))
+       (qd-02 (u1-single-plaquette-quadrature 0.2 64))
+       (ser-02 (- (/ 0.2 2.0) (/ (* 0.2 0.2 0.2) 16.0)))
+       (sc-15 (u1-strong-coupling-plaquette 1.5))
+       (qd-15 (u1-single-plaquette-quadrature 1.5 64)))
+  (check "2D U(1) strong-coupling I_1(0.2)/I_0(0.2) matches quadrature & series"
+         (and (approx= sc-02 qd-02 1e-13)
+              (approx= sc-02 ser-02 1e-5)))
+  (check "2D U(1) plaquette expectation I_1(1.5)/I_0(1.5) matches quadrature (< 1e-13)"
+         (approx= sc-15 qd-15 1e-13)))
+
+;; 2D SU(2) Wilson action exact rational AND f64 gauge invariance
+(let* ((qa (su2-from-quat (/ 3 5) (/ 4 5) 0 0))
+       (qb (su2-from-quat (/ 1 3) (/ 2 3) (/ 2 3) 0))
+       (qc (su2-from-quat (/ 2 7) (/ 3 7) (/ 6 7) 0))
+       (qd (su2-from-quat (/ 1 7) (/ 4 7) (/ -4 7) (/ 4 7)))
+       (links-q (vector qa qb qc qd (su2-mul qa qb) qc qd qa))
+       (gfield-q (vector qb qc qd qa))
+       (links-f (vector (su2-from-axis-angle 1.0 0.2 0.3 0.5)
+                        (su2-from-axis-angle -0.3 1.0 0.2 0.9)
+                        (su2-from-axis-angle 0.4 -0.5 1.0 1.2)
+                        (su2-from-axis-angle 0.7 0.6 -0.1 0.4)
+                        (su2-from-axis-angle -0.8 0.2 0.5 1.1)
+                        (su2-from-axis-angle 0.2 -0.9 0.3 0.6)
+                        (su2-from-axis-angle 0.5 0.5 0.5 0.8)
+                        (su2-from-axis-angle -0.1 0.4 -0.9 1.4)))
+       (gfield-f (vector (su2-from-axis-angle 0.3 0.7 -0.2 1.3)
+                         (su2-from-axis-angle -0.5 0.2 0.9 0.7)
+                         (su2-from-axis-angle 0.8 -0.6 0.1 1.9)
+                         (su2-from-axis-angle 0.1 0.9 0.4 0.5))))
+  (check "2D SU(2) Wilson action exact rational gauge invariance over Q"
+         (su2-verify-action-gauge-invariance 2 2 2 links-q gfield-q))
+  (check "2D SU(2) Wilson action f64 gauge invariance (< 1e-12)"
+         (su2-verify-action-gauge-invariance 2 2 1.75 links-f gfield-f 1e-12)))
+
+(display "=== Pillar M12: Simple Lie Algebras & Cartan-Killing Classification ===") (newline)
+
+(define cA2 (cartan-matrix 'A 2))
+(define cA3 (cartan-matrix 'A 3))
+(define cB2 (cartan-matrix 'B 2))
+(define cB3 (cartan-matrix 'B 3))
+(define cC3 (cartan-matrix 'C 3))
+(define cD4 (cartan-matrix 'D 4))
+(define cG2 (cartan-matrix 'G2 2))
+(define cF4 (cartan-matrix 'F4 4))
+(define cE6 (cartan-matrix 'E6 6))
+(define cE7 (cartan-matrix 'E7 7))
+(define cE8 (cartan-matrix 'E8 8))
+
+(check "Cartan matrices valid for A2, B2, C3, D4, G2, F4, E6, E7, E8"
+       (and (cartan-matrix-valid? cA2) (cartan-matrix-valid? cB2)
+            (cartan-matrix-valid? cC3) (cartan-matrix-valid? cD4)
+            (cartan-matrix-valid? cG2) (cartan-matrix-valid? cF4)
+            (cartan-matrix-valid? cE6) (cartan-matrix-valid? cE7)
+            (cartan-matrix-valid? cE8)))
+
+;; Negative counterexamples for Cartan matrix validation
+(check "Cartan counterexample: affine A1^ (det=0) rejected"
+       (not (cartan-matrix-valid? (vector (vector 2 -2) (vector -2 2)))))
+(check "Cartan counterexample: positive off-diagonal rejected"
+       (not (cartan-matrix-valid? (vector (vector 2 1) (vector 1 2)))))
+
+;; Exact Cartan determinants
+(check "Exact Cartan determinants: det(A2)=3, A3=4, B2=2, C3=2, D4=4, G2=1, F4=1, E6=3, E7=2, E8=1"
+       (and (= (cartan-det cA2) 3) (= (cartan-det cA3) 4)
+            (= (cartan-det cB2) 2) (= (cartan-det cC3) 2)
+            (= (cartan-det cD4) 4) (= (cartan-det cG2) 1)
+            (= (cartan-det cF4) 1) (= (cartan-det cE6) 3)
+            (= (cartan-det cE7) 2) (= (cartan-det cE8) 1)))
+
+;; Exact root counts generated via Weyl reflections!
+(check "Exact root counts: |A2|=6, |B2|=8, |C3|=18, |D4|=24"
+       (and (= (length (generate-roots cA2)) 6)
+            (= (length (generate-roots cB2)) 8)
+            (= (length (generate-roots cC3)) 18)
+            (= (length (generate-roots cD4)) 24)))
+(check "Exact exceptional root counts: |G2|=12, |F4|=48, |E6|=72, |E7|=126, |E8|=240"
+       (and (= (length (generate-roots cG2)) 12)
+            (= (length (generate-roots cF4)) 48)
+            (= (length (generate-roots cE6)) 72)
+            (= (length (generate-roots cE7)) 126)
+            (= (length (generate-roots cE8)) 240)))
+
+;; Exact dimensions, Coxeter numbers h, dual Coxeter numbers h^v
+(check "Exact exceptional dimensions: G2=14, F4=52, E6=78, E7=133, E8=248"
+       (and (= (lie-dimension cG2) 14)
+            (= (lie-dimension cF4) 52)
+            (= (lie-dimension cE6) 78)
+            (= (lie-dimension cE7) 133)
+            (= (lie-dimension cE8) 248)))
+(check "Exact Coxeter & dual Coxeter numbers: G2(6,4), F4(12,9), B3(6,5), C3(6,4), E8(30,30)"
+       (and (= (lie-coxeter-number cG2) 6)  (= (lie-dual-coxeter-number cG2) 4)
+            (= (lie-coxeter-number cF4) 12) (= (lie-dual-coxeter-number cF4) 9)
+            (= (lie-coxeter-number cB3) 6)  (= (lie-dual-coxeter-number cB3) 5)
+            (= (lie-coxeter-number cC3) 6)  (= (lie-dual-coxeter-number cC3) 4)
+            (= (lie-coxeter-number cE8) 30) (= (lie-dual-coxeter-number cE8) 30)))
+
+;; Weyl reflection involution & bilinear form invariance
+(let* ((u (vector 2 1))
+       (v (vector 1 3))
+       (su (weyl-reflect cG2 0 u))
+       (sv (weyl-reflect cG2 0 v))
+       (ssu (weyl-reflect cG2 0 su)))
+  (check "Weyl reflection is exact involution s_i^2 = id on G2"
+         (and (= (vector-ref ssu 0) (vector-ref u 0))
+              (= (vector-ref ssu 1) (vector-ref u 1))))
+  (check "Weyl reflection preserves exact Cartan bilinear form (s_i u, s_i v) = (u, v)"
+         (= (cartan-bilinear-form cG2 su sv)
+            (cartan-bilinear-form cG2 u v))))
+
+;; Exact Killing form matrix on A2: K(H_i, H_j) = 2 h^v A_{ij} = 6 * [[2 -1] [-1 2]] = [[12 -6] [-6 12]]
+(let ((K-A2 (lie-killing-form-matrix cA2)))
+  (check "Exact Killing form on A2 Cartan subalgebra equals [[12 -6] [-6 12]]"
+         (and (= (exact-matrix-ref K-A2 0 0) 12)
+              (= (exact-matrix-ref K-A2 0 1) -6)
+              (= (exact-matrix-ref K-A2 1 0) -6)
+              (= (exact-matrix-ref K-A2 1 1) 12))))
+
+(display "=== Pillar M12: 4D Spinor-Helicity, BCFW & ABHY Associahedron ===") (newline)
+
+;; Exact Q[i] Schouten identity & counterexample
+(let ((s1 (make-spinor (qi 1 2) (qi 3 -1)))
+      (s2 (make-spinor (qi 2 -1) (qi 1 4)))
+      (s3 (make-spinor (qi -1 3) (qi 2 1)))
+      (s4 (make-spinor (qi 4 1) (qi -2 3))))
+  (check "4D Spinor-Helicity exact Schouten identity over Q[i]"
+         (verify-schouten s1 s2 s3 s4))
+  (let* ((t1 (qi* (angle-bracket s1 s2) (angle-bracket s3 s4)))
+         (t2 (qi* (angle-bracket s1 s3) (angle-bracket s4 s2)))
+         (t3 (qi* (angle-bracket s1 s4) (angle-bracket s2 s3))))
+    (check "Schouten counterexample: flipped sign gives non-zero residual"
+           (not (qi-zero? (qi- (qi+ t1 t2) t3))))))
+
+;; 4-point exact Q[i] momentum-conserving kinematics
+(define kin4
+  (make-momentum-conserving-kinematics
+    (vector (make-spinor (qi 1 0) (qi 2 1))
+            (make-spinor (qi 2 -1) (qi 1 0))
+            (make-spinor (qi 1 1) (qi 3 -1))
+            (make-spinor (qi 3 0) (qi 1 2)))
+    (vector (make-spinor (qi 2 1) (qi 1 -1))
+            (make-spinor (qi 1 2) (qi -1 3)))))
+
+(check "4-point exact Q[i] momentum conservation sum lambda_i tilde-lambda_i = 0"
+       (verify-momentum-conservation kin4))
+(check "4-point counterexample: perturbing p_1 breaks momentum conservation"
+       (let ((bad4 (vector (make-particle (make-spinor 5 7) (make-spinor 3 2))
+                           (vector-ref kin4 1)
+                           (vector-ref kin4 2)
+                           (vector-ref kin4 3))))
+         (not (verify-momentum-conservation bad4))))
+(check "4-point exact Mandelstam identity s_12 + s_13 + s_14 = 0"
+       (qi-zero? (qi+ (qi+ (mandelstam-s (vector-ref kin4 0) (vector-ref kin4 1))
+                           (mandelstam-s (vector-ref kin4 0) (vector-ref kin4 2)))
+                      (mandelstam-s (vector-ref kin4 0) (vector-ref kin4 3)))))
+
+;; Exact rational/Q[i] equality: BCFW == Parke-Taylor for 4-point MHV!
+(let ((pt4   (parke-taylor-mhv kin4))
+      (bcfw4 (bcfw-mhv-4pt kin4)))
+  (check "4-point gluon MHV: exact BCFW recursion == Parke-Taylor over Q[i]"
+         (and (not (qi-zero? pt4)) (qi= bcfw4 pt4))))
+
+;; 5-point exact Q[i] momentum-conserving kinematics
+(define kin5
+  (make-momentum-conserving-kinematics
+    (vector (make-spinor (qi 1 0) (qi 1 1))
+            (make-spinor (qi 2 1) (qi 1 0))
+            (make-spinor (qi 1 -1) (qi 2 1))
+            (make-spinor (qi 3 1) (qi 1 -2))
+            (make-spinor (qi 2 1) (qi 3 -1)))
+    (vector (make-spinor (qi 1 1) (qi 2 0))
+            (make-spinor (qi 2 -1) (qi 1 1))
+            (make-spinor (qi -1 2) (qi 3 -1)))))
+
+(check "5-point exact Q[i] momentum conservation sum lambda_i tilde-lambda_i = 0"
+       (verify-momentum-conservation kin5))
+
+;; Exact rational/Q[i] equality: BCFW == Parke-Taylor for 5-point MHV!
+(let ((pt5   (parke-taylor-mhv kin5))
+      (bcfw5 (bcfw-mhv-5pt kin5)))
+  (check "5-point gluon MHV: exact BCFW recursion == Parke-Taylor over Q[i]"
+         (and (not (qi-zero? pt5)) (qi= bcfw5 pt5))))
+
+;; Also verify 5-point BCFW == Parke-Taylor on purely rational Q spinors
+(define kin5-q
+  (make-momentum-conserving-kinematics
+    (vector (make-spinor 1 0) (make-spinor 1 1) (make-spinor 1 2)
+            (make-spinor 1 3) (make-spinor 1 5))
+    (vector (make-spinor 1 2) (make-spinor 2 1) (make-spinor 3 -1))))
+(check "5-point gluon MHV: exact BCFW == Parke-Taylor over pure Q"
+       (and (verify-momentum-conservation kin5-q)
+            (qi= (bcfw-mhv-5pt kin5-q) (parke-taylor-mhv kin5-q))))
+
+;; Planar ABHY Associahedron kinematic variables & causal diamond mesh relations
+(check "4-point ABHY planar mesh relations X_{i,j} + X_{i+1,j+1} - X_{i,j+1} - X_{i+1,j} = c_{i,j}"
+       (abhy-verify-mesh-relations kin4))
+(check "5-point ABHY planar mesh relations hold identically across all diamonds"
+       (abhy-verify-mesh-relations kin5))
+(check "4-point ABHY bi-adjoint amplitude m_4 = 1/s + 1/t matches exact Mandelstam sum"
+       (let* ((m4 (abhy-biadjoint-m4 kin4))
+              (s12 (mandelstam-s (vector-ref kin4 0) (vector-ref kin4 1)))
+              (s23 (mandelstam-s (vector-ref kin4 1) (vector-ref kin4 2)))
+              (expected (qi+ (qi/ (qi 1 0) s12) (qi/ (qi 1 0) s23))))
+         (qi= m4 expected)))
+(check "5-point ABHY bi-adjoint amplitude m_5 (pentagon K_4, 5 vertices) is well-defined non-zero Q[i]"
+       (not (qi-zero? (abhy-biadjoint-m5 kin5))))
+(check "ABHY counterexample: perturbed mesh constant violates causal diamond relation"
+       (let* ((x13 (abhy-planar-x kin5 1 3))
+              (x24 (abhy-planar-x kin5 2 4))
+              (x14 (abhy-planar-x kin5 1 4))
+              (x23 (abhy-planar-x kin5 2 3))
+              (lhs (qi- (qi+ x13 x24) (qi+ x14 x23)))
+              (c-bad (qi+ (abhy-mesh-c kin5 1 3) (qi 1 0))))
+         (not (qi= lhs c-bad))))
+
+(newline)
+(display "qft_hep_test: ") (display pass-count) (display " passed, ")
+(display fail-count) (display " failed") (newline)
+(if (= fail-count 0)
+    (begin (display "PASS: qft_hep_test") (newline) (exit 0))
+    (begin (display "FAIL: qft_hep_test") (newline) (exit 1)))

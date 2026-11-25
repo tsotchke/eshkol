@@ -1,0 +1,606 @@
+;;; core.physics.aqft -- Haag-Kastler AQFT Nets & Prefactorization Algebras
+;;;
+;;; Usage: (require core.physics.aqft)
+;;;
+;;; Implements:
+;;;   - Finite causal poset (M, <=) with validity check, spacelike separation,
+;;;     causal complement O', and causal completion (diamond) O''
+;;;   - Exact Q[i] / f64 complex d x d matrix C*-algebra operations (product,
+;;;     commutator [A, B], dagger, Kronecker tensor product, Pauli operators)
+;;;   - Haag-Kastler net of local algebras with executable axiom verifiers:
+;;;       * Isotony: O_1 subseteq O_2 => A(O_1) subseteq A(O_2)
+;;;       * Einstein Microcausality: O_1 perp O_2 => [a, b] = 0 with explicit
+;;;         non-commuting counterexample witness on failure
+;;;       * Time-Slice / Causal Completion check
+;;;   - Concrete qubit spin-chain causal net + microcausality-violating net
+;;;   - Finite-open-cover Prefactorization Algebra with exact associativity
+;;;     and unitality verifiers + concrete locally constant example & counterexample
+
+(require stdlib)
+(require core.geometry.gauge)
+
+(provide make-causal-poset causal-poset? causal-poset-elements
+         causal-poset-valid? causal-leq? causal-events-spacelike?
+         causal-regions-spacelike? causal-subset?
+         causal-complement causal-completion
+         cmat-identity cmat-zero cmat-mul cmat-add cmat-sub cmat-scale
+         cmat-dagger cmat-commutator cmat-zero? cmat-equal? cmat-kronecker
+         pauli-i pauli-x pauli-y pauli-z
+         make-aqft-net aqft-net? aqft-net-poset aqft-net-regions aqft-net-algebra
+         aqft-check-isotony aqft-check-microcausality aqft-check-time-slice
+         make-spin-chain-aqft-net make-nonlocal-counterexample-net
+         make-factorization-algebra factorization-algebra?
+         fact-check-unitality fact-check-associativity
+         make-locally-constant-factorization-algebra
+         make-nonassociative-factorization-counterexample)
+
+;; ============================================================================
+;; Finite Causal Poset (M, <=)
+;; ============================================================================
+;; Representation: (vector 'causal-poset elements leq-pairs)
+;; where `elements` is a list of event symbols/integers and `leq-pairs` is
+;; a list of (a . b) pairs meaning a <= b.
+
+(define (causal-poset? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'causal-poset)))
+
+(define (make-causal-poset elements leq-pairs)
+  (vector 'causal-poset elements leq-pairs))
+
+(define (causal-poset-elements p) (vector-ref p 1))
+(define (causal-poset-pairs p) (vector-ref p 2))
+
+(define (aq-member? x xs)
+  (cond ((null? xs) #f)
+        ((equal? x (car xs)) #t)
+        (else (aq-member? x (cdr xs)))))
+
+(define (aq-all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (aq-all? pred (cdr xs)))
+        (else #f)))
+
+(define (causal-leq? poset a b)
+  (if (aq-member? (cons a b) (causal-poset-pairs poset)) #t #f))
+
+;; Verify reflexivity, antisymmetry, transitivity
+(define (causal-poset-valid? poset)
+  (let ((elems (causal-poset-elements poset)))
+    (and
+      ;; Reflexive
+      (aq-all? (lambda (a) (causal-leq? poset a a)) elems)
+      ;; Antisymmetric
+      (aq-all? (lambda (a)
+                 (aq-all? (lambda (b)
+                            (if (and (causal-leq? poset a b) (causal-leq? poset b a))
+                                (equal? a b)
+                                #t))
+                          elems))
+               elems)
+      ;; Transitive
+      (aq-all? (lambda (a)
+                 (aq-all? (lambda (b)
+                            (if (causal-leq? poset a b)
+                                (aq-all? (lambda (c)
+                                           (if (causal-leq? poset b c)
+                                               (causal-leq? poset a c)
+                                               #t))
+                                         elems)
+                                #t))
+                          elems))
+               elems))))
+
+;; Two events are spacelike iff neither causally precedes the other
+(define (causal-events-spacelike? poset a b)
+  (and (not (causal-leq? poset a b))
+       (not (causal-leq? poset b a))))
+
+(define (causal-subset? r1 r2)
+  (aq-all? (lambda (x) (aq-member? x r2)) r1))
+
+(define (causal-set-equal? r1 r2)
+  (and (causal-subset? r1 r2) (causal-subset? r2 r1)))
+
+(define (causal-regions-spacelike? poset r1 r2)
+  (aq-all? (lambda (a)
+             (aq-all? (lambda (b) (causal-events-spacelike? poset a b)) r2))
+           r1))
+
+;; Causal complement O' = {x in M : forall y in O, x perp y}
+(define (causal-complement poset region)
+  (let loop ((xs (causal-poset-elements poset)) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (let ((x (car xs)))
+          (if (aq-all? (lambda (y) (causal-events-spacelike? poset x y)) region)
+              (loop (cdr xs) (cons x acc))
+              (loop (cdr xs) acc))))))
+
+;; Causal completion (causal diamond) O'' = (O')'
+(define (causal-completion poset region)
+  (causal-complement poset (causal-complement poset region)))
+
+;; ============================================================================
+;; Complex d x d Matrix Algebra over Q[i] / f64 (using cx from core.geometry.gauge)
+;; ============================================================================
+
+(define (cmat-zero n)
+  (let ((m (make-vector n #f)))
+    (let li ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (vector-set! row j (cx 0 0)) (lj (+ j 1)))))
+            (vector-set! m i row)
+            (li (+ i 1)))
+          m))))
+
+(define (cmat-identity n)
+  (let ((m (cmat-zero n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! (vector-ref m i) i (cx 1 0))
+                 (loop (+ i 1)))
+          m))))
+
+(define (cmat-ref m i j) (vector-ref (vector-ref m i) j))
+
+(define (cmat-add A B)
+  (let* ((n (vector-length A))
+         (out (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (vector-set! (vector-ref out i) j (cx+ (cmat-ref A i j) (cmat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (cmat-sub A B)
+  (let* ((n (vector-length A))
+         (out (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (vector-set! (vector-ref out i) j (cx- (cmat-ref A i j) (cmat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (cmat-scale z A)
+  (let* ((n (vector-length A))
+         (out (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (vector-set! (vector-ref out i) j (cx* z (cmat-ref A i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (cmat-mul A B)
+  (let* ((n (vector-length A))
+         (out (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin
+                    (vector-set! (vector-ref out i) j
+                      (let lk ((k 0) (acc (cx 0 0)))
+                        (if (< k n)
+                            (lk (+ k 1) (cx+ acc (cx* (cmat-ref A i k) (cmat-ref B k j))))
+                            acc)))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (cmat-dagger A)
+  (let* ((n (vector-length A))
+         (out (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (vector-set! (vector-ref out i) j (cx-conj (cmat-ref A j i)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (cmat-commutator A B)
+  (cmat-sub (cmat-mul A B) (cmat-mul B A)))
+
+(define (cmat-zero? A)
+  (let ((n (vector-length A)))
+    (let li ((i 0))
+      (if (>= i n)
+          #t
+          (if (let lj ((j 0))
+                (cond ((>= j n) #t)
+                      ((cx-zero? (cmat-ref A i j)) (lj (+ j 1)))
+                      (else #f)))
+              (li (+ i 1))
+              #f)))))
+
+(define (cmat-equal? A B)
+  (and (= (vector-length A) (vector-length B))
+       (let ((n (vector-length A)))
+         (let li ((i 0))
+           (if (>= i n)
+               #t
+               (if (let lj ((j 0))
+                     (cond ((>= j n) #t)
+                           ((cx= (cmat-ref A i j) (cmat-ref B i j)) (lj (+ j 1)))
+                           (else #f)))
+                   (li (+ i 1))
+                   #f))))))
+
+(define (cmat-kronecker A B)
+  (let* ((na (vector-length A))
+         (nb (vector-length B))
+         (out (cmat-zero (* na nb))))
+    (let li ((ia 0))
+      (if (< ia na)
+          (begin
+            (let lj ((ja 0))
+              (if (< ja na)
+                  (let ((aij (cmat-ref A ia ja)))
+                    (let lib ((ib 0))
+                      (if (< ib nb)
+                          (begin
+                            (let ljb ((jb 0))
+                              (if (< jb nb)
+                                  (begin
+                                    (vector-set! (vector-ref out (+ (* ia nb) ib))
+                                                 (+ (* ja nb) jb)
+                                                 (cx* aij (cmat-ref B ib jb)))
+                                    (ljb (+ jb 1)))))
+                            (lib (+ ib 1)))))
+                    (lj (+ ja 1)))))
+            (li (+ ia 1)))
+          out))))
+
+;; Exact Q[i] Pauli operators
+(define (pauli-i) (cmat-identity 2))
+(define (pauli-x)
+  (vector (vector (cx 0 0) (cx 1 0))
+          (vector (cx 1 0) (cx 0 0))))
+(define (pauli-y)
+  (vector (vector (cx 0 0) (cx 0 -1))
+          (vector (cx 0 1) (cx 0 0))))
+(define (pauli-z)
+  (vector (vector (cx 1 0) (cx 0 0))
+          (vector (cx 0 0) (cx -1 0))))
+
+;; ============================================================================
+;; Haag-Kastler Net of Local C*-Algebras
+;; ============================================================================
+;; Representation: (vector 'aqft-net poset region-algebra-alist)
+;; where `region-algebra-alist` is a list of (cons region-list operator-list).
+;; Each operator-list holds the finite generating set (or linear basis) of A(O).
+
+(define (aqft-net? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'aqft-net)))
+
+(define (make-aqft-net poset region-algebra-alist)
+  (vector 'aqft-net poset region-algebra-alist))
+
+(define (aqft-net-poset net) (vector-ref net 1))
+(define (aqft-net-entries net) (vector-ref net 2))
+(define (aqft-net-regions net) (map car (vector-ref net 2)))
+
+(define (aqft-net-algebra net region)
+  (let loop ((entries (aqft-net-entries net)))
+    (cond ((null? entries) #f)
+          ((causal-set-equal? (caar entries) region) (cdar entries))
+          (else (loop (cdr entries))))))
+
+(define (aq-cmat-member? m ms)
+  (cond ((null? ms) #f)
+        ((cmat-equal? m (car ms)) #t)
+        (else (aq-cmat-member? m (cdr ms)))))
+
+;; Generate multiplicative closure of operator generators (up to scalar phases
+;; +-1, +-i for Pauli-group / finite-algebra closure, bounded by max-ops)
+(define (aq-canonical-phase-member? m ms)
+  (let ((phases (list (cx 1 0) (cx -1 0) (cx 0 1) (cx 0 -1))))
+    (let lp ((ps phases))
+      (cond ((null? ps) #f)
+            ((aq-cmat-member? (cmat-scale (car ps) m) ms) #t)
+            (else (lp (cdr ps)))))))
+
+(define (aq-algebra-closure gens max-size)
+  (if (null? gens)
+      '()
+      (let* ((id (cmat-identity (vector-length (car gens))))
+             (seed (if (aq-canonical-phase-member? id gens) gens (cons id gens))))
+        (let loop ((pool seed) (frontier seed))
+          (if (or (null? frontier) (>= (length pool) max-size))
+              pool
+              (let ((next-front
+                      (let l1 ((fs frontier) (acc '()))
+                        (if (null? fs)
+                            acc
+                            (let ((f (car fs)))
+                              (l1 (cdr fs)
+                                  (let l2 ((gs gens) (a2 acc))
+                                    (if (null? gs)
+                                        a2
+                                        (let ((p (cmat-mul f (car gs))))
+                                          (if (or (cmat-zero? p)
+                                                  (aq-canonical-phase-member? p pool)
+                                                  (aq-canonical-phase-member? p a2))
+                                              (l2 (cdr gs) a2)
+                                              (l2 (cdr gs) (cons p a2))))))))))))
+                (loop (append next-front pool) next-front)))))))
+
+;; Axiom 1: Isotony -- O_1 subseteq O_2 => every operator in A(O_1) lies in A(O_2)
+;; (checked via multiplicative closure of A(O_2)).
+;; Returns (cons #t '()) or (cons #f (list O1 O2 offending-op)).
+(define (aqft-check-isotony net)
+  (let ((entries (aqft-net-entries net)))
+    (let l1 ((e1 entries))
+      (if (null? e1)
+          (cons #t '())
+          (let ((r1 (caar e1)) (ops1 (cdar e1)))
+            (let l2 ((e2 entries))
+              (if (null? e2)
+                  (l1 (cdr e1))
+                  (let ((r2 (caar e2)) (ops2 (cdar e2)))
+                    (if (causal-subset? r1 r2)
+                        (let ((clos2 (aq-algebra-closure ops2 64)))
+                          (let lo ((os ops1))
+                            (cond ((null? os) (l2 (cdr e2)))
+                                  ((aq-canonical-phase-member? (car os) clos2) (lo (cdr os)))
+                                  (else (cons #f (list r1 r2 (car os)))))))
+                        (l2 (cdr e2)))))))))))
+
+;; Axiom 2: Einstein Microcausality -- O_1 perp O_2 => [a, b] = 0 for all
+;; a in A(O_1), b in A(O_2).
+;; Returns (cons #t '()) or (cons #f (list O1 O2 a b [a,b])).
+(define (aqft-check-microcausality net)
+  (let ((poset (aqft-net-poset net))
+        (entries (aqft-net-entries net)))
+    (let l1 ((e1 entries))
+      (if (null? e1)
+          (cons #t '())
+          (let ((r1 (caar e1)) (ops1 (cdar e1)))
+            (let l2 ((e2 entries))
+              (if (null? e2)
+                  (l1 (cdr e1))
+                  (let ((r2 (caar e2)) (ops2 (cdar e2)))
+                    (if (causal-regions-spacelike? poset r1 r2)
+                        (let la ((as ops1))
+                          (if (null? as)
+                              (l2 (cdr e2))
+                              (let ((a (car as)))
+                                (let lb ((bs ops2))
+                                  (if (null? bs)
+                                      (la (cdr as))
+                                      (let* ((b (car bs))
+                                             (comm (cmat-commutator a b)))
+                                        (if (cmat-zero? comm)
+                                            (lb (cdr bs))
+                                            (cons #f (list r1 r2 a b comm)))))))))
+                        (l2 (cdr e2)))))))))))
+
+;; Axiom 3: Time-Slice / Causal Completion -- given a Cauchy surface region S,
+;; checks that S'' = M AND that the algebra generated by A(S) contains every
+;; generator of the global algebra A(M).
+(define (aqft-check-time-slice net cauchy-region)
+  (let* ((poset (aqft-net-poset net))
+         (all-elems (causal-poset-elements poset))
+         (comp (causal-completion poset cauchy-region))
+         (ops-s (aqft-net-algebra net cauchy-region))
+         (ops-m (aqft-net-algebra net all-elems)))
+    (cond ((not (causal-set-equal? comp all-elems))
+           (cons #f (list 'not-cauchy-surface cauchy-region comp)))
+          ((or (not ops-s) (not ops-m))
+           (cons #f (list 'missing-region-algebra cauchy-region)))
+          (else
+           (let ((clos-s (aq-algebra-closure ops-s 64)))
+             (let loop ((os ops-m))
+               (cond ((null? os) (cons #t '()))
+                     ((aq-canonical-phase-member? (car os) clos-s) (loop (cdr os)))
+                     (else (cons #f (list 'incomplete-time-slice (car os)))))))))))
+
+;; ============================================================================
+;; Concrete Qubit Spin-Chain Causal Net & Non-Local Counterexample
+;; ============================================================================
+;; 2 spatial sites (L, R) x 2 time slices (t=0, t=1): events (L0 R0 L1 R1).
+;; Causal cone: L0 <= L1, L0 <= R1, R0 <= L1, R0 <= R1 (full lightcone across
+;; dt=1); L0 perp R0 and L1 perp R1 (spacelike separated at equal time!).
+;; Hilbert space: C^2 tensor C^2 (dim 4).
+;; Local algebras:
+;;   A({L0}) = <I x I, X x I, Z x I>
+;;   A({R0}) = <I x I, I x X, I x Z>
+;;   A({L1}) = <I x I, X x I, Z x I>  (free local evolution)
+;;   A({R1}) = <I x I, I x X, I x Z>
+;;   A({L0, R0}) = A({L1, R1}) = A(M) = full 2-qubit algebra!
+
+(define (make-spin-chain-poset)
+  (make-causal-poset
+    '(L0 R0 L1 R1)
+    '((L0 . L0) (R0 . R0) (L1 . L1) (R1 . R1)
+      (L0 . L1) (L0 . R1) (R0 . L1) (R0 . R1))))
+
+(define (make-spin-chain-aqft-net)
+  (let* ((poset (make-spin-chain-poset))
+         (I2 (pauli-i)) (X (pauli-x)) (Z (pauli-z))
+         (II (cmat-kronecker I2 I2))
+         (XI (cmat-kronecker X I2))
+         (ZI (cmat-kronecker Z I2))
+         (IX (cmat-kronecker I2 X))
+         (IZ (cmat-kronecker I2 Z))
+         (left-ops (list II XI ZI))
+         (right-ops (list II IX IZ))
+         (full-ops (list II XI ZI IX IZ)))
+    (make-aqft-net poset
+      (list (cons '(L0) left-ops)
+            (cons '(R0) right-ops)
+            (cons '(L1) left-ops)
+            (cons '(R1) right-ops)
+            (cons '(L0 R0) full-ops)
+            (cons '(L1 R1) full-ops)
+            (cons '(L0 R0 L1 R1) full-ops)))))
+
+;; Counterexample violating Einstein Microcausality: assigns Z x I to spacelike
+;; region {R0}, which fails to commute with X x I in {L0}!
+(define (make-nonlocal-counterexample-net)
+  (let* ((poset (make-spin-chain-poset))
+         (I2 (pauli-i)) (X (pauli-x)) (Z (pauli-z))
+         (II (cmat-kronecker I2 I2))
+         (XI (cmat-kronecker X I2))
+         (ZI (cmat-kronecker Z I2))
+         (IX (cmat-kronecker I2 X))
+         (IZ (cmat-kronecker I2 Z)))
+    (make-aqft-net poset
+      (list (cons '(L0) (list II XI ZI))
+            (cons '(R0) (list II IX IZ ZI))
+            (cons '(L0 R0 L1 R1) (list II XI ZI IX IZ))))))
+
+;; ============================================================================
+;; Finite-Open-Cover Prefactorization Algebra (Costello-Gwilliam)
+;; ============================================================================
+;; Representation:
+;;   (vector 'factorization-algebra opens basis-fn unit-el mul-fn eq-fn)
+;; where:
+;;   opens     list of opens (each a list of points of finite space X)
+;;   basis-fn  (lambda (U) list-of-basis-elements-of-F(U))
+;;   unit-el   unit element 1 in F(emptyset)
+;;   mul-fn    (lambda (U V W x y) element-of-F(W)) for U cap V = empty, U u V <= W
+;;   eq-fn     equality predicate on algebra elements
+
+(define (factorization-algebra? x)
+  (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'factorization-algebra)))
+
+(define (make-factorization-algebra opens basis-fn unit-el mul-fn eq-fn)
+  (vector 'factorization-algebra opens basis-fn unit-el mul-fn eq-fn))
+
+(define (fact-disjoint? U V)
+  (aq-all? (lambda (x) (not (aq-member? x V))) U))
+
+(define (fact-union U V)
+  (let loop ((xs U) (acc V))
+    (if (null? xs)
+        acc
+        (if (aq-member? (car xs) acc)
+            (loop (cdr xs) acc)
+            (loop (cdr xs) (cons (car xs) acc))))))
+
+(define (fact-open-in? U opens)
+  (let loop ((os opens))
+    (cond ((null? os) #f)
+          ((causal-set-equal? U (car os)) #t)
+          (else (loop (cdr os))))))
+
+;; Verify unitality: m_{empty, U}(1, x) = x = m_{U, empty}(x, 1) for all U, x
+(define (fact-check-unitality fa)
+  (let ((opens (vector-ref fa 1))
+        (basis-fn (vector-ref fa 2))
+        (unit (vector-ref fa 3))
+        (mul (vector-ref fa 4))
+        (eqv (vector-ref fa 5)))
+    (let lo ((os opens))
+      (if (null? os)
+          (cons #t '())
+          (let ((U (car os)))
+            (let lb ((bs (basis-fn U)))
+              (if (null? bs)
+                  (lo (cdr os))
+                  (let* ((x (car bs))
+                         (lhs (mul '() U U unit x))
+                         (rhs (mul U '() U x unit)))
+                    (if (and (eqv lhs x) (eqv rhs x))
+                        (lb (cdr bs))
+                        (cons #f (list U x lhs rhs)))))))))))
+
+;; Verify exact associativity for all mutually disjoint triples (U, V, W)
+;; with U u V, V u W, U u V u W in opens:
+;;   m_{U u V, W}(m_{U, V}(x, y), z) = m_{U, V u W}(x, m_{V, W}(y, z))
+(define (fact-check-associativity fa)
+  (let ((opens (vector-ref fa 1))
+        (basis-fn (vector-ref fa 2))
+        (mul (vector-ref fa 4))
+        (eqv (vector-ref fa 5)))
+    (let lu ((us opens))
+      (if (null? us)
+          (cons #t '())
+          (let ((U (car us)))
+            (let lv ((vs opens))
+              (if (null? vs)
+                  (lu (cdr us))
+                  (let ((V (car vs)))
+                    (if (not (fact-disjoint? U V))
+                        (lv (cdr vs))
+                        (let ((UV (fact-union U V)))
+                          (if (not (fact-open-in? UV opens))
+                              (lv (cdr vs))
+                              (let lw ((ws opens))
+                                (if (null? ws)
+                                    (lv (cdr vs))
+                                    (let ((W (car ws)))
+                                      (if (not (and (fact-disjoint? U W) (fact-disjoint? V W)))
+                                          (lw (cdr ws))
+                                          (let ((VW (fact-union V W))
+                                                (UVW (fact-union UV W)))
+                                            (if (not (and (fact-open-in? VW opens)
+                                                          (fact-open-in? UVW opens)))
+                                                (lw (cdr ws))
+                                                (let lx ((xs (basis-fn U)))
+                                                  (if (null? xs)
+                                                      (lw (cdr ws))
+                                                      (let ly ((ys (basis-fn V)))
+                                                        (if (null? ys)
+                                                            (lx (cdr xs))
+                                                            (let lz ((zs (basis-fn W)))
+                                                              (if (null? zs)
+                                                                  (ly (cdr ys))
+                                                                  (let* ((x (car xs)) (y (car ys)) (z (car zs))
+                                                                         (left (mul UV W UVW (mul U V UV x y) z))
+                                                                         (right (mul U VW UVW x (mul V W VW y z))))
+                                                                    (if (eqv left right)
+                                                                        (lz (cdr zs))
+                                                                        (cons #f (list U V W x y z left right)))))))))))))))))))))))))))
+
+;; Concrete locally constant E_1 prefactorization algebra on the connected
+;; open intervals of a 3-point discrete interval {0, 1, 2} with ordered
+;; matrix algebra M_2(Q[i]) (disjoint intervals multiply in spatial order).
+(define (fact-min-pt U)
+  (if (null? U) -1
+      (let loop ((xs (cdr U)) (m (car U)))
+        (if (null? xs) m (loop (cdr xs) (if (< (car xs) m) (car xs) m))))))
+
+(define (make-locally-constant-factorization-algebra)
+  (let* ((opens '(() (0) (1) (2) (0 1) (1 2) (0 1 2)))
+         (I2 (pauli-i)) (X (pauli-x)) (Z (pauli-z))
+         (basis (list I2 X Z))
+         (basis-fn (lambda (U) (if (null? U) (list I2) basis)))
+         (mul-fn (lambda (U V W x y)
+                   (cond ((null? U) y)
+                         ((null? V) x)
+                         ((< (fact-min-pt U) (fact-min-pt V)) (cmat-mul x y))
+                         (else (cmat-mul y x))))))
+    (make-factorization-algebra opens basis-fn I2 mul-fn cmat-equal?)))
+
+;; Non-associative counterexample using Lie commutator [x, y] (violates associativity!)
+(define (make-nonassociative-factorization-counterexample)
+  (let* ((opens '(() (0) (1) (2) (0 1) (1 2) (0 1 2)))
+         (I2 (pauli-i)) (X (pauli-x)) (Y (pauli-y)) (Z (pauli-z))
+         (basis (list X Y Z))
+         (basis-fn (lambda (U) (if (null? U) (list I2) basis)))
+         (mul-fn (lambda (U V W x y)
+                   (cond ((null? U) y)
+                         ((null? V) x)
+                         ((< (fact-min-pt U) (fact-min-pt V)) (cmat-commutator x y))
+                         (else (cmat-commutator y x))))))
+    (make-factorization-algebra opens basis-fn I2 mul-fn cmat-equal?)))
