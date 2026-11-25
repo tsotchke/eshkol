@@ -10715,6 +10715,34 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_k5_k6_services.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_k5_k6_services_selfhost_test.cpp")
+        add_library(eshkol-os-k5-k6-services STATIC lib/core/os_k5_k6_services.c)
+        target_include_directories(eshkol-os-k5-k6-services PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-k5-k6-services PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-k5-k6-services PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_k5_k6_services_selfhost_test tests/toolchain/os_k5_k6_services_selfhost_test.cpp)
+        target_compile_features(os_k5_k6_services_selfhost_test PRIVATE cxx_std_17)
+        target_link_libraries(os_k5_k6_services_selfhost_test PRIVATE
+            eshkol-os-k5-k6-services eshkol-os-drivers-vfs eshkol-os-self-host eshkol-os-vm-shell)
+        add_dependencies(os_k5_k6_services_selfhost_test
+            eshkol-os-k5-k6-services eshkol-os-drivers-vfs eshkol-os-self-host eshkol-os-vm-shell)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_k5_k6_services_selfhost_test
+                COMMAND os_k5_k6_services_selfhost_test "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-k5-k6-services>
+            )
+        else()
+            add_test(
+                NAME os_k5_k6_services_selfhost_test
+                COMMAND os_k5_k6_services_selfhost_test "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-k5-k6-services>
+            )
+        endif()
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)
