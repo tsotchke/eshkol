@@ -1,0 +1,258 @@
+;;; core.operator.cp_instrument -- Exact Choi-PSD verified completely positive
+;;; maps, Kraus representations, sigma-cpu maps, and compositional
+;;; sigma-CP-instruments (ADR-0062; arXiv:2611.32363 Thm. 7.6 & Prop. 7.7).
+;;;
+;;; Strictly separated from core.monoidal.zx: every CP map and instrument branch
+;;; must pass exact Choi-Jamiolkowski Hermitian PSD certification via
+;;; core.exact_psd. Non-CP maps (e.g. transpose) are rejected with an exact
+;;; rational negative witness vector!
+
+(require stdlib)
+(require core.operator.cstar)
+(require core.operator.sigma_cstar)
+
+(provide
+  ;; Superoperators & exact Choi-Jamiolkowski complete-positivity certification
+  make-superop superop? superop-in-dim superop-out-dim superop-apply
+  superop-choi-matrix superop-cp-certify superop-cp? superop-cp-witness
+  superop-unital? superop-trace-preserving? superop-cpu? superop-cptp?
+  superop-compose
+  ;; Kraus-form superoperators (Schrodinger CPTP and Heisenberg sigma-cpu dual)
+  kraus-schrodinger-superop kraus-heisenberg-superop
+  ;; sigma-CP-instruments p: Sigma -> sigma-CP(A, B)
+  ;; (Heisenberg picture: p(top)(I_A) = I_B; Schrodinger picture: trace-preserving)
+  make-sigma-cp-instrument sigma-cp-instrument?
+  instrument-sigma instrument-in-dim instrument-out-dim
+  instrument-eval-atom instrument-eval-event
+  instrument-valid? instrument-unital?
+  ;; Theorem 7.6 bijection: p <-> sigma-cpu map L^infty_abs(Sigma) (x) A -> B
+  instrument->tensor-cpu-map
+  ;; Proposition 7.7 sequential composition: p' o p: (Sigma (x) Sigma') -> sigma-CP(A, C)
+  instrument-compose
+  ;; Born-rule outcome probability distribution for a density state rho
+  instrument-outcome-probs)
+
+;; ---------------------------------------------------------------------------
+;; Superoperators Phi: M_{in}(Q[i]) -> M_{out}(Q[i])
+;; ---------------------------------------------------------------------------
+
+(define (make-superop in-dim out-dim apply-fn)
+  (vector 'superop-v1 in-dim out-dim apply-fn))
+
+(define (superop? s)
+  (and (vector? s) (= (vector-length s) 4) (eq? (vector-ref s 0) 'superop-v1)))
+
+(define (superop-in-dim s) (vector-ref s 1))
+(define (superop-out-dim s) (vector-ref s 2))
+(define (superop-apply s X) ((vector-ref s 3) X))
+
+;; Exact Choi-Jamiolkowski matrix:
+;;   C_Phi = sum_{i,j=0}^{in-1} E_{ij} (x) Phi(E_{ij}) in M_{in * out}(Q[i])
+(define (superop-choi-matrix s)
+  (let* ((n (superop-in-dim s))
+         (m (superop-out-dim s))
+         (C (cmat-zero (* n m))))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (let ((block (superop-apply s (cmat-unit n i j))))
+                    (let lp ((p 0))
+                      (if (< p m)
+                          (begin
+                            (let lq ((q 0))
+                              (if (< q m)
+                                  (begin
+                                    (cmat-set! C (+ (* i m) p) (+ (* j m) q)
+                                               (cmat-ref block p q))
+                                    (lq (+ q 1)))))
+                            (lp (+ p 1)))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+;; Exact complete-positivity certification via Choi matrix + core.exact_psd
+(define (superop-cp-certify s)
+  (cmat-psd-certify (superop-choi-matrix s)))
+
+(define (superop-cp? s)
+  (vector-ref (superop-cp-certify s) 1))
+
+(define (superop-cp-witness s)
+  (vector-ref (superop-cp-certify s) 3))
+
+(define (superop-unital? s)
+  (cmat= (superop-apply s (cmat-identity (superop-in-dim s)))
+         (cmat-identity (superop-out-dim s))))
+
+;; Exact trace preservation verified on every matrix unit E_{i,j}:
+;; Tr(Phi(E_{i,j})) == delta_{i,j}
+(define (superop-trace-preserving? s)
+  (let ((n (superop-in-dim s)))
+    (let li ((i 0))
+      (cond ((= i n) #t)
+            ((let lj ((j 0))
+               (cond ((= j n) #t)
+                     ((qi= (cmat-trace (superop-apply s (cmat-unit n i j)))
+                           (if (= i j) qi-one qi-zero))
+                      (lj (+ j 1)))
+                     (else #f)))
+             (li (+ i 1)))
+            (else #f)))))
+
+(define (superop-cpu? s)
+  (and (superop-cp? s) (superop-unital? s)))
+
+(define (superop-cptp? s)
+  (and (superop-cp? s) (superop-trace-preserving? s)))
+
+;; Composition (s2 o s1)(X) = s2(s1(X))
+(define (superop-compose s2 s1)
+  (if (not (= (superop-out-dim s1) (superop-in-dim s2)))
+      (error "superop-compose: inner dimension mismatch"))
+  (make-superop (superop-in-dim s1) (superop-out-dim s2)
+                (lambda (X) (superop-apply s2 (superop-apply s1 X)))))
+
+;; ---------------------------------------------------------------------------
+;; Kraus-form constructors (Schrodinger & Heisenberg dual)
+;; ---------------------------------------------------------------------------
+
+(define (kraus-schrodinger-superop dim kraus-list)
+  (make-superop dim dim
+    (lambda (X)
+      (let loop ((ks kraus-list) (acc (cmat-zero dim)))
+        (if (null? ks) acc
+            (let ((K (car ks)))
+              (loop (cdr ks) (cmat+ acc (cmat* K (cmat* X (cmat-adjoint K)))))))))))
+
+(define (kraus-heisenberg-superop dim kraus-list)
+  (make-superop dim dim
+    (lambda (A)
+      (let loop ((ks kraus-list) (acc (cmat-zero dim)))
+        (if (null? ks) acc
+            (let ((K (car ks)))
+              (loop (cdr ks) (cmat+ acc (cmat* (cmat-adjoint K) (cmat* A K))))))))))
+
+;; ---------------------------------------------------------------------------
+;; sigma-CP-instruments (arXiv:2611.32363 Definition 7.1, Thm 7.6, Prop 7.7)
+;;
+;; Heisenberg picture: p: Sigma -> sigma-CP(A, B) with:
+;;   - Each atomic branch p({i}): A -> B is exact Choi-PSD completely positive
+;;   - p(U) = sum_{i in U} p({i}) (sigma-additive on disjoint events)
+;;   - p(top)(I_A) = I_B (unitality)
+;; ---------------------------------------------------------------------------
+
+(define (make-sigma-cp-instrument sigma in-dim out-dim atomic-branches)
+  (let ((bv (if (vector? atomic-branches) atomic-branches (list->vector atomic-branches))))
+    (if (not (= (vector-length bv) (sigma-atom-count sigma)))
+        (error "make-sigma-cp-instrument: branch count must match sigma atom count"))
+    ;; Fail closed: certify EVERY atomic branch via exact Choi-PSD!
+    (let loop ((i 0))
+      (if (< i (vector-length bv))
+          (let* ((br (vector-ref bv i))
+                 (cert (superop-cp-certify br)))
+            (if (not (vector-ref cert 1))
+                (error "make-sigma-cp-instrument: branch failed exact Choi-PSD certification" i))
+            (loop (+ i 1)))))
+    (vector 'sigma-cp-instrument-v1 sigma in-dim out-dim bv)))
+
+(define (sigma-cp-instrument? p)
+  (and (vector? p) (= (vector-length p) 5) (eq? (vector-ref p 0) 'sigma-cp-instrument-v1)))
+
+(define (instrument-sigma p) (vector-ref p 1))
+(define (instrument-in-dim p) (vector-ref p 2))
+(define (instrument-out-dim p) (vector-ref p 3))
+(define (instrument-eval-atom p idx) (vector-ref (vector-ref p 4) idx))
+
+;; Evaluate instrument p on an arbitrary measurable event U in Sigma:
+;; returns the superoperator p(U) = sum_{i in U} p({i}).
+(define (instrument-eval-event p event)
+  (let ((in-d (instrument-in-dim p))
+        (out-d (instrument-out-dim p)))
+    (make-superop in-d out-d
+      (lambda (A)
+        (let loop ((es event) (acc (cmat-zero out-d)))
+          (if (null? es) acc
+              (loop (cdr es)
+                    (cmat+ acc (superop-apply (instrument-eval-atom p (car es)) A)))))))))
+
+(define (instrument-unital? p)
+  (superop-unital? (instrument-eval-event p (sigma-top (instrument-sigma p)))))
+
+(define (instrument-valid? p)
+  (and (sigma-cp-instrument? p)
+       (let ((k (sigma-atom-count (instrument-sigma p))))
+         (let loop ((i 0))
+           (cond ((= i k) (instrument-unital? p))
+                 ((superop-cp? (instrument-eval-atom p i)) (loop (+ i 1)))
+                 (else #f))))))
+
+;; ---------------------------------------------------------------------------
+;; Theorem 7.6 Bijection (arXiv:2611.32363):
+;;   p: Sigma -> sigma-CP(A, B)  <==>  phi: L^infty_abs(Sigma) (x) A -> B
+;; For a block-direct-sum element X = (X_0, ..., X_{k-1}) in L^infty_abs(Sigma) (x) A,
+;;   phi(X) = sum_{i=0}^{k-1} p({i})(X_i).
+;; ---------------------------------------------------------------------------
+
+(define (instrument->tensor-cpu-map p)
+  (let ((k (sigma-atom-count (instrument-sigma p)))
+        (out-d (instrument-out-dim p)))
+    (lambda (block-el)
+      (if (not (= (block-cstar-count block-el) k))
+          (error "instrument->tensor-cpu-map: block count mismatch"))
+      (let loop ((i 0) (acc (cmat-zero out-d)))
+        (if (= i k) acc
+            (loop (+ i 1)
+                  (cmat+ acc
+                         (superop-apply (instrument-eval-atom p i)
+                                        (block-cstar-ref block-el i)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Proposition 7.7 Sequential Composition (arXiv:2611.32363):
+;; In the contravariant Heisenberg picture:
+;;   p-first: Sigma  -> sigma-CP(B, A)  (applied first to states on A, pulls B -> A)
+;;   p-next:  Sigma' -> sigma-CP(C, B)  (applied second to states on B, pulls C -> B)
+;; returns (p-next after p-first): (Sigma (x) Sigma') -> sigma-CP(C, A)
+;; with Heisenberg atomic branches:
+;;   (p-next after p-first)({(i, j)})(c) = p-first({i})(p-next({j})(c)).
+;; ---------------------------------------------------------------------------
+
+(define (instrument-compose p-next p-first)
+  (if (not (= (instrument-in-dim p-first) (instrument-out-dim p-next)))
+      (error "instrument-compose: intermediate algebra dimension mismatch"))
+  (let* ((s1 (instrument-sigma p-first))
+         (s2 (instrument-sigma p-next))
+         (s12 (sigma-tensor-product s1 s2))
+         (k1 (sigma-atom-count s1))
+         (k2 (sigma-atom-count s2))
+         (branches (make-vector (* k1 k2) #f)))
+    (let li ((i 0))
+      (if (< i k1)
+          (begin
+            (let lj ((j 0))
+              (if (< j k2)
+                  (begin
+                    (vector-set! branches (+ (* i k2) j)
+                                 (superop-compose (instrument-eval-atom p-first i)
+                                                  (instrument-eval-atom p-next j)))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    (make-sigma-cp-instrument s12 (instrument-in-dim p-next)
+                              (instrument-out-dim p-first) branches)))
+
+;; Exact Born-rule probability vector for Heisenberg instrument p acting on
+;; density state rho: P(outcome = i) = Tr(rho * p({i})(I_in)) in exact Q.
+(define (instrument-outcome-probs p st)
+  (let* ((k (sigma-atom-count (instrument-sigma p)))
+         (I-in (cmat-identity (instrument-in-dim p)))
+         (probs (make-vector k 0)))
+    (let loop ((i 0))
+      (if (< i k)
+          (let* ((effect (superop-apply (instrument-eval-atom p i) I-in))
+                 (val (state-eval st effect)))
+            (if (not (= (qi-im val) 0))
+                (error "instrument-outcome-probs: non-real outcome probability"))
+            (vector-set! probs i (qi-re val))
+            (loop (+ i 1)))))
+    probs))
