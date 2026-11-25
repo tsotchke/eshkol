@@ -2701,6 +2701,8 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/vsa_hdc.cpp
   lib/core/sheaf_workspace.cpp
   lib/core/gflownet_ebm.cpp
+  lib/core/resident_cognition.cpp
+  lib/core/holomorphic_wfr.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4359,6 +4361,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce4_5_vsa_sheaf_gflownet_test PRIVATE eshkol-runtime)
     add_test(NAME ce4_5_vsa_sheaf_gflownet_test COMMAND ce4_5_vsa_sheaf_gflownet_test)
     set_tests_properties(ce4_5_vsa_sheaf_gflownet_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce7_resident_hep_wfr_test.cpp")
+    add_executable(ce7_resident_hep_wfr_test
+        tests/logic/ce7_resident_hep_wfr_test.cpp)
+    target_compile_features(ce7_resident_hep_wfr_test PRIVATE cxx_std_17)
+    target_include_directories(ce7_resident_hep_wfr_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce7_resident_hep_wfr_test PRIVATE eshkol-runtime)
+    add_test(NAME ce7_resident_hep_wfr_test COMMAND ce7_resident_hep_wfr_test)
+    set_tests_properties(ce7_resident_hep_wfr_test PROPERTIES TIMEOUT 120)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
