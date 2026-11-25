@@ -387,6 +387,7 @@ static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, con
         // leaf copy left dangling into the popped region arena.
         case HEAP_SUBTYPE_SUBSTITUTION:   return EVAC_SUBSTITUTION;
         case HEAP_SUBTYPE_FACT:           return EVAC_FACT;
+        case HEAP_SUBTYPE_RULE:           return EVAC_RULE;
         case HEAP_SUBTYPE_KNOWLEDGE_BASE: return EVAC_KNOWLEDGE_BASE;
         case HEAP_SUBTYPE_FACTOR_GRAPH:   return EVAC_FACTOR_GRAPH;
         case HEAP_SUBTYPE_WORKSPACE:      return EVAC_WORKSPACE;
@@ -585,6 +586,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
             case HEAP_SUBTYPE_EXCEPTION:
             case HEAP_SUBTYPE_SUBSTITUTION:
             case HEAP_SUBTYPE_FACT:
+            case HEAP_SUBTYPE_RULE:
             case HEAP_SUBTYPE_KNOWLEDGE_BASE:
             case HEAP_SUBTYPE_FACTOR_GRAPH:
             case HEAP_SUBTYPE_WORKSPACE:
@@ -1069,14 +1071,48 @@ static void evac_drain(EvacState& st) {
                 break;
             }
             case EVAC_SUBSTITUTION: {
-                // Layout [hdr][struct][var_ids u64[cap]][terms tagged[cap]] — all
-                // inline (already copied contiguously). var_ids are plain ints;
-                // only the bound terms carry heap pointers. Unused capacity slots
-                // beyond num_bindings are uninitialized and must not be walked.
+                // Inline layout [hdr][struct][var_ids u64[cap]][terms tagged[cap]]
+                // when hamt_root == NULL; otherwise persistent 32-way HAMT nodes.
                 auto* s = (eshkol_substitution_t*)nd;
-                eshkol_tagged_value_t* terms = SUBST_TERMS(s);
-                for (uint32_t i = 0; i < s->num_bindings; ++i)
-                    terms[i] = evac_value(st, terms[i]);
+                if (s->hamt_root) {
+                    auto evac_hamt = [&](auto&& self, eshkol_subst_hamt_node_t* node) -> eshkol_subst_hamt_node_t* {
+                        if (!node || !st.owns(node)) return node;
+                        auto* copy = (eshkol_subst_hamt_node_t*)evac_raw(
+                            st, node, sizeof(eshkol_subst_hamt_node_t));
+                        if (!copy) return node;
+                        if (copy->bitmap == 0) {
+                            if (copy->leaf_ids && copy->count > 0 && st.owns(copy->leaf_ids)) {
+                                copy->leaf_ids = (uint64_t*)evac_raw(
+                                    st, copy->leaf_ids, (size_t)copy->count * sizeof(uint64_t));
+                            }
+                            if (copy->leaf_terms && copy->count > 0 && st.owns(copy->leaf_terms)) {
+                                copy->leaf_terms = (eshkol_tagged_value_t*)evac_raw(
+                                    st, copy->leaf_terms,
+                                    (size_t)copy->count * sizeof(eshkol_tagged_value_t));
+                            }
+                            if (copy->leaf_terms) {
+                                for (uint32_t i = 0; i < copy->count; ++i)
+                                    copy->leaf_terms[i] = evac_value(st, copy->leaf_terms[i]);
+                            }
+                        } else {
+                            if (copy->children && copy->count > 0 && st.owns(copy->children)) {
+                                copy->children = (eshkol_subst_hamt_node_t**)evac_raw(
+                                    st, copy->children,
+                                    (size_t)copy->count * sizeof(eshkol_subst_hamt_node_t*));
+                            }
+                            if (copy->children) {
+                                for (uint32_t i = 0; i < copy->count; ++i)
+                                    copy->children[i] = self(self, copy->children[i]);
+                            }
+                        }
+                        return copy;
+                    };
+                    s->hamt_root = evac_hamt(evac_hamt, s->hamt_root);
+                } else {
+                    eshkol_tagged_value_t* terms = SUBST_TERMS(s);
+                    for (uint32_t i = 0; i < s->num_bindings; ++i)
+                        terms[i] = evac_value(st, terms[i]);
+                }
                 break;
             }
             case EVAC_FACT: {
@@ -1096,6 +1132,27 @@ static void evac_drain(EvacState& st) {
                         f->predicate = (uint64_t)(uintptr_t)evac_raw(
                             st, pred, std::strlen((const char*)pred) + 1);
                 }
+                break;
+            }
+            case EVAC_RULE: {
+                auto* r = (eshkol_rule_t*)nd;
+                if (r->head)
+                    r->head = (eshkol_fact_t*)evac_object_ptr(st, r->head);
+                if (r->body && r->num_body > 0) {
+                    if (st.owns(r->body))
+                        r->body = (eshkol_fact_t**)evac_raw(
+                            st, r->body, (size_t)r->num_body * sizeof(eshkol_fact_t*));
+                    else
+                        st.preserve(r->body, (size_t)r->num_body * sizeof(eshkol_fact_t*));
+                    if (r->body) {
+                        for (uint32_t i = 0; i < r->num_body; ++i)
+                            r->body[i] = (eshkol_fact_t*)evac_object_ptr(st, r->body[i]);
+                    }
+                }
+                r->guard = evac_value(st, r->guard);
+                if (r->name && st.owns(r->name))
+                    r->name = (const char*)evac_raw(
+                        st, r->name, std::strlen(r->name) + 1);
                 break;
             }
             case EVAC_KNOWLEDGE_BASE: {

@@ -304,12 +304,181 @@ static void test_bethe_free_energy_oracles() {
     std::printf("PASS: Bethe free energy exact -ln Z oracles (single, chain, star)\n");
 }
 
+static void test_persistent_hamt_substitutions() {
+    arena_t* arena = arena_create(8 * 1024 * 1024);
+    check(arena != nullptr, "arena created for HAMT test");
+    eshkol_logic_registry_reset();
+
+    const uint32_t N = 5000;
+    std::vector<uint64_t> vars(N);
+    char buf[64];
+    for (uint32_t i = 0; i < N; i++) {
+        std::snprintf(buf, sizeof(buf), "?hamt_k_%u", i);
+        vars[i] = eshkol_make_logic_var(buf);
+    }
+
+    eshkol_substitution_t* s = eshkol_make_substitution(arena, 4);
+    check(s != nullptr && s->hamt_root == nullptr, "initial subst starts inline");
+
+    eshkol_substitution_t* s_mid = nullptr;
+    auto t0 = std::chrono::steady_clock::now();
+    for (uint32_t i = 0; i < N; i++) {
+        eshkol_tagged_value_t val = make_int_tv(static_cast<int64_t>(i * 7 + 3));
+        s = eshkol_extend_subst(arena, s, vars[i], &val);
+        check(s != nullptr, "HAMT extend succeeded");
+        if (i == 7) check(s->hamt_root == nullptr, "8th binding stays inline");
+        if (i == 8) check(s->hamt_root != nullptr, "9th binding promotes to HAMT");
+        if (i == 2499) s_mid = s;
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    check(s->num_bindings == N, "HAMT tracks 5000 bindings");
+    check(ms < 2000.0, "5000 persistent HAMT extends stay O(log32 N)");
+
+    /* Full lookup verification */
+    for (uint32_t i = 0; i < N; i++) {
+        const eshkol_tagged_value_t* v = eshkol_subst_lookup(s, vars[i]);
+        check(v != nullptr && v->type == ESHKOL_VALUE_INT64 &&
+              v->data.int_val == static_cast<int64_t>(i * 7 + 3),
+              "HAMT lookup exact match");
+    }
+
+    /* Persistence / immutability of earlier snapshot */
+    check(s_mid != nullptr && s_mid->num_bindings == 2500, "midpoint snapshot keeps 2500 bindings");
+    check(eshkol_subst_lookup(s_mid, vars[0]) != nullptr, "midpoint snapshot sees var 0");
+    check(eshkol_subst_lookup(s_mid, vars[2499]) != nullptr, "midpoint snapshot sees var 2499");
+    check(eshkol_subst_lookup(s_mid, vars[2500]) == nullptr, "midpoint snapshot excludes var 2500");
+
+    /* Overwrite immutability */
+    eshkol_tagged_value_t repl = make_int_tv(999999);
+    eshkol_substitution_t* s_over = eshkol_extend_subst(arena, s, vars[1234], &repl);
+    check(s_over != nullptr && s_over->num_bindings == N, "overwrite preserves binding count");
+    check(eshkol_subst_lookup(s_over, vars[1234])->data.int_val == 999999, "overwrite visible in new subst");
+    check(eshkol_subst_lookup(s, vars[1234])->data.int_val == static_cast<int64_t>(1234 * 7 + 3),
+          "overwrite leaves previous subst immutable");
+
+    /* Adversarial stride-32 and stride-1024 keys stay O(1) under salted SplitMix64 */
+    eshkol_substitution_t* s_adv = eshkol_make_substitution(arena, 4);
+    auto a0 = std::chrono::steady_clock::now();
+    for (uint64_t k = 0; k < 2048; k++) {
+        uint64_t adv_id = (k & 1) ? (k * 1024ULL) : (k * 32ULL + 1ULL);
+        eshkol_tagged_value_t val = make_int_tv(static_cast<int64_t>(k));
+        s_adv = eshkol_extend_subst(arena, s_adv, adv_id, &val);
+        check(s_adv != nullptr, "adversarial stride key extend succeeded");
+    }
+    for (uint64_t k = 0; k < 2048; k++) {
+        uint64_t adv_id = (k & 1) ? (k * 1024ULL) : (k * 32ULL + 1ULL);
+        const eshkol_tagged_value_t* v = eshkol_subst_lookup(s_adv, adv_id);
+        check(v != nullptr && v->data.int_val == static_cast<int64_t>(k),
+              "adversarial stride key lookup exact");
+    }
+    auto a1 = std::chrono::steady_clock::now();
+    double adv_ms = std::chrono::duration<double, std::milli>(a1 - a0).count();
+    check(adv_ms < 1000.0, "adversarial stride keys stay fast");
+
+    /* Display on HAMT substitution */
+    FILE* tmp = std::tmpfile();
+    check(tmp != nullptr, "tmpfile for subst display");
+    eshkol_display_substitution(s_mid, tmp);
+    std::fflush(tmp);
+    check(std::ftell(tmp) > 100, "HAMT substitution display emits bindings");
+    std::fclose(tmp);
+
+    arena_destroy(arena);
+    std::printf("PASS: persistent 32-way salted HAMT substitutions (5000 bindings in %.2f ms, adv 2048 in %.2f ms)\n",
+                ms, adv_ms);
+}
+
+static void test_first_class_rules_subtype_14() {
+    arena_t* arena = arena_create(2 * 1024 * 1024);
+    check(arena != nullptr, "arena created for rule test");
+    eshkol_logic_registry_reset();
+
+    check(HEAP_SUBTYPE_RULE == 14, "HEAP_SUBTYPE_RULE occupies ABI slot 14");
+    check(eshkol_heap_subtype_is_declared(HEAP_SUBTYPE_RULE), "HEAP_SUBTYPE_RULE declared in ABI table");
+
+    uint64_t p_parent = reinterpret_cast<uint64_t>(eshkol_intern_predicate("parent"));
+    uint64_t p_gp     = reinterpret_cast<uint64_t>(eshkol_intern_predicate("grandparent"));
+    uint64_t vx = eshkol_make_logic_var("?rx");
+    uint64_t vy = eshkol_make_logic_var("?ry");
+    uint64_t vz = eshkol_make_logic_var("?rz");
+
+    eshkol_tagged_value_t head_args[2] = { make_var_tv(vx), make_var_tv(vz) };
+    eshkol_tagged_value_t b1_args[2]   = { make_var_tv(vx), make_var_tv(vy) };
+    eshkol_tagged_value_t b2_args[2]   = { make_var_tv(vy), make_var_tv(vz) };
+    eshkol_fact_t* head = eshkol_make_fact(arena, p_gp, head_args, 2);
+    eshkol_fact_t* b1   = eshkol_make_fact(arena, p_parent, b1_args, 2);
+    eshkol_fact_t* b2   = eshkol_make_fact(arena, p_parent, b2_args, 2);
+
+    /* Loud refusal on malformed inputs */
+    check(eshkol_make_rule(arena, nullptr, nullptr, 0, nullptr, 1.0, 1.0, 0, nullptr) == nullptr,
+          "rule with NULL head rejected");
+    check(eshkol_make_rule(arena, head, nullptr, 2, nullptr, 1.0, 1.0, 0, nullptr) == nullptr,
+          "rule with num_body > 0 and NULL body rejected");
+
+    /* Unbounded name (>128 chars) + multi-join forward chaining */
+    std::string long_name = std::string(120, 'r') + "_grandparent_rule";
+    eshkol_fact_t* body2[2] = { b1, b2 };
+    eshkol_rule_t* rule = eshkol_make_rule(
+        arena, head, body2, 2, nullptr, 0.95, 0.99,
+        ESHKOL_RULE_FLAG_WEIGHTED, long_name.c_str());
+    check(rule != nullptr, "rule constructed");
+    check(ESHKOL_GET_HEADER(rule)->subtype == HEAP_SUBTYPE_RULE, "rule header carries HEAP_SUBTYPE_RULE");
+    check(rule->num_body == 2 && rule->name != nullptr &&
+          std::strcmp(rule->name, long_name.c_str()) == 0,
+          "rule preserves unbounded 137-char name");
+
+    /* Unbounded 50-goal body (zero fixed cap) */
+    std::vector<eshkol_fact_t*> body50(50, b1);
+    eshkol_rule_t* wide_rule = eshkol_make_rule(
+        arena, head, body50.data(), 50, nullptr, 1.0, 1.0, 0, "wide_50");
+    check(wide_rule != nullptr && wide_rule->num_body == 50, "50-goal rule body stored without truncation");
+
+    /* Forward-chain grandparent over KB */
+    eshkol_knowledge_base_t* kb = eshkol_make_kb(arena);
+    int64_t edges[4][2] = { {1, 2}, {2, 3}, {2, 4}, {5, 6} };
+    for (int i = 0; i < 4; i++) {
+        eshkol_tagged_value_t eargs[2] = { make_int_tv(edges[i][0]), make_int_tv(edges[i][1]) };
+        eshkol_kb_assert(arena, kb, eshkol_make_fact(arena, p_parent, eargs, 2));
+    }
+
+    eshkol_tagged_value_t derived = eshkol_rule_apply(arena, rule, kb, nullptr);
+    check(count_cons_list(derived) == 2, "grandparent rule derives exactly 2 facts");
+
+    /* Verify exact derived pairs: (1, 3) and (1, 4) */
+    bool saw_13 = false, saw_14 = false;
+    eshkol_tagged_value_t cur = derived;
+    while (cur.type == ESHKOL_VALUE_HEAP_PTR && cur.data.ptr_val != 0) {
+        auto* cell = reinterpret_cast<const eshkol_tagged_value_t*>(cur.data.ptr_val);
+        auto* f = reinterpret_cast<const eshkol_fact_t*>(cell[0].data.ptr_val);
+        check(f != nullptr && f->predicate == p_gp && f->arity == 2, "derived item is grandparent/2 fact");
+        auto* fargs = FACT_ARGS(f);
+        if (fargs[0].data.int_val == 1 && fargs[1].data.int_val == 3) saw_13 = true;
+        if (fargs[0].data.int_val == 1 && fargs[1].data.int_val == 4) saw_14 = true;
+        cur = cell[1];
+    }
+    check(saw_13 && saw_14, "derived facts are exactly grandparent(1,3) and grandparent(1,4)");
+
+    /* Display rule */
+    FILE* tmp = std::tmpfile();
+    check(tmp != nullptr, "tmpfile for rule display");
+    eshkol_display_rule(rule, tmp);
+    std::fflush(tmp);
+    check(std::ftell(tmp) > 10, "eshkol_display_rule emits output");
+    std::fclose(tmp);
+
+    arena_destroy(arena);
+    std::printf("PASS: first-class HEAP_SUBTYPE_RULE=14 (unbounded body/name + multi-join forward chaining)\n");
+}
+
 int main() {
     test_unbounded_logic_vars();
     test_unbounded_predicates();
     test_indexed_kb_and_retract();
     test_csr_bp_scale();
     test_bethe_free_energy_oracles();
+    test_persistent_hamt_substitutions();
+    test_first_class_rules_subtype_14();
     std::printf("CE-0 SUBSTRATE TEST: PASS (%d checks)\n", g_checks);
     return 0;
 }

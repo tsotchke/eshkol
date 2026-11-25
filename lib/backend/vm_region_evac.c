@@ -403,6 +403,21 @@ static int vm_evac_walk_term(VM* vm, const VmValue* t, int depth) {
     return 1;
 }
 
+static int vm_evac_walk_subst_hamt(VM* vm, const VmSubstHamtNode* node, int depth) {
+    if (!node) return 1;
+    if (depth > 32) return 0;
+    if (node->bitmap == 0) {
+        if (node->count > 0 && !node->leaf_terms) return 0;
+        for (uint32_t i = 0; i < node->count; i++)
+            if (!vm_evac_walk_term(vm, &node->leaf_terms[i], 0)) return 0;
+        return 1;
+    }
+    if (node->count > 0 && !node->children) return 0;
+    for (uint32_t i = 0; i < node->count; i++)
+        if (!vm_evac_walk_subst_hamt(vm, node->children[i], depth + 1)) return 0;
+    return 1;
+}
+
 /**
  * @brief Push every heap index referenced by object @p idx onto the mark
  *        worklist. TOTAL over the heap tag space.
@@ -567,7 +582,11 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
     case HEAP_SUBST: {
         VmSubstitution* s = (VmSubstitution*)o->opaque.ptr;
         if (!s) return 1;
-        if (s->n_bindings < 0 || (s->n_bindings > 0 && !s->terms)) return 0;
+        if (s->n_bindings < 0) return 0;
+        if (s->hamt_root) {
+            return vm_evac_walk_subst_hamt(vm, s->hamt_root, 0);
+        }
+        if (s->n_bindings > 0 && !s->terms) return 0;
         /* Only [0, n_bindings) is initialised; capacity beyond that is
          * uninitialised memory, exactly as native's EVAC_SUBSTITUTION notes. */
         for (int i = 0; i < s->n_bindings; i++)
@@ -761,6 +780,31 @@ static void vm_evac_walk_dual(VmEvacBlocks* bs, const VmDual* d, int depth) {
     }
 }
 
+static void vm_evac_scan_subst_hamt(VmEvacBlocks* bs, const VmSubstHamtNode* node, int depth) {
+    if (!node || depth > 32) return;
+    vm_evac_retain_ptr(bs, (void*)node);
+    vm_evac_scan_range(bs, (void*)node, sizeof(VmSubstHamtNode));
+    if (node->bitmap == 0) {
+        if (node->leaf_ids) vm_evac_retain_ptr(bs, node->leaf_ids);
+        if (node->leaf_terms) {
+            vm_evac_retain_ptr(bs, node->leaf_terms);
+            for (uint32_t i = 0; i < node->count; i++) {
+                if (node->leaf_terms[i].flags == VM_TERM_KIND_FACT && node->leaf_terms[i].data.ptr_val) {
+                    const VmFact* f = (const VmFact*)(uintptr_t)node->leaf_terms[i].data.ptr_val;
+                    vm_evac_retain_ptr(bs, (void*)f);
+                    vm_evac_scan_range(bs, (void*)f, sizeof(VmFact));
+                }
+            }
+        }
+        return;
+    }
+    if (node->children && node->count > 0) {
+        vm_evac_retain_ptr(bs, node->children);
+        for (uint32_t i = 0; i < node->count; i++)
+            vm_evac_scan_subst_hamt(bs, node->children[i], depth + 1);
+    }
+}
+
 static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
     switch ((int)o->type) {
     case HEAP_CONS: case HEAP_FACT: case HEAP_PRNG:
@@ -872,6 +916,22 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
                         vm_evac_retain_ptr(bs, r->big_den);
                         vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum));
                     }
+                }
+            }
+        }
+        break;
+    }
+    case HEAP_SUBST: {
+        const VmSubstitution* s = (const VmSubstitution*)p;
+        if (s->hamt_root) {
+            vm_evac_scan_subst_hamt(bs, s->hamt_root, 0);
+        } else if (s->terms && s->n_bindings > 0) {
+            vm_evac_retain_ptr(bs, s->terms);
+            for (int i = 0; i < s->n_bindings; i++) {
+                if (s->terms[i].flags == VM_TERM_KIND_FACT && s->terms[i].data.ptr_val) {
+                    const VmFact* f = (const VmFact*)(uintptr_t)s->terms[i].data.ptr_val;
+                    vm_evac_retain_ptr(bs, (void*)f);
+                    vm_evac_scan_range(bs, (void*)f, sizeof(VmFact));
                 }
             }
         }

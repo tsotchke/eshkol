@@ -65,5 +65,38 @@
 (check "long-var-a-value" (= (walk ?ce0_very_long_variable_name_exceeding_sixty_three_characters_prefix_alpha u-long2) 101))
 (check "long-var-b-value" (= (walk ?ce0_very_long_variable_name_exceeding_sixty_three_characters_prefix_beta u-long2) 202))
 
+;; 5. Persistent HAMT substitution past inline threshold (64 bindings + immutability)
+(define (build-hamt-subst n)
+  (let loop ((i 0) (s (make-substitution)))
+    (if (= i n)
+        s
+        (let ((v (string->symbol (string-append "?ce0_hamt_v_" (number->string i)))))
+          (loop (+ i 1) (unify v (+ (* i 10) 7) s))))))
+
+(define hamt-20 (build-hamt-subst 20))
+(define hamt-64 (build-hamt-subst 64))
+(check "hamt-20-first" (= (walk (string->symbol "?ce0_hamt_v_0") hamt-20) 7))
+(check "hamt-20-last" (= (walk (string->symbol "?ce0_hamt_v_19") hamt-20) 197))
+(check "hamt-64-first" (= (walk (string->symbol "?ce0_hamt_v_0") hamt-64) 7))
+(check "hamt-64-mid" (= (walk (string->symbol "?ce0_hamt_v_37") hamt-64) 377))
+(check "hamt-64-last" (= (walk (string->symbol "?ce0_hamt_v_63") hamt-64) 637))
+
+;; Immutability check: extending hamt-64 does not alter hamt-64
+(define hamt-65 (unify (string->symbol "?ce0_hamt_v_64") 647 hamt-64))
+(check "hamt-65-new" (= (walk (string->symbol "?ce0_hamt_v_64") hamt-65) 647))
+(check "hamt-64-unchanged" (logic-var? (walk (string->symbol "?ce0_hamt_v_64") hamt-64)))
+
+;; 6. Region escape of a promoted HAMT substitution (poison-safe evacuation across JIT/AOT/VM)
+(define escaped-hamt
+  (with-region
+    (let loop ((i 0) (s (make-substitution)))
+      (if (= i 40)
+          s
+          (let ((v (string->symbol (string-append "?ce0_esc_v_" (number->string i)))))
+            (loop (+ i 1) (unify v (+ (* i 3) 1) s)))))))
+(check "escaped-hamt-0" (= (walk (string->symbol "?ce0_esc_v_0") escaped-hamt) 1))
+(check "escaped-hamt-25" (= (walk (string->symbol "?ce0_esc_v_25") escaped-hamt) 76))
+(check "escaped-hamt-39" (= (walk (string->symbol "?ce0_esc_v_39") escaped-hamt) 118))
+
 (display "CE-0 PARITY checks: ") (display checks) (newline)
 (display "CE-0 PARITY RESULT: PASS") (newline)

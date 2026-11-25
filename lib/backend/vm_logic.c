@@ -254,21 +254,217 @@ static void vm_logic_var_reset(void) {
 }
 
 /* ========================================================================
- * Substitution (immutable, copy-on-extend)
+ * Substitution (Inline <= 8 + Persistent 32-Way Salted HAMT)
  * ======================================================================== */
 
+#define VM_SUBST_INLINE_MAX 8
+#define VM_SUBST_HAMT_BITS  5
+#define VM_SUBST_HAMT_MASK  31u
+#define VM_SUBST_HAMT_MAX_DEPTH 12
+
+typedef struct VmSubstHamtNode {
+    uint32_t bitmap;
+    uint32_t count;
+    uint64_t* leaf_ids;
+    VmValue*  leaf_terms;
+    struct VmSubstHamtNode** children;
+} VmSubstHamtNode;
+
 typedef struct {
-    uint64_t* var_ids;   /* arena-allocated array */
-    VmValue*  terms;     /* arena-allocated array */
+    uint64_t* var_ids;        /* inline array when hamt_root == NULL */
+    VmValue*  terms;          /* inline array when hamt_root == NULL */
     int       n_bindings;
     int       capacity;
+    VmSubstHamtNode* hamt_root; /* persistent 32-way salted HAMT when > 8 bindings */
 } VmSubstitution;
 
-/** @brief Native call 502: `(make-substitution [capacity])` — allocate an
- *         empty substitution with room for @p capacity bindings (default
- *         8 if <= 0). */
+static uint64_t vm_subst_salt(void) {
+    static uint64_t salt = 0;
+    if (salt == 0) {
+        uint64_t x = (uint64_t)(uintptr_t)&g_vm_var_count ^ 0x9e3779b97f4a7c15ULL;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        salt = (x ^ (x >> 31)) | 1ULL;
+    }
+    return salt;
+}
+
+static uint64_t vm_subst_hash(uint64_t var_id) {
+    uint64_t x = var_id ^ vm_subst_salt();
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static uint32_t vm_subst_popcount32(uint32_t v) {
+    return (uint32_t)__builtin_popcount(v);
+}
+
+static VmSubstHamtNode* vm_hamt_make_leaf1(VmRegionStack* rs, uint64_t var_id, const VmValue* term) {
+    VmSubstHamtNode* n = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+    if (!n) return NULL;
+    uint64_t* ids = (uint64_t*)vm_alloc(rs, sizeof(uint64_t));
+    VmValue* terms = (VmValue*)vm_alloc(rs, sizeof(VmValue));
+    if (!ids || !terms) return NULL;
+    ids[0] = var_id;
+    terms[0] = *term;
+    n->bitmap = 0;
+    n->count = 1;
+    n->leaf_ids = ids;
+    n->leaf_terms = terms;
+    n->children = NULL;
+    return n;
+}
+
+static VmSubstHamtNode* vm_hamt_insert(
+    VmRegionStack* rs, const VmSubstHamtNode* node,
+    uint64_t var_id, uint64_t hash, const VmValue* term,
+    uint32_t depth, int* inserted_new)
+{
+    if (!node) {
+        *inserted_new = 1;
+        return vm_hamt_make_leaf1(rs, var_id, term);
+    }
+
+    if (node->bitmap == 0) {
+        for (uint32_t i = 0; i < node->count; i++) {
+            if (node->leaf_ids[i] == var_id) {
+                *inserted_new = 0;
+                VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+                VmValue* terms = (VmValue*)vm_alloc(rs, (size_t)node->count * sizeof(VmValue));
+                if (!copy || !terms) return NULL;
+                memcpy(terms, node->leaf_terms, (size_t)node->count * sizeof(VmValue));
+                terms[i] = *term;
+                copy->bitmap = 0;
+                copy->count = node->count;
+                copy->leaf_ids = node->leaf_ids;
+                copy->leaf_terms = terms;
+                copy->children = NULL;
+                return copy;
+            }
+        }
+        if (depth >= VM_SUBST_HAMT_MAX_DEPTH) {
+            *inserted_new = 1;
+            uint32_t nc = node->count + 1;
+            VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+            uint64_t* ids = (uint64_t*)vm_alloc(rs, (size_t)nc * sizeof(uint64_t));
+            VmValue* terms = (VmValue*)vm_alloc(rs, (size_t)nc * sizeof(VmValue));
+            if (!copy || !ids || !terms) return NULL;
+            memcpy(ids, node->leaf_ids, (size_t)node->count * sizeof(uint64_t));
+            memcpy(terms, node->leaf_terms, (size_t)node->count * sizeof(VmValue));
+            ids[node->count] = var_id;
+            terms[node->count] = *term;
+            copy->bitmap = 0;
+            copy->count = nc;
+            copy->leaf_ids = ids;
+            copy->leaf_terms = terms;
+            copy->children = NULL;
+            return copy;
+        }
+
+        uint64_t old_id = node->leaf_ids[0];
+        uint64_t old_hash = vm_subst_hash(old_id);
+        uint32_t old_chunk = (uint32_t)((old_hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+        uint32_t new_chunk = (uint32_t)((hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+
+        VmSubstHamtNode* internal = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+        if (!internal) return NULL;
+        internal->leaf_ids = NULL;
+        internal->leaf_terms = NULL;
+
+        if (old_chunk == new_chunk) {
+            VmSubstHamtNode* sub = vm_hamt_insert(rs, node, var_id, hash, term, depth + 1, inserted_new);
+            if (!sub) return NULL;
+            VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, sizeof(VmSubstHamtNode*));
+            if (!ch) return NULL;
+            ch[0] = sub;
+            internal->bitmap = 1u << old_chunk;
+            internal->count = 1;
+            internal->children = ch;
+            return internal;
+        } else {
+            *inserted_new = 1;
+            VmSubstHamtNode* nl = vm_hamt_make_leaf1(rs, var_id, term);
+            if (!nl) return NULL;
+            VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, 2 * sizeof(VmSubstHamtNode*));
+            if (!ch) return NULL;
+            internal->bitmap = (1u << old_chunk) | (1u << new_chunk);
+            internal->count = 2;
+            if (old_chunk < new_chunk) {
+                ch[0] = (VmSubstHamtNode*)node;
+                ch[1] = nl;
+            } else {
+                ch[0] = nl;
+                ch[1] = (VmSubstHamtNode*)node;
+            }
+            internal->children = ch;
+            return internal;
+        }
+    }
+
+    uint32_t chunk = (uint32_t)((hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+    uint32_t bit = 1u << chunk;
+    uint32_t idx = vm_subst_popcount32(node->bitmap & (bit - 1u));
+
+    if (node->bitmap & bit) {
+        VmSubstHamtNode* upd = vm_hamt_insert(rs, node->children[idx], var_id, hash, term, depth + 1, inserted_new);
+        if (!upd) return NULL;
+        VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+        VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, (size_t)node->count * sizeof(VmSubstHamtNode*));
+        if (!copy || !ch) return NULL;
+        memcpy(ch, node->children, (size_t)node->count * sizeof(VmSubstHamtNode*));
+        ch[idx] = upd;
+        copy->bitmap = node->bitmap;
+        copy->count = node->count;
+        copy->leaf_ids = NULL;
+        copy->leaf_terms = NULL;
+        copy->children = ch;
+        return copy;
+    } else {
+        *inserted_new = 1;
+        VmSubstHamtNode* nl = vm_hamt_make_leaf1(rs, var_id, term);
+        if (!nl) return NULL;
+        uint32_t nc = node->count + 1;
+        VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+        VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, (size_t)nc * sizeof(VmSubstHamtNode*));
+        if (!copy || !ch) return NULL;
+        if (idx > 0) memcpy(ch, node->children, (size_t)idx * sizeof(VmSubstHamtNode*));
+        ch[idx] = nl;
+        if (idx < node->count) {
+            memcpy(ch + idx + 1, node->children + idx,
+                   (size_t)(node->count - idx) * sizeof(VmSubstHamtNode*));
+        }
+        copy->bitmap = node->bitmap | bit;
+        copy->count = nc;
+        copy->leaf_ids = NULL;
+        copy->leaf_terms = NULL;
+        copy->children = ch;
+        return copy;
+    }
+}
+
+static const VmValue* vm_hamt_lookup(const VmSubstHamtNode* node, uint64_t var_id, uint64_t hash) {
+    uint32_t depth = 0;
+    while (node) {
+        if (node->bitmap == 0) {
+            for (uint32_t i = 0; i < node->count; i++) {
+                if (node->leaf_ids[i] == var_id) return &node->leaf_terms[i];
+            }
+            return NULL;
+        }
+        uint32_t chunk = (uint32_t)((hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+        uint32_t bit = 1u << chunk;
+        if ((node->bitmap & bit) == 0) return NULL;
+        uint32_t idx = vm_subst_popcount32(node->bitmap & (bit - 1u));
+        node = node->children[idx];
+        depth++;
+    }
+    return NULL;
+}
+
+/** @brief Native call 502: `(make-substitution [capacity])` */
 static VmSubstitution* vm_make_substitution(VmRegionStack* rs, int capacity) {
-    if (capacity <= 0) capacity = 8;
+    if (capacity <= 0) capacity = VM_SUBST_INLINE_MAX;
     VmSubstitution* s = (VmSubstitution*)vm_alloc(rs, sizeof(VmSubstitution));
     if (!s) return NULL;
     s->var_ids = (uint64_t*)vm_alloc(rs, (size_t)capacity * sizeof(uint64_t));
@@ -276,52 +472,70 @@ static VmSubstitution* vm_make_substitution(VmRegionStack* rs, int capacity) {
     if (!s->var_ids || !s->terms) return NULL;
     s->n_bindings = 0;
     s->capacity   = capacity;
+    s->hamt_root  = NULL;
     return s;
 }
 
-/** @brief Native call 503: `(subst-lookup s var-id)` — linear-scan lookup
- *         of a variable's bound term.
- * @return A pointer into @p s's terms array, or NULL if unbound.
- */
+/** @brief Native call 503: `(subst-lookup s var-id)` */
 static const VmValue* vm_subst_lookup(const VmSubstitution* s, uint64_t var_id) {
     if (!s) return NULL;
+    if (s->hamt_root) {
+        return vm_hamt_lookup(s->hamt_root, var_id, vm_subst_hash(var_id));
+    }
     for (int i = 0; i < s->n_bindings; i++) {
         if (s->var_ids[i] == var_id) return &s->terms[i];
     }
     return NULL;
 }
 
-/**
- * @brief Native call 504: `(subst-extend s var-id term)` — immutable
- *        extend: copies @p s's existing bindings into a fresh, larger
- *        (capacity-doubled as needed) substitution and appends the new
- *        (@p var_id, @p term) binding, leaving @p s untouched.
- */
+/** @brief Native call 504: `(subst-extend s var-id term)` */
 static VmSubstitution* vm_subst_extend(VmRegionStack* rs,
     const VmSubstitution* s, uint64_t var_id, const VmValue* term)
 {
     if (!rs || !term) return NULL;
 
     int old_n = s ? s->n_bindings : 0;
-    int new_cap = old_n + 1;
-    /* Ensure capacity doubling */
-    if (s && new_cap <= s->capacity) {
-        new_cap = s->capacity;
-    } else {
-        int min_cap = s ? s->capacity * 2 : 8;
-        if (new_cap < min_cap) new_cap = min_cap;
+
+    if ((s && s->hamt_root) || old_n >= VM_SUBST_INLINE_MAX) {
+        VmSubstHamtNode* root = s ? s->hamt_root : NULL;
+        if (!root && s && old_n > 0) {
+            for (int i = 0; i < old_n; i++) {
+                int dummy = 0;
+                root = vm_hamt_insert(rs, root, s->var_ids[i],
+                                      vm_subst_hash(s->var_ids[i]),
+                                      &s->terms[i], 0, &dummy);
+                if (!root) return NULL;
+            }
+        }
+        int inserted_new = 0;
+        VmSubstHamtNode* new_root = vm_hamt_insert(
+            rs, root, var_id, vm_subst_hash(var_id), term, 0, &inserted_new);
+        if (!new_root) return NULL;
+        VmSubstitution* ns = (VmSubstitution*)vm_alloc(rs, sizeof(VmSubstitution));
+        if (!ns) return NULL;
+        ns->var_ids = NULL;
+        ns->terms = NULL;
+        ns->capacity = 0;
+        ns->n_bindings = old_n + (inserted_new ? 1 : 0);
+        ns->hamt_root = new_root;
+        return ns;
     }
 
-    VmSubstitution* ns = vm_make_substitution(rs, new_cap);
+    VmSubstitution* ns = vm_make_substitution(rs, VM_SUBST_INLINE_MAX);
     if (!ns) return NULL;
 
-    /* Copy old bindings */
     if (s && old_n > 0) {
         memcpy(ns->var_ids, s->var_ids, (size_t)old_n * sizeof(uint64_t));
         memcpy(ns->terms, s->terms, (size_t)old_n * sizeof(VmValue));
+        for (int i = 0; i < old_n; i++) {
+            if (ns->var_ids[i] == var_id) {
+                ns->terms[i] = *term;
+                ns->n_bindings = old_n;
+                return ns;
+            }
+        }
     }
 
-    /* Append new binding */
     ns->var_ids[old_n] = var_id;
     ns->terms[old_n]   = *term;
     ns->n_bindings     = old_n + 1;

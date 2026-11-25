@@ -207,6 +207,7 @@ static eshkol_substitution_t* alloc_substitution(arena_t* arena, uint32_t capaci
     if (s) {
         s->num_bindings = 0;
         s->capacity = capacity;
+        s->hamt_root = NULL;
     }
     return s;
 }
@@ -233,7 +234,224 @@ static eshkol_knowledge_base_t* alloc_kb(arena_t* arena) {
     return kb;
 }
 
-/* ===== Substitution ===== */
+/* ===== Substitution (Inline <= 8 + Persistent 32-Way Salted HAMT) ===== */
+
+#define SUBST_INLINE_MAX 8
+#define SUBST_HAMT_BITS  5
+#define SUBST_HAMT_MASK  31u
+#define SUBST_HAMT_MAX_DEPTH 12 /* 12 * 5 = 60 hash bits */
+
+static uint64_t subst_get_salt() {
+    static const uint64_t salt = []() -> uint64_t {
+        uint64_t x = (uint64_t)(uintptr_t)&g_var_count ^ 0x9e3779b97f4a7c15ULL;
+        x ^= x >> 30;
+        x *= 0xbf58476d1ce4e5b9ULL;
+        x ^= x >> 27;
+        x *= 0x94d049bb133111ebULL;
+        x ^= x >> 31;
+        return x | 1ULL;
+    }();
+    return salt;
+}
+
+static inline uint64_t subst_salted_hash(uint64_t var_id) {
+    uint64_t x = var_id ^ subst_get_salt();
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static inline uint32_t subst_popcount32(uint32_t v) {
+    return (uint32_t)__builtin_popcount(v);
+}
+
+static eshkol_subst_hamt_node_t* subst_hamt_make_leaf1(
+    arena_t* arena, uint64_t var_id, const eshkol_tagged_value_t* term) {
+    auto* node = (eshkol_subst_hamt_node_t*)arena_allocate_aligned(
+        arena, sizeof(eshkol_subst_hamt_node_t), 8);
+    if (!node) return NULL;
+    uint64_t* ids = (uint64_t*)arena_allocate_aligned(arena, sizeof(uint64_t), 8);
+    auto* terms = (eshkol_tagged_value_t*)arena_allocate_aligned(
+        arena, sizeof(eshkol_tagged_value_t), 8);
+    if (!ids || !terms) return NULL;
+    ids[0] = var_id;
+    terms[0] = *term;
+    node->bitmap = 0;
+    node->count = 1;
+    node->leaf_ids = ids;
+    node->leaf_terms = terms;
+    node->children = NULL;
+    return node;
+}
+
+static eshkol_subst_hamt_node_t* subst_hamt_insert(
+    arena_t* arena,
+    const eshkol_subst_hamt_node_t* node,
+    uint64_t var_id,
+    uint64_t hash,
+    const eshkol_tagged_value_t* term,
+    uint32_t depth,
+    bool* inserted_new) {
+    if (!node) {
+        *inserted_new = true;
+        return subst_hamt_make_leaf1(arena, var_id, term);
+    }
+
+    if (node->bitmap == 0) {
+        /* Leaf / collision bucket */
+        for (uint32_t i = 0; i < node->count; i++) {
+            if (node->leaf_ids[i] == var_id) {
+                /* Replace existing binding immutably */
+                *inserted_new = false;
+                auto* copy = (eshkol_subst_hamt_node_t*)arena_allocate_aligned(
+                    arena, sizeof(eshkol_subst_hamt_node_t), 8);
+                auto* terms = (eshkol_tagged_value_t*)arena_allocate_aligned(
+                    arena, (size_t)node->count * sizeof(eshkol_tagged_value_t), 8);
+                if (!copy || !terms) return NULL;
+                memcpy(terms, node->leaf_terms, (size_t)node->count * sizeof(eshkol_tagged_value_t));
+                terms[i] = *term;
+                copy->bitmap = 0;
+                copy->count = node->count;
+                copy->leaf_ids = node->leaf_ids;
+                copy->leaf_terms = terms;
+                copy->children = NULL;
+                return copy;
+            }
+        }
+
+        if (depth >= SUBST_HAMT_MAX_DEPTH) {
+            /* Append to collision leaf bucket */
+            *inserted_new = true;
+            uint32_t nc = node->count + 1;
+            auto* copy = (eshkol_subst_hamt_node_t*)arena_allocate_aligned(
+                arena, sizeof(eshkol_subst_hamt_node_t), 8);
+            auto* ids = (uint64_t*)arena_allocate_aligned(arena, (size_t)nc * sizeof(uint64_t), 8);
+            auto* terms = (eshkol_tagged_value_t*)arena_allocate_aligned(
+                arena, (size_t)nc * sizeof(eshkol_tagged_value_t), 8);
+            if (!copy || !ids || !terms) return NULL;
+            memcpy(ids, node->leaf_ids, (size_t)node->count * sizeof(uint64_t));
+            memcpy(terms, node->leaf_terms, (size_t)node->count * sizeof(eshkol_tagged_value_t));
+            ids[node->count] = var_id;
+            terms[node->count] = *term;
+            copy->bitmap = 0;
+            copy->count = nc;
+            copy->leaf_ids = ids;
+            copy->leaf_terms = terms;
+            copy->children = NULL;
+            return copy;
+        }
+
+        /* Split single-entry leaf into internal 32-way node */
+        uint64_t old_id = node->leaf_ids[0];
+        uint64_t old_hash = subst_salted_hash(old_id);
+        uint32_t old_chunk = (uint32_t)((old_hash >> (depth * SUBST_HAMT_BITS)) & SUBST_HAMT_MASK);
+        uint32_t new_chunk = (uint32_t)((hash >> (depth * SUBST_HAMT_BITS)) & SUBST_HAMT_MASK);
+
+        auto* internal = (eshkol_subst_hamt_node_t*)arena_allocate_aligned(
+            arena, sizeof(eshkol_subst_hamt_node_t), 8);
+        if (!internal) return NULL;
+        internal->leaf_ids = NULL;
+        internal->leaf_terms = NULL;
+
+        if (old_chunk == new_chunk) {
+            eshkol_subst_hamt_node_t* sub = subst_hamt_insert(
+                arena, node, var_id, hash, term, depth + 1, inserted_new);
+            if (!sub) return NULL;
+            auto** children = (eshkol_subst_hamt_node_t**)arena_allocate_aligned(
+                arena, sizeof(eshkol_subst_hamt_node_t*), 8);
+            if (!children) return NULL;
+            children[0] = sub;
+            internal->bitmap = 1u << old_chunk;
+            internal->count = 1;
+            internal->children = children;
+            return internal;
+        } else {
+            *inserted_new = true;
+            eshkol_subst_hamt_node_t* new_leaf = subst_hamt_make_leaf1(arena, var_id, term);
+            if (!new_leaf) return NULL;
+            auto** children = (eshkol_subst_hamt_node_t**)arena_allocate_aligned(
+                arena, 2 * sizeof(eshkol_subst_hamt_node_t*), 8);
+            if (!children) return NULL;
+            internal->bitmap = (1u << old_chunk) | (1u << new_chunk);
+            internal->count = 2;
+            if (old_chunk < new_chunk) {
+                children[0] = const_cast<eshkol_subst_hamt_node_t*>(node);
+                children[1] = new_leaf;
+            } else {
+                children[0] = new_leaf;
+                children[1] = const_cast<eshkol_subst_hamt_node_t*>(node);
+            }
+            internal->children = children;
+            return internal;
+        }
+    }
+
+    /* Internal 32-way bitmap node: path-copy O(1) */
+    uint32_t chunk = (uint32_t)((hash >> (depth * SUBST_HAMT_BITS)) & SUBST_HAMT_MASK);
+    uint32_t bit = 1u << chunk;
+    uint32_t idx = subst_popcount32(node->bitmap & (bit - 1u));
+
+    if (node->bitmap & bit) {
+        eshkol_subst_hamt_node_t* updated = subst_hamt_insert(
+            arena, node->children[idx], var_id, hash, term, depth + 1, inserted_new);
+        if (!updated) return NULL;
+        auto* copy = (eshkol_subst_hamt_node_t*)arena_allocate_aligned(
+            arena, sizeof(eshkol_subst_hamt_node_t), 8);
+        auto** children = (eshkol_subst_hamt_node_t**)arena_allocate_aligned(
+            arena, (size_t)node->count * sizeof(eshkol_subst_hamt_node_t*), 8);
+        if (!copy || !children) return NULL;
+        memcpy(children, node->children, (size_t)node->count * sizeof(eshkol_subst_hamt_node_t*));
+        children[idx] = updated;
+        copy->bitmap = node->bitmap;
+        copy->count = node->count;
+        copy->leaf_ids = NULL;
+        copy->leaf_terms = NULL;
+        copy->children = children;
+        return copy;
+    } else {
+        *inserted_new = true;
+        eshkol_subst_hamt_node_t* new_leaf = subst_hamt_make_leaf1(arena, var_id, term);
+        if (!new_leaf) return NULL;
+        uint32_t nc = node->count + 1;
+        auto* copy = (eshkol_subst_hamt_node_t*)arena_allocate_aligned(
+            arena, sizeof(eshkol_subst_hamt_node_t), 8);
+        auto** children = (eshkol_subst_hamt_node_t**)arena_allocate_aligned(
+            arena, (size_t)nc * sizeof(eshkol_subst_hamt_node_t*), 8);
+        if (!copy || !children) return NULL;
+        if (idx > 0) memcpy(children, node->children, (size_t)idx * sizeof(eshkol_subst_hamt_node_t*));
+        children[idx] = new_leaf;
+        if (idx < node->count) {
+            memcpy(children + idx + 1, node->children + idx,
+                   (size_t)(node->count - idx) * sizeof(eshkol_subst_hamt_node_t*));
+        }
+        copy->bitmap = node->bitmap | bit;
+        copy->count = nc;
+        copy->leaf_ids = NULL;
+        copy->leaf_terms = NULL;
+        copy->children = children;
+        return copy;
+    }
+}
+
+static const eshkol_tagged_value_t* subst_hamt_lookup(
+    const eshkol_subst_hamt_node_t* node, uint64_t var_id, uint64_t hash) {
+    uint32_t depth = 0;
+    while (node) {
+        if (node->bitmap == 0) {
+            for (uint32_t i = 0; i < node->count; i++) {
+                if (node->leaf_ids[i] == var_id) return &node->leaf_terms[i];
+            }
+            return NULL;
+        }
+        uint32_t chunk = (uint32_t)((hash >> (depth * SUBST_HAMT_BITS)) & SUBST_HAMT_MASK);
+        uint32_t bit = 1u << chunk;
+        if ((node->bitmap & bit) == 0) return NULL;
+        uint32_t idx = subst_popcount32(node->bitmap & (bit - 1u));
+        node = node->children[idx];
+        depth++;
+    }
+    return NULL;
+}
 
 /**
  * @brief Create an empty substitution with the given initial @p capacity.
@@ -242,24 +460,16 @@ static eshkol_knowledge_base_t* alloc_kb(arena_t* arena) {
  */
 extern "C" eshkol_substitution_t* eshkol_make_substitution(arena_t* arena, uint32_t capacity) {
     if (!arena) return NULL;
-    if (capacity == 0) capacity = 8; /* default initial capacity */
+    if (capacity == 0) capacity = SUBST_INLINE_MAX;
     return alloc_substitution(arena, capacity);
 }
 
 /**
  * @brief Immutably extend @p s with a new (var_id -> term) binding.
  *
- * Since substitutions are immutable, this allocates a new substitution
- * (doubling capacity if @p s is at capacity), copies all of @p s's existing
- * bindings into it, then appends the new binding. @p s itself is left
- * untouched, which is what makes Prolog-style backtracking cheap (just
- * discard the extended substitution to "undo").
- *
- * @param arena Arena for the new substitution's allocation.
- * @param s Existing substitution to extend, or NULL to start from empty.
- * @param var_id Logic variable id to bind.
- * @param term Term to bind it to.
- * @return New substitution with the binding added, or NULL on invalid input or allocation failure.
+ * Uses a compact inline array up to SUBST_INLINE_MAX (8) bindings, and
+ * promotes to a persistent 32-way salted HAMT beyond that so extend and
+ * lookup stay O(log_32 N) with path-copy persistence.
  */
 extern "C" eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
     const eshkol_substitution_t* s, uint64_t var_id,
@@ -267,44 +477,64 @@ extern "C" eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
     if (!arena || !term) return NULL;
 
     uint32_t old_bindings = s ? s->num_bindings : 0;
-    uint32_t new_capacity = old_bindings + 1;
-    /* Grow capacity if needed */
-    if (s && new_capacity <= s->capacity) {
-        new_capacity = s->capacity;
-    } else {
-        /* At least double */
-        uint32_t min_cap = s ? s->capacity * 2 : 8;
-        if (new_capacity < min_cap) new_capacity = min_cap;
+
+    if ((s && s->hamt_root) || old_bindings >= SUBST_INLINE_MAX) {
+        eshkol_subst_hamt_node_t* root = s ? s->hamt_root : NULL;
+        if (!root && s && old_bindings > 0) {
+            const uint64_t* old_ids = SUBST_VAR_IDS(s);
+            const eshkol_tagged_value_t* old_terms = SUBST_TERMS(s);
+            for (uint32_t i = 0; i < old_bindings; i++) {
+                bool dummy = false;
+                root = subst_hamt_insert(arena, root, old_ids[i],
+                                         subst_salted_hash(old_ids[i]),
+                                         &old_terms[i], 0, &dummy);
+                if (!root) return NULL;
+            }
+        }
+        bool inserted_new = false;
+        eshkol_subst_hamt_node_t* new_root = subst_hamt_insert(
+            arena, root, var_id, subst_salted_hash(var_id), term, 0, &inserted_new);
+        if (!new_root) return NULL;
+        eshkol_substitution_t* new_s = alloc_substitution(arena, 0);
+        if (!new_s) return NULL;
+        new_s->hamt_root = new_root;
+        new_s->num_bindings = old_bindings + (inserted_new ? 1u : 0u);
+        return new_s;
     }
 
+    uint32_t new_capacity = SUBST_INLINE_MAX;
     eshkol_substitution_t* new_s = alloc_substitution(arena, new_capacity);
     if (!new_s) return NULL;
 
-    /* Copy old bindings */
+    uint64_t* ids = SUBST_VAR_IDS(new_s);
+    eshkol_tagged_value_t* terms = SUBST_TERMS(new_s);
     if (s && old_bindings > 0) {
         const uint64_t* old_ids = SUBST_VAR_IDS(s);
         const eshkol_tagged_value_t* old_terms = SUBST_TERMS(s);
-        uint64_t* new_ids = SUBST_VAR_IDS(new_s);
-        eshkol_tagged_value_t* new_terms = SUBST_TERMS(new_s);
-        memcpy(new_ids, old_ids, old_bindings * sizeof(uint64_t));
-        memcpy(new_terms, old_terms, old_bindings * sizeof(eshkol_tagged_value_t));
+        memcpy(ids, old_ids, old_bindings * sizeof(uint64_t));
+        memcpy(terms, old_terms, old_bindings * sizeof(eshkol_tagged_value_t));
+        for (uint32_t i = 0; i < old_bindings; i++) {
+            if (ids[i] == var_id) {
+                terms[i] = *term;
+                new_s->num_bindings = old_bindings;
+                return new_s;
+            }
+        }
     }
 
-    /* Add new binding */
-    uint64_t* ids = SUBST_VAR_IDS(new_s);
-    eshkol_tagged_value_t* terms = SUBST_TERMS(new_s);
     ids[old_bindings] = var_id;
     terms[old_bindings] = *term;
     new_s->num_bindings = old_bindings + 1;
-
     return new_s;
 }
 
-/** Linear-scan @p s for a binding of @p var_id, returning a pointer to its
- *  bound term, or NULL if @p s is NULL or the variable is unbound. */
+/** Look up @p var_id in @p s (inline scan for <=8 bindings, salted 32-way HAMT above). */
 extern "C" const eshkol_tagged_value_t* eshkol_subst_lookup(
     const eshkol_substitution_t* s, uint64_t var_id) {
     if (!s) return NULL;
+    if (s->hamt_root) {
+        return subst_hamt_lookup(s->hamt_root, var_id, subst_salted_hash(var_id));
+    }
     const uint64_t* ids = SUBST_VAR_IDS(s);
     const eshkol_tagged_value_t* terms = SUBST_TERMS(s);
     for (uint32_t i = 0; i < s->num_bindings; i++) {
@@ -1500,6 +1730,27 @@ static void eshkol_display_logic_term(const eshkol_tagged_value_t* t, void* file
  * Each bound term is formatted by eshkol_display_logic_term().
  * @param file Destination FILE*, or NULL to write to stdout.
  */
+static void eshkol_display_hamt_entries(
+    const eshkol_subst_hamt_node_t* node, void* file, bool* first) {
+    if (!node) return;
+    FILE* f = file ? (FILE*)file : stdout;
+    if (node->bitmap == 0) {
+        for (uint32_t i = 0; i < node->count; i++) {
+            if (!*first) fprintf(f, ", ");
+            *first = false;
+            const char* name = eshkol_logic_var_name(node->leaf_ids[i]);
+            if (name) fprintf(f, "%s", name);
+            else fprintf(f, "?_%llu", (unsigned long long)node->leaf_ids[i]);
+            fprintf(f, " -> ");
+            eshkol_display_logic_term(&node->leaf_terms[i], file);
+        }
+        return;
+    }
+    for (uint32_t i = 0; i < node->count; i++) {
+        eshkol_display_hamt_entries(node->children[i], file, first);
+    }
+}
+
 extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!s) {
@@ -1508,22 +1759,172 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
     }
 
     fprintf(f, "{");
-    const uint64_t* ids = SUBST_VAR_IDS(s);
-    const eshkol_tagged_value_t* terms = SUBST_TERMS(s);
+    if (s->hamt_root) {
+        bool first = true;
+        eshkol_display_hamt_entries(s->hamt_root, file, &first);
+    } else {
+        const uint64_t* ids = SUBST_VAR_IDS(s);
+        const eshkol_tagged_value_t* terms = SUBST_TERMS(s);
 
-    for (uint32_t i = 0; i < s->num_bindings; i++) {
-        if (i > 0) fprintf(f, ", ");
-        const char* name = eshkol_logic_var_name(ids[i]);
-        if (name) {
-            fprintf(f, "%s", name);
-        } else {
-            fprintf(f, "?_%llu", (unsigned long long)ids[i]);
+        for (uint32_t i = 0; i < s->num_bindings; i++) {
+            if (i > 0) fprintf(f, ", ");
+            const char* name = eshkol_logic_var_name(ids[i]);
+            if (name) {
+                fprintf(f, "%s", name);
+            } else {
+                fprintf(f, "?_%llu", (unsigned long long)ids[i]);
+            }
+            fprintf(f, " -> ");
+            eshkol_display_logic_term(&terms[i], file);
         }
-        fprintf(f, " -> ");
-        eshkol_display_logic_term(&terms[i], file);
     }
 
     fprintf(f, "}");
+}
+
+/* ===== Rules (HEAP_SUBTYPE_RULE = 14) ===== */
+
+extern "C" eshkol_rule_t* eshkol_make_rule(arena_t* arena,
+    eshkol_fact_t* head,
+    eshkol_fact_t* const* body,
+    uint32_t num_body,
+    const eshkol_tagged_value_t* guard,
+    double weight,
+    double confidence,
+    uint32_t flags,
+    const char* name) {
+    if (!arena || !head) {
+        eshkol_error("eshkol_make_rule: arena and head must be non-NULL");
+        return NULL;
+    }
+    if (num_body > 0 && !body) {
+        eshkol_error("eshkol_make_rule: non-empty body (%u goals) requires non-NULL body array",
+                     num_body);
+        return NULL;
+    }
+
+    eshkol_rule_t* rule = (eshkol_rule_t*)arena_allocate_with_header(
+        arena, sizeof(eshkol_rule_t), HEAP_SUBTYPE_RULE, 0);
+    if (!rule) return NULL;
+    memset(rule, 0, sizeof(*rule));
+
+    rule->head = head;
+    rule->num_body = num_body;
+    rule->flags = flags;
+    rule->weight = weight;
+    rule->confidence = confidence;
+
+    if (guard) {
+        rule->guard = *guard;
+    } else {
+        rule->guard.type = ESHKOL_VALUE_NULL;
+    }
+
+    if (num_body > 0) {
+        rule->body = (eshkol_fact_t**)arena_allocate_aligned(
+            arena, (size_t)num_body * sizeof(eshkol_fact_t*), 8);
+        if (!rule->body) return NULL;
+        memcpy(rule->body, body, (size_t)num_body * sizeof(eshkol_fact_t*));
+    } else {
+        rule->body = NULL;
+    }
+
+    if (name) {
+        size_t len = strlen(name);
+        char* copy = (char*)arena_allocate_aligned(arena, len + 1, 1);
+        if (!copy) return NULL;
+        memcpy(copy, name, len + 1);
+        rule->name = copy;
+    } else {
+        rule->name = NULL;
+    }
+
+    return rule;
+}
+
+static eshkol_tagged_value_t make_cons_cell(arena_t* arena,
+    const eshkol_tagged_value_t& car_val, const eshkol_tagged_value_t& cdr_val) {
+    eshkol_tagged_value_t cell_tv;
+    memset(&cell_tv, 0, sizeof(cell_tv));
+    cell_tv.type = ESHKOL_VALUE_NULL;
+    void* mem = arena_allocate_with_header(arena, 2 * sizeof(eshkol_tagged_value_t),
+                                           HEAP_SUBTYPE_CONS, 0);
+    if (!mem) return cell_tv;
+    auto* cells = (eshkol_tagged_value_t*)mem;
+    cells[0] = car_val;
+    cells[1] = cdr_val;
+    cell_tv.type = ESHKOL_VALUE_HEAP_PTR;
+    cell_tv.data.ptr_val = (uint64_t)(uintptr_t)mem;
+    return cell_tv;
+}
+
+static eshkol_tagged_value_t rule_join_body(arena_t* arena,
+    const eshkol_rule_t* rule,
+    const eshkol_knowledge_base_t* kb,
+    uint32_t body_idx,
+    const eshkol_substitution_t* current_subst,
+    eshkol_tagged_value_t acc_head) {
+    if (body_idx >= rule->num_body) {
+        eshkol_tagged_value_t head_tv;
+        memset(&head_tv, 0, sizeof(head_tv));
+        head_tv.type = ESHKOL_VALUE_HEAP_PTR;
+        head_tv.data.ptr_val = (uint64_t)(uintptr_t)rule->head;
+        eshkol_tagged_value_t inst = eshkol_walk_deep(arena, &head_tv, current_subst);
+        return make_cons_cell(arena, inst, acc_head);
+    }
+
+    eshkol_tagged_value_t matches = eshkol_kb_query(arena, kb, rule->body[body_idx], current_subst);
+    /* Collect matches to iterate in reverse so prepending preserves KB order */
+    std::vector<const eshkol_substitution_t*> substs;
+    eshkol_tagged_value_t cur = matches;
+    while (cur.type == ESHKOL_VALUE_HEAP_PTR && cur.data.ptr_val != 0) {
+        auto* cell = (const eshkol_tagged_value_t*)(uintptr_t)cur.data.ptr_val;
+        if (cell[0].type == ESHKOL_VALUE_HEAP_PTR && cell[0].data.ptr_val != 0) {
+            substs.push_back((const eshkol_substitution_t*)(uintptr_t)cell[0].data.ptr_val);
+        }
+        cur = cell[1];
+    }
+
+    for (size_t i = substs.size(); i-- > 0; ) {
+        acc_head = rule_join_body(arena, rule, kb, body_idx + 1, substs[i], acc_head);
+    }
+    return acc_head;
+}
+
+extern "C" eshkol_tagged_value_t eshkol_rule_apply(arena_t* arena,
+    const eshkol_rule_t* rule,
+    const eshkol_knowledge_base_t* kb,
+    const eshkol_substitution_t* initial_subst) {
+    eshkol_tagged_value_t null_val;
+    memset(&null_val, 0, sizeof(null_val));
+    null_val.type = ESHKOL_VALUE_NULL;
+    if (!arena || !rule || !rule->head || !kb) return null_val;
+
+    const eshkol_substitution_t* base = initial_subst;
+    if (!base) {
+        base = eshkol_make_substitution(arena, SUBST_INLINE_MAX);
+        if (!base) return null_val;
+    }
+    return rule_join_body(arena, rule, kb, 0, base, null_val);
+}
+
+extern "C" void eshkol_display_rule(const eshkol_rule_t* r, void* file) {
+    FILE* f = file ? (FILE*)file : stdout;
+    if (!r) {
+        fprintf(f, "(rule)");
+        return;
+    }
+    fprintf(f, "(rule ");
+    if (r->name) fprintf(f, "[%s] ", r->name);
+    eshkol_display_fact(r->head, file);
+    if (r->num_body > 0) {
+        fprintf(f, " :- ");
+        for (uint32_t i = 0; i < r->num_body; i++) {
+            if (i > 0) fprintf(f, ", ");
+            eshkol_display_fact(r->body[i], file);
+        }
+    }
+    fprintf(f, ")");
 }
 
 /**
