@@ -2690,6 +2690,9 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/sdnc_finetune.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
+  lib/core/cdcl_sat.cpp
+  lib/core/slg_table.cpp
+  lib/core/nars_truth.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4300,6 +4303,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce0_substrate_scale_and_bethe_test PRIVATE eshkol-runtime)
     add_test(NAME ce0_substrate_scale_and_bethe_test COMMAND ce0_substrate_scale_and_bethe_test)
     set_tests_properties(ce0_substrate_scale_and_bethe_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce1_logic_cdcl_slg_test.cpp")
+    add_executable(ce1_logic_cdcl_slg_test
+        tests/logic/ce1_logic_cdcl_slg_test.cpp)
+    target_compile_features(ce1_logic_cdcl_slg_test PRIVATE cxx_std_17)
+    target_include_directories(ce1_logic_cdcl_slg_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce1_logic_cdcl_slg_test PRIVATE eshkol-runtime)
+    add_test(NAME ce1_logic_cdcl_slg_test COMMAND ce1_logic_cdcl_slg_test)
+    set_tests_properties(ce1_logic_cdcl_slg_test PROPERTIES TIMEOUT 60)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
