@@ -1,7 +1,7 @@
 schema = 1
 release = "Verificatum R0"
 claim_scope = { theorem = "mt", format = "3.1.0", calculus = "restricted-dependent-pi", kind = "independent-executable-replay", universal_executable_soundness = false }
-eshkol_base = "eb224260b4814baf3ad260744c8dcdd05fb84898"
+eshkol_base = "6925e2f3154ba3b192e836fc1a05f473c9819bf7"
 lean = "4.35.0"
 lean_revision = "eb6cafb7290e8bd5f2937522d8d804f58f02bafc"
 node_observed = "22.23.2"
@@ -57,6 +57,6 @@ domain = "Exhaustive subcorpus: all 1..4-node bodies in width 3 by all 1..3-node
 "Binders.lean" = "91d562dda3f9bb297cf12cfa50fe7bec9ab0be386745dd71026e86bbbad368bc"
 "Typing.lean" = "2587483bce8dcd7fe2a9e46f972e77557ed998fa273d3146f3180e73a417d5c3"
 "binder-replay.cjs" = "724beae0626371048f74594c971b55653538789ef49d24163ac41be7c18b172f"
-"../../site/static/eshkol-vm.wasm" = "2c0b0441ea77402e679a9ffa679062c519aacee2b39e69f8d6ebc448ff609f72"
-"../../site/static/eshkol-vm.js" = "9b96a5016e940d1fcbfc9ab213af0363fe7c9c5c09cadcabfa9f576afa9b5144"
-"../../lib/core/blc.esk" = "25048643f33b8b24f5e1602e4ec13d85f745bf88fda49c504dce13138cf38d6c"
+"../../site/static/eshkol-vm.wasm" = "34da7d11efd17bf59ff242b03ac12b257b44cfcf95f48d2a9aaf7b8dca013582"
+"../../site/static/eshkol-vm.js" = "987279e2fe19b1d0a78dd1442706c29ca8c14f6ef3915e4fc9810adc40995a6a"
+"../../lib/core/blc.esk" = "377fd102c5d5cac33007f310679c927868008dfd39c86f63dbd69278dfc36213"
