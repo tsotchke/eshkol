@@ -1,0 +1,452 @@
+;;; core.operator.cstar -- exact Q[i] finite-dimensional C*-algebras,
+;;; commutators, exact Hermitian PSD certification via core.exact_psd,
+;;; states, and executable GNS representation (ADR-0062).
+;;;
+;;; Matrices are stored as exact pairs `(cmat n re im)` where `re` and `im`
+;;; are n x n exact rational matrices built strictly via `vector` / `make-vector`
+;;; (never `#(...)` numeric literals, which auto-promote to inexact tensors).
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.exact_psd)
+
+(provide
+  ;; Exact Q[i] scalars represented as pairs (re . im)
+  qi qi-re qi-im qi? qi-zero qi-one qi-i
+  qi+ qi- qi* qi/ qi-conj qi-norm-sq qi= qi-zero?
+  ;; Exact M_n(Q[i]) matrices (elements of a C*-algebra)
+  cmat? make-cmat cmat-dim cmat-re cmat-im cmat-ref cmat-set!
+  cmat-zero cmat-identity cmat-unit cmat-from-real cmat-from-lists
+  cmat+ cmat- cmat-scale cmat* cmat-adjoint cmat-transpose
+  cmat-commutator cmat-commutes? cmat= cmat-zero?
+  cmat-trace cmat-hs-inner cmat-hermitian? cmat-unitary? cmat-projection?
+  cmat-kron cmat-frobenius-sq
+  ;; Exact Hermitian PSD certification via real-block lift + core.exact_psd
+  cmat-real-block cmat-psd-certify cmat-psd? cmat-psd-witness
+  ;; States (positive unital linear functionals) & executable GNS construction
+  make-density-state state-eval state-valid?
+  cstar-gns-representation gns-dim gns-action-matrix gns-cyclic-vector)
+
+;; ---------------------------------------------------------------------------
+;; Exact Gaussian rationals Q[i]
+;; ---------------------------------------------------------------------------
+
+(define (qi-exact x)
+  (if (not (and (rational? x) (exact? x)))
+      (error "core.operator.cstar: requires exact rational coordinates" x))
+  x)
+
+(define (qi a b) (cons (qi-exact a) (qi-exact b)))
+(define (qi? z) (and (pair? z) (rational? (car z)) (exact? (car z))
+                     (rational? (cdr z)) (exact? (cdr z))))
+(define (qi-re z) (if (pair? z) (car z) (qi-exact z)))
+(define (qi-im z) (if (pair? z) (cdr z) 0))
+(define qi-zero (cons 0 0))
+(define qi-one  (cons 1 0))
+(define qi-i    (cons 0 1))
+
+(define (qi+ z w)
+  (cons (+ (qi-re z) (qi-re w)) (+ (qi-im z) (qi-im w))))
+
+(define (qi- z w)
+  (cons (- (qi-re z) (qi-re w)) (- (qi-im z) (qi-im w))))
+
+(define (qi* z w)
+  (let ((a (qi-re z)) (b (qi-im z)) (c (qi-re w)) (d (qi-im w)))
+    (cons (- (* a c) (* b d)) (+ (* a d) (* b c)))))
+
+(define (qi-conj z)
+  (cons (qi-re z) (- 0 (qi-im z))))
+
+(define (qi-norm-sq z)
+  (let ((a (qi-re z)) (b (qi-im z)))
+    (+ (* a a) (* b b))))
+
+(define (qi/ z w)
+  (let ((d (qi-norm-sq w)))
+    (if (= d 0) (error "qi/: division by zero"))
+    (let ((p (qi* z (qi-conj w))))
+      (cons (/ (car p) d) (/ (cdr p) d)))))
+
+(define (qi= z w)
+  (and (= (qi-re z) (qi-re w)) (= (qi-im z) (qi-im w))))
+
+(define (qi-zero? z)
+  (and (= (qi-re z) 0) (= (qi-im z) 0)))
+
+;; ---------------------------------------------------------------------------
+;; Exact rational grid helpers (strictly via vector / make-vector)
+;; ---------------------------------------------------------------------------
+
+(define (op-make-grid r c val)
+  (let ((g (make-vector r #f)))
+    (let loop ((i 0))
+      (if (< i r)
+          (begin (vector-set! g i (make-vector c val))
+                 (loop (+ i 1)))))
+    g))
+
+(define (op-grid-ref g i j) (vector-ref (vector-ref g i) j))
+(define (op-grid-set! g i j v) (vector-set! (vector-ref g i) j v))
+
+;; ---------------------------------------------------------------------------
+;; M_n(Q[i]) C*-algebra elements
+;; ---------------------------------------------------------------------------
+
+(define (make-cmat n re im)
+  (vector 'cmat-v1 n re im))
+
+(define (cmat? m)
+  (and (vector? m) (= (vector-length m) 4) (eq? (vector-ref m 0) 'cmat-v1)))
+
+(define (cmat-dim m) (vector-ref m 1))
+(define (cmat-re m) (vector-ref m 2))
+(define (cmat-im m) (vector-ref m 3))
+
+(define (cmat-ref m i j)
+  (cons (op-grid-ref (cmat-re m) i j) (op-grid-ref (cmat-im m) i j)))
+
+(define (cmat-set! m i j z)
+  (op-grid-set! (cmat-re m) i j (qi-re z))
+  (op-grid-set! (cmat-im m) i j (qi-im z)))
+
+(define (cmat-zero n)
+  (make-cmat n (op-make-grid n n 0) (op-make-grid n n 0)))
+
+(define (cmat-identity n)
+  (let ((m (cmat-zero n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (cmat-set! m i i qi-one) (loop (+ i 1)))))
+    m))
+
+(define (cmat-unit n r c)
+  (let ((m (cmat-zero n)))
+    (cmat-set! m r c qi-one)
+    m))
+
+(define (cmat-from-real mat)
+  (let* ((n (vector-length mat))
+         (m (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (cmat-set! m i j (qi (op-grid-ref mat i j) 0))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    m))
+
+(define (cmat-from-lists rows)
+  (let* ((n (length rows))
+         (m (cmat-zero n)))
+    (let li ((rs rows) (i 0))
+      (if (not (null? rs))
+          (begin
+            (let lj ((cs (car rs)) (j 0))
+              (if (not (null? cs))
+                  (begin
+                    (let ((v (car cs)))
+                      (cmat-set! m i j (if (pair? v) (qi (car v) (cdr v)) (qi v 0))))
+                    (lj (cdr cs) (+ j 1)))))
+            (li (cdr rs) (+ i 1)))))
+    m))
+
+(define (cmat+ A B)
+  (let* ((n (cmat-dim A)) (C (cmat-zero n)))
+    (if (not (= n (cmat-dim B))) (error "cmat+: dimension mismatch"))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (cmat-set! C i j (qi+ (cmat-ref A i j) (cmat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+(define (cmat- A B)
+  (let* ((n (cmat-dim A)) (C (cmat-zero n)))
+    (if (not (= n (cmat-dim B))) (error "cmat-: dimension mismatch"))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (cmat-set! C i j (qi- (cmat-ref A i j) (cmat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+(define (cmat-scale s A)
+  (let* ((z (if (pair? s) s (qi s 0)))
+         (n (cmat-dim A))
+         (C (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (cmat-set! C i j (qi* z (cmat-ref A i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+(define (cmat* A B)
+  (let* ((n (cmat-dim A)) (C (cmat-zero n)))
+    (if (not (= n (cmat-dim B))) (error "cmat*: dimension mismatch"))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin
+                    (cmat-set! C i j
+                      (let lk ((k 0) (acc qi-zero))
+                        (if (= k n) acc
+                            (lk (+ k 1) (qi+ acc (qi* (cmat-ref A i k) (cmat-ref B k j)))))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+(define (cmat-adjoint A)
+  (let* ((n (cmat-dim A)) (C (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (cmat-set! C j i (qi-conj (cmat-ref A i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+(define (cmat-transpose A)
+  (let* ((n (cmat-dim A)) (C (cmat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (cmat-set! C j i (cmat-ref A i j))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+(define (cmat-commutator A B)
+  (cmat- (cmat* A B) (cmat* B A)))
+
+(define (cmat= A B)
+  (and (= (cmat-dim A) (cmat-dim B))
+       (let ((n (cmat-dim A)))
+         (let li ((i 0))
+           (cond ((= i n) #t)
+                 ((let lj ((j 0))
+                    (cond ((= j n) #t)
+                          ((qi= (cmat-ref A i j) (cmat-ref B i j)) (lj (+ j 1)))
+                          (else #f)))
+                  (li (+ i 1)))
+                 (else #f))))))
+
+(define (cmat-zero? A)
+  (let ((n (cmat-dim A)))
+    (let li ((i 0))
+      (cond ((= i n) #t)
+            ((let lj ((j 0))
+               (cond ((= j n) #t)
+                     ((qi-zero? (cmat-ref A i j)) (lj (+ j 1)))
+                     (else #f)))
+             (li (+ i 1)))
+            (else #f)))))
+
+(define (cmat-commutes? A B)
+  (cmat-zero? (cmat-commutator A B)))
+
+(define (cmat-trace A)
+  (let ((n (cmat-dim A)))
+    (let loop ((i 0) (acc qi-zero))
+      (if (= i n) acc (loop (+ i 1) (qi+ acc (cmat-ref A i i)))))))
+
+(define (cmat-hs-inner A B)
+  (cmat-trace (cmat* (cmat-adjoint A) B)))
+
+(define (cmat-frobenius-sq A)
+  (qi-re (cmat-hs-inner A A)))
+
+(define (cmat-hermitian? A)
+  (cmat= A (cmat-adjoint A)))
+
+(define (cmat-unitary? U)
+  (let ((I (cmat-identity (cmat-dim U))))
+    (and (cmat= (cmat* (cmat-adjoint U) U) I)
+         (cmat= (cmat* U (cmat-adjoint U)) I))))
+
+(define (cmat-projection? P)
+  (and (cmat-hermitian? P) (cmat= (cmat* P P) P)))
+
+;; Exact Kronecker tensor product A (x) B of M_m(Q[i]) and M_n(Q[i])
+(define (cmat-kron A B)
+  (let* ((m (cmat-dim A))
+         (n (cmat-dim B))
+         (C (cmat-zero (* m n))))
+    (let li ((i 0))
+      (if (< i m)
+          (begin
+            (let lj ((j 0))
+              (if (< j m)
+                  (begin
+                    (let ((aij (cmat-ref A i j)))
+                      (let lp ((p 0))
+                        (if (< p n)
+                            (begin
+                              (let lq ((q 0))
+                                (if (< q n)
+                                    (begin
+                                      (cmat-set! C (+ (* i n) p) (+ (* j n) q)
+                                                 (qi* aij (cmat-ref B p q)))
+                                      (lq (+ q 1)))))
+                              (lp (+ p 1))))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+
+;; ---------------------------------------------------------------------------
+;; Exact Hermitian PSD certification via real-symmetric 2n x 2n block lift:
+;;   R(H) = [[ Re(H), -Im(H) ],
+;;           [ Im(H),  Re(H) ]]
+;; For any complex vector psi = x + i y, <psi | H | psi> = [x; y]^T R(H) [x; y]
+;; holds identically over Q. Thus H >= 0 iff R(H) >= 0 in core.exact_psd!
+;; ---------------------------------------------------------------------------
+
+(define (cmat-real-block H)
+  (let* ((n (cmat-dim H))
+         (R (op-make-grid (* 2 n) (* 2 n) 0)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (let* ((z (cmat-ref H i j))
+                         (a (qi-re z))
+                         (b (qi-im z)))
+                    (op-grid-set! R i j a)
+                    (op-grid-set! R i (+ n j) (- 0 b))
+                    (op-grid-set! R (+ n i) j b)
+                    (op-grid-set! R (+ n i) (+ n j) a)
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (cmat-psd-certify H)
+  (if (not (cmat-hermitian? H))
+      (vector 'cmat-psd-verdict #f 'not-hermitian #f)
+      (let* ((R (cmat-real-block H))
+             (res (exact-psd-factor R)))
+        (if (psd-factor? res)
+            (vector 'cmat-psd-verdict #t res #f)
+            (vector 'cmat-psd-verdict #f 'indefinite (psd-negative-direction res))))))
+
+(define (cmat-psd? H)
+  (vector-ref (cmat-psd-certify H) 1))
+
+(define (cmat-psd-witness H)
+  (vector-ref (cmat-psd-certify H) 3))
+
+;; ---------------------------------------------------------------------------
+;; States (positive unital functionals omega_rho(A) = Tr(rho A))
+;; ---------------------------------------------------------------------------
+
+(define (make-density-state rho)
+  (if (not (cmat-psd? rho))
+      (error "make-density-state: density operator failed exact Hermitian PSD certification"))
+  (if (not (qi= (cmat-trace rho) qi-one))
+      (error "make-density-state: density operator must have exact unit trace"))
+  (vector 'cstar-state-v1 rho))
+
+(define (state-valid? st)
+  (and (vector? st)
+       (= (vector-length st) 2)
+       (eq? (vector-ref st 0) 'cstar-state-v1)
+       (cmat-psd? (vector-ref st 1))
+       (qi= (cmat-trace (vector-ref st 1)) qi-one)))
+
+(define (state-eval st A)
+  (cmat-trace (cmat* (vector-ref st 1) A)))
+
+;; ---------------------------------------------------------------------------
+;; Executable GNS representation for a density state omega_rho on M_n(Q[i]):
+;;   Left ideal N_omega = { A : Tr(rho A^* A) = 0 }.
+;;   Inner product <A, B>_omega = Tr(rho A^* B) on the n^2-dimensional
+;;   matrix space. We build the exact Hermitian Gram matrix G (dimension n^2)
+;;   in the standard matrix-unit basis E_{pq}, extract an exact quotient basis
+;;   via rational pivot columns of R(G), and construct pi_omega(A) acting by
+;;   left multiplication on the quotient Hilbert space H_omega = M_n / N_omega!
+;; ---------------------------------------------------------------------------
+
+(define (cstar-gns-representation st)
+  (let* ((rho (vector-ref st 1))
+         (n (cmat-dim rho))
+         (n2 (* n n))
+         (basis (make-vector n2 #f)))
+    ;; Enumerate matrix units E_{r,c}
+    (let lr ((r 0))
+      (if (< r n)
+          (begin
+            (let lc ((c 0))
+              (if (< c n)
+                  (begin (vector-set! basis (+ (* r n) c) (cmat-unit n r c))
+                         (lc (+ c 1)))))
+            (lr (+ r 1)))))
+    ;; Build exact n^2 x n^2 Hermitian Gram matrix G_{u,v} = Tr(rho E_u^* E_v)
+    (let ((G (cmat-zero n2)))
+      (let lu ((u 0))
+        (if (< u n2)
+            (begin
+              (let lv ((v 0))
+                (if (< v n2)
+                    (begin
+                      (cmat-set! G u v
+                        (cmat-trace (cmat* rho (cmat* (cmat-adjoint (vector-ref basis u))
+                                                      (vector-ref basis v)))))
+                      (lv (+ v 1)))))
+              (lu (+ u 1)))))
+      ;; Quotient dimension = rank(R(G)) / 2 (complex dimension of H_omega)
+      (let* ((RG (cmat-real-block G))
+             (r-rank (exact-rank RG))
+             (h-dim (/ r-rank 2)))
+        (vector 'cstar-gns-v1 n h-dim rho G basis)))))
+
+(define (gns-dim gns) (vector-ref gns 2))
+
+;; Cyclic vector Omega = [I] represented in the ambient E_{r,c} coordinates
+(define (gns-cyclic-vector gns)
+  (let* ((n (vector-ref gns 1))
+         (n2 (* n n))
+         (v (make-vector n2 qi-zero)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! v (+ (* i n) i) qi-one) (loop (+ i 1)))))
+    v))
+
+;; Left-multiplication action pi_omega(A) on the ambient n^2 basis (preserving N_omega):
+;; satisfies <Omega, pi(A) Omega>_G = Tr(rho A) identically!
+(define (gns-action-matrix gns A)
+  (let* ((n (vector-ref gns 1))
+         (n2 (* n n))
+         (M (cmat-zero n2)))
+    ;; A * E_{r,c} = sum_p A_{p,r} E_{p,c}
+    (let lr ((r 0))
+      (if (< r n)
+          (begin
+            (let lc ((c 0))
+              (if (< c n)
+                  (let ((col (+ (* r n) c)))
+                    (let lp ((p 0))
+                      (if (< p n)
+                          (begin
+                            (cmat-set! M (+ (* p n) c) col (cmat-ref A p r))
+                            (lp (+ p 1)))))
+                    (lc (+ c 1)))))
+            (lr (+ r 1)))))
+    M))

@@ -213,14 +213,17 @@
 ;; Minimal nonempty events in F. For any valid finite sigma-algebra, these are
 ;; pairwise disjoint and partition (sigma-space F).
 (define (sigma-atoms F)
-  (let ((nonempty (filter (lambda (e) (not (null? e))) (sigma-events F))))
-    (filter
-     (lambda (a)
-       (not (sa-any? (lambda (b)
-                       (and (< (length b) (length a))
-                            (event-subset? b a)))
-                     nonempty)))
-     nonempty)))
+  (if (and (vector? F) (= (vector-length F) 3) (eq? (vector-ref F 0) 'boolean-sigma-alg-v1))
+      (let loop ((i (- (vector-ref F 1) 1)) (acc '()))
+        (if (< i 0) acc (loop (- i 1) (cons i acc))))
+      (let ((nonempty (filter (lambda (e) (not (null? e))) (sigma-events F))))
+        (filter
+         (lambda (a)
+           (not (sa-any? (lambda (b)
+                           (and (< (length b) (length a))
+                                (event-subset? b a)))
+                         nonempty)))
+         nonempty))))
 
 (define (sigma-partition F)
   (sigma-atoms F))

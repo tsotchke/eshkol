@@ -1,0 +1,203 @@
+;;; tests/stdlib/operator_cstar_cp_test.esk -- Executable Mathematical Rigor Gate
+;;; for M1 (ADR-0062: core.operator.{cstar,sigma_cstar,cp_instrument}, arXiv:2611.32363).
+;;;
+;;; Verifies:
+;;;   1. Exact Q[i] C*-algebra arithmetic, Pauli commutators [X,Y]=2iZ, exact
+;;;      non-commutativity, C*-identity, Hermitian/unitary/projection predicates.
+;;;   2. Exact Hermitian PSD certification via real-block lift + core.exact_psd
+;;;      (including exact rational negative witness for indefinite Hermitian matrix).
+;;;   3. Density states & executable GNS representation (<Omega, pi(A) Omega>_G = Tr(rho A),
+;;;      dim H_omega = 2 for pure state, dim H_omega = 4 for faithful maximally mixed state).
+;;;   4. Boolean sigma-algebra L^infty_abs(Sigma) embedding & maximal tensor product
+;;;      L^infty_abs(Sigma) (x) M_2(Q[i]), plus Loewner monotone sigma-normality.
+;;;   5. Exact Choi-Jamiolkowski CP certification:
+;;;      - Admits unitary conjugation, Z-dephasing, depolarizing channels (CPU + CPTP)
+;;;      - REJECTS matrix transpose map X |-> X^T with an EXACT rational witness vector!
+;;;   6. arXiv:2611.32363 Thm. 7.6 bijection (sigma-CP-instrument <-> tensor sigma-cpu map)
+;;;      and Prop. 7.7 sequential composition of noncommuting Z-basis and X-basis projective
+;;;      instruments into a 4-outcome instrument on Sigma_Z (x) Sigma_X with exact Born probs!
+
+(require core.operator)
+
+(define checks 0)
+(define (expect label cond)
+  (if (not cond)
+      (begin (display "FAIL: ") (display label) (newline) (exit 1))
+      (set! checks (+ checks 1))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Exact Q[i] C*-algebra & Pauli non-commutativity
+;; ---------------------------------------------------------------------------
+(define I2 (cmat-identity 2))
+(define X2 (cmat-from-lists (list (list 0 1) (list 1 0))))
+(define Y2 (cmat-from-lists (list (list 0 (qi 0 -1)) (list (qi 0 1) 0))))
+(define Z2 (cmat-from-lists (list (list 1 0) (list 0 -1))))
+
+(expect "pauli-X-hermitian" (cmat-hermitian? X2))
+(expect "pauli-Y-hermitian" (cmat-hermitian? Y2))
+(expect "pauli-Z-hermitian" (cmat-hermitian? Z2))
+(expect "pauli-Y-unitary"   (cmat-unitary? Y2))
+(expect "pauli-commutator-[X,Y]=2iZ"
+        (cmat= (cmat-commutator X2 Y2) (cmat-scale (qi 0 2) Z2)))
+(expect "pauli-X-Z-do-not-commute" (not (cmat-commutes? X2 Z2)))
+(expect "pauli-Z-I-commute" (cmat-commutes? Z2 I2))
+
+;; Projectors onto |0>, |1>, |+>, |-> in exact Q[i]
+(define P0 (cmat-from-lists (list (list 1 0) (list 0 0))))
+(define P1 (cmat-from-lists (list (list 0 0) (list 0 1))))
+(define Pplus  (cmat-scale 1/2 (cmat-from-lists (list (list 1 1) (list 1 1)))))
+(define Pminus (cmat-scale 1/2 (cmat-from-lists (list (list 1 -1) (list -1 1)))))
+
+(expect "P0-projection" (cmat-projection? P0))
+(expect "Pplus-projection" (cmat-projection? Pplus))
+(expect "P0-Pplus-do-not-commute" (not (cmat-commutes? P0 Pplus)))
+
+;; ---------------------------------------------------------------------------
+;; 2. Exact Hermitian PSD certification + negative witness
+;; ---------------------------------------------------------------------------
+(expect "Pplus-is-exact-PSD" (cmat-psd? Pplus))
+(expect "Z2-not-PSD" (not (cmat-psd? Z2)))
+(let* ((w (cmat-psd-witness Z2))
+       (R (cmat-real-block Z2))
+       ;; Verify witness v^T R(Z2) v < 0 directly over exact Q!
+       (n (vector-length w))
+       (quad (let li ((i 0) (s 0))
+               (if (= i n) s
+                   (li (+ i 1)
+                       (+ s (* (vector-ref w i)
+                               (let lj ((j 0) (t 0))
+                                 (if (= j n) t
+                                     (lj (+ j 1) (+ t (* (exact-matrix-ref R i j) (vector-ref w j)))))))))))))
+  (expect "Z2-witness-strictly-negative" (< quad 0)))
+
+;; ---------------------------------------------------------------------------
+;; 3. Density states & executable GNS representation
+;; ---------------------------------------------------------------------------
+(define st-pure0 (make-density-state P0))
+(define st-mixed (make-density-state (cmat-scale 1/2 I2)))
+(expect "pure-state-valid" (state-valid? st-pure0))
+(expect "mixed-state-valid" (state-valid? st-mixed))
+(expect "state-eval-<0|Z|0>=1" (qi= (state-eval st-pure0 Z2) qi-one))
+(expect "state-eval-mixed-Z=0" (qi= (state-eval st-mixed Z2) qi-zero))
+
+(define gns-pure (cstar-gns-representation st-pure0))
+(define gns-mixed (cstar-gns-representation st-mixed))
+;; For M_2(C): pure state has GNS dim 2 (C^2); faithful mixed state has GNS dim 4 (M_2)
+(expect "gns-pure-dim-2" (= (gns-dim gns-pure) 2))
+(expect "gns-mixed-dim-4" (= (gns-dim gns-mixed) 4))
+
+;; Check GNS representation homomorphism: pi(X * Y) == pi(X) * pi(Y)
+(expect "gns-homomorphism"
+        (cmat= (gns-action-matrix gns-mixed (cmat* X2 Y2))
+               (cmat* (gns-action-matrix gns-mixed X2)
+                      (gns-action-matrix gns-mixed Y2))))
+
+;; ---------------------------------------------------------------------------
+;; 4. Boolean sigma-algebra L^infty_abs(Sigma) & maximal tensor product
+;; ---------------------------------------------------------------------------
+(define sig2 (make-boolean-sigma-algebra (vector 'up 'down)))
+(expect "sigma-atom-count-2" (= (sigma-atom-count sig2) 2))
+(expect "sigma-disjoint-atoms" (sigma-disjoint? sig2 '(0) '(1)))
+(expect "sigma-join-top" (sigma-event=? (sigma-join sig2 '(0) '(1)) (sigma-top sig2)))
+(expect "sigma-indicator-projection" (cmat-projection? (sigma-indicator-cmat sig2 '(0))))
+
+(define bt1 (block-cstar-pure-tensor sig2 (vector 1 0) X2))
+(define bt2 (block-cstar-pure-tensor sig2 (vector 0 1) Y2))
+(expect "orthogonal-fibers-commute" (block-cstar-commutes? bt1 bt2))
+
+;; Loewner monotone chain 0 <= 1/2 P0 <= P0 <= I2
+(expect "loewner-monotone-chain"
+        (cmat-monotone-increasing-chain?
+          (list (cmat-zero 2) (cmat-scale 1/2 P0) P0 I2)))
+
+;; ---------------------------------------------------------------------------
+;; 5. Exact Choi-PSD Complete Positivity Gate (including non-CP transpose rejection!)
+;; ---------------------------------------------------------------------------
+;; Z-dephasing channel: Phi(A) = P0 A P0 + P1 A P1 (both CPU and CPTP!)
+(define dephase-z (kraus-heisenberg-superop 2 (list P0 P1)))
+(expect "dephase-z-is-CP"   (superop-cp? dephase-z))
+(expect "dephase-z-is-CPU"  (superop-cpu? dephase-z))
+(expect "dephase-z-is-CPTP" (superop-cptp? dephase-z))
+
+;; Unitary Y-conjugation channel
+(define conj-y (kraus-heisenberg-superop 2 (list Y2)))
+(expect "conj-y-is-CPU" (superop-cpu? conj-y))
+
+;; CRITICAL NEGATIVE CONTROL: Matrix transpose T(A) = A^T is positive & unital
+;; & trace-preserving, yet NOT completely positive (Choi matrix = SWAP has -1 eig)!
+(define transpose-map (make-superop 2 2 cmat-transpose))
+(expect "transpose-is-unital" (superop-unital? transpose-map))
+(expect "transpose-is-trace-preserving" (superop-trace-preserving? transpose-map))
+(expect "transpose-REJECTED-by-exact-Choi-PSD" (not (superop-cp? transpose-map)))
+(let* ((tw (superop-cp-witness transpose-map))
+       (RC (cmat-real-block (superop-choi-matrix transpose-map)))
+       (n (vector-length tw))
+       (quad (let li ((i 0) (s 0))
+               (if (= i n) s
+                   (li (+ i 1)
+                       (+ s (* (vector-ref tw i)
+                               (let lj ((j 0) (t 0))
+                                 (if (= j n) t
+                                     (lj (+ j 1) (+ t (* (exact-matrix-ref RC i j) (vector-ref tw j)))))))))))))
+  (expect "transpose-exact-witness-proves-not-CP" (< quad 0)))
+
+;; Verify Loewner sigma-normality on dephase-z
+(expect "dephase-z-sigma-normal"
+        (cmat-sigma-normal-preserves-sup?
+          (lambda (A) (superop-apply dephase-z A))
+          (list (cmat-zero 2) (cmat-scale 1/2 P0) P0 I2)
+          I2))
+
+;; ---------------------------------------------------------------------------
+;; 6. arXiv:2611.32363 Thm 7.6 & Prop 7.7: Noncommuting sigma-CP-Instruments
+;; ---------------------------------------------------------------------------
+;; Z-basis projective Lüders instrument p_Z: Sigma_Z -> sigma-CP(M2, M2)
+(define inst-Z
+  (make-sigma-cp-instrument sig2 2 2
+    (vector (kraus-heisenberg-superop 2 (list P0))
+            (kraus-heisenberg-superop 2 (list P1)))))
+
+;; X-basis projective Lüders instrument p_X: Sigma_X -> sigma-CP(M2, M2)
+(define sigX (make-boolean-sigma-algebra (vector 'plus 'minus)))
+(define inst-X
+  (make-sigma-cp-instrument sigX 2 2
+    (vector (kraus-heisenberg-superop 2 (list Pplus))
+            (kraus-heisenberg-superop 2 (list Pminus)))))
+
+(expect "inst-Z-valid-unital" (instrument-valid? inst-Z))
+(expect "inst-X-valid-unital" (instrument-valid? inst-X))
+
+;; Theorem 7.6 bijection: phi(1_top (x) I2) == I2 and phi(1_{0} (x) A) == P0 A P0
+(define phi-Z (instrument->tensor-cpu-map inst-Z))
+(expect "thm76-unital-on-tensor-id"
+        (cmat= (phi-Z (block-cstar-identity 2 2)) I2))
+(expect "thm76-pure-tensor-matches-atom"
+        (cmat= (phi-Z (block-cstar-pure-tensor sig2 (vector 1 0) X2))
+               (superop-apply (instrument-eval-atom inst-Z 0) X2)))
+
+;; Proposition 7.7 sequential composition: p_X o p_Z : (Sigma_Z (x) Sigma_X) -> sigma-CP(M2, M2)
+;; Measure Z first, then X on state |0><0|:
+;;   P(Z=up, X=plus)   = 1/2
+;;   P(Z=up, X=minus)  = 1/2
+;;   P(Z=down, X=plus) = 0
+;;   P(Z=down, X=minus)= 0
+(define inst-ZX (instrument-compose inst-X inst-Z))
+(expect "prop77-composed-instrument-valid" (instrument-valid? inst-ZX))
+(expect "prop77-4-joint-outcomes" (= (sigma-atom-count (instrument-sigma inst-ZX)) 4))
+(define probs-ZX-on-0 (instrument-outcome-probs inst-ZX st-pure0))
+(expect "born-ZX-up-plus=1/2"   (= (vector-ref probs-ZX-on-0 0) 1/2))
+(expect "born-ZX-up-minus=1/2"  (= (vector-ref probs-ZX-on-0 1) 1/2))
+(expect "born-ZX-down-plus=0"   (= (vector-ref probs-ZX-on-0 2) 0))
+(expect "born-ZX-down-minus=0"  (= (vector-ref probs-ZX-on-0 3) 0))
+
+;; Reverse order p_Z o p_X on state |0><0| (non-commuting measurement order!):
+;;   P(X=plus, Z=up)   = 1/4, P(X=plus, Z=down)  = 1/4,
+;;   P(X=minus, Z=up)  = 1/4, P(X=minus, Z=down) = 1/4!
+(define inst-XZ (instrument-compose inst-Z inst-X))
+(define probs-XZ-on-0 (instrument-outcome-probs inst-XZ st-pure0))
+(expect "born-XZ-noncommuting-0=1/4" (= (vector-ref probs-XZ-on-0 0) 1/4))
+(expect "born-XZ-noncommuting-1=1/4" (= (vector-ref probs-XZ-on-0 1) 1/4))
+(expect "born-XZ-noncommuting-2=1/4" (= (vector-ref probs-XZ-on-0 2) 1/4))
+(expect "born-XZ-noncommuting-3=1/4" (= (vector-ref probs-XZ-on-0 3) 1/4))
+
+(display "PASS: operator_cstar_cp_test (") (display checks) (display " checks)") (newline)

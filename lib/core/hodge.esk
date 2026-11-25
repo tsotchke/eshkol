@@ -4,6 +4,7 @@
 (require core.hodge.structure)
 (require core.hodge.cycles)
 (require core.hodge.periods)
+(require core.hodge.weil_fourfold)
 
 (provide
   ;; Exact rational matrix helpers & Q[i] helpers
@@ -24,6 +25,9 @@
   hodge-cycle-class-certify hodge-classify-candidate
   schubert-gr24-mul schubert-gr24-degree
   mumford-tate-lie-algebra-check mumford-tate-invariant-tensor?
+  ;; Weil Abelian 4-Fold Extraordinary Hodge Gap & Hypothesis Search
+  make-weil-fourfold-hodge-benchmark weil-fourfold-verify-gap
+  hodge-period-relation-hypothesis
   ;; Periods, Siegel upper half-space, Endomorphisms, Griffiths & Picard-Fuchs
   make-siegel-period siegel-period? siegel-period-certify
   abelian-endomorphism-check

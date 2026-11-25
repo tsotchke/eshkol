@@ -1,0 +1,121 @@
+;;; core.integrable.painleve_kp -- Exact Hirota bilinear KdV 2-soliton tau-function
+;;;   via native 4th-order AD, Sofia Kowalevski's exact quartic 4th integral of
+;;;   motion over Q[i], and Painleve II exact rational isomonodromic solutions (ADR-0063).
+
+(require stdlib)
+(require core.hodge.structure)
+
+(provide
+  hirota-kdv-2soliton-residual
+  kowalevski-top-verify-4-integrals
+  painleve-ii-residual)
+
+;; ---------------------------------------------------------------------------
+;; 1. Hirota Bilinear KdV 2-Soliton tau-function Verification via Native 4th-Order AD
+;;    tau(x, t) = 1 + exp(th1) + exp(th2) + A12 * exp(th1 + th2)
+;;    with th_i = k_i * x - k_i^3 * t, and exact scattering phase
+;;      A12 = ((k1 - k2) / (k1 + k2))^2.
+;;    Verifies (D_x D_t + D_x^4)(tau . tau) = 0 (and passing wrong phase A12 != exact
+;;    yields a large nonzero residual!).
+;; ---------------------------------------------------------------------------
+
+(define (hirota-kdv-2soliton-residual k1 k2 A12 x0 t0)
+  (let* ((tau (lambda (x t)
+                (let ((e1 (exp (- (* k1 x) (* k1 k1 k1 t))))
+                      (e2 (exp (- (* k2 x) (* k2 k2 k2 t)))))
+                  (+ 1.0 e1 e2 (* A12 e1 e2)))))
+         (tau-x    (lambda (x t) ((derivative (lambda (xx) (tau xx t))) x)))
+         (tau-t    (lambda (x t) ((derivative (lambda (tt) (tau x tt))) t)))
+         (tau-xt   (lambda (x t) ((derivative (lambda (tt) (tau-x x tt))) t)))
+         (tau-xx   (lambda (x t) ((derivative (lambda (xx) (tau-x xx t))) x)))
+         (tau-xxx  (lambda (x t) ((derivative (lambda (xx) (tau-xx xx t))) x)))
+         (tau-xxxx (lambda (x t) ((derivative (lambda (xx) (tau-xxx xx t))) x)))
+         (f     (tau x0 t0))
+         (fx    (tau-x x0 t0))
+         (ft    (tau-t x0 t0))
+         (fxt   (tau-xt x0 t0))
+         (fxx   (tau-xx x0 t0))
+         (fxxx  (tau-xxx x0 t0))
+         (fxxxx (tau-xxxx x0 t0))
+         (dxdt (* 2.0 (- (* f fxt) (* fx ft))))
+         (dx4  (* 2.0 (+ (- (* f fxxxx) (* 4.0 fx fxxx)) (* 3.0 fxx fxx)))))
+    (+ dxdt dx4)))
+
+;; ---------------------------------------------------------------------------
+;; 2. Sofia Kowalevski's Heavy Top — Exact Algebraic Conservation over Q[i]!
+;;    Principal inertias I = (I1, I2, I3), gravity torque vector c*(1, 0, 0):
+;;      Euler-Poisson equations:
+;;        I1 * dw1/dt = (I2 - I3) * w2 * w3
+;;        I2 * dw2/dt = (I3 - I1) * w3 * w1 - c * g3
+;;        I3 * dw3/dt = (I1 - I2) * w1 * w2 + c * g2
+;;        dg/dt = g x w
+;;    Integrals:
+;;      1. Energy:       H  = (1/2)(I1 w1^2 + I2 w2^2 + I3 w3^2) - c * g1
+;;      2. Vertical AM:  Lz = I1 w1 g1 + I2 w2 g2 + I3 w3 g3
+;;      3. Casimir:      C  = g1^2 + g2^2 + g3^2
+;;      4. Kowalevski's 4th Integral (ONLY conserved when I1 = I2 = 2*I3!):
+;;           xi = (w1 + i w2)^2 + (c / I3) * (g1 + i g2)? Wait: let's check sign!
+;;           With I1 = I2 = 2, I3 = 1:
+;;             dw1/dt = w2 w3,  dw2/dt = -w3 w1 - (c/2) g3,  dw3/dt = c g2
+;;             dg1/dt = g2 w3 - g3 w2,  dg2/dt = g3 w1 - g1 w3,  dg3/dt = g1 w2 - g2 w1
+;;           Set W = w1 + i w2, G = g1 + i g2:
+;;             dW/dt = (w2 w3) + i(-w3 w1 - (c/2) g3) = -i w3 W - i (c/2) g3
+;;             dG/dt = (g2 w3 - g3 w2) + i(g3 w1 - g1 w3) = -i w3 G + i g3 W
+;;           Therefore:
+;;             d(W^2 + c*G)/dt = 2 W (-i w3 W - i (c/2) g3) + c (-i w3 G + i g3 W)
+;;                             = -2i w3 W^2 - i c g3 W - i c w3 G + i c g3 W
+;;                             = -i w3 (2 W^2 + c G)  ... wait: factor 2 on W^2!
+;;           Let's adjust the coefficient cleanly:
+;;             d(W^2 + (c/I3)*G)/dt with I1=I2=2*I3:
+;;               dW/dt = (1/2) w2 w3 - i (1/2) w3 w1 - i (c/(2*I3)) g3
+;;                     = -(i/2) w3 W - i (c/(2*I3)) g3!
+;;               Then:
+;;                 d(W^2)/dt = 2 W dW/dt = -i w3 W^2 - i (c/I3) g3 W!
+;;                 d((c/I3) G)/dt = (c/I3)(-i w3 G + i g3 W) = -i w3 (c/I3) G + i (c/I3) g3 W!
+;;               SUM: d(W^2 + (c/I3) G)/dt = -i w3 * (W^2 + (c/I3) G)!!
+;;           EXACT!! Since w3 is purely real, d(|xi|^2)/dt = xi* d(xi)/dt + xi d(xi*)/dt
+;;             = (-i w3 + i w3) |xi|^2 == 0 IDENTICALLY OVER EXACT Q[i]!!
+;; ---------------------------------------------------------------------------
+
+(define (kowalevski-top-verify-4-integrals I1 I2 I3 c w1 w2 w3 g1 g2 g3)
+  (let* ((dw1 (/ (* (- I2 I3) w2 w3) I1))
+         (dw2 (/ (- (* (- I3 I1) w3 w1) (* c g3)) I2))
+         (dw3 (/ (+ (* (- I1 I2) w1 w2) (* c g2)) I3))
+         (dg1 (- (* g2 w3) (* g3 w2)))
+         (dg2 (- (* g3 w1) (* g1 w3)))
+         (dg3 (- (* g1 w2) (* g2 w1)))
+         ;; 1. dH/dt = I1 w1 dw1 + I2 w2 dw2 + I3 w3 dw3 - c dg1
+         (dH (- (+ (* I1 w1 dw1) (* I2 w2 dw2) (* I3 w3 dw3)) (* c dg1)))
+         ;; 2. dLz/dt
+         (dLz (+ (* I1 (+ (* dw1 g1) (* w1 dg1)))
+                 (* I2 (+ (* dw2 g2) (* w2 dg2)))
+                 (* I3 (+ (* dw3 g3) (* w3 dg3)))))
+         ;; 3. dC/dt
+         (dC (* 2 (+ (* g1 dg1) (* g2 dg2) (* g3 dg3))))
+         ;; 4. Kowalevski quartic integral K = |xi|^2 where xi = (w1 + i w2)^2 + (c/I3)*(g1 + i g2)
+         (W  (hq w1 w2))
+         (dW (hq dw1 dw2))
+         (G  (hq g1 g2))
+         (dG (hq dg1 dg2))
+         (scale-c (hq (/ c I3) 0))
+         (xi  (hq+ (hq* W W) (hq* scale-c G)))
+         (dxi (hq+ (hq* (hq 2 0) (hq* W dW)) (hq* scale-c dG)))
+         ;; d(|xi|^2)/dt = conj(xi)*dxi + xi*conj(dxi)
+         (dK (hq+ (hq* (hq-conj xi) dxi) (hq* xi (hq-conj dxi)))))
+    (if (and (= dH 0) (= dLz 0) (= dC 0) (hq-zero? dK))
+        #t
+        (vector 'kowalevski-conservation-violation dH dLz dC dK))))
+
+;; ---------------------------------------------------------------------------
+;; 3. Painleve II Equation via Native 2nd-Order AD:
+;;    y''(x) - 2*y(x)^3 - x*y(x) - alpha = 0
+;;    Exact rational Yablonskii-Vorob'ev solutions:
+;;      alpha = 1: y(x) = -1/x
+;;      alpha = 2: y(x) = 1/x - 3*x^2 / (x^3 + 4)
+;; ---------------------------------------------------------------------------
+
+(define (painleve-ii-residual y-fn alpha x0)
+  (let* ((dy  (lambda (x) ((derivative y-fn) x)))
+         (ddy ((derivative dy) x0))
+         (y0  (y-fn x0)))
+    (- ddy (+ (* 2.0 y0 y0 y0) (* x0 y0) alpha))))
