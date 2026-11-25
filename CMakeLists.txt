@@ -2283,6 +2283,11 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/platform/(platform\\.c|event/|window/|aud
 # underscore suffix, so it deliberately stays in the glob.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/event_loop_[a-z]+\\.c$")
 
+# Eshkol OS Phase U5: freestanding in-OS ESKB VM shell links exclusively against
+# `eshkol_os_syscall6` and ships in its own zero-LLVM/zero-POSIX target
+# (`eshkol-os-vm-shell`), never inside hosted `eshkol-static`.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/os_vm_shell\\.c$")
+
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
 # platform_runtime.cpp stays in eshkol-static so the REPL, compiler, and JIT
@@ -10628,6 +10633,32 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
             add_test(
                 NAME os_u4_userspace_elf_test
                 COMMAND os_u4_userspace_elf_test $<TARGET_FILE:eshkol-run> "" "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_vm_shell.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u5_in_os_vm_test.cpp")
+        add_library(eshkol-os-vm-shell STATIC lib/core/os_vm_shell.c)
+        target_include_directories(eshkol-os-vm-shell PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-vm-shell PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-vm-shell PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_u5_in_os_vm_test tests/toolchain/os_u5_in_os_vm_test.cpp)
+        target_compile_features(os_u5_in_os_vm_test PRIVATE cxx_std_17)
+        target_link_libraries(os_u5_in_os_vm_test PRIVATE eshkol-os-vm-shell)
+        add_dependencies(os_u5_in_os_vm_test eshkol-run eshkol-os-vm-shell)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u5_in_os_vm_test
+                COMMAND os_u5_in_os_vm_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-vm-shell>
+            )
+        else()
+            add_test(
+                NAME os_u5_in_os_vm_test
+                COMMAND os_u5_in_os_vm_test $<TARGET_FILE:eshkol-run> "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-vm-shell>
             )
         endif()
     endif()
