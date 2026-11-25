@@ -1,0 +1,328 @@
+;;; core.category.monad -- monads, Kleisli categories, Eilenberg-Moore
+;;; categories, algebra verification, and Beck monadicity preconditions
+;;; built on core.category.functor and core.sheaf.site.
+;;;
+;;; Usage: (require core.category.monad)   or   (require core.category)
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.category.finite)
+(require core.category.functor)
+
+(provide
+  adjunction->monad monad-verify
+  kleisli-category kleisli-free-functor kleisli-forgetful-functor kleisli-adjunction
+  monad-algebra-violations monad-algebra?
+  eilenberg-moore-category em-forgetful-functor em-free-functor em-adjunction
+  category-coequalizer-arrows split-coequalizer?
+  beck-monadicity-check)
+
+;; ===========================================================================
+;; Private helpers (prefix cm-)
+;; ===========================================================================
+
+(define (cm-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (cm-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (cm-all? p (cdr xs))) (else #f)))
+(define (cm-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (cm-any? p (cdr xs)))))
+(define (cm-objects C) (cm-range (category-object-count C)))
+(define (cm-arrows C) (cm-range (category-arrow-count C)))
+
+;; ===========================================================================
+;; Monad verification & adjunction->monad
+;; ===========================================================================
+
+(define (adjunction->monad A) (adjunction-monad A))
+
+;; Verify functor laws of T, naturality of eta and mu, left/right unit and
+;; associativity laws, returning explicit violations with failing objects/arrows.
+(define (monad-verify M)
+  (let* ((T (monad-functor M))
+         (fv (functor-laws-violations T))
+         (mv (if (null? fv) (monad-laws-violations M) '())))
+    (append (map (lambda (v) (list 'functor v)) fv) mv)))
+
+;; ===========================================================================
+;; Kleisli Category C_T and Kleisli Adjunction F_T -| U_T
+;; ===========================================================================
+;;
+;; Objects of C_T: same 0..n-1 as C.
+;; Arrows a ->_T b: arrows f : a -> T(b) in C, named (a b f).
+;; Identity at a: (a a eta_a).
+;; Composition g o_T f = mu_c o T(g) o f for f : a -> T(b), g : b -> T(c).
+
+(define (kleisli-category M)
+  (let* ((C (monad-category M)) (T (monad-functor M))
+         (eta (monad-unit M)) (mu (monad-multiplication M))
+         (n (category-object-count C))
+         (arrows
+          (apply append
+                 (map (lambda (a)
+                        (apply append
+                               (map (lambda (b)
+                                      (map (lambda (f) (vector a b (list a b f)))
+                                           (category-hom C a (functor-object T b))))
+                                    (cm-objects C))))
+                      (cm-objects C))))
+         (av (list->vector arrows))
+         (m (vector-length av))
+         (idx (let ((h (make-hash-table)))
+                (let loop ((k 0))
+                  (if (< k m)
+                      (begin (hash-table-set! h (vector-ref (vector-ref av k) 2) k) (loop (+ k 1)))))
+                h)))
+    (make-finite-category
+     n arrows
+     (lambda (gk fk)
+       (let* ((nf (vector-ref (vector-ref av fk) 2))
+              (ng (vector-ref (vector-ref av gk) 2))
+              (a (car nf)) (b (cadr nf)) (f (caddr nf))
+              (c (cadr ng)) (g (caddr ng))
+              (comp-arrow (category-compose C (vector-ref mu c)
+                            (category-compose C (functor-arrow T g) f))))
+         (hash-table-ref/default idx (list a c comp-arrow) #f)))
+     (map (lambda (a) (hash-table-ref/default idx (list a a (vector-ref eta a)) #f)) (cm-objects C))
+     (map (lambda (a) (category-object-label C a)) (cm-objects C)))))
+
+(define (kleisli-free-functor M KT)
+  ;; F_T : C -> C_T, a |-> a, (f : a -> b) |-> (a b (eta_b o f))
+  (let* ((C (monad-category M)) (eta (monad-unit M))
+         (find (lambda (a b u)
+                 (let loop ((ks (category-hom KT a b)))
+                   (cond ((null? ks) #f)
+                         ((equal? (arrow-name KT (car ks)) (list a b u)) (car ks))
+                         (else (loop (cdr ks))))))))
+    (functor-from-procedures
+     C KT
+     (lambda (a) a)
+     (lambda (f)
+       (let ((a (arrow-source C f)) (b (arrow-target C f)))
+         (find a b (category-compose C (vector-ref eta b) f)))))))
+
+(define (kleisli-forgetful-functor M KT)
+  ;; U_T : C_T -> C, a |-> T(a), (a b f) |-> mu_b o T(f)
+  (let ((C (monad-category M)) (T (monad-functor M)) (mu (monad-multiplication M)))
+    (functor-from-procedures
+     KT C
+     (lambda (a) (functor-object T a))
+     (lambda (k)
+       (let* ((nm (arrow-name KT k)) (b (cadr nm)) (f (caddr nm)))
+         (category-compose C (vector-ref mu b) (functor-arrow T f)))))))
+
+(define (kleisli-adjunction M)
+  (let* ((C (monad-category M)) (T (monad-functor M)) (KT (kleisli-category M))
+         (FT (kleisli-free-functor M KT))
+         (UT (kleisli-forgetful-functor M KT))
+         (eta (monad-unit M))
+         (eps (map (lambda (b)
+                     ;; eps_b : T(b) ->_T b is id_{T(b)} : T(b) -> T(b)
+                     (let ((Tb (functor-object T b))
+                           (idTb (category-identity C (functor-object T b))))
+                       (let loop ((ks (category-hom KT Tb b)))
+                         (cond ((null? ks) (error "kleisli-adjunction: missing counit arrow" b))
+                               ((equal? (arrow-name KT (car ks)) (list Tb b idTb)) (car ks))
+                               (else (loop (cdr ks)))))))
+                   (cm-objects C))))
+    (make-adjunction FT UT eta eps)))
+
+;; ===========================================================================
+;; Eilenberg-Moore Algebras & Eilenberg-Moore Category C^T
+;; ===========================================================================
+
+;; Verify whether (c . h) (or (c h)) is a valid T-algebra.
+(define (monad-algebra-violations M alg)
+  (let* ((C (monad-category M)) (T (monad-functor M))
+         (eta (monad-unit M)) (mu (monad-multiplication M))
+         (c (car alg))
+         (h (if (pair? (cdr alg)) (cadr alg) (cdr alg)))
+         (out '()))
+    (if (not (and (= (arrow-source C h) (functor-object T c))
+                  (= (arrow-target C h) c)))
+        (set! out (cons (list 'type-mismatch c h (arrow-source C h) (arrow-target C h)) out))
+        (begin
+          (let ((u (category-compose C h (vector-ref eta c))))
+            (if (not (eqv? u (category-identity C c)))
+                (set! out (cons (list 'unit-law c h u) out))))
+          (let ((lhs (category-compose C h (functor-arrow T h)))
+                (rhs (category-compose C h (vector-ref mu c))))
+            (if (not (eqv? lhs rhs))
+                (set! out (cons (list 'associativity-law c h lhs rhs) out))))))
+    (reverse out)))
+
+(define (monad-algebra? M alg) (null? (monad-algebra-violations M alg)))
+
+(define (eilenberg-moore-category M)
+  (let* ((C (monad-category M)) (T (monad-functor M))
+         (algs (monad-algebras M))
+         (av-objs (list->vector algs))
+         (n (vector-length av-objs))
+         (arrows
+          (apply append
+                 (map (lambda (i)
+                        (let ((ci (car (vector-ref av-objs i)))
+                              (hi (cdr (vector-ref av-objs i))))
+                          (apply append
+                                 (map (lambda (j)
+                                        (let ((cj (car (vector-ref av-objs j)))
+                                              (hj (cdr (vector-ref av-objs j))))
+                                          (map (lambda (f) (vector i j (list i j f)))
+                                               (filter (lambda (f)
+                                                         (eqv? (category-compose C f hi)
+                                                               (category-compose C hj (functor-arrow T f))))
+                                                       (category-hom C ci cj)))))
+                                      (cm-range n)))))
+                      (cm-range n))))
+         (av (list->vector arrows))
+         (m (vector-length av))
+         (idx (let ((h (make-hash-table)))
+                (let loop ((k 0))
+                  (if (< k m)
+                      (begin (hash-table-set! h (vector-ref (vector-ref av k) 2) k) (loop (+ k 1)))))
+                h)))
+    (make-finite-category
+     n arrows
+     (lambda (gk fk)
+       (let* ((nf (vector-ref (vector-ref av fk) 2))
+              (ng (vector-ref (vector-ref av gk) 2)))
+         (hash-table-ref/default idx (list (car nf) (cadr ng) (category-compose C (caddr ng) (caddr nf))) #f)))
+     (map (lambda (i)
+            (let ((ci (car (vector-ref av-objs i))))
+              (hash-table-ref/default idx (list i i (category-identity C ci)) #f)))
+          (cm-range n))
+     algs)))
+
+(define (em-forgetful-functor M CT)
+  (functor-from-procedures
+   CT (monad-category M)
+   (lambda (i) (car (category-object-label CT i)))
+   (lambda (k) (caddr (arrow-name CT k)))))
+
+(define (em-free-functor M CT)
+  ;; F^T : C -> C^T, c |-> (T c . mu_c), f |-> T(f)
+  (let* ((C (monad-category M)) (T (monad-functor M)) (mu (monad-multiplication M))
+         (obj-of (lambda (c) (category-object-of-label CT (cons (functor-object T c) (vector-ref mu c))))))
+    (functor-from-procedures
+     C CT
+     obj-of
+     (lambda (f)
+       (let* ((i (obj-of (arrow-source C f)))
+              (j (obj-of (arrow-target C f)))
+              (Tf (functor-arrow T f)))
+         (let loop ((ks (category-hom CT i j)))
+           (cond ((null? ks) (error "em-free-functor: missing free algebra morphism" f))
+                 ((equal? (arrow-name CT (car ks)) (list i j Tf)) (car ks))
+                 (else (loop (cdr ks))))))))))
+
+(define (em-adjunction M)
+  (let* ((C (monad-category M)) (CT (eilenberg-moore-category M))
+         (FT (em-free-functor M CT)) (UT (em-forgetful-functor M CT))
+         (eta (monad-unit M))
+         (eps (map (lambda (i)
+                     (let* ((alg (category-object-label CT i))
+                            (c (car alg)) (h (cdr alg))
+                            (fi (functor-object FT c)))
+                       (let loop ((ks (category-hom CT fi i)))
+                         (cond ((null? ks) (error "em-adjunction: missing counit arrow" i))
+                               ((equal? (arrow-name CT (car ks)) (list fi i h)) (car ks))
+                               (else (loop (cdr ks)))))))
+                   (cm-objects CT))))
+    (make-adjunction FT UT eta eps)))
+
+;; ===========================================================================
+;; Coequalizers, Split Coequalizers & Beck Monadicity Precondition Checker
+;; ===========================================================================
+
+;; Check if q : y -> z is a coequalizer of parallel arrows f, g : x -> y in C.
+(define (cm-is-coequalizer? C f g q)
+  (let ((y (arrow-target C f)) (z (arrow-target C q)))
+    (and (= (arrow-source C q) y)
+         (eqv? (category-compose C q f) (category-compose C q g))
+         (cm-all?
+          (lambda (w)
+            (cm-all?
+             (lambda (h)
+               (if (eqv? (category-compose C h f) (category-compose C h g))
+                   (= 1 (length (filter (lambda (u) (eqv? (category-compose C u q) h))
+                                        (category-hom C z w))))
+                   #t))
+             (category-hom C y w)))
+          (cm-objects C)))))
+
+(define (category-coequalizer-arrows C f g)
+  (let ((y (arrow-target C f)))
+    (filter (lambda (q) (cm-is-coequalizer? C f g q)) (category-arrows-from C y))))
+
+;; Check whether parallel pair f, g : x -> y admits a split coequalizer (e, s, t)
+;; in C: e : y -> z, s : z -> y, t : y -> x with
+;;   e f = e g,  e s = id_z,  f t = id_y,  g t = s e  (or with f, g swapped).
+;; Returns (list e s t) witness or #f.
+(define (cm-find-split-coequalizer-ordered C f g)
+  (let ((x (arrow-source C f)) (y (arrow-target C f)))
+    (let loop-e ((es (category-arrows-from C y)))
+      (if (null? es)
+          #f
+          (let* ((e (car es)) (z (arrow-target C e)))
+            (if (not (eqv? (category-compose C e f) (category-compose C e g)))
+                (loop-e (cdr es))
+                (let loop-s ((ss (category-hom C z y)))
+                  (if (null? ss)
+                      (loop-e (cdr es))
+                      (let ((s (car ss)))
+                        (if (not (eqv? (category-compose C e s) (category-identity C z)))
+                            (loop-s (cdr ss))
+                            (let ((se (category-compose C s e)))
+                              (let loop-t ((ts (category-hom C y x)))
+                                (cond ((null? ts) (loop-s (cdr ss)))
+                                      ((and (eqv? (category-compose C f (car ts)) (category-identity C y))
+                                            (eqv? (category-compose C g (car ts)) se))
+                                       (list e s (car ts)))
+                                      (else (loop-t (cdr ts))))))))))))))))
+
+(define (split-coequalizer? C f g)
+  (or (cm-find-split-coequalizer-ordered C f g)
+      (cm-find-split-coequalizer-ordered C g f)))
+
+;; Beck's monadicity theorem precondition check for an adjunction L -| R (R : D -> C):
+;;   (1) R is conservative (reflects isomorphisms);
+;;   (2) Every R-split parallel pair (f, g) in D has a coequalizer q in D such that
+;;       R(q) is a coequalizer of (R(f), R(g)) in C.
+(define (beck-monadicity-check A)
+  (let* ((R (adjunction-right A))
+         (D (functor-source R))
+         (C (functor-target R))
+         ;; (1) Conservativity
+         (cons-viols
+          (filter (lambda (f)
+                    (and (category-isomorphism? C (functor-arrow R f))
+                         (not (category-isomorphism? D f))))
+                  (cm-arrows D)))
+         ;; (2) R-split coequalizers
+         (checked 0)
+         (coeq-viols '()))
+    (for-each
+     (lambda (x)
+       (for-each
+        (lambda (y)
+          (let ((hxy (category-hom D x y)))
+            (for-each
+             (lambda (f)
+               (for-each
+                (lambda (g)
+                  (let ((Rf (functor-arrow R f)) (Rg (functor-arrow R g)))
+                    (if (split-coequalizer? C Rf Rg)
+                        (begin
+                          (set! checked (+ checked 1))
+                          (let ((coeqs (category-coequalizer-arrows D f g)))
+                            (cond ((null? coeqs)
+                                   (set! coeq-viols (cons (list 'missing-coequalizer f g) coeq-viols)))
+                                  ((not (cm-any? (lambda (q) (cm-is-coequalizer? C Rf Rg (functor-arrow R q))) coeqs))
+                                   (set! coeq-viols (cons (list 'coequalizer-not-preserved f g coeqs) coeq-viols)))))))))
+                hxy))
+             hxy)))
+        (cm-objects D)))
+     (cm-objects D))
+    (let ((ok (and (null? cons-viols) (null? coeq-viols))))
+      (list (cons 'monadic-preconditions-hold? ok)
+            (cons 'conservative? (null? cons-viols))
+            (cons 'conservative-violations cons-viols)
+            (cons 'split-coequalizer-pairs-checked checked)
+            (cons 'split-coequalizer-violations (reverse coeq-viols))))))

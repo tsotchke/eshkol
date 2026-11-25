@@ -1,0 +1,395 @@
+;;; core.geometry.scheme -- Grothendieckian algebraic geometry:
+;;; Zariski sites and structure sheaves of finite commutative rings via
+;;; exact core.ring localizations R[1/f], internal locality in the Zariski
+;;; topos, affine schemes, glued schemes with cocycle verification, and the
+;;; projective line P^1 as a non-affine functor of points.
+;;;
+;;; Usage: (require core.geometry.scheme)   or   (require core.geometry)
+
+(require stdlib)
+(require core.ring)
+(require core.ring.localization)
+(require core.exact_linalg)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.topos)
+
+(provide
+  ;; Zariski site & structure sheaf of finite rings Z/n
+  zariski-site zariski-site? zariski-site-ring zariski-site-category zariski-site-site
+  zariski-site-opens zariski-site-generator zariski-site-localization zariski-site-modulus
+  zariski-site-top-object
+  structure-sheaf structure-sheaf-language verify-structure-sheaf-local
+  ;; Affine schemes as functors of points
+  make-affine-scheme affine-scheme? affine-scheme-name affine-scheme-dim
+  affine-scheme-member? affine-scheme-points affine-scheme-map-point
+  affine-line affine-space gm-scheme affine-hypersurface
+  ;; Glued schemes & projective line P^1
+  make-glued-scheme glued-scheme? glued-scheme-name glued-scheme-charts
+  glued-scheme-cocycle-violations glued-scheme-point? glued-scheme-point=?
+  glued-scheme-points glued-scheme-map-point
+  projective-line projective-line-global-sections-dim)
+
+;; ===========================================================================
+;; Private helpers (prefix gs-)
+;; ===========================================================================
+
+(define (gs-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (gs-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (gs-all? p (cdr xs))) (else #f)))
+(define (gs-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (gs-any? p (cdr xs)))))
+(define (gs-subsets xs)
+  (if (null? xs) (list '())
+      (let ((r (gs-subsets (cdr xs)))) (append r (map (lambda (s) (cons (car xs) s)) r)))))
+(define (gs-tuples k xs)
+  (if (= k 0) (list '())
+      (apply append (map (lambda (v) (map (lambda (r) (cons v r)) (gs-tuples (- k 1) xs))) xs))))
+(define (gs-prime-divisors n)
+  (let loop ((p 2) (m n) (acc '()))
+    (cond ((= m 1) (reverse acc))
+          ((= 0 (remainder m p))
+           (loop p (let strip ((m m)) (if (= 0 (remainder m p)) (strip (quotient m p)) m)) (cons p acc)))
+          (else (loop (+ p 1) m acc)))))
+
+;; ===========================================================================
+;; Zariski Site & Structure Sheaf of Spec(Z/n) using core.ring localizations
+;; ===========================================================================
+;;
+;; #(zariski-site R C site opens gens locs mods top-obj)
+;;   R:       (make-zmod n) carrier
+;;   C:       poset category of distinguished opens D(f) ordered by inclusion
+;;   site:    Zariski site with unit-ideal covering sieves
+;;   opens:   vector obj -> sorted prime list of D(f)
+;;   gens:    vector obj -> generator f in Z/n with D(f) = open
+;;   locs:    vector obj -> exact (make-localization R f) carrier!
+;;   mods:    vector obj -> characteristic of R[1/f]
+;;   top-obj: object index of Spec(R) = D(1)
+
+(define (zariski-site R)
+  (if (not (and (ring-carrier? R) (eq? (ring-carrier-family R) 'zmod)))
+      (error "zariski-site: expected a Z/n ring carrier" R))
+  (let* ((n (car (ring-carrier-parameters R)))
+         (ps (gs-prime-divisors n))
+         (sorted (map (lambda (U) (sort U <)) (gs-subsets ps)))
+         (nobj (length sorted))
+         (ov (list->vector sorted))
+         (gen-fn (lambda (U) (apply * (filter (lambda (p) (not (memv p U))) ps))))
+         (gens (list->vector (map gen-fn sorted)))
+         (locs (list->vector (map (lambda (i) (make-localization R (vector-ref gens i))) (gs-range nobj))))
+         (mods (list->vector (map (lambda (i) (ring-ref (vector-ref locs i) 'characteristic)) (gs-range nobj))))
+         (C (poset-category nobj
+              (lambda (i j) (gs-all? (lambda (p) (memv p (vector-ref ov j))) (vector-ref ov i)))
+              sorted))
+         ;; S covers c iff the generators of S generate the unit ideal in R[1/f_c]
+         (site (make-site C (lambda (c S)
+                              (let ((m (vector-ref mods c)))
+                                (= 1 (gcd m (apply gcd (cons 0 (map (lambda (arr)
+                                                                      (remainder (vector-ref gens (arrow-source C arr)) m))
+                                                                    S)))))))))
+         (top (category-object-of-label C (sort ps <))))
+    (vector 'zariski-site R C site ov gens locs mods top)))
+
+(define (zariski-site? x) (and (vector? x) (= (vector-length x) 9) (eq? (vector-ref x 0) 'zariski-site)))
+(define (zariski-site-ring Z) (vector-ref Z 1))
+(define (zariski-site-category Z) (vector-ref Z 2))
+(define (zariski-site-site Z) (vector-ref Z 3))
+(define (zariski-site-opens Z) (vector-ref Z 4))
+(define (zariski-site-generator Z c) (vector-ref (vector-ref Z 5) c))
+(define (zariski-site-localization Z c) (vector-ref (vector-ref Z 6) c))
+(define (zariski-site-modulus Z c) (vector-ref (vector-ref Z 7) c))
+(define (zariski-site-top-object Z) (vector-ref Z 8))
+
+;; Structure sheaf O_X of Spec(R):
+;;   O_X(D(f)) = canonical residue representatives 0 .. m_c - 1 of (make-localization R f)
+;;   restriction O_X(D(f)) -> O_X(D(g)) computed via localization-universal-lift!
+(define (structure-sheaf Z)
+  (let* ((C (zariski-site-category Z))
+         (nobj (category-object-count C))
+         (sets (map (lambda (c)
+                      (map localization-numerator
+                           (localization-finite-elements (zariski-site-localization Z c))))
+                    (gs-range nobj)))
+         ;; Precompute universal-property restriction ring maps for every arrow a : d -> c (D(g) subset D(f))
+         (narr (category-arrow-count C))
+         (rmaps (list->vector
+                 (map (lambda (a)
+                        (let* ((c (arrow-target C a)) (d (arrow-source C a))
+                               (Lc (zariski-site-localization Z c))
+                               (Ld (zariski-site-localization Z d)))
+                          (localization-universal-lift Lc (localization-map Ld))))
+                      (gs-range narr)))))
+    (make-set-presheaf C sets
+      (lambda (a x)
+        (let* ((c (arrow-target C a))
+               (Lc (zariski-site-localization Z c)))
+          (localization-numerator (ring-map-apply (vector-ref rmaps a) (localization-frac Lc x 0))))))))
+
+;; Mitchell-Benabou internal ring language for the structure sheaf O in topos T,
+;; with every ring operation delegated to the exact localization carrier R[1/f_U].
+(define (structure-sheaf-language Z T O)
+  (make-topos-language
+   T (list (cons 'O O))
+   (list (topos-function 'add '(O O) 'O
+           (lambda (U x y)
+             (let ((LU (zariski-site-localization Z U)))
+               (localization-numerator (r+ LU (localization-frac LU x 0) (localization-frac LU y 0))))))
+         (topos-function 'mul '(O O) 'O
+           (lambda (U x y)
+             (let ((LU (zariski-site-localization Z U)))
+               (localization-numerator (r* LU (localization-frac LU x 0) (localization-frac LU y 0))))))
+         (topos-function 'sub '(O O) 'O
+           (lambda (U x y)
+             (let ((LU (zariski-site-localization Z U)))
+               (localization-numerator (r- LU (localization-frac LU x 0) (localization-frac LU y 0))))))
+         (topos-constant 'zero 'O
+           (lambda (U) (localization-numerator (r0 (zariski-site-localization Z U)))))
+         (topos-constant 'one 'O
+           (lambda (U) (localization-numerator (r1 (zariski-site-localization Z U))))))))
+
+;; Verify that (Spec(R), O_X) is a locally ringed topos:
+;;   (1) Zariski covers form a Grothendieck topology;
+;;   (2) O_X is a sheaf;
+;;   (3) O_X internally forces nontriviality (not (= zero one)) and locality
+;;       (forall x, (exists y, x*y = 1) or (exists y, (1 - x)*y = 1));
+;;   (4) Kripke-Joyal forcing agrees with Omega-valued truth on every stage/env.
+(define (verify-structure-sheaf-local Z)
+  (let* ((C (zariski-site-category Z))
+         (site (zariski-site-site Z))
+         (Ofun (structure-sheaf Z))
+         (topo? (grothendieck-topology? site))
+         (sheaf? (presheaf-sheaf? site Ofun))
+         (T (make-topos site))
+         (O (topos-object T Ofun))
+         (L (structure-sheaf-language Z T O))
+         (local-axiom '(forall (x O) (or (exists (y O) (= (mul x y) one))
+                                         (exists (y O) (= (mul (sub one x) y) one)))))
+         (nontriv-axiom '(not (= zero one)))
+         (F-loc (topos-formula L '() local-axiom))
+         (F-nt (topos-formula L '() nontriv-axiom))
+         (loc-valid? (topos-valid? F-loc))
+         (nt-valid? (topos-valid? F-nt))
+         (xcheck? (cadr (topos-cross-check F-loc)))
+         ;; Presheaf topos comparison (trivial topology)
+         (Tp (presheaf-topos C))
+         (Op (topos-object Tp Ofun))
+         (Lp (structure-sheaf-language Z Tp Op))
+         (Fp-loc (topos-formula Lp '() local-axiom))
+         (presheaf-valid? (topos-valid? Fp-loc))
+         (presheaf-witness (topos-counter-witness Fp-loc)))
+    (list (cons 'valid? (and topo? sheaf? loc-valid? nt-valid? xcheck?))
+          (cons 'grothendieck-topology? topo?)
+          (cons 'sheaf? sheaf?)
+          (cons 'internally-local? loc-valid?)
+          (cons 'internally-nontrivial? nt-valid?)
+          (cons 'cross-check? xcheck?)
+          (cons 'presheaf-local? presheaf-valid?)
+          (cons 'presheaf-counter-witness presheaf-witness))))
+
+;; ===========================================================================
+;; Affine Schemes as Functors of Points
+;; ===========================================================================
+;;
+;; #(affine-scheme name dim equations)
+;;   dim:       number of ambient coordinates n
+;;   equations: list of polynomial procedures (R coords-list) -> element of R
+;;              A point coords in R^n lies in X(R) iff every eq evaluates to (r0 R).
+
+(define (make-affine-scheme name dim equations)
+  (vector 'affine-scheme name dim equations))
+(define (affine-scheme? x) (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'affine-scheme)))
+(define (affine-scheme-name X) (vector-ref X 1))
+(define (affine-scheme-dim X) (vector-ref X 2))
+(define (affine-scheme-equations X) (vector-ref X 3))
+
+(define (affine-scheme-member? X R pt)
+  (and (list? pt) (= (length pt) (affine-scheme-dim X))
+       (gs-all? (lambda (eq-fn) (r-zero? R (eq-fn R pt))) (affine-scheme-equations X))))
+
+;; Enumerate elements of a finite ring carrier R (Z/m, localizations of Z/m, jets over Z/m).
+(define (gs-ring-finite-elements R)
+  (let ((fam (ring-carrier-family R)))
+    (cond ((eq? fam 'zmod) (gs-range (car (ring-carrier-parameters R))))
+          ((localization-carrier? R) (localization-finite-elements R))
+          ((eq? fam 'jets)
+           (let* ((K (ring-ref R 'base)) (n (ring-ref R 'nilpotency))
+                  (kes (gs-ring-finite-elements K)))
+             (map (lambda (cs) (make-jet R cs)) (gs-tuples n kes))))
+          (else (error "affine-scheme-points: carrier is not finite-enumerable" (ring-carrier-name R))))))
+
+(define (affine-scheme-points X R)
+  (let ((es (gs-ring-finite-elements R)))
+    (filter (lambda (pt) (affine-scheme-member? X R pt))
+            (gs-tuples (affine-scheme-dim X) es))))
+
+;; Push an R-point forward along a ring homomorphism phi : R -> S.
+(define (affine-scheme-map-point X phi pt)
+  (map (lambda (c) (ring-map-apply phi c)) pt))
+
+;; Standard affine schemes
+(define (affine-space n) (make-affine-scheme (string-append "A^" (number->string n)) n '()))
+(define (affine-line) (affine-space 1))
+;; G_m = Spec Z[t, s]/(t*s - 1)
+(define (gm-scheme)
+  (make-affine-scheme "G_m" 2
+    (list (lambda (R pt) (r- R (r* R (car pt) (cadr pt)) (r1 R))))))
+(define (affine-hypersurface name n poly-fn)
+  (make-affine-scheme name n (list poly-fn)))
+
+;; ===========================================================================
+;; Glued Schemes from Affine Charts + Overlap Isomorphisms + Cocycle Verifier
+;; ===========================================================================
+;;
+;; #(glued-scheme name charts overlap? transition)
+;;   charts:     vector i -> affine-scheme U_i (0 <= i < k)
+;;   overlap?:   (i j R pt) -> boolean: is pt in U_{ij}(R) subset U_i(R)?
+;;   transition: (i j R pt) -> pt' in U_{ji}(R) subset U_j(R) representing
+;;               phi_{ji} : U_{ij} -> U_{ji} (takes chart i point to chart j point!)
+;;
+;; A chart-represented R-point is (cons chart-index coords-list).
+
+(define (make-glued-scheme name charts overlap? transition)
+  (vector 'glued-scheme name (if (vector? charts) charts (list->vector charts)) overlap? transition))
+(define (glued-scheme? x) (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'glued-scheme)))
+(define (glued-scheme-name X) (vector-ref X 1))
+(define (glued-scheme-charts X) (vector-ref X 2))
+(define (glued-scheme-overlap? X i j R pt) ((vector-ref X 3) i j R pt))
+(define (glued-scheme-transition X i j R pt) ((vector-ref X 4) i j R pt))
+
+(define (gs-pt=? R p1 p2)
+  (and (= (length p1) (length p2))
+       (let loop ((a p1) (b p2))
+         (or (null? a) (and (r= R (car a) (car b)) (loop (cdr a) (cdr b)))))))
+
+(define (glued-scheme-point? X R cpt)
+  (and (pair? cpt)
+       (integer? (car cpt)) (>= (car cpt) 0) (< (car cpt) (vector-length (glued-scheme-charts X)))
+       (affine-scheme-member? (vector-ref (glued-scheme-charts X) (car cpt)) R (cdr cpt))))
+
+;; Decide equality of two chart-represented R-points (i . x) and (j . y):
+;;   if i = j: x = y in U_i(R);
+;;   if i /= j: x in U_{ij}(R) and phi_{ji}(x) = y in U_j(R).
+(define (glued-scheme-point=? X R p1 p2)
+  (let ((i (car p1)) (x (cdr p1)) (j (car p2)) (y (cdr p2)))
+    (if (= i j)
+        (gs-pt=? R x y)
+        (and (glued-scheme-overlap? X i j R x)
+             (gs-pt=? R (glued-scheme-transition X i j R x) y)))))
+
+;; Verify gluing cocycle conditions over ring carrier R on chart-samples
+;; (if chart-samples omitted, enumerates all R-points of each finite chart):
+;;   (1) Identity: phi_{ii}(x) = x on U_{ii} = U_i;
+;;   (2) Symmetry / Inverse: if x in U_{ij}, then y = phi_{ji}(x) in U_{ji} and phi_{ij}(y) = x;
+;;   (3) Triple-overlap cocycle: if x in U_{ij} and x in U_{ik}, then
+;;       y = phi_{ji}(x) in U_{jk} and phi_{kj}(y) = phi_{ki}(x).
+(define (glued-scheme-cocycle-violations X R . samples-opt)
+  (let* ((charts (glued-scheme-charts X))
+         (k (vector-length charts))
+         (pts-of (if (null? samples-opt)
+                     (list->vector (map (lambda (i) (affine-scheme-points (vector-ref charts i) R)) (gs-range k)))
+                     (let ((s (car samples-opt))) (if (vector? s) s (list->vector s)))))
+         (out '()))
+    (define (note! v) (set! out (cons v out)))
+    (for-each
+     (lambda (i)
+       (for-each
+        (lambda (x)
+          ;; (1) Identity on U_{ii}
+          (if (not (glued-scheme-overlap? X i i R x))
+              (note! (list 'self-overlap-missing i x))
+              (let ((tx (glued-scheme-transition X i i R x)))
+                (if (not (gs-pt=? R tx x)) (note! (list 'identity-violation i x tx)))))
+          ;; (2) Pairwise inverse
+          (for-each
+           (lambda (j)
+             (if (glued-scheme-overlap? X i j R x)
+                 (let ((y (glued-scheme-transition X i j R x)))
+                   (cond ((not (affine-scheme-member? (vector-ref charts j) R y))
+                          (note! (list 'transition-leaves-chart i j x y)))
+                         ((not (glued-scheme-overlap? X j i R y))
+                          (note! (list 'image-leaves-overlap i j x y)))
+                         ((not (gs-pt=? R (glued-scheme-transition X j i R y) x))
+                          (note! (list 'inverse-violation i j x y (glued-scheme-transition X j i R y))))
+                         (else
+                          ;; (3) Triple overlap cocycle
+                          (for-each
+                           (lambda (l)
+                             (if (glued-scheme-overlap? X i l R x)
+                                 (if (not (glued-scheme-overlap? X j l R y))
+                                     (note! (list 'triple-overlap-mismatch i j l x y))
+                                     (let ((lhs (glued-scheme-transition X j l R y))
+                                           (rhs (glued-scheme-transition X i l R x)))
+                                       (if (not (gs-pt=? R lhs rhs))
+                                           (note! (list 'cocycle-violation i j l x lhs rhs)))))))
+                           (gs-range k)))))))
+           (gs-range k)))
+        (vector-ref pts-of i)))
+     (gs-range k))
+    (reverse out)))
+
+;; Enumerate all R-points of a glued scheme over a finite local ring / field R
+;; by quotienting the disjoint union of chart R-points by overlap gluing.
+(define (glued-scheme-points X R)
+  (let* ((charts (glued-scheme-charts X))
+         (k (vector-length charts))
+         (raw (apply append
+                     (map (lambda (i)
+                            (map (lambda (pt) (cons i pt))
+                                 (affine-scheme-points (vector-ref charts i) R)))
+                          (gs-range k)))))
+    (let loop ((xs raw) (acc '()))
+      (if (null? xs)
+          (reverse acc)
+          (let ((p (car xs)))
+            (if (gs-any? (lambda (q) (glued-scheme-point=? X R p q)) acc)
+                (loop (cdr xs) acc)
+                (loop (cdr xs) (cons p acc))))))))
+
+;; Functorial pushforward of a chart-represented R-point along phi : R -> S.
+(define (glued-scheme-map-point X phi cpt)
+  (let* ((i (car cpt))
+         (chart (vector-ref (glued-scheme-charts X) i)))
+    (cons i (affine-scheme-map-point chart phi (cdr cpt)))))
+
+;; ===========================================================================
+;; Projective Line P^1 = A^1 U_{G_m} A^1
+;; ===========================================================================
+;;
+;; Chart 0: U_0 = A^1 with coordinate t (denotes [1 : t])
+;; Chart 1: U_1 = A^1 with coordinate s (denotes [s : 1])
+;; Overlap: U_{01} = {t in R^x}, U_{10} = {s in R^x}
+;; Transition: phi_{10}(t) = t^{-1}, phi_{01}(s) = s^{-1}.
+
+(define (projective-line)
+  (let ((U0 (make-affine-scheme "U_0=A^1" 1 '()))
+        (U1 (make-affine-scheme "U_1=A^1" 1 '())))
+    (make-glued-scheme
+     "P^1"
+     (vector U0 U1)
+     (lambda (i j R pt)
+       (if (= i j) #t (r-unit? R (car pt))))
+     (lambda (i j R pt)
+       (if (= i j) pt (list (r-inv R (car pt))))))))
+
+;; Compute exact dimension over Q of global regular functions O(P^1) =
+;; Eq(Q[t]_{<=d} x Q[s]_{<=d} => Q[t, t^{-1}]_{[-d..d]}), where
+;;   p(t) = sum_{k=0}^d a_k t^k  and  q(s) = sum_{k=0}^d b_k s^k
+;; agree on U_{01} iff sum_{k=0}^d a_k t^k = sum_{k=0}^d b_k t^{-k},
+;; i.e., a_0 - b_0 = 0, a_k = 0 (k >= 1), b_k = 0 (k >= 1).
+;; Computed via exact-nullspace of the exact restriction-difference matrix!
+;; Result is ALWAYS 1 (only constants!), proving O(P^1) = Q and hence P^1 is
+;; non-affine (since Spec(O(P^1)) = Spec(Q) has 1 point while |P^1(F_p)| = p + 1).
+(define (projective-line-global-sections-dim max-deg)
+  (let* ((d max-deg)
+         (ncols (* 2 (+ d 1)))     ;; a_0..a_d, b_0..b_d
+         (nrows (+ (* 2 d) 1))     ;; exponents -d .. +d in Q[t, t^{-1}]
+         (M (list->vector
+             (map (lambda (row-idx)
+                    (let* ((exp (- row-idx d))
+                           (row (make-vector ncols 0)))
+                      ;; coefficient of t^exp in p(t) - q(t^{-1})
+                      (if (and (>= exp 0) (<= exp d))
+                          (vector-set! row exp 1))
+                      (if (and (<= exp 0) (>= exp (- d)))
+                          (vector-set! row (+ (+ d 1) (- exp)) -1))
+                      row))
+                  (gs-range nrows)))))
+    (length (exact-nullspace M))))

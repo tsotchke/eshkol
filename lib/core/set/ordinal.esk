@@ -1,0 +1,381 @@
+;;; core.set.ordinal -- exact Cantor Normal Form ordinals up to epsilon_0
+;;; and Veblen hierarchy terms phi_alpha(beta) up to Gamma_0.
+;;;
+;;; Usage: (require core.set.ordinal)   or   (require core.set)
+;;;
+;;; Representation:
+;;;   CNF ordinal: #(ordinal terms) where terms is a list of (exp . coeff)
+;;;   pairs with strictly decreasing CNF exponents exp and exact positive
+;;;   integer coefficients coeff >= 1. Zero is #(ordinal ()).
+;;;
+;;;   Veblen ordinal: #(veblen terms) where terms is a non-increasing list
+;;;   of Veblen atoms #(veblen-atom alpha beta), each denoting phi_alpha(beta)
+;;;   in canonical form (phi_alpha(phi_gamma(delta)) = phi_gamma(delta) when
+;;;   gamma > alpha). Zero is #(veblen ()).
+
+(require stdlib)
+
+(provide
+  ;; CNF ordinals up to epsilon_0
+  ordinal? make-ordinal make-ordinal-raw ord-terms
+  ord-zero ord-one ord-omega ord-from-nat ord-to-nat
+  ord-zero? ord-finite? ord-successor? ord-limit?
+  ord-normal-form? ord-normal-form-violations
+  ord-cmp ord=? ord<? ord<=? ord>? ord>=?
+  ord-add ord-sub ord-mul ord-expt ord-predecessor ord-fundamental-seq
+  ord-noncommutativity-add-witness ord-noncommutativity-mul-witness
+  ord-right-distributivity-failure-witness
+  ;; Veblen hierarchy phi_alpha(beta)
+  veblen? veblen-zero veblen-one veblen-omega veblen-epsilon0 veblen-zeta0
+  veblen-from-nat veblen-from-ord veblen-phi veblen-add
+  veblen-cmp veblen=? veblen<? veblen<=? veblen>? veblen>=?
+  veblen-zero? veblen-terms)
+
+;; ===========================================================================
+;; Private helpers (prefix so-)
+;; ===========================================================================
+
+(define (so-pos-int? x) (and (number? x) (exact? x) (integer? x) (> x 0)))
+(define (so-nat? x) (and (number? x) (exact? x) (integer? x) (>= x 0)))
+
+(define (ordinal? x)
+  (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'ordinal) (list? (vector-ref x 1))))
+
+(define (ord-terms a)
+  (if (ordinal? a) (vector-ref a 1) (error "ord-terms: expected an ordinal" a)))
+
+(define (make-ordinal-raw terms) (vector 'ordinal terms))
+
+(define ord-zero (make-ordinal-raw '()))
+(define ord-one (make-ordinal-raw (list (cons ord-zero 1))))
+(define ord-omega (make-ordinal-raw (list (cons ord-one 1))))
+
+(define (ord-zero? a) (null? (ord-terms a)))
+
+(define (ord-from-nat n)
+  (if (not (so-nat? n)) (error "ord-from-nat: expected an exact nonnegative integer" n))
+  (if (= n 0) ord-zero (make-ordinal-raw (list (cons ord-zero n)))))
+
+(define (ord-finite? a)
+  (let ((ts (ord-terms a)))
+    (or (null? ts)
+        (and (null? (cdr ts)) (ord-zero? (caar ts))))))
+
+(define (ord-to-nat a)
+  (let ((ts (ord-terms a)))
+    (cond ((null? ts) 0)
+          ((and (null? (cdr ts)) (ord-zero? (caar ts))) (cdar ts))
+          (else #f))))
+
+;; ===========================================================================
+;; Comparison on CNF ordinals
+;; ===========================================================================
+
+(define (ord-cmp a b)
+  (let loop ((xs (ord-terms a)) (ys (ord-terms b)))
+    (cond ((and (null? xs) (null? ys)) 0)
+          ((null? xs) -1)
+          ((null? ys) 1)
+          (else
+           (let ((ec (ord-cmp (caar xs) (caar ys))))
+             (cond ((not (= ec 0)) ec)
+                   ((< (cdar xs) (cdar ys)) -1)
+                   ((> (cdar xs) (cdar ys)) 1)
+                   (else (loop (cdr xs) (cdr ys)))))))))
+
+(define (ord=? a b) (= (ord-cmp a b) 0))
+(define (ord<? a b) (< (ord-cmp a b) 0))
+(define (ord<=? a b) (<= (ord-cmp a b) 0))
+(define (ord>? a b) (> (ord-cmp a b) 0))
+(define (ord>=? a b) (>= (ord-cmp a b) 0))
+
+;; ===========================================================================
+;; Cantor Normal Form validation with explicit counterexample witnesses
+;; ===========================================================================
+
+(define (ord-normal-form-violations a)
+  (if (not (ordinal? a))
+      (list (list 'not-an-ordinal a))
+      (let ((out '()))
+        (let loop ((ts (ord-terms a)) (prev #f) (idx 0))
+          (if (null? ts)
+              (reverse out)
+              (let ((term (car ts)))
+                (if (not (pair? term))
+                    (begin
+                      (set! out (cons (list 'malformed-term idx term) out))
+                      (loop (cdr ts) prev (+ idx 1)))
+                    (let ((e (car term)) (c (cdr term)))
+                      (if (not (so-pos-int? c))
+                          (set! out (cons (list 'non-positive-coeff idx c) out)))
+                      (let ((ev (ord-normal-form-violations e)))
+                        (if (not (null? ev))
+                            (set! out (cons (list 'exponent-not-normal idx ev) out))
+                            (if (and prev (not (ord>? prev e)))
+                                (set! out (cons (list 'exponents-not-strictly-decreasing idx prev e) out)))))
+                      (loop (cdr ts) (if (and (ordinal? e) (null? (ord-normal-form-violations e))) e prev) (+ idx 1))))))))))
+
+(define (ord-normal-form? a) (null? (ord-normal-form-violations a)))
+
+(define (make-ordinal terms)
+  (let ((o (make-ordinal-raw terms)))
+    (let ((v (ord-normal-form-violations o)))
+      (if (null? v) o (error "make-ordinal: terms are not in Cantor normal form" v)))))
+
+;; ===========================================================================
+;; Zero / successor / limit classification & predecessor
+;; ===========================================================================
+
+(define (so-last xs)
+  (if (null? (cdr xs)) (car xs) (so-last (cdr xs))))
+
+(define (so-init xs)
+  (if (null? (cdr xs)) '() (cons (car xs) (so-init (cdr xs)))))
+
+(define (ord-successor? a)
+  (let ((ts (ord-terms a)))
+    (and (pair? ts) (ord-zero? (car (so-last ts))))))
+
+(define (ord-limit? a)
+  (let ((ts (ord-terms a)))
+    (and (pair? ts) (not (ord-zero? (car (so-last ts)))))))
+
+(define (ord-predecessor a)
+  (if (not (ord-successor? a))
+      (error "ord-predecessor: ordinal is not a successor" a))
+  (let* ((ts (ord-terms a))
+         (lst (so-last ts))
+         (c (cdr lst)))
+    (if (= c 1)
+        (make-ordinal-raw (so-init ts))
+        (make-ordinal-raw (append (so-init ts) (list (cons ord-zero (- c 1))))))))
+
+;; ===========================================================================
+;; Exact CNF arithmetic: addition, left subtraction, multiplication, exponentiation
+;; ===========================================================================
+
+(define (ord-add a b)
+  (let ((as (ord-terms a)) (bs (ord-terms b)))
+    (cond ((null? as) b)
+          ((null? bs) a)
+          (else
+           (let ((be (caar bs)) (bc (cdar bs)))
+             (let loop ((xs as) (acc '()))
+               (cond ((null? xs) (make-ordinal-raw (append (reverse acc) bs)))
+                     ((ord>? (caar xs) be) (loop (cdr xs) (cons (car xs) acc)))
+                     ((ord=? (caar xs) be)
+                      (make-ordinal-raw
+                       (append (reverse acc) (cons (cons be (+ (cdar xs) bc)) (cdr bs)))))
+                     (else (make-ordinal-raw (append (reverse acc) bs))))))))))
+
+;; Left subtraction: unique gamma with a + gamma = b when a <= b; #f if a > b.
+(define (ord-sub b a)
+  (let ((cmp (ord-cmp b a)))
+    (cond ((< cmp 0) #f)
+          ((= cmp 0) ord-zero)
+          (else
+           (let loop ((bs (ord-terms b)) (as (ord-terms a)))
+             (cond ((null? as) (make-ordinal-raw bs))
+                   ((null? bs) ord-zero)
+                   (else
+                    (let ((ec (ord-cmp (caar bs) (caar as))))
+                      (cond ((> ec 0) (make-ordinal-raw bs))
+                            ((< ec 0) #f)
+                            ((> (cdar bs) (cdar as))
+                             (make-ordinal-raw (cons (cons (caar bs) (- (cdar bs) (cdar as))) (cdr bs))))
+                            ((= (cdar bs) (cdar as)) (loop (cdr bs) (cdr as)))
+                            (else #f))))))))))
+
+(define (so-mul-single a term)
+  (let ((e (car term)) (c (cdr term)) (as (ord-terms a)))
+    (if (ord-zero? e)
+        (make-ordinal-raw (cons (cons (caar as) (* (cdar as) c)) (cdr as)))
+        (make-ordinal-raw (list (cons (ord-add (caar as) e) c))))))
+
+(define (ord-mul a b)
+  (cond ((or (ord-zero? a) (ord-zero? b)) ord-zero)
+        (else
+         (let loop ((bs (ord-terms b)) (acc ord-zero))
+           (if (null? bs) acc (loop (cdr bs) (ord-add acc (so-mul-single a (car bs)))))))))
+
+;; Split b = limit-part + finite-part (nat).
+(define (so-split-limit-finite b)
+  (let ((ts (ord-terms b)))
+    (cond ((null? ts) (cons ord-zero 0))
+          ((ord-zero? (car (so-last ts)))
+           (cons (make-ordinal-raw (so-init ts)) (cdr (so-last ts))))
+          (else (cons b 0)))))
+
+;; For finite base m >= 2 and limit ordinal lam, find gamma with omega * gamma = lam.
+(define (so-div-left-omega lam)
+  (make-ordinal-raw
+   (map (lambda (term)
+          (let ((e (car term)) (c (cdr term)))
+            (if (ord-finite? e)
+                (cons (ord-from-nat (- (ord-to-nat e) 1)) c)
+                (cons e c))))
+        (ord-terms lam))))
+
+(define (so-ord-expt-nat a n)
+  (let loop ((k n) (acc ord-one))
+    (if (= k 0) acc (loop (- k 1) (ord-mul acc a)))))
+
+(define (ord-expt a b)
+  (cond ((ord-zero? b) ord-one)
+        ((ord-zero? a) ord-zero)
+        ((ord=? a ord-one) ord-one)
+        ((ord-finite? a)
+         (let ((m (ord-to-nat a)))
+           (if (ord-finite? b)
+               (ord-from-nat (expt m (ord-to-nat b)))
+               (let* ((sp (so-split-limit-finite b))
+                      (lam (car sp))
+                      (r (cdr sp))
+                      (gamma (so-div-left-omega lam)))
+                 (ord-mul (make-ordinal-raw (list (cons gamma 1))) (ord-from-nat (expt m r)))))))
+        (else
+         ;; Infinite base a = omega^{a0}*c0 + ...
+         (let* ((a0 (caar (ord-terms a)))
+                (sp (so-split-limit-finite b))
+                (lam (car sp))
+                (r (cdr sp)))
+           (if (ord-zero? lam)
+               (so-ord-expt-nat a r)
+               (let ((lim-pow (make-ordinal-raw (list (cons (ord-mul a0 lam) 1)))))
+                 (ord-mul lim-pow (so-ord-expt-nat a r))))))))
+
+;; ===========================================================================
+;; Fundamental sequences for limit ordinals below epsilon_0
+;; ===========================================================================
+
+(define (ord-fundamental-seq a n)
+  (if (not (ord-limit? a)) (error "ord-fundamental-seq: expected a limit ordinal" a))
+  (if (not (so-nat? n)) (error "ord-fundamental-seq: expected a nonnegative exact integer" n))
+  (let* ((ts (ord-terms a))
+         (lst (so-last ts))
+         (e (car lst))
+         (c (cdr lst))
+         (prefix (if (= c 1)
+                     (make-ordinal-raw (so-init ts))
+                     (make-ordinal-raw (append (so-init ts) (list (cons e (- c 1))))))))
+    (if (ord-successor? e)
+        (let ((ep (ord-predecessor e)))
+          (if (= n 0)
+              prefix
+              (ord-add prefix (make-ordinal-raw (list (cons ep n))))))
+        (ord-add prefix (make-ordinal-raw (list (cons (ord-fundamental-seq e n) 1)))))))
+
+;; ===========================================================================
+;; Explicit algebraic law witnesses for ordinal arithmetic
+;; ===========================================================================
+
+;; 1 + omega = omega /= omega + 1
+(define (ord-noncommutativity-add-witness)
+  (let ((lhs (ord-add ord-one ord-omega))
+        (rhs (ord-add ord-omega ord-one)))
+    (list (cons 'a ord-one) (cons 'b ord-omega)
+          (cons 'a+b lhs) (cons 'b+a rhs)
+          (cons 'distinct? (not (ord=? lhs rhs))))))
+
+;; 2 * omega = omega /= omega * 2
+(define (ord-noncommutativity-mul-witness)
+  (let* ((two (ord-from-nat 2))
+         (lhs (ord-mul two ord-omega))
+         (rhs (ord-mul ord-omega two)))
+    (list (cons 'a two) (cons 'b ord-omega)
+          (cons 'a*b lhs) (cons 'b*a rhs)
+          (cons 'distinct? (not (ord=? lhs rhs))))))
+
+;; (1 + 1) * omega = omega /= omega * 2 = 1*omega + 1*omega
+(define (ord-right-distributivity-failure-witness)
+  (let* ((lhs (ord-mul (ord-add ord-one ord-one) ord-omega))
+         (rhs (ord-add (ord-mul ord-one ord-omega) (ord-mul ord-one ord-omega))))
+    (list (cons 'a ord-one) (cons 'b ord-one) (cons 'c ord-omega)
+          (cons 'lhs lhs) (cons 'rhs rhs)
+          (cons 'distinct? (not (ord=? lhs rhs))))))
+
+;; ===========================================================================
+;; Veblen hierarchy phi_alpha(beta) up to Gamma_0
+;; ===========================================================================
+
+(define (so-vatom? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'veblen-atom)))
+(define (so-vatom alpha beta) (vector 'veblen-atom alpha beta))
+(define (so-vatom-alpha t) (vector-ref t 1))
+(define (so-vatom-beta t) (vector-ref t 2))
+
+(define (veblen? x)
+  (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'veblen) (list? (vector-ref x 1))))
+(define (veblen-terms v)
+  (if (veblen? v) (vector-ref v 1) (error "veblen-terms: expected a Veblen ordinal" v)))
+(define (so-make-veblen terms) (vector 'veblen terms))
+
+(define veblen-zero (so-make-veblen '()))
+(define (veblen-zero? v) (null? (veblen-terms v)))
+
+;; Compare two Veblen atoms phi_{a1}(b1) and phi_{a2}(b2), mutually recursive
+;; with veblen-cmp on sums.
+(define (so-vatom-cmp t1 t2)
+  (let* ((a1 (so-vatom-alpha t1)) (b1 (so-vatom-beta t1))
+         (a2 (so-vatom-alpha t2)) (b2 (so-vatom-beta t2))
+         (ac (veblen-cmp a1 a2)))
+    (cond ((= ac 0) (veblen-cmp b1 b2))
+          ((< ac 0) (veblen-cmp b1 (so-make-veblen (list t2))))
+          (else (veblen-cmp (so-make-veblen (list t1)) b2)))))
+
+(define (veblen-cmp x y)
+  (let loop ((xs (veblen-terms x)) (ys (veblen-terms y)))
+    (cond ((and (null? xs) (null? ys)) 0)
+          ((null? xs) -1)
+          ((null? ys) 1)
+          (else
+           (let ((c (so-vatom-cmp (car xs) (car ys))))
+             (if (not (= c 0)) c (loop (cdr xs) (cdr ys))))))))
+
+(define (veblen=? x y) (= (veblen-cmp x y) 0))
+(define (veblen<? x y) (< (veblen-cmp x y) 0))
+(define (veblen<=? x y) (<= (veblen-cmp x y) 0))
+(define (veblen>? x y) (> (veblen-cmp x y) 0))
+(define (veblen>=? x y) (>= (veblen-cmp x y) 0))
+
+;; Veblen phi_alpha(beta) with absorption at higher critical ordinals:
+;; if beta = phi_gamma(delta) with gamma > alpha, then phi_alpha(beta) = beta.
+(define (veblen-phi alpha beta)
+  (if (not (and (veblen? alpha) (veblen? beta)))
+      (error "veblen-phi: expected two Veblen ordinals" alpha beta))
+  (let ((bt (veblen-terms beta)))
+    (if (and (pair? bt) (null? (cdr bt)) (veblen>? (so-vatom-alpha (car bt)) alpha))
+        beta
+        (so-make-veblen (list (so-vatom alpha beta))))))
+
+(define (veblen-add x y)
+  (let ((xs (veblen-terms x)) (ys (veblen-terms y)))
+    (cond ((null? xs) y)
+          ((null? ys) x)
+          (else
+           (let ((head-y (car ys)))
+             (let loop ((l xs) (acc '()))
+               (cond ((null? l) (so-make-veblen (append (reverse acc) ys)))
+                     ((>= (so-vatom-cmp (car l) head-y) 0) (loop (cdr l) (cons (car l) acc)))
+                     (else (so-make-veblen (append (reverse acc) ys))))))))))
+
+(define veblen-one (veblen-phi veblen-zero veblen-zero))
+(define veblen-omega (veblen-phi veblen-zero veblen-one))
+(define veblen-epsilon0 (veblen-phi veblen-one veblen-zero))
+(define veblen-zeta0 (veblen-phi (veblen-add veblen-one veblen-one) veblen-zero))
+
+(define (veblen-from-nat n)
+  (if (not (so-nat? n)) (error "veblen-from-nat: expected an exact nonnegative integer" n))
+  (let loop ((k n) (acc '()))
+    (if (= k 0) (so-make-veblen acc) (loop (- k 1) (cons (so-vatom veblen-zero veblen-zero) acc)))))
+
+(define (veblen-from-ord a)
+  (if (not (ordinal? a)) (error "veblen-from-ord: expected a CNF ordinal" a))
+  (let loop ((ts (ord-terms a)) (acc veblen-zero))
+    (if (null? ts)
+        acc
+        (let* ((e (veblen-from-ord (caar ts)))
+               (c (cdar ts))
+               (atom (veblen-phi veblen-zero e)))
+          (let rep ((k c) (s acc))
+            (if (= k 0) (loop (cdr ts) s) (rep (- k 1) (veblen-add s atom))))))))

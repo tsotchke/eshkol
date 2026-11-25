@@ -1,0 +1,501 @@
+;;; core.sheaf.condensed -- finite-profinite-site Condensed Sets and
+;;; Condensed Abelian Groups (Clausen-Scholze), Stone duality for finite
+;;; Boolean algebras, and extremally disconnected projective covers.
+;;;
+;;; Usage: (require core.sheaf.condensed)   or   (require core.set)
+;;;
+;;; On the finite site of finite discrete (Stone / profinite) spaces
+;;; S_n = {0, ..., n-1} for 0 <= n <= max-size:
+;;;   - Every finite discrete space is compact Hausdorff totally disconnected
+;;;     and extremally disconnected (projective in Profinite).
+;;;   - A condensed set T satisfies:
+;;;       (1) contravariant functoriality on maps f : S_m -> S_n;
+;;;       (2) finite disjoint unions sent to products: |T(0)| = 1 and
+;;;           (T(i1), T(i2)) : T(m + n) -> T(m) x T(n) is a bijection;
+;;;       (3) surjective epimorphism descent: for any surjection p : S' ->> S,
+;;;           T(S) -> T(S') => T(S' x_S S') is an equalizer.
+
+(require stdlib)
+(require core.set.forcing)
+
+(provide
+  ;; Stone duality & extremally disconnected covers
+  stone-clopen-algebra stone-spectrum stone-duality-check
+  extremally-disconnected-cover verify-projective-lifting
+  ;; Condensed sets
+  make-condensed-set condensed-set? condensed-set-max-size
+  condensed-set-eval condensed-set-restrict
+  condensed-representable condensed-product condensed-constant
+  condensed-set-violations
+  ;; Condensed abelian groups
+  make-condensed-ab condensed-ab? condensed-ab-as-set
+  condensed-ab-eval condensed-ab-restrict condensed-ab-add condensed-ab-zero condensed-ab-neg
+  condensed-ab-from-zmod condensed-ab-violations
+  make-condensed-ab-hom condensed-ab-hom-apply condensed-ab-hom-violations
+  condensed-ab-hom-set condensed-ab-kernel condensed-ab-cokernel
+  condensed-ab-exact-at?)
+
+;; ===========================================================================
+;; Private helpers (prefix sc-)
+;; ===========================================================================
+
+(define (sc-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (sc-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (sc-all? p (cdr xs))) (else #f)))
+(define (sc-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (sc-any? p (cdr xs)))))
+(define (sc-flatmap f xs)
+  (let loop ((l xs) (acc '()))
+    (if (null? l) (reverse acc) (loop (cdr l) (append (reverse (f (car l))) acc)))))
+(define (sc-functions m n)
+  (if (= m 0) (list '())
+      (sc-flatmap (lambda (v) (map (lambda (rest) (cons v rest)) (sc-functions (- m 1) n)))
+                  (sc-range n))))
+(define (sc-surjective? m n f)
+  (sc-all? (lambda (y) (memv y f)) (sc-range n)))
+(define (sc-compose-fn g f)
+  (map (lambda (i) (list-ref g i)) f))
+(define (sc-bijection? xs ys f)
+  (and (= (length xs) (length ys))
+       (let ((imgs (map f xs)))
+         (and (sc-all? (lambda (y) (member y ys)) imgs)
+              (sc-all? (lambda (y) (= 1 (length (filter (lambda (z) (equal? z y)) imgs)))) ys)))))
+(define (sc-dedup xs)
+  (let loop ((l xs) (acc '()))
+    (cond ((null? l) (reverse acc))
+          ((member (car l) acc) (loop (cdr l) acc))
+          (else (loop (cdr l) (cons (car l) acc))))))
+
+;; ===========================================================================
+;; Stone Duality for Finite Stone Spaces & Finite Boolean Algebras
+;; ===========================================================================
+
+;; Clopen(S_n) = P({0..n-1}) as a Boolean algebra.
+(define (stone-clopen-algebra n) (powerset-boolean-algebra n))
+
+;; Spec(B) = Hom_Bool(B, {0,1}), represented by the atoms of B (which are
+;; in canonical bijection with ultrafilters U_a = {b in B : a <= b}).
+(define (stone-spectrum B)
+  (let ((bot (ba-bot B)) (es (ba-elements B)))
+    (filter (lambda (a)
+              (and (not (equal? a bot))
+                   (sc-all? (lambda (b)
+                              (or (not (ba-leq? B b a))
+                                  (equal? b bot)
+                                  (equal? b a)))
+                            es)))
+            es)))
+
+;; Verify Stone duality round-trip on finite Stone space S_n and finite BA B:
+;;   (1) |Spec(Clopen(S_n))| = n and x |-> {x} is a bijection S_n -> Spec(Clopen(S_n));
+;;   (2) b |-> {a in Spec(B) : a <= b} is a Boolean algebra isomorphism B -> Clopen(Spec(B)).
+(define (stone-duality-check n B)
+  (let* ((cl (stone-clopen-algebra n))
+         (sp-cl (stone-spectrum cl))
+         (space-roundtrip (sc-bijection? (sc-range n) sp-cl (lambda (x) (list x))))
+         (atoms (stone-spectrum B))
+         (k (length atoms))
+         (cl-sp (stone-clopen-algebra k))
+         (to-clopen (lambda (b)
+                      (let loop ((as atoms) (i 0) (acc '()))
+                        (cond ((null? as) (reverse acc))
+                              ((ba-leq? B (car as) b) (loop (cdr as) (+ i 1) (cons i acc)))
+                              (else (loop (cdr as) (+ i 1) acc))))))
+         (ba-bij (sc-bijection? (ba-elements B) (ba-elements cl-sp) to-clopen))
+         (ba-hom (sc-all?
+                  (lambda (x)
+                    (and (equal? (to-clopen (ba-compl B x)) (ba-compl cl-sp (to-clopen x)))
+                         (sc-all?
+                          (lambda (y)
+                            (and (equal? (to-clopen (ba-join B x y)) (ba-join cl-sp (to-clopen x) (to-clopen y)))
+                                 (equal? (to-clopen (ba-meet B x y)) (ba-meet cl-sp (to-clopen x) (to-clopen y)))))
+                          (ba-elements B))))
+                  (ba-elements B))))
+    (list (cons 'duality-holds? (and space-roundtrip ba-bij ba-hom))
+          (cons 'space-roundtrip? space-roundtrip)
+          (cons 'ba-isomorphism? (and ba-bij ba-hom))
+          (cons 'spectrum-size k))))
+
+;; ===========================================================================
+;; Extremally Disconnected Projective Covers
+;; ===========================================================================
+;;
+;; Given a finite space (represented as a size n and equivalence / quotient or
+;; simply size n), its canonical extremally disconnected cover is the discrete
+;; Stone space of size n with projection pi : n -> n. Projectivity states that
+;; for every surjection p : T ->> U and every map f : S -> U, there exists a
+;; lift g : S -> T with p o g = f.
+
+(define (extremally-disconnected-cover n)
+  (list (cons 'cover-size n) (cons 'projection (sc-range n))))
+
+;; Verify projective lifting of S (size s) against a map p : T (size t) -> U (size u).
+;; Returns (list (cons 'lifts-all? bool) (cons 'counterexample ...)).
+;; If p is NOT surjective, lifting fails on any f hitting a missed point of U (witness!).
+(define (verify-projective-lifting s t u p)
+  (let ((all-f (sc-functions s u))
+        (all-g (sc-functions s t)))
+    (let loop ((fs all-f))
+      (if (null? fs)
+          (list (cons 'lifts-all? #t) (cons 'surjective? (sc-surjective? t u p)) (cons 'counterexample #f))
+          (let ((f (car fs)))
+            (if (sc-any? (lambda (g) (equal? (sc-compose-fn p g) f)) all-g)
+                (loop (cdr fs))
+                (list (cons 'lifts-all? #f)
+                      (cons 'surjective? (sc-surjective? t u p))
+                      (cons 'counterexample f))))))))
+
+;; ===========================================================================
+;; Condensed Sets on Finite Profinite Site FinProfinite_{<= max-size}
+;; ===========================================================================
+;;
+;; #(condensed-set max-size eval-fn restrict-fn)
+;;   eval-fn:     n -> list of elements of T(S_n)
+;;   restrict-fn: (m n f x) -> element of T(S_m) for f : S_m -> S_n (list of length m
+;;                with entries in 0..n-1) and x in T(S_n).
+
+(define (make-condensed-set max-size eval-fn restrict-fn)
+  (vector 'condensed-set max-size eval-fn restrict-fn))
+(define (condensed-set? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'condensed-set)))
+(define (condensed-set-max-size T) (vector-ref T 1))
+(define (condensed-set-eval T n) ((vector-ref T 2) n))
+(define (condensed-set-restrict T m n f x) ((vector-ref T 3) m n f x))
+
+;; Representable condensed set X_(S_n) = Map(S_n, X) for a finite set X.
+(define (condensed-representable elems max-size)
+  (let ((k (length elems)))
+    (make-condensed-set
+     max-size
+     (lambda (n)
+       (map (lambda (idxs) (map (lambda (i) (list-ref elems i)) idxs))
+            (sc-functions n k)))
+     (lambda (m n f x)
+       (map (lambda (i) (list-ref x (list-ref f i))) (sc-range m))))))
+
+;; Product of two condensed sets.
+(define (condensed-product T1 T2)
+  (make-condensed-set
+   (min (condensed-set-max-size T1) (condensed-set-max-size T2))
+   (lambda (n)
+     (sc-flatmap (lambda (x) (map (lambda (y) (cons x y)) (condensed-set-eval T2 n)))
+                 (condensed-set-eval T1 n)))
+   (lambda (m n f p)
+     (cons (condensed-set-restrict T1 m n f (car p))
+           (condensed-set-restrict T2 m n f (cdr p))))))
+
+;; Naive constant presheaf (non-condensed witness whenever |elems| /= 1!).
+(define (condensed-constant elems max-size)
+  (make-condensed-set max-size (lambda (n) elems) (lambda (m n f x) x)))
+
+;; Verify ALL Clausen-Scholze condensed set axioms up to max-size:
+;;   1. Functoriality (identity and composition on small maps);
+;;   2. Empty space: |T(0)| = 1;
+;;   3. Disjoint union -> product: T(a + b) -> T(a) x T(b) is a bijection for a + b <= max-size;
+;;   4. Surjection equalizer descent: for every surjection p : S_m ->> S_n with m, n <= max-size
+;;      and |S_m x_{S_n} S_m| <= max-size, T(n) -> T(m) => T(S_m x_{S_n} S_m) is an exact equalizer.
+(define (condensed-set-violations T)
+  (let ((N (condensed-set-max-size T)) (out '()))
+    (define (note! v) (set! out (cons v out)))
+    ;; (1) Functoriality
+    (for-each
+     (lambda (n)
+       (let ((id (sc-range n)))
+         (for-each (lambda (x)
+                     (let ((rx (condensed-set-restrict T n n id x)))
+                       (if (not (equal? rx x)) (note! (list 'identity n x rx)))))
+                   (condensed-set-eval T n))))
+     (sc-range (+ N 1)))
+    (let ((cmax (min N 2)))
+      (for-each
+       (lambda (a)
+         (for-each
+          (lambda (b)
+            (for-each
+             (lambda (c)
+               (for-each
+                (lambda (f)
+                  (for-each
+                   (lambda (g)
+                     (let ((gf (sc-compose-fn g f)))
+                       (for-each
+                        (lambda (x)
+                          (let ((lhs (condensed-set-restrict T a c gf x))
+                                (rhs (condensed-set-restrict T a b f (condensed-set-restrict T b c g x))))
+                            (if (not (equal? lhs rhs))
+                                (note! (list 'composition a b c f g x lhs rhs)))))
+                        (condensed-set-eval T c))))
+                   (sc-functions b c)))
+                (sc-functions a b)))
+             (sc-range (+ cmax 1))))
+          (sc-range (+ cmax 1))))
+       (sc-range (+ cmax 1))))
+    ;; (2) Empty space -> singleton
+    (if (not (= (length (condensed-set-eval T 0)) 1))
+        (note! (list 'empty-not-singleton (condensed-set-eval T 0))))
+    ;; (3) Disjoint union -> product
+    (for-each
+     (lambda (a)
+       (for-each
+        (lambda (b)
+          (if (<= (+ a b) N)
+              (let* ((s (+ a b))
+                     (i1 (sc-range a))
+                     (i2 (map (lambda (j) (+ a j)) (sc-range b)))
+                     (dom (condensed-set-eval T s))
+                     (cod (sc-flatmap (lambda (x) (map (lambda (y) (cons x y)) (condensed-set-eval T b)))
+                                      (condensed-set-eval T a)))
+                     (phi (lambda (z) (cons (condensed-set-restrict T a s i1 z)
+                                            (condensed-set-restrict T b s i2 z)))))
+                (if (not (sc-bijection? dom cod phi))
+                    (note! (list 'disjoint-union-not-product a b (length dom) (length cod)))))))
+        (sc-range (+ N 1))))
+     (sc-range (+ N 1)))
+    ;; (4) Surjection equalizer descent
+    (for-each
+     (lambda (n)
+       (for-each
+        (lambda (m)
+          (if (and (>= m n) (> n 0))
+              (for-each
+               (lambda (p)
+                 (if (sc-surjective? m n p)
+                     (let* ((pb-pairs
+                             (sc-flatmap (lambda (i)
+                                           (map (lambda (j) (cons i j))
+                                                (filter (lambda (j) (= (list-ref p i) (list-ref p j)))
+                                                        (sc-range m))))
+                                         (sc-range m)))
+                            (k (length pb-pairs)))
+                       (if (<= k N)
+                           (let* ((pi1 (map car pb-pairs))
+                                  (pi2 (map cdr pb-pairs))
+                                  (Tn (condensed-set-eval T n))
+                                  (Tm (condensed-set-eval T m))
+                                  (eq-set (filter (lambda (y)
+                                                    (equal? (condensed-set-restrict T k m pi1 y)
+                                                            (condensed-set-restrict T k m pi2 y)))
+                                                  Tm))
+                                  (res-p (lambda (x) (condensed-set-restrict T m n p x))))
+                             (if (not (sc-bijection? Tn eq-set res-p))
+                                 (note! (list 'surjection-equalizer-failure m n p (length Tn) (length eq-set)))))))))
+               (sc-functions m n))))
+        (sc-range (+ N 1))))
+     (sc-range (+ N 1)))
+    (reverse out)))
+
+;; ===========================================================================
+;; Condensed Abelian Groups
+;; ===========================================================================
+
+(define (make-condensed-ab max-size eval-fn restrict-fn add-fn zero-fn neg-fn)
+  (vector 'condensed-ab (make-condensed-set max-size eval-fn restrict-fn) add-fn zero-fn neg-fn))
+(define (condensed-ab? x)
+  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'condensed-ab)))
+(define (condensed-ab-as-set A) (vector-ref A 1))
+(define (condensed-ab-eval A n) (condensed-set-eval (condensed-ab-as-set A) n))
+(define (condensed-ab-restrict A m n f x) (condensed-set-restrict (condensed-ab-as-set A) m n f x))
+(define (condensed-ab-add A n x y) ((vector-ref A 2) n x y))
+(define (condensed-ab-zero A n) ((vector-ref A 3) n))
+(define (condensed-ab-neg A n x) ((vector-ref A 4) n x))
+
+;; Condensed abelian group Z/mZ: (Z/mZ)(S_n) = (Z/mZ)^n with pointwise addition mod m.
+(define (condensed-ab-from-zmod m max-size)
+  (let ((rep (condensed-representable (sc-range m) max-size)))
+    (make-condensed-ab
+     max-size
+     (lambda (n) (condensed-set-eval rep n))
+     (lambda (a b f x) (condensed-set-restrict rep a b f x))
+     (lambda (n x y) (map (lambda (u v) (modulo (+ u v) m)) x y))
+     (lambda (n) (map (lambda (i) 0) (sc-range n)))
+     (lambda (n x) (map (lambda (u) (modulo (- u) m)) x)))))
+
+;; Verify condensed set axioms + abelian group laws + restriction homomorphism laws.
+(define (condensed-ab-violations A)
+  (let ((N (condensed-set-max-size (condensed-ab-as-set A)))
+        (out (reverse (condensed-set-violations (condensed-ab-as-set A)))))
+    (define (note! v) (set! out (cons v out)))
+    (for-each
+     (lambda (n)
+       (let ((es (condensed-ab-eval A n))
+             (z (condensed-ab-zero A n)))
+         (if (not (member z es)) (note! (list 'zero-not-element n z)))
+         (for-each
+          (lambda (x)
+            (if (not (equal? (condensed-ab-add A n x z) x)) (note! (list 'zero-identity n x)))
+            (if (not (equal? (condensed-ab-add A n x (condensed-ab-neg A n x)) z)) (note! (list 'inverse n x)))
+            (for-each
+             (lambda (y)
+               (if (not (equal? (condensed-ab-add A n x y) (condensed-ab-add A n y x)))
+                   (note! (list 'commutativity n x y))))
+             es))
+          es)))
+     (sc-range (+ (min N 2) 1)))
+    ;; Restriction maps are group homomorphisms (checked up to size 2)
+    (let ((cmax (min N 2)))
+      (for-each
+       (lambda (a)
+         (for-each
+          (lambda (b)
+            (for-each
+             (lambda (f)
+               (let ((es (condensed-ab-eval A b)))
+                 (for-each
+                  (lambda (x)
+                    (for-each
+                     (lambda (y)
+                       (let ((lhs (condensed-ab-restrict A a b f (condensed-ab-add A b x y)))
+                             (rhs (condensed-ab-add A a
+                                    (condensed-ab-restrict A a b f x)
+                                    (condensed-ab-restrict A a b f y))))
+                         (if (not (equal? lhs rhs))
+                             (note! (list 'restrict-not-hom a b f x y lhs rhs)))))
+                     es))
+                  es)))
+             (sc-functions a b)))
+          (sc-range (+ cmax 1))))
+       (sc-range (+ cmax 1))))
+    (reverse out)))
+
+;; Morphisms of condensed abelian groups: #(condensed-ab-hom A B map-fn)
+;;   map-fn: (n x) -> element of B(S_n)
+(define (make-condensed-ab-hom A B map-fn) (vector 'condensed-ab-hom A B map-fn))
+(define (condensed-ab-hom-apply phi n x) ((vector-ref phi 3) n x))
+
+(define (condensed-ab-hom-violations phi)
+  (let* ((A (vector-ref phi 1)) (B (vector-ref phi 2))
+         (N (min (condensed-set-max-size (condensed-ab-as-set A))
+                 (condensed-set-max-size (condensed-ab-as-set B))))
+         (cmax (min N 2))
+         (out '()))
+    (define (note! v) (set! out (cons v out)))
+    ;; Group homomorphism at each stage
+    (for-each
+     (lambda (n)
+       (let ((es (condensed-ab-eval A n)) (bs (condensed-ab-eval B n)))
+         (for-each
+          (lambda (x)
+            (let ((fx (condensed-ab-hom-apply phi n x)))
+              (if (not (member fx bs)) (note! (list 'outside-codomain n x fx)))
+              (for-each
+               (lambda (y)
+                 (let ((lhs (condensed-ab-hom-apply phi n (condensed-ab-add A n x y)))
+                       (rhs (condensed-ab-add B n fx (condensed-ab-hom-apply phi n y))))
+                   (if (not (equal? lhs rhs)) (note! (list 'not-additive n x y lhs rhs)))))
+               es)))
+          es)))
+     (sc-range (+ cmax 1)))
+    ;; Naturality
+    (for-each
+     (lambda (a)
+       (for-each
+        (lambda (b)
+          (for-each
+           (lambda (f)
+             (for-each
+              (lambda (x)
+                (let ((lhs (condensed-ab-restrict B a b f (condensed-ab-hom-apply phi b x)))
+                      (rhs (condensed-ab-hom-apply phi a (condensed-ab-restrict A a b f x))))
+                  (if (not (equal? lhs rhs)) (note! (list 'not-natural a b f x lhs rhs)))))
+              (condensed-ab-eval A b)))
+           (sc-functions a b)))
+        (sc-range (+ cmax 1))))
+     (sc-range (+ cmax 1)))
+    (reverse out)))
+
+;; Enumerate all condensed abelian group homomorphisms A -> B.
+;; By disjoint-union -> product, a condensed hom is completely determined by
+;; its action on S_1 (a group homomorphism A(1) -> B(1))! We enumerate all group
+;; homomorphisms A(1) -> B(1), lift them pointwise to all S_n via the point
+;; projections i_k : S_1 -> S_n, and verify naturality on all stages.
+(define (condensed-ab-hom-set A B)
+  (let* ((a1 (condensed-ab-eval A 1))
+         (b1 (condensed-ab-eval B 1))
+         (k (length a1))
+         (l (length b1))
+         (N (min (condensed-set-max-size (condensed-ab-as-set A))
+                 (condensed-set-max-size (condensed-ab-as-set B))))
+         (pos-a (lambda (x) (let loop ((xs a1) (i 0)) (if (equal? (car xs) x) i (loop (cdr xs) (+ i 1))))))
+         ;; Find unique element of B(n) whose restriction along (list j) is y_j for all j
+         (glue-B (lambda (n ys)
+                   (let loop ((bs (condensed-ab-eval B n)))
+                     (cond ((null? bs) #f)
+                           ((sc-all? (lambda (j)
+                                       (equal? (condensed-ab-restrict B 1 n (list j) (car bs))
+                                               (list-ref ys j)))
+                                     (sc-range n))
+                            (car bs))
+                           (else (loop (cdr bs))))))))
+    (let loop ((fs (sc-functions k l)) (acc '()))
+      (if (null? fs)
+          (reverse acc)
+          (let* ((f (car fs))
+                 (f1 (lambda (x) (list-ref b1 (list-ref f (pos-a x)))))
+                 (add-ok (sc-all? (lambda (x)
+                                    (sc-all? (lambda (y)
+                                               (equal? (f1 (condensed-ab-add A 1 x y))
+                                                       (condensed-ab-add B 1 (f1 x) (f1 y))))
+                                             a1))
+                                  a1)))
+            (if (not add-ok)
+                (loop (cdr fs) acc)
+                (let ((hom (make-condensed-ab-hom
+                            A B
+                            (lambda (n x)
+                              (if (= n 0)
+                                  (condensed-ab-zero B 0)
+                                  (glue-B n (map (lambda (j) (f1 (condensed-ab-restrict A 1 n (list j) x)))
+                                                 (sc-range n))))))))
+                  (if (null? (condensed-ab-hom-violations hom))
+                      (loop (cdr fs) (cons hom acc))
+                      (loop (cdr fs) acc)))))))))
+
+;; Pointwise kernel of a condensed abelian group homomorphism phi : A -> B.
+(define (condensed-ab-kernel phi)
+  (let* ((A (vector-ref phi 1)) (B (vector-ref phi 2))
+         (N (min (condensed-set-max-size (condensed-ab-as-set A))
+                 (condensed-set-max-size (condensed-ab-as-set B)))))
+    (make-condensed-ab
+     N
+     (lambda (n)
+       (let ((zb (condensed-ab-zero B n)))
+         (filter (lambda (x) (equal? (condensed-ab-hom-apply phi n x) zb))
+                 (condensed-ab-eval A n))))
+     (lambda (a b f x) (condensed-ab-restrict A a b f x))
+     (lambda (n x y) (condensed-ab-add A n x y))
+     (lambda (n) (condensed-ab-zero A n))
+     (lambda (n x) (condensed-ab-neg A n x)))))
+
+;; Pointwise cokernel on finite discrete (extremally disconnected) spaces:
+;; coker(phi)(S_n) = B(S_n) / im(phi_n), representing each coset by its
+;; canonical first element in (condensed-ab-eval B n).
+(define (condensed-ab-cokernel phi)
+  (let* ((A (vector-ref phi 1)) (B (vector-ref phi 2))
+         (N (min (condensed-set-max-size (condensed-ab-as-set A))
+                 (condensed-set-max-size (condensed-ab-as-set B))))
+         (im-at (lambda (n) (sc-dedup (map (lambda (x) (condensed-ab-hom-apply phi n x)) (condensed-ab-eval A n)))))
+         (canon (lambda (n y)
+                  (let ((im (im-at n)) (bs (condensed-ab-eval B n)))
+                    (let loop ((l bs))
+                      (cond ((null? l) (error "condensed-ab-cokernel: element outside B" (list n y)))
+                            ((member (condensed-ab-add B n y (condensed-ab-neg B n (car l))) im) (car l))
+                            (else (loop (cdr l)))))))))
+    (make-condensed-ab
+     N
+     (lambda (n) (sc-dedup (map (lambda (y) (canon n y)) (condensed-ab-eval B n))))
+     (lambda (a b f y) (canon a (condensed-ab-restrict B a b f y)))
+     (lambda (n y1 y2) (canon n (condensed-ab-add B n y1 y2)))
+     (lambda (n) (canon n (condensed-ab-zero B n)))
+     (lambda (n y) (canon n (condensed-ab-neg B n y))))))
+
+;; Verify exactness of A -f-> B -g-> C at B: im(f_n) = ker(g_n) for all n <= max-size.
+(define (condensed-ab-exact-at? f g)
+  (let* ((A (vector-ref f 1)) (B (vector-ref f 2)) (C (vector-ref g 2))
+         (N (min (condensed-set-max-size (condensed-ab-as-set A))
+                 (condensed-set-max-size (condensed-ab-as-set B))
+                 (condensed-set-max-size (condensed-ab-as-set C)))))
+    (sc-all? (lambda (n)
+               (let* ((zc (condensed-ab-zero C n))
+                      (im (sc-dedup (map (lambda (x) (condensed-ab-hom-apply f n x)) (condensed-ab-eval A n))))
+                      (ker (filter (lambda (y) (equal? (condensed-ab-hom-apply g n y) zc)) (condensed-ab-eval B n))))
+                 (and (sc-all? (lambda (y) (member y ker)) im)
+                      (sc-all? (lambda (y) (member y im)) ker))))
+             (sc-range (+ N 1)))))

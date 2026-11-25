@@ -1,0 +1,258 @@
+;;; core.ring.localization -- exact localization ring carrier R[1/f],
+;;; canonical map R -> R[1/f], and universal lift R[1/f] -> S built on
+;;; core.ring's carrier protocol.
+;;;
+;;; Usage: (require core.ring.localization)
+;;;
+;;; Elements are self-locating fraction pairs (a . k) denoting a / f^k with
+;;; a in R and exact integer k >= 0, modulo the exact equivalence
+;;;   (a, k) ~ (b, n)  iff  exists N >= 0, f^N * (f^n * a - f^k * b) = 0 in R.
+
+(require stdlib)
+(require core.ring)
+
+(provide
+  make-localization localization-carrier?
+  localization-base localization-element localization-frac
+  localization-numerator localization-denominator-exp
+  localization-map localization-universal-lift localization-finite-elements)
+
+;; ===========================================================================
+;; Private helpers (prefix rl-)
+;; ===========================================================================
+
+(define (rl-exact-int? x) (and (number? x) (exact? x) (integer? x)))
+
+(define (rl-integer-length n)
+  (let loop ((n (abs n)) (k 0)) (if (= n 0) k (loop (quotient n 2) (+ k 1)))))
+
+(define (rl-mod-inverse a m)
+  (if (= m 1)
+      0
+      (let ((g (exact-gcdext (modulo a m) m)))
+        (if (= (car g) 1) (modulo (cadr g) m) #f))))
+
+(define (rl-localize-modulus m f)
+  (let loop ((cur m))
+    (let ((g (gcd cur f)))
+      (if (= g 1) cur (loop (quotient cur g))))))
+
+;; In Z, every prime divisor of |a| divides |f| (when a /= 0, f /= 0).
+(define (rl-z-unit-in-loc? a f)
+  (cond ((= a 0) #f)
+        ((or (= a 1) (= a -1)) #t)
+        ((or (= f 1) (= f -1)) #f)
+        (else
+         (let loop ((n (abs a)))
+           (let ((g (gcd n (abs f))))
+             (cond ((= n 1) #t)
+                   ((= g 1) #f)
+                   (else (loop (quotient n g)))))))))
+
+;; For a a unit in Z[1/f], return (c . r) with a * c = f^r.
+(define (rl-z-loc-inv-factor a f)
+  (cond ((= a 1) (cons 1 0))
+        ((= a -1) (cons -1 0))
+        (else
+         (let loop ((r 1) (fp f))
+           (if (= (remainder fp a) 0)
+               (cons (quotient fp a) r)
+               (loop (+ r 1) (* fp f)))))))
+
+;; Reduce fraction pair (a . k) over Z by cancelling factors of f.
+(define (rl-z-loc-reduce a k f)
+  (cond ((= a 0) (cons 0 0))
+        ((= f 1) (cons a 0))
+        ((= f -1) (cons (if (even? k) a (- a)) 0))
+        (else
+         (let loop ((num a) (e k))
+           (if (and (> e 0) (= (remainder num f) 0))
+               (loop (quotient num f) (- e 1))
+               (cons num e))))))
+
+(define (rl-elem? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'loc-element-v1)))
+
+(ring-register-recognizer! (lambda (x) (if (rl-elem? x) (vector-ref x 1) #f)))
+
+;; ===========================================================================
+;; Localization Carrier R[1/f]
+;; ===========================================================================
+
+(define (localization-carrier? L)
+  (and (ring-carrier? L) (if (ring-carrier-extra L 'localization?) #t #f)))
+
+(define (rl-check L who)
+  (if (localization-carrier? L) L
+      (error (string-append who ": expected a localization carrier") L)))
+
+(define (make-localization R f0)
+  (if (not (ring-carrier? R)) (error "make-localization: expected a ring carrier" R))
+  (let* ((f (ring-admit R f0))
+         (box (vector #f))
+         (fam (ring-carrier-family R))
+         (is-zmod (eq? fam 'zmod))
+         (is-Z (eq? fam 'integers))
+         (is-field (if (ring-ref R 'field?) #t #f))
+         (is-domain (or is-field is-Z (if (ring-carrier-extra R 'integral-domain) #t #f)))
+         (rzero (r0 R))
+         (rone (r1 R))
+         (zmod-m (if is-zmod (car (ring-carrier-parameters R)) #f))
+         (zmod-nmax (if is-zmod (rl-integer-length zmod-m) 0))
+         (zmod-mp (if is-zmod (rl-localize-modulus zmod-m f) #f))
+         (zero-ring? (cond (is-zmod (= zmod-mp 1))
+                           (is-domain (r= R f rzero))
+                           (else (let ((nil? (ring-ref R 'nilpotent?))) (and nil? (nil? f))))))
+         (char (cond (zero-ring? 1)
+                     (is-zmod zmod-mp)
+                     (else (ring-ref R 'characteristic))))
+         (field? (cond (zero-ring? #f)
+                       (is-zmod (exact-prime? zmod-mp))
+                       (is-field #t)
+                       (else #f)))
+         (name (string-append (ring-carrier-name R) "[1/" (if (number? f) (number->string f) "f") "]"))
+         (f-nmax (if is-zmod (exact-expt-mod f zmod-nmax zmod-m) rone))
+         (norm (lambda (a k)
+                 (cond (zero-ring? (cons rzero 0))
+                       (is-Z (rl-z-loc-reduce a k f))
+                       (is-zmod
+                        (let ((fi (rl-mod-inverse f zmod-mp)))
+                          (cons (modulo (* a (exact-expt-mod fi k zmod-mp)) zmod-mp) 0)))
+                       (else (cons a k)))))
+         (wrap (lambda (p) (vector 'loc-element-v1 (vector-ref box 0) p)))
+         (pair-of (lambda (x) (vector-ref x 2)))
+         (constant (lambda (a) (wrap (norm a 0))))
+         (same (lambda (x y)
+                 (if zero-ring?
+                     #t
+                     (let* ((px (pair-of x)) (py (pair-of y))
+                            (a (car px)) (k (cdr px))
+                            (b (car py)) (n (cdr py))
+                            (diff (r- R (r* R (r-expt R f n) a) (r* R (r-expt R f k) b))))
+                       (cond (is-zmod (= (modulo (* f-nmax diff) zmod-m) 0))
+                             (is-domain (r= R diff rzero))
+                             (else
+                              (let loop ((N 0) (cur diff))
+                                (cond ((r= R cur rzero) #t)
+                                      ((>= N 16) #f)
+                                      (else (loop (+ N 1) (r* R f cur)))))))))))
+         (add (lambda (x y)
+                (if zero-ring?
+                    (wrap (cons rzero 0))
+                    (let* ((px (pair-of x)) (py (pair-of y))
+                           (a (car px)) (k (cdr px))
+                           (b (car py)) (n (cdr py)))
+                      (if (= k n)
+                          (wrap (norm (r+ R a b) k))
+                          (wrap (norm (r+ R (r* R (r-expt R f n) a) (r* R (r-expt R f k) b)) (+ k n))))))))
+         (neg (lambda (x)
+                (let ((p (pair-of x))) (wrap (norm (r-neg R (car p)) (cdr p))))))
+         (mul (lambda (x y)
+                (if zero-ring?
+                    (wrap (cons rzero 0))
+                    (let ((px (pair-of x)) (py (pair-of y)))
+                      (wrap (norm (r* R (car px) (car py)) (+ (cdr px) (cdr py))))))))
+         (unit? (lambda (x)
+                  (let ((a (car (pair-of x))))
+                    (cond (zero-ring? #t)
+                          (is-zmod (= (gcd a zmod-mp) 1))
+                          (is-Z (rl-z-unit-in-loc? a f))
+                          (is-field (not (r= R a rzero)))
+                          (else (r-unit? R a))))))
+         (inv (lambda (x)
+                (let* ((p (pair-of x)) (a (car p)) (k (cdr p)))
+                  (cond (zero-ring? (wrap (cons rzero 0)))
+                        (is-zmod
+                         (let ((u (rl-mod-inverse a zmod-mp)))
+                           (wrap (norm (modulo (* (exact-expt-mod f k zmod-m) u) zmod-m) 0))))
+                        (is-Z
+                         (let ((cr (rl-z-loc-inv-factor a f)))
+                           (wrap (norm (* (car cr) (expt f k)) (cdr cr)))))
+                        (is-field
+                         (wrap (norm (r* R (r-expt R f k) (r-inv R a)) 0)))
+                        (else
+                         (wrap (norm (r* R (r-expt R f k) (r-inv R a)) 0)))))))
+         (rfr (ring-ref R 'from-rational))
+         (from-rational (if rfr (lambda (q) (constant (rfr q))) #f))
+         (L (make-ring-carrier name
+              'characteristic char
+              'field? field?
+              'lawful? (ring-ref R 'lawful?)
+              'exact? (ring-ref R 'exact?)
+              'base R
+              'zero (vector 'placeholder)
+              'one (vector 'placeholder)
+              'add add
+              'neg neg
+              'mul mul
+              'from-integer (lambda (n) (constant (r-int R n)))
+              'from-rational from-rational
+              'constant constant
+              'equal? same
+              'unit? unit?
+              'inverse inv
+              'member? (lambda (x) (and (rl-elem? x) (eq? (vector-ref x 1) (vector-ref box 0))))
+              'self-locating? #t
+              'extra (list (cons 'localization? #t)
+                           (cons 'base R)
+                           (cons 'element f)
+                           (cons 'zero-ring? zero-ring?)
+                           (cons 'integral-domain (and (not zero-ring?) is-domain))
+                           (cons 'modulus zmod-mp)
+                           (cons 'make-frac (lambda (a k) (wrap (norm a k))))))))
+    (vector-set! box 0 L)
+    (vector-set! L 12 (constant rzero))
+    (vector-set! L 13 (if zero-ring? (constant rzero) (constant rone)))
+    L))
+
+(define (localization-base L) (ring-carrier-extra (rl-check L "localization-base") 'base))
+(define (localization-element L) (ring-carrier-extra (rl-check L "localization-element") 'element))
+
+(define (localization-frac L a k)
+  (rl-check L "localization-frac")
+  (if (not (and (rl-exact-int? k) (>= k 0)))
+      (error "localization-frac: exponent must be an exact nonnegative integer" k))
+  ((ring-carrier-extra L 'make-frac) (ring-admit (localization-base L) a) k))
+
+(define (localization-numerator x)
+  (if (rl-elem? x) (car (vector-ref x 2))
+      (error "localization-numerator: expected a localization element" x)))
+
+(define (localization-denominator-exp x)
+  (if (rl-elem? x) (cdr (vector-ref x 2))
+      (error "localization-denominator-exp: expected a localization element" x)))
+
+;; Canonical ring map R -> R[1/f], a |-> a / 1.
+(define (localization-map L)
+  (rl-check L "localization-map")
+  (let ((R (localization-base L))
+        (mk (ring-carrier-extra L 'make-frac)))
+    (make-ring-map R L (lambda (a) (mk a 0)) "localization")))
+
+;; Universal property of localization: for phi : R -> S sending f to a unit
+;; of S, returns the unique ring map R[1/f] -> S sending a/f^k |-> phi(a) * phi(f)^{-k}.
+;; Refuses with ring-not-a-unit if phi(f) is not a unit in S.
+(define (localization-universal-lift L phi)
+  (rl-check L "localization-universal-lift")
+  (let* ((R (localization-base L))
+         (f (localization-element L))
+         (S (ring-map-target phi)))
+    (if (not (ring-carrier=? (ring-map-source phi) R))
+        (error "ring-no-ring-map" 'localization-universal-lift (ring-carrier-name R) (ring-carrier-name (ring-map-source phi))))
+    (let* ((pf (ring-map-apply phi f))
+           ;; r-inv raises ring-not-a-unit if pf is not a unit in S!
+           (pfinv (r-inv S pf)))
+      (make-ring-map L S
+        (lambda (x)
+          (let* ((p (vector-ref x 2)) (a (car p)) (k (cdr p)))
+            (r* S (ring-map-apply phi a) (r-expt S pfinv k))))
+        "localization-lift"))))
+
+;; Canonical distinct elements for localizations of Z/m.
+(define (localization-finite-elements L)
+  (rl-check L "localization-finite-elements")
+  (let ((mp (ring-carrier-extra L 'modulus)))
+    (if (not mp)
+        (error "ring-missing-capability" 'localization-finite-elements (ring-carrier-name L) 'finite-elements))
+    (let loop ((i (- mp 1)) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (cons (localization-frac L i 0) acc))))))
