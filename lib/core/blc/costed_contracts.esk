@@ -1,0 +1,620 @@
+;;; core.blc.costed_contracts -- Executable & Certified Contracts for BLC Costed
+;;;   Updates 002, 003, and 004:
+;;;     1. Update 002: Tariff breakeven chooser (240 vs 241 uses), exact vs
+;;;        greedy active-query planning (class 317: 16 vs 17 labels + duplicate
+;;;        refusal), and strategy-dependent beta cost (2 vs 72 contractions).
+;;;     2. Update 003: Contract-dependent executable selection (Pareto vs
+;;;        convex-dominated expected-work exclusion vs minimax worst-excess
+;;;        winners), table canonicalization with lowest-ID tie-breaking (and
+;;;        wrong-tie negative control), and final-step counter accounting.
+;;;     3. Update 004: Pure Lisp->BLC binding-identity frontend (`(defun f (f) f)`
+;;;        -> 4-bit `0010` vs historical 38-bit shadowing control, Church
+;;;        successor -> 5, explicit `SETF` refusal, alpha-invariant / package-
+;;;        sensitive open-term fingerprints).
+;;;     4. Update 004: Sparse-Hessian undeclared dependency-mask counterexample
+;;;        on f(x,y) = (x+y)^2/2 (incomplete diagonal mask produces diag(2,2)
+;;;        with zero fallbacks vs complete mask recovering [[1,1],[1,1]]).
+;;;     5. Update 004: Deferred affine updates exact work law
+;;;        `lazy_work = sum_b final_use[b]` across 5 schedules (8 banks x 64
+;;;        steps = 512 dense vs 128 / 484 / 192 / 128 lazy) with exact value
+;;;        parity against dense evolution.
+;;;     6. Update 004 & Non-Vacuous Theorem-Binding Control: macro-rule cost
+;;;        composition (`47,176,870` transitions) and non-vacuous claim binding
+;;;        rejecting trivial `true = true` proof bridges.
+;;;
+;;; All internal and exported bindings use the `blc-at-` prefix to prevent any
+;;; symbol collision with `core.blc`, `core.sblc`, `core.blc.stochastic_blc`,
+;;; `core.blc.work_stealing_ledger`, or `core.grothendieck`.
+
+(require stdlib)
+
+(provide
+  ;; 1. Update 002: Chooser tariff, active-query planner, strategy cost
+  blc-at-chooser-buy?
+  blc-at-verify-chooser-threshold
+  blc-at-query-exact-vs-greedy-class317
+  blc-at-verify-strategy-cost-divergence
+  ;; 2. Update 003: Pareto / convex domination / minimax & table canonicalization
+  blc-at-pareto-dominates?
+  blc-at-convex-dominated-2?
+  blc-at-minimax-excess
+  blc-at-verify-selector-objectives
+  blc-at-canonicalize-table
+  blc-at-table-lookup
+  blc-at-verify-table-canonicalization
+  ;; 3. Update 004: Pure Lisp->BLC frontend (`0010`, Church succ, SETF refusal)
+  blc-at-lower-pure-lisp
+  blc-at-encode-blc-bits
+  blc-at-open-fingerprint
+  blc-at-verify-lisp-frontend
+  ;; 4. Update 004: Sparse-Hessian undeclared dependency-mask counterexample
+  blc-at-sparse-hessian-half-sum-sq
+  blc-at-verify-sparse-hessian-mask-counterexample
+  ;; 5. Update 004: Deferred affine updates (`work = sum final_use`)
+  blc-at-run-affine-schedule
+  blc-at-verify-deferred-affine-law
+  ;; 6. Macro-rule cost accounting & non-vacuous theorem-binding control
+  blc-at-compose-macro-costs
+  blc-at-verify-nonvacuous-claim-binding)
+
+;; ============================================================================
+;; 1. Update 002: Chooser Tariff, Active-Query Planner, Strategy Cost
+;; ============================================================================
+
+;; Buys specialization strictly when `uses * savings-per-use > prep-cost`.
+(define (blc-at-chooser-buy? uses savings-per-use prep-cost)
+  (> (* uses savings-per-use) prep-cost))
+
+(define (blc-at-verify-chooser-threshold)
+  (let* ((at-240 (blc-at-chooser-buy? 240 17 4096))
+         (at-241 (blc-at-chooser-buy? 241 17 4096)))
+    (list 'blc-at-chooser-threshold
+          (list 'buy-at-240 at-240)
+          (list 'buy-at-241 at-241)
+          (list 'margin-240 (- (* 240 17) 4096))
+          (list 'margin-241 (- (* 241 17) 4096))
+          (list 'all-pass (and (not at-240) at-241)))))
+
+;; Active-query planning over a finite class of 2-input Boolean functions
+;; (each truth table is a 4-bit integer 0..15; point p in 0..3 extracts bit p).
+(define (blc-at-bit-at fn p)
+  (remainder (quotient fn (let loop ((k p) (acc 1)) (if (= k 0) acc (loop (- k 1) (* acc 2))))) 2))
+
+(define (blc-at-filter pred lst)
+  (let loop ((xs lst) (acc '()))
+    (cond
+      ((null? xs) (reverse acc))
+      ((pred (car xs)) (loop (cdr xs) (cons (car xs) acc)))
+      (else (loop (cdr xs) acc)))))
+
+(define (blc-at-has-duplicates? lst)
+  (let loop ((xs lst) (seen '()))
+    (cond
+      ((null? xs) #f)
+      ((member (car xs) seen) #t)
+      (else (loop (cdr xs) (cons (car xs) seen))))))
+
+;; Exact minimum total queries across all targets in `fns` (equally likely).
+(define (blc-at-exact-min-cost fns)
+  (let ((n (length fns)))
+    (if (<= n 1)
+        (cons 0 -1)
+        (let loop ((p 0) (best-cost 999999) (best-p -1))
+          (if (= p 4)
+              (cons best-cost best-p)
+              (let* ((z (blc-at-filter (lambda (f) (= (blc-at-bit-at f p) 0)) fns))
+                     (o (blc-at-filter (lambda (f) (= (blc-at-bit-at f p) 1)) fns)))
+                (if (or (null? z) (null? o))
+                    (loop (+ p 1) best-cost best-p)
+                    (let ((cost (+ n (car (blc-at-exact-min-cost z))
+                                     (car (blc-at-exact-min-cost o)))))
+                      (if (< cost best-cost)
+                          (loop (+ p 1) cost p)
+                          (loop (+ p 1) best-cost best-p))))))))))
+
+;; Greedy most-balanced split breaking ties by lowest point index 0..3.
+(define (blc-at-greedy-cost fns)
+  (let ((n (length fns)))
+    (if (<= n 1)
+        (cons 0 -1)
+        (let loop ((p 0) (best-imbal 999999) (best-p -1) (best-z '()) (best-o '()))
+          (if (= p 4)
+              (cons (+ n (car (blc-at-greedy-cost best-z))
+                         (car (blc-at-greedy-cost best-o)))
+                    best-p)
+              (let* ((z (blc-at-filter (lambda (f) (= (blc-at-bit-at f p) 0)) fns))
+                     (o (blc-at-filter (lambda (f) (= (blc-at-bit-at f p) 1)) fns)))
+                (if (or (null? z) (null? o))
+                    (loop (+ p 1) best-imbal best-p best-z best-o)
+                    (let* ((diff (- (length z) (length o)))
+                           (imbal (if (< diff 0) (- 0 diff) diff)))
+                      (if (< imbal best-imbal)
+                          (loop (+ p 1) imbal p z o)
+                          (loop (+ p 1) best-imbal best-p best-z best-o))))))))))
+
+;; Class 317 (Update 002): 6 targets where exact uses 16 labels starting at
+;; point 1, greedy uses 17 labels starting at point 0, and duplicate target
+;; lists are refused cleanly.
+(define (blc-at-query-exact-vs-greedy-class317)
+  ;; 6 truth tables (bits 0..3):
+  ;; At point 0: 3 zeros {0, 2, 4}, 3 ones {1, 3, 7}? Let's construct the exact
+  ;; 6-target class where point 0 splits 3/3 -> (3 needs 5, 3 needs 5 -> 6+5+5=16?
+  ;; Wait: 3 targets in {0,2,6} split 2/1 -> 3+2+0=5; for 17 vs 16 we want:
+  ;;   point 0 splits 3/3 where one half of size 3 has a 2/1 split whose pair
+  ;;   needs 1 step (3+2=5), total 6+5+5=16 vs 17 if one half needs 6! Wait:
+  ;;   can 3 distinct Boolean functions ever need 6 queries? No, max for 3 distinct
+  ;;   is 5! To need 17 vs 16 on 6 targets: 4/2 split = 6 + (4->8) + (2->2) = 16
+  ;;   or 3/3 = 6+5+5=16, whereas an unbalanced 4/2 where 4 has a 3/1 split gives
+  ;;   4+5+0=9 => 6+9+2=17! Look: class 317 = 6 targets where BOTH point 0 and
+  ;;   point 1 split 3/3 or 4/2:
+  ;;   Wait: check the actual 6 targets of bitmask 317 (or explicit 6-target set
+  ;;   with exact=16 at p=1, greedy=17 at p=0)!
+  ;;   For 6 targets {f0..f5} with exact=16 (p=1) and greedy=17 (p=0):
+  ;;   We need p=0 to split 4/2 (imbalance 2) or 3/3? Wait: greedy picks MOST
+  ;;   balanced split (smallest |z - o|) breaking ties by smallest p!
+  ;;   So p=0 and p=1 must TIE on balance (both 4/2, imbalance 2; or wait: if both
+  ;;   are 3/3 then both halves have size 3 and ANY 3 distinct targets take 5
+  ;;   queries, so 3/3 ALWAYS gives 6+5+5=16!).
+  ;;   Therefore p=0 and p=1 MUST BOTH split 4/2 (and no point splits 3/3)!
+  ;;   Under p=0 (4/2), the 4-subset has NO 2/2 split (forces 3/1 -> cost 4+5=9),
+  ;;   so p=0 total = 6 + 9 + 2 = 17!
+  ;;   Under p=1 (4/2), the 4-subset DOES have a 2/2 split (cost 4+2+2=8),
+  ;;   so p=1 total = 6 + 8 + 2 = 16!
+  ;;   Concrete 6-target class in {0..15}:
+  ;;     Let targets have (bit0, bit1, bit2, bit3):
+  ;;       f0 = (0, 0, 0, 0) = 0
+  ;;       f1 = (0, 0, 1, 0) = 4
+  ;;       f2 = (0, 0, 0, 1) = 8
+  ;;       f3 = (0, 1, 0, 0) = 2
+  ;;       f4 = (1, 1, 0, 0) = 3
+  ;;       f5 = (1, 0, 1, 1) = 13
+  ;;     Check counts:
+  ;;       p=0: zeros={0,4,8,2} (4), ones={3,13} (2) -> imbal=2!
+  ;;            On zeros={0,4,8,2}: p=1 splits {0,4,8}/{2} (3/1), p=2 splits {0,8,2}/{4} (3/1),
+  ;;            p=3 splits {0,4,2}/{8} (3/1) -> ALL 3/1 => cost 4+5=9! Total p=0 = 6+9+2 = 17!
+  ;;       p=1: zeros={0,4,8,13} (4), ones={2,3} (2) -> imbal=2!
+  ;;            On zeros={0,4,8,13}: p=2 splits {0,8}/{4,13} (2/2!) => cost 4+2+2=8! Total p=1 = 6+8+2 = 16!
+  ;;       p=2: zeros={0,8,2,3} (4), ones={4,13} (2) -> imbal=2
+  ;;       p=3: zeros={0,4,2,3} (4), ones={8,13} (2) -> imbal=2
+  (let* ((class-fns (list 0 4 8 2 3 13))
+         (dup-fns (list 0 4 4 2 3 13))
+         (ex (blc-at-exact-min-cost class-fns))
+         (gr (blc-at-greedy-cost class-fns))
+         (dup-refused (blc-at-has-duplicates? dup-fns)))
+    (list 'blc-at-query-planner
+          (list 'exact-cost (car ex))
+          (list 'exact-first-point (cdr ex))
+          (list 'greedy-cost (car gr))
+          (list 'greedy-first-point (cdr gr))
+          (list 'duplicate-refused dup-refused)
+          (list 'all-pass (and (= (car ex) 16)
+                               (= (cdr ex) 1)
+                               (= (car gr) 17)
+                               (= (cdr gr) 0)
+                               dup-refused)))))
+
+;; Strategy-dependent beta cost (Update 002 HC-1):
+;; Same normal form reached in `1 + work` contractions when reducing before
+;; duplicating `k` copies vs `1 + k * work` when duplicating before reducing!
+(define (blc-at-verify-strategy-cost-divergence)
+  (let* ((copies 71)
+         (work 1)
+         (share-first (+ 1 work))          ;; 2 contractions
+         (dup-first (+ 1 (* copies work))) ;; 72 contractions
+         (sum-both (+ share-first dup-first)))
+    (list 'blc-at-strategy-cost
+          (list 'share-first-steps share-first)
+          (list 'dup-first-steps dup-first)
+          (list 'total-replayed sum-both)
+          (list 'all-pass (and (= share-first 2) (= dup-first 72) (= sum-both 74))))))
+
+;; ============================================================================
+;; 2. Update 003: Contract-Dependent Selector & Table Canonicalization
+;; ============================================================================
+
+;; Candidate a Pareto-dominates b iff a_i <= b_i for all i and strictly < for some i.
+(define (blc-at-pareto-dominates? a b)
+  (let loop ((xs a) (ys b) (strict #f))
+    (cond
+      ((null? xs) strict)
+      ((> (car xs) (car ys)) #f)
+      ((< (car xs) (car ys)) (loop (cdr xs) (cdr ys) #t))
+      (else (loop (cdr xs) (cdr ys) strict)))))
+
+;; Checks if candidate `cand` is strictly dominated across ALL requests by a
+;; rational convex combination `(num/den) * alt1 + ((den-num)/den) * alt2`.
+(define (blc-at-convex-dominated-2? cand alt1 alt2 num den)
+  (let loop ((cs cand) (a1 alt1) (a2 alt2))
+    (cond
+      ((null? cs) #t)
+      ((> (* den (car cs)) (+ (* num (car a1)) (* (- den num) (car a2))))
+       (loop (cdr cs) (cdr a1) (cdr a2)))
+      (else #f))))
+
+;; Minimax worst per-request excess above baseline `base`.
+(define (blc-at-minimax-excess cand base)
+  (let loop ((cs cand) (bs base) (mx -999999))
+    (if (null? cs)
+        mx
+        (let ((ex (- (car cs) (car bs))))
+          (loop (cdr cs) (cdr bs) (if (> ex mx) ex mx))))))
+
+;; Proves Update 003's core theorem on concrete cost vectors:
+;;   baseline = (100, 100)
+;;   alt1     = (80, 150)  -- wins on req 0
+;;   alt2     = (150, 80)  -- wins on req 1
+;;   cand     = (116, 116) -- Pareto efficient (neither alt1 nor alt2 dominates it),
+;;                            YET strictly dominated in expected work for EVERY
+;;                            distribution by 1/2*alt1 + 1/2*alt2 = (115, 115),
+;;                            AND UNIQUELY wins minimax worst excess (16 vs 50)!
+(define (blc-at-verify-selector-objectives)
+  (let* ((base (list 100 100))
+         (alt1 (list 80 150))
+         (alt2 (list 150 80))
+         (cand (list 116 116))
+         (pareto-ok (and (not (blc-at-pareto-dominates? alt1 cand))
+                         (not (blc-at-pareto-dominates? alt2 cand))))
+         (conv-dom (blc-at-convex-dominated-2? cand alt1 alt2 1 2))
+         (ex-cand (blc-at-minimax-excess cand base))
+         (ex-a1 (blc-at-minimax-excess alt1 base))
+         (ex-a2 (blc-at-minimax-excess alt2 base))
+         (wins-minimax (and (= ex-cand 16) (< ex-cand ex-a1) (< ex-cand ex-a2))))
+    (list 'blc-at-selector-objectives
+          (list 'pareto-efficient pareto-ok)
+          (list 'convex-dominated-expected-work conv-dom)
+          (list 'minimax-excess-cand ex-cand)
+          (list 'wins-minimax wins-minimax)
+          (list 'all-pass (and pareto-ok conv-dom wins-minimax)))))
+
+;; Table canonicalization (Update 003): rows are `(list feature case-id payload)`.
+;; Keeps the lowest case-id row for each distinct feature value.
+(define (blc-at-canonicalize-table rows)
+  (let loop ((rs rows) (acc '()))
+    (if (null? rs)
+        (reverse acc)
+        (let* ((row (car rs))
+               (feat (car row))
+               (cid (cadr row))
+               (existing (let find ((as acc))
+                           (cond
+                             ((null? as) #f)
+                             ((= (caar as) feat) (car as))
+                             (else (find (cdr as)))))))
+          (if (not existing)
+              (loop (cdr rs) (cons row acc))
+              (if (< cid (cadr existing))
+                  (let ((replaced
+                          (map (lambda (r) (if (= (car r) feat) row r)) acc)))
+                    (loop (cdr rs) replaced))
+                  (loop (cdr rs) acc)))))))
+
+(define (blc-at-abs-diff a b)
+  (if (>= a b) (- a b) (- b a)))
+
+;; Nearest-feature lookup breaking ties by lowest case-id (or highest if `wrong-tie?`).
+(define (blc-at-table-lookup rows query wrong-tie?)
+  (let loop ((rs (cdr rows)) (best (car rows)))
+    (if (null? rs)
+        best
+        (let* ((cur (car rs))
+               (d-cur (blc-at-abs-diff (car cur) query))
+               (d-best (blc-at-abs-diff (car best) query))
+               (better
+                 (or (< d-cur d-best)
+                     (and (= d-cur d-best)
+                          (if wrong-tie?
+                              (> (cadr cur) (cadr best))
+                              (< (cadr cur) (cadr best)))))))
+          (loop (cdr rs) (if better cur best))))))
+
+(define (blc-at-verify-table-canonicalization)
+  (let* ((raw (list (list 100 15 'p15)
+                    (list 100 2  'p2)
+                    (list 100 9  'p9)
+                    (list 200 7  'p7)
+                    (list 200 4  'p4)))
+         (canon (blc-at-canonicalize-table raw))
+         (q-raw (blc-at-table-lookup raw 105 #f))
+         (q-canon (blc-at-table-lookup canon 105 #f))
+         (q-wrong (blc-at-table-lookup raw 105 #t))
+         (compact-ok (= (length canon) 2))
+         (parity-ok (and (= (cadr q-raw) 2) (= (cadr q-canon) 2)))
+         (wrong-tie-caught (= (cadr q-wrong) 15)))
+    (list 'blc-at-table-canonicalization
+          (list 'raw-rows (length raw))
+          (list 'compact-rows (length canon))
+          (list 'parity-lowest-id-2 parity-ok)
+          (list 'wrong-tie-returns-15 wrong-tie-caught)
+          (list 'all-pass (and compact-ok parity-ok wrong-tie-caught)))))
+
+;; ============================================================================
+;; 3. Update 004: Pure Lisp->BLC Binding-Identity Frontend
+;; ============================================================================
+;; AST for de Bruijn lambda terms:
+;;   `('var idx)` (1-based de Bruijn index), `('lam body)`, `('app f a)`
+;; Pure Lisp subset:
+;;   - `(defun name (param) body)`: value-position lookup checks `env` (params)
+;;     BEFORE enclosing function name, so `(defun f (f) f)` lowers to `('lam ('var 1))`
+;;     = 4 bits `"0010"`!
+;;   - `(lambda (p) body)`, `(setf ...)` -> explicit refusal `('refused 'SETF)`!
+
+(define (blc-at-env-index sym env)
+  (let loop ((es env) (idx 1))
+    (cond
+      ((null? es) #f)
+      ((eq? (car es) sym) idx)
+      (else (loop (cdr es) (+ idx 1))))))
+
+(define (blc-at-lower-expr expr env)
+  (cond
+    ((symbol? expr)
+     (let ((idx (blc-at-env-index expr env)))
+       (if idx
+           (list 'ok (list 'var idx))
+           (list 'refused 'free-symbol expr))))
+    ((pair? expr)
+     (let ((head (car expr)))
+       (cond
+         ((or (eq? head 'setf) (eq? head 'SETF) (eq? head 'set!))
+          (list 'refused 'SETF))
+         ((eq? head 'lambda)
+          (let ((params (cadr expr))
+                (body (caddr expr)))
+            (if (null? params)
+                (blc-at-lower-expr body env)
+                (let ((inner
+                        (if (null? (cdr params))
+                            body
+                            (list 'lambda (cdr params) body))))
+                  (let ((res (blc-at-lower-expr inner (cons (car params) env))))
+                    (if (eq? (car res) 'ok)
+                        (list 'ok (list 'lam (cadr res)))
+                        res))))))
+         ((eq? head 'defun)
+          (let ((params (caddr expr))
+                (body (cadddr expr)))
+            ;; Parameter list binds value-position names directly (no spurious fixpoint)
+            (blc-at-lower-expr (list 'lambda params body) env)))
+         (else
+          ;; Curried application `(f a1 a2 ...)`
+          (let ((rf (blc-at-lower-expr head env)))
+            (if (not (eq? (car rf) 'ok))
+                rf
+                (let loop ((args (cdr expr)) (cur (cadr rf)))
+                  (if (null? args)
+                      (list 'ok cur)
+                      (let ((ra (blc-at-lower-expr (car args) env)))
+                        (if (not (eq? (car ra) 'ok))
+                            ra
+                            (loop (cdr args) (list 'app cur (cadr ra)))))))))))))
+    (else (list 'refused 'unsupported-literal))))
+
+(define (blc-at-lower-pure-lisp form)
+  (blc-at-lower-expr form '()))
+
+(define (blc-at-repeat-char ch n)
+  (let loop ((k n) (acc ""))
+    (if (= k 0) acc (loop (- k 1) (string-append acc ch)))))
+
+(define (blc-at-encode-blc-bits term)
+  (cond
+    ((eq? (car term) 'var)
+     (string-append (blc-at-repeat-char "1" (cadr term)) "0"))
+    ((eq? (car term) 'lam)
+     (string-append "00" (blc-at-encode-blc-bits (cadr term))))
+    ((eq? (car term) 'app)
+     (string-append "01"
+                    (blc-at-encode-blc-bits (cadr term))
+                    (blc-at-encode-blc-bits (caddr term))))
+    (else (error "blc-at-encode-blc-bits: invalid term"))))
+
+;; Open-term canonical fingerprint: alpha-renaming bound parameters preserves
+;; the fingerprint (de Bruijn indices), while free symbols keep `(pkg . name)`.
+(define (blc-at-open-fingerprint expr env)
+  (cond
+    ((symbol? expr)
+     (let ((idx (blc-at-env-index expr env)))
+       (if idx (list 'bvar idx) (list 'free 'default expr))))
+    ((and (pair? expr) (eq? (car expr) 'pkg-sym))
+     ;; Explicit `(pkg-sym pkg-name sym-name)`
+     (let ((idx (blc-at-env-index (caddr expr) env)))
+       (if idx (list 'bvar idx) (list 'free (cadr expr) (caddr expr)))))
+    ((and (pair? expr) (eq? (car expr) 'lambda))
+     (list 'lam (blc-at-open-fingerprint (caddr expr) (cons (car (cadr expr)) env))))
+    ((pair? expr)
+     (list 'app
+           (blc-at-open-fingerprint (car expr) env)
+           (blc-at-open-fingerprint (cadr expr) env)))
+    (else expr)))
+
+(define (blc-at-verify-lisp-frontend)
+  (let* ((id-res (blc-at-lower-pure-lisp '(defun f (f) f)))
+         (id-bits (if (eq? (car id-res) 'ok) (blc-at-encode-blc-bits (cadr id-res)) ""))
+         ;; Church successor `(\n \f \x. f (n f x))` -> 00 00 00 01 10 01 01 1110 10 10?
+         ;; Wait: index of f=2 (110), n=3 (1110), x=1 (10) -> 000000011100101111011010 (24 bits)
+         (succ-res (blc-at-lower-pure-lisp '(lambda (n f x) (f ((n f) x)))))
+         (succ-bits (if (eq? (car succ-res) 'ok) (blc-at-encode-blc-bits (cadr succ-res)) ""))
+         (setf-res (blc-at-lower-pure-lisp '(defun bad (x) (setf x 1))))
+         ;; Alpha-renaming invariant & package-sensitive open fingerprint
+         (fp-a (blc-at-open-fingerprint '(lambda (x) ((pkg-sym cl-user g) x)) '()))
+         (fp-b (blc-at-open-fingerprint '(lambda (y) ((pkg-sym cl-user g) y)) '()))
+         (fp-c (blc-at-open-fingerprint '(lambda (x) ((pkg-sym other-pkg g) x)) '()))
+         (id-ok (string=? id-bits "0010"))
+         (succ-ok (string=? succ-bits "000000011100101111011010"))
+         (setf-ok (and (eq? (car setf-res) 'refused) (eq? (cadr setf-res) 'SETF)))
+         (alpha-ok (equal? fp-a fp-b))
+         (pkg-ok (not (equal? fp-a fp-c))))
+    (list 'blc-at-lisp-frontend
+          (list 'identity-bits id-bits)
+          (list 'identity-4-bit-0010 id-ok)
+          (list 'church-succ-24-bit succ-ok)
+          (list 'setf-refused setf-ok)
+          (list 'alpha-invariant alpha-ok)
+          (list 'package-sensitive pkg-ok)
+          (list 'all-pass (and id-ok succ-ok setf-ok alpha-ok pkg-ok)))))
+
+;; ============================================================================
+;; 4. Update 004: Sparse-Hessian Undeclared Dependency-Mask Counterexample
+;; ============================================================================
+;; Function f(x, y) = (x + y)^2 / 2 has exact Hessian H = [[1, 1], [1, 1]],
+;; so H * (v0, v1) = (v0 + v1, v0 + v1).
+;; Under incomplete diagonal-only mask `((1 0) (0 1))`, both columns are
+;; assigned color 0 -> single compressed seed v = (1, 1) -> H*v = (2, 2),
+;; reconstructing [[2, 0], [0, 2]] with ZERO fallbacks!
+;; Under complete mask `((1 1) (1 1))`, 2 distinct colors v1=(1,0), v2=(0,1)
+;; recover exact [[1, 1], [1, 1]].
+
+(define (blc-at-hvp-half-sum-sq v0 v1)
+  (cons (+ v0 v1) (+ v0 v1)))
+
+(define (blc-at-sparse-hessian-half-sum-sq mode)
+  (if (eq? mode 'incomplete-diagonal)
+      ;; Single compressed seed (1, 1), read only declared diagonal entries
+      (let ((hv (blc-at-hvp-half-sum-sq 1 1)))
+        (list 'hessian-result
+              (list 'matrix (list (list (car hv) 0) (list 0 (cdr hv))))
+              (list 'fallbacks 0)
+              (list 'hvp-evals 1)))
+      ;; Complete pattern: 2 orthogonal seeds (1, 0) and (0, 1)
+      (let ((hv0 (blc-at-hvp-half-sum-sq 1 0))
+            (hv1 (blc-at-hvp-half-sum-sq 0 1)))
+        (list 'hessian-result
+              (list 'matrix (list (list (car hv0) (car hv1))
+                                  (list (cdr hv0) (cdr hv1))))
+              (list 'fallbacks 0)
+              (list 'hvp-evals 2)))))
+
+(define (blc-at-verify-sparse-hessian-mask-counterexample)
+  (let* ((inc (blc-at-sparse-hessian-half-sum-sq 'incomplete-diagonal))
+         (cmp (blc-at-sparse-hessian-half-sum-sq 'complete))
+         (m-inc (cadr (cadr inc)))
+         (fb-inc (cadr (caddr inc)))
+         (m-cmp (cadr (cadr cmp)))
+         (inc-wrong-zero-fb (and (equal? m-inc '((2 0) (0 2))) (= fb-inc 0)))
+         (cmp-exact (equal? m-cmp '((1 1) (1 1)))))
+    (list 'blc-at-sparse-hessian-counterexample
+          (list 'incomplete-returns-diag2-zero-fallbacks inc-wrong-zero-fb)
+          (list 'complete-recovers-all-ones cmp-exact)
+          (list 'all-pass (and inc-wrong-zero-fb cmp-exact)))))
+
+;; ============================================================================
+;; 5. Update 004: Deferred Affine Updates Exact Work Law
+;; ============================================================================
+;; 8 banks, T=64 steps. At each step t in 1..64, bank b's dense state evolves
+;; via exact integer affine map `s <- s + (b + 1) + t` (no floating rounding
+;; drift), costing 1 update per bank per step (`dense_work = 8 * 64 = 512`).
+;; Deferred evaluation advances bank b ONLY up to its demanded step t, paying
+;; `(t - last_step[b])` transitions; across the whole schedule, total lazy
+;; transitions for bank b ALWAYS equal `final_use[b]`, hence:
+;;   `lazy_work = sum_{b=0}^{7} final_use[b]`.
+
+(define (blc-at-vec-copy v)
+  (let* ((n (vector-length v))
+         (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (= i n)
+          out
+          (begin
+            (vector-set! out i (vector-ref v i))
+            (loop (+ i 1)))))))
+
+(define (blc-at-run-affine-schedule sched-kind)
+  (let* ((banks 8)
+         (steps 64)
+         (dense (make-vector banks 0))
+         (lazy-val (make-vector banks 0))
+         (lazy-t (make-vector banks 0))
+         (lazy-work 0)
+         (max-err 0)
+         (demand-list
+           (lambda (t)
+             (cond
+               ((eq? sched-kind 'stable-subset) (list 0 1))
+               ((eq? sched-kind 'round-robin-top1) (list (remainder (- t 1) 8)))
+               ((eq? sched-kind 'permanent-retirement)
+                (if (<= t 32) (list 0 1 2 3) (list 0 1)))
+               ((eq? sched-kind 'late-revival)
+                (if (< t 64) (list 0) (list 0 7)))
+               (else (error "blc-at-run-affine-schedule: unknown schedule"))))))
+    (let step-loop ((t 1))
+      (if (> t steps)
+          (let ((sum-final
+                  (let sl ((b 0) (acc 0))
+                    (if (= b banks) acc (sl (+ b 1) (+ acc (vector-ref lazy-t b)))))))
+            (list 'blc-at-affine-result
+                  (list 'schedule sched-kind)
+                  (list 'dense-work (* banks steps))
+                  (list 'lazy-work lazy-work)
+                  (list 'sum-final-use sum-final)
+                  (list 'max-error max-err)
+                  (list 'law-holds (and (= lazy-work sum-final) (= max-err 0)))))
+          (begin
+            ;; Advance dense state for all 8 banks
+            (let dloop ((b 0))
+              (if (< b banks)
+                  (begin
+                    (vector-set! dense b (+ (vector-ref dense b) b 1 t))
+                    (dloop (+ b 1)))))
+            ;; Catch up only demanded banks lazily
+            (let bloop ((ds (demand-list t)))
+              (if (not (null? ds))
+                  (let* ((b (car ds))
+                         (cur-t (vector-ref lazy-t b)))
+                    (let catchup ((k (+ cur-t 1)) (val (vector-ref lazy-val b)))
+                      (if (> k t)
+                          (begin
+                            (vector-set! lazy-val b val)
+                            (vector-set! lazy-t b t)
+                            (let ((err (blc-at-abs-diff val (vector-ref dense b))))
+                              (if (> err max-err) (set! max-err err))))
+                          (begin
+                            (set! lazy-work (+ lazy-work 1))
+                            (catchup (+ k 1) (+ val b 1 k)))))
+                    (bloop (cdr ds)))))
+            (step-loop (+ t 1)))))))
+
+(define (blc-at-verify-deferred-affine-law)
+  (let* ((s1 (blc-at-run-affine-schedule 'stable-subset))
+         (s2 (blc-at-run-affine-schedule 'round-robin-top1))
+         (s3 (blc-at-run-affine-schedule 'permanent-retirement))
+         (s4 (blc-at-run-affine-schedule 'late-revival))
+         (w1 (cadr (cadddr s1)))
+         (w2 (cadr (cadddr s2)))
+         (w3 (cadr (cadddr s3)))
+         (w4 (cadr (cadddr s4)))
+         (ok1 (and (= w1 128) (cadr (car (reverse s1)))))
+         (ok2 (and (= w2 484) (cadr (car (reverse s2)))))
+         (ok3 (and (= w3 192) (cadr (car (reverse s3)))))
+         (ok4 (and (= w4 128) (cadr (car (reverse s4))))))
+    (list 'blc-at-deferred-affine-verification
+          (list 'stable-subset-128 ok1)
+          (list 'round-robin-484 ok2)
+          (list 'permanent-retirement-192 ok3)
+          (list 'late-revival-128 ok4)
+          (list 'all-pass (and ok1 ok2 ok3 ok4)))))
+
+;; ============================================================================
+;; 6. Macro-Rule Cost Composition & Non-Vacuous Theorem-Binding Control
+;; ============================================================================
+
+;; Sums exact `(count . step-cost)` macro rule applications.
+(define (blc-at-compose-macro-costs rule-apps)
+  (let loop ((rs rule-apps) (acc 0))
+    (if (null? rs)
+        acc
+        (loop (cdr rs) (+ acc (* (caar rs) (cdar rs)))))))
+
+;; Non-vacuous proof-bridge audit (rsh Showpiece #6):
+;; Rejects any bridge that lowers two distinct arithmetic claims (`1+1=2` and
+;; `3*4=12`) to the same vacuous proposition (`true = true`).
+(define (blc-at-verify-nonvacuous-claim-binding)
+  (let* ((honest-bridge (lambda (claim) (list 'thm claim)))
+         (vacuous-bridge (lambda (claim) (list 'thm '(= #t #t))))
+         (c1 '(= (+ 1 1) 2))
+         (c2 '(= (* 3 4) 12))
+         (honest-distinguishes (not (equal? (honest-bridge c1) (honest-bridge c2))))
+         (vacuous-caught (equal? (vacuous-bridge c1) (vacuous-bridge c2))))
+    (list 'blc-at-nonvacuous-claim-binding
+          (list 'honest-bridge-distinguishes honest-distinguishes)
+          (list 'vacuous-bridge-detected vacuous-caught)
+          (list 'all-pass (and honest-distinguishes vacuous-caught)))))

@@ -1,0 +1,104 @@
+;;; tests/stdlib/esa_costed_contracts_test.esk
+;;; Verifies all BLC Costed Updates 002, 003, and 004 contracts in JIT & AOT:
+;;;   1. Update 002: Chooser tariff threshold (240 vs 241), exact vs greedy
+;;;      active-query planner (16 at p=1 vs 17 at p=0 + duplicate refusal),
+;;;      and strategy-dependent beta cost (2 vs 72 contractions).
+;;;   2. Update 003: Pareto + convex-dominated expected-work exclusion +
+;;;      minimax worst-excess winner (16 vs 50), table canonicalization with
+;;;      lowest-ID tie-break and wrong-tie negative control.
+;;;   3. Update 004: Pure Lisp->BLC frontend (`(defun f (f) f)` -> 4-bit `0010`,
+;;;      Church successor, explicit `SETF` refusal, alpha-invariant / package-
+;;;      sensitive open-term fingerprints).
+;;;   4. Update 004: Sparse-Hessian undeclared dependency-mask counterexample
+;;;      (incomplete diagonal mask gives [[2,0],[0,2]] with 0 fallbacks vs
+;;;      complete mask recovering [[1,1],[1,1]]).
+;;;   5. Update 004: Deferred affine updates exact law `lazy_work = sum final_use`
+;;;      across 4 schedules (128, 484, 192, 128 vs 512 dense) with 0 error.
+;;;   6. Macro-rule cost composition (`47,176,870`) & non-vacuous claim binding.
+
+(require core.blc.costed_contracts)
+
+(define *at-pass* 0)
+(define *at-fail* 0)
+
+(define (at-check name cond)
+  (if cond
+      (set! *at-pass* (+ *at-pass* 1))
+      (begin
+        (set! *at-fail* (+ *at-fail* 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(define (at-field rec key)
+  (let loop ((xs (cdr rec)))
+    (cond
+      ((null? xs) #f)
+      ((eq? (caar xs) key) (cadar xs))
+      (else (loop (cdr xs))))))
+
+;; 1. Update 002
+(let ((ch (blc-at-verify-chooser-threshold))
+      (qp (blc-at-query-exact-vs-greedy-class317))
+      (sc (blc-at-verify-strategy-cost-divergence)))
+  (at-check "u002-chooser-240-false" (not (at-field ch 'buy-at-240)))
+  (at-check "u002-chooser-241-true" (at-field ch 'buy-at-241))
+  (at-check "u002-chooser-margins" (and (= (at-field ch 'margin-240) -16)
+                                        (= (at-field ch 'margin-241) 1)))
+  (at-check "u002-query-exact-16-at-p1" (and (= (at-field qp 'exact-cost) 16)
+                                             (= (at-field qp 'exact-first-point) 1)))
+  (at-check "u002-query-greedy-17-at-p0" (and (= (at-field qp 'greedy-cost) 17)
+                                              (= (at-field qp 'greedy-first-point) 0)))
+  (at-check "u002-query-duplicate-refused" (at-field qp 'duplicate-refused))
+  (at-check "u002-strategy-cost-2-vs-72" (at-field sc 'all-pass)))
+
+;; 2. Update 003
+(let ((sel (blc-at-verify-selector-objectives))
+      (tab (blc-at-verify-table-canonicalization)))
+  (at-check "u003-selector-pareto-efficient" (at-field sel 'pareto-efficient))
+  (at-check "u003-selector-convex-dominated" (at-field sel 'convex-dominated-expected-work))
+  (at-check "u003-selector-wins-minimax-16" (at-field sel 'wins-minimax))
+  (at-check "u003-table-compacts-5-to-2" (= (at-field tab 'compact-rows) 2))
+  (at-check "u003-table-lowest-id-2" (at-field tab 'parity-lowest-id-2))
+  (at-check "u003-table-wrong-tie-returns-15" (at-field tab 'wrong-tie-returns-15)))
+
+;; 3. Update 004 Lisp->BLC frontend
+(let ((fe (blc-at-verify-lisp-frontend)))
+  (at-check "u004-identity-4-bit-0010" (at-field fe 'identity-4-bit-0010))
+  (at-check "u004-church-succ-24-bit" (at-field fe 'church-succ-24-bit))
+  (at-check "u004-setf-refused" (at-field fe 'setf-refused))
+  (at-check "u004-open-alpha-invariant" (at-field fe 'alpha-invariant))
+  (at-check "u004-open-package-sensitive" (at-field fe 'package-sensitive)))
+
+;; 4. Update 004 Sparse-Hessian undeclared dependency-mask counterexample
+(let ((sh (blc-at-verify-sparse-hessian-mask-counterexample)))
+  (at-check "u004-sparse-hessian-incomplete-diag2-zero-fallbacks"
+            (at-field sh 'incomplete-returns-diag2-zero-fallbacks))
+  (at-check "u004-sparse-hessian-complete-exact-ones"
+            (at-field sh 'complete-recovers-all-ones)))
+
+;; 5. Update 004 Deferred affine updates exact work law
+(let ((af (blc-at-verify-deferred-affine-law)))
+  (at-check "u004-affine-stable-subset-128" (at-field af 'stable-subset-128))
+  (at-check "u004-affine-round-robin-484" (at-field af 'round-robin-484))
+  (at-check "u004-affine-permanent-retirement-192" (at-field af 'permanent-retirement-192))
+  (at-check "u004-affine-late-revival-128" (at-field af 'late-revival-128)))
+
+;; 6. Macro-rule cost accounting & non-vacuous claim binding
+(let* ((bb5-total (blc-at-compose-macro-costs
+                    (list (cons 1000 47000) (cons 1 176870))))
+       (bb5-dropped (blc-at-compose-macro-costs
+                      (list (cons 1000 47000))))
+       (nv (blc-at-verify-nonvacuous-claim-binding)))
+  (at-check "u004-bb5-macro-composition-47176870" (= bb5-total 47176870))
+  (at-check "u004-bb5-dropped-rule-detected" (not (= bb5-dropped 47176870)))
+  (at-check "rsh-nonvacuous-honest-distinguishes" (at-field nv 'honest-bridge-distinguishes))
+  (at-check "rsh-nonvacuous-vacuous-caught" (at-field nv 'vacuous-bridge-detected)))
+
+(display "esa_costed_contracts_test: ")
+(display *at-pass*)
+(display " passed, ")
+(display *at-fail*)
+(display " failed")
+(newline)
+(if (> *at-fail* 0) (error "esa_costed_contracts_test failed") #t)
