@@ -3678,7 +3678,10 @@ add_custom_command(
   # on PATH: the hosted runners happen to carry one, a plain Windows node does
   # not, and the stack request has no meaning there anyway (Windows sizes the
   # thread stack at link time).
+  # The compiler finds the trusted stdlib root separately from ESHKOL_PATH.
+  # Name the shipped modules explicitly for builds outside the checkout.
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
+          "ESHKOL_LIB_DIR=${CMAKE_CURRENT_SOURCE_DIR}/lib"
           ${STDLIB_CODEGEN_LAUNCHER}
           $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib"
           --embed-stdlib-identity=${ESHKOL_STDLIB_IDENTITY_SYMBOL} "${STDLIB_SOURCE}"
