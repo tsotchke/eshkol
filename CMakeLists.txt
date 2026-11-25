@@ -10689,6 +10689,32 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_drivers_vfs.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_k4_drivers_vfs_test.cpp")
+        add_library(eshkol-os-drivers-vfs STATIC lib/core/os_drivers_vfs.c)
+        target_include_directories(eshkol-os-drivers-vfs PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-drivers-vfs PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-drivers-vfs PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_k4_drivers_vfs_test tests/toolchain/os_k4_drivers_vfs_test.cpp)
+        target_compile_features(os_k4_drivers_vfs_test PRIVATE cxx_std_17)
+        target_link_libraries(os_k4_drivers_vfs_test PRIVATE eshkol-os-drivers-vfs)
+        add_dependencies(os_k4_drivers_vfs_test eshkol-os-drivers-vfs)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_k4_drivers_vfs_test
+                COMMAND os_k4_drivers_vfs_test "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-drivers-vfs>
+            )
+        else()
+            add_test(
+                NAME os_k4_drivers_vfs_test
+                COMMAND os_k4_drivers_vfs_test "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-drivers-vfs>
+            )
+        endif()
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)
