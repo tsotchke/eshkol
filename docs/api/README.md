@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3136/7254 public symbols documented (43.2%), 4118 undocumented.
+**Coverage:** 3137/7256 public symbols documented (43.2%), 4119 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -48,7 +48,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1368/3309 symbols documented.
+1368/3310 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -75,7 +75,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/ir_builder.h`](backend/ir_builder.md) | 10 | 0 |
 | [`backend/libm_codegen.h`](backend/libm_codegen.md) | 5 | 5 |
 | [`backend/link_probe.h`](backend/link_probe.md) | 1 | 1 |
-| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 934 | 24 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 935 | 24 |
 | [`backend/llvm_compat.h`](backend/llvm_compat.md) | 4 | 0 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 43 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 54 | 23 |
@@ -102,11 +102,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/gpu/`
 
-51/61 symbols documented.
+52/62 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/gpu/gpu_memory.h`](backend/gpu/gpu_memory.md) | 61 | 51 |
+| [`backend/gpu/matmul_range_guard.h`](backend/gpu/matmul_range_guard.md) | 1 | 1 |
 
 ### `backend/xla/`
 

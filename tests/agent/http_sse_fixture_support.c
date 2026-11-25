@@ -10,6 +10,10 @@ void eshkol_sse_test_set_network_allowed(int allowed) {
 }
 
 /* The standalone SSE executables link native HTTP without the hosted policy. */
+int eshkol_capability_runtime_is_active(void) {
+    return 0;
+}
+
 int eshkol_capability_runtime_allows(const char* capability) {
     return network_allowed && capability && strcmp(capability, "network") == 0;
 }

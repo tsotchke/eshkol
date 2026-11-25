@@ -18086,6 +18086,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
                         --link-dir "${CMAKE_CURRENT_BINARY_DIR}" --mode ${mode})
                 set_tests_properties(http_sse_scope_${mode} PROPERTIES
                     TIMEOUT 300 LABELS "resource;ipc;sse"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
             endforeach()
             add_test(NAME agent_session_persistence_jit

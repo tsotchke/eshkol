@@ -36,6 +36,10 @@ enum { SHORT_SEND = 14, READY_MS = 4000 };
 static const uint64_t UNIX_PEER_COOKIE = UINT64_C(0x554e495850454552);
 
 /* Standalone fixture policy for the production native capability checks. */
+int eshkol_capability_runtime_is_active(void) {
+    return 0;
+}
+
 int eshkol_capability_runtime_allows(const char* capability) {
     return capability && (strcmp(capability, "network") == 0 ||
                           strcmp(capability, "subprocess") == 0);
