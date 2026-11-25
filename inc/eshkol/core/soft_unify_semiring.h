@@ -159,6 +159,15 @@ bool eshkol_proof_dag_get_value(const eshkol_proof_dag_t* dag,
                                 uint32_t node_id,
                                 eshkol_semiring_val_t* out_val);
 
+bool eshkol_proof_dag_inspect_node(const eshkol_proof_dag_t* dag,
+                                   uint32_t node_id,
+                                   eshkol_proof_node_kind_t* out_kind,
+                                   const char** out_label,
+                                   const uint32_t** out_parents,
+                                   uint32_t* out_num_parents,
+                                   eshkol_semiring_val_t* out_val,
+                                   uint64_t* out_hash);
+
 /* Tamper helper for negative controls: corrupt stored value without updating hash. */
 bool eshkol_proof_dag_corrupt_value_for_test(eshkol_proof_dag_t* dag,
                                              uint32_t node_id,

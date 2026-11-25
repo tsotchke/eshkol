@@ -599,6 +599,25 @@ extern "C" bool eshkol_proof_dag_get_value(const eshkol_proof_dag_t* dag,
     return true;
 }
 
+extern "C" bool eshkol_proof_dag_inspect_node(const eshkol_proof_dag_t* dag,
+                                              uint32_t node_id,
+                                              eshkol_proof_node_kind_t* out_kind,
+                                              const char** out_label,
+                                              const uint32_t** out_parents,
+                                              uint32_t* out_num_parents,
+                                              eshkol_semiring_val_t* out_val,
+                                              uint64_t* out_hash) {
+    if (!dag || node_id >= dag->nodes.size()) return false;
+    const ProofDagNode& n = dag->nodes[node_id];
+    if (out_kind) *out_kind = n.kind;
+    if (out_label) *out_label = n.label.c_str();
+    if (out_parents) *out_parents = n.parents.empty() ? nullptr : n.parents.data();
+    if (out_num_parents) *out_num_parents = static_cast<uint32_t>(n.parents.size());
+    if (out_val) *out_val = n.value;
+    if (out_hash) *out_hash = n.hash;
+    return true;
+}
+
 extern "C" bool eshkol_proof_dag_corrupt_value_for_test(eshkol_proof_dag_t* dag,
                                                         uint32_t node_id,
                                                         double new_a) {
