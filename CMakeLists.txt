@@ -2698,6 +2698,9 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/asp_solver.cpp
   lib/core/diff_egglog.cpp
   lib/core/ce_persist.cpp
+  lib/core/vsa_hdc.cpp
+  lib/core/sheaf_workspace.cpp
+  lib/core/gflownet_ebm.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4344,6 +4347,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce3_asp_egglog_persist_test PRIVATE eshkol-runtime)
     add_test(NAME ce3_asp_egglog_persist_test COMMAND ce3_asp_egglog_persist_test)
     set_tests_properties(ce3_asp_egglog_persist_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce4_5_vsa_sheaf_gflownet_test.cpp")
+    add_executable(ce4_5_vsa_sheaf_gflownet_test
+        tests/logic/ce4_5_vsa_sheaf_gflownet_test.cpp)
+    target_compile_features(ce4_5_vsa_sheaf_gflownet_test PRIVATE cxx_std_17)
+    target_include_directories(ce4_5_vsa_sheaf_gflownet_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce4_5_vsa_sheaf_gflownet_test PRIVATE eshkol-runtime)
+    add_test(NAME ce4_5_vsa_sheaf_gflownet_test COMMAND ce4_5_vsa_sheaf_gflownet_test)
+    set_tests_properties(ce4_5_vsa_sheaf_gflownet_test PROPERTIES TIMEOUT 60)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
