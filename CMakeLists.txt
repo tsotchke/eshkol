@@ -3680,7 +3680,10 @@ add_custom_command(
   # on PATH: the hosted runners happen to carry one, a plain Windows node does
   # not, and the stack request has no meaning there anyway (Windows sizes the
   # thread stack at link time).
+  # The compiler finds the trusted stdlib root separately from ESHKOL_PATH.
+  # Name the shipped modules explicitly for builds outside the checkout.
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
+          "ESHKOL_LIB_DIR=${CMAKE_CURRENT_SOURCE_DIR}/lib"
           ${STDLIB_CODEGEN_LAUNCHER}
           $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib"
           --embed-stdlib-identity=${ESHKOL_STDLIB_IDENTITY_SYMBOL} "${STDLIB_SOURCE}"
@@ -3757,9 +3760,6 @@ install(FILES inc/eshkol/backend/tensorcore_codegen.h
 if(TARGET eshkol-runtime)
   install(TARGETS eshkol-runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 endif()
-if(TARGET eshkol-repl-lib)
-  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
-endif()
 install(FILES cmake/FindEshkol.cmake cmake/EshkolCompile.cmake
         DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/cmake)
 # The full (require ...)/(import ...) module-source tree, preserving lib/'s
@@ -3799,6 +3799,7 @@ option(BUILD_REPL "Build the interactive REPL" ON)
 if(REPL_SRC)
   # REPL library
   add_library(eshkol-repl-lib STATIC ${REPL_SRC})
+  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
   target_include_directories(eshkol-repl-lib
     PUBLIC
