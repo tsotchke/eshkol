@@ -3758,9 +3758,6 @@ install(FILES inc/eshkol/backend/tensorcore_codegen.h
 if(TARGET eshkol-runtime)
   install(TARGETS eshkol-runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 endif()
-if(TARGET eshkol-repl-lib)
-  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
-endif()
 install(FILES cmake/FindEshkol.cmake cmake/EshkolCompile.cmake
         DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/cmake)
 # The full (require ...)/(import ...) module-source tree, preserving lib/'s
@@ -3800,6 +3797,7 @@ option(BUILD_REPL "Build the interactive REPL" ON)
 if(REPL_SRC)
   # REPL library
   add_library(eshkol-repl-lib STATIC ${REPL_SRC})
+  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
   target_include_directories(eshkol-repl-lib
     PUBLIC
