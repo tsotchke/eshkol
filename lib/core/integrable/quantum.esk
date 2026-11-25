@@ -1,0 +1,166 @@
+;;; core.integrable.quantum -- Exact Q[i] Quantum Yang-Baxter Equation (QYBE)
+;;;   for rational Yang and trigonometric 6-vertex XXZ R-matrices, exact
+;;;   transfer-matrix commutation [T(u), T(v)] = 0 for spin chains, and exact
+;;;   Heisenberg XXX Algebraic Bethe Ansatz eigenstate verification (ADR-0063).
+
+(require stdlib)
+(require core.hodge.structure)
+
+(provide
+  yang-quantum-R-matrix xxz-quantum-R-matrix
+  qybe-verify-exact
+  spin-chain-transfer-matrix transfer-matrix-commute-verify
+  xxx-hamiltonian-L3 xxx-verify-eigenstate)
+
+;; ---------------------------------------------------------------------------
+;; 1. Exact Q[i] R-Matrices (4x4 acting on C^2 (x) C^2)
+;; ---------------------------------------------------------------------------
+
+;; Yang's rational R-matrix: R(u) = u * I_4 + eta * P
+(define (yang-quantum-R-matrix u eta)
+  (let ((u+e (hq+ u eta)))
+    (vector (vector u+e      (hq 0 0) (hq 0 0) (hq 0 0))
+            (vector (hq 0 0) u        eta      (hq 0 0))
+            (vector (hq 0 0) eta      u        (hq 0 0))
+            (vector (hq 0 0) (hq 0 0) (hq 0 0) u+e))))
+
+;; Trigonometric 6-vertex XXZ R-matrix in multiplicative spectral parameter x = e^{u},
+;; anisotropy q in Q[i] \ {0}:
+;;   a(x) = q*x - q^{-1}*x^{-1}
+;;   b(x) = x - x^{-1}
+;;   c    = q - q^{-1}
+;; Satisfies multiplicative QYBE: R_12(x/y) R_13(x) R_23(y) = R_23(y) R_13(x) R_12(x/y)!
+(define (xxz-quantum-R-matrix x q)
+  (let* ((xinv (hq/ (hq 1 0) x))
+         (qinv (hq/ (hq 1 0) q))
+         (a (hq- (hq* q x) (hq* qinv xinv)))
+         (b (hq- x xinv))
+         (c (hq- q qinv)))
+    (vector (vector a        (hq 0 0) (hq 0 0) (hq 0 0))
+            (vector (hq 0 0) b        c        (hq 0 0))
+            (vector (hq 0 0) c        b        (hq 0 0))
+            (vector (hq 0 0) (hq 0 0) (hq 0 0) a))))
+
+;; Embed 4x4 operator M on slots (slotA, slotB) of (C^2)^{\otimes 3} (8x8)
+(define (embed-4x4-3 M slotA slotB)
+  (let ((R (hq-mat-zero 8 8)))
+    (define (get-bit idx s)
+      (cond ((= s 1) (quotient idx 4))
+            ((= s 2) (remainder (quotient idx 2) 2))
+            (else    (remainder idx 2))))
+    (let ((slotC (- 6 (+ slotA slotB))))
+      (let li ((row 0))
+        (if (< row 8)
+            (let ((ra (get-bit row slotA))
+                  (rb (get-bit row slotB))
+                  (rc (get-bit row slotC)))
+              (let lj ((col 0))
+                (if (< col 8)
+                    (let ((ca (get-bit col slotA))
+                          (cb (get-bit col slotB))
+                          (cc (get-bit col slotC)))
+                      (if (= rc cc)
+                          (hq-mat-set! R row col
+                                       (hq-mat-ref M (+ (* 2 ra) rb) (+ (* 2 ca) cb))))
+                      (lj (+ col 1)))))
+              (li (+ row 1))))))
+    R))
+
+;; Verify exact Quantum Yang-Baxter Equation over Q[i]:
+;;   mode = 'additive:       R_12(u-v) R_13(u) R_23(v) = R_23(v) R_13(u) R_12(u-v)
+;;   mode = 'multiplicative: R_12(u/v) R_13(u) R_23(v) = R_23(v) R_13(u) R_12(u/v)
+(define (qybe-verify-exact R-fn u v mode)
+  (let* ((uv (if (eq? mode 'multiplicative) (hq/ u v) (hq- u v)))
+         (R12 (embed-4x4-3 (R-fn uv) 1 2))
+         (R13 (embed-4x4-3 (R-fn u)  1 3))
+         (R23 (embed-4x4-3 (R-fn v)  2 3))
+         (lhs (hq-mat-mul (hq-mat-mul R12 R13) R23))
+         (rhs (hq-mat-mul (hq-mat-mul R23 R13) R12))
+         (diff (hq-mat- lhs rhs)))
+    (if (hq-mat= lhs rhs)
+        #t
+        (vector 'qybe-violation u v diff))))
+
+;; ---------------------------------------------------------------------------
+;; 2. Exact Transfer Matrix T(u) = Tr_0 (R_{0,L}(u) ... R_{0,1}(u)) on (C^2)^{\otimes L}
+;;    Exact verification that [T(u), T(v)] == 0 over Q[i]!
+;; ---------------------------------------------------------------------------
+;; For L sites (dim = 2^L), auxiliary space is 2-dimensional (a0 in {0,1}).
+;; Monodromy matrix M_{a0, b0}(s_out, s_in) = sum_{a1..a_{L-1}} prod_k R(u)_{(a_k, s_k_out), (a_{k-1}, s_k_in)}
+;; Transfer matrix T(u)_{s_out, s_in} = M_{0,0} + M_{1,1}.
+
+(define (pow2 L)
+  (let loop ((k 0) (p 1)) (if (= k L) p (loop (+ k 1) (* 2 p)))))
+
+(define (bit-at x k)
+  (remainder (quotient x (pow2 k)) 2))
+
+(define (spin-chain-transfer-matrix L R-mat)
+  (let* ((dim (pow2 L))
+         (T (hq-mat-zero dim dim)))
+    ;; For each (s_out, s_in), multiply L 2x2 auxiliary transfer matrices M_k(s_k_out, s_k_in)
+    ;; and take the 2x2 auxiliary trace!
+    (let lo ((sout 0))
+      (if (< sout dim)
+          (begin
+            (let li ((sin 0))
+              (if (< sin dim)
+                  (let loop ((k 0) (M (hq-mat-identity 2)))
+                    (if (= k L)
+                        (begin
+                          (hq-mat-set! T sout sin (hq+ (hq-mat-ref M 0 0) (hq-mat-ref M 1 1)))
+                          (li (+ sin 1)))
+                        (let* ((bo (bit-at sout k))
+                               (bi (bit-at sin k))
+                               (step (vector
+                                       (vector (hq-mat-ref R-mat (+ 0 bo) (+ 0 bi))
+                                               (hq-mat-ref R-mat (+ 0 bo) (+ 2 bi)))
+                                       (vector (hq-mat-ref R-mat (+ 2 bo) (+ 0 bi))
+                                               (hq-mat-ref R-mat (+ 2 bo) (+ 2 bi))))))
+                          (loop (+ k 1) (hq-mat-mul step M)))))))
+            (lo (+ sout 1)))))
+    T))
+
+(define (transfer-matrix-commute-verify L R-fn u v)
+  (let* ((Tu (spin-chain-transfer-matrix L (R-fn u)))
+         (Tv (spin-chain-transfer-matrix L (R-fn v)))
+         (comm (hq-mat-commutator Tu Tv))
+         (Z (hq-mat-zero (pow2 L) (pow2 L))))
+    (if (hq-mat= comm Z)
+        #t
+        (vector 'transfer-matrix-noncommuting u v comm))))
+
+;; ---------------------------------------------------------------------------
+;; 3. Exact Heisenberg XXX Spin-Chain Hamiltonian (L = 3, Periodic)
+;;    H = sum_{j=0}^{2} (P_{j, j+1} - I)   (acts on (C^2)^{\otimes 3}, dim = 8)
+;;    Exact Bethe Ansatz eigenstates:
+;;      - Ferromagnetic vacuum |000>: E = 0
+;;      - 1-magnon momentum p = 0 (|100>+|010>+|001>): E = 0
+;;      - 1-magnon momentum p = +/- 2*pi/3 (exact Bethe root): E = -3!
+;; ---------------------------------------------------------------------------
+
+(define (xxx-hamiltonian-L3)
+  (let* ((P4 (vector (vector (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0))
+                     (vector (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 0))
+                     (vector (hq 0 0) (hq 1 0) (hq 0 0) (hq 0 0))
+                     (vector (hq 0 0) (hq 0 0) (hq 0 0) (hq 1 0))))
+         (P12 (embed-4x4-3 P4 1 2))
+         (P23 (embed-4x4-3 P4 2 3))
+         (P31 (embed-4x4-3 P4 3 1))
+         (I8  (hq-mat-identity 8)))
+    (hq-mat- (hq-mat+ (hq-mat+ P12 P23) P31) (hq-mat-scale (hq 3 0) I8))))
+
+(define (xxx-verify-eigenstate H psi E)
+  (let* ((n (hq-mat-rows H))
+         (Hpsi (make-vector n (hq 0 0))))
+    (let li ((i 0))
+      (if (< i n)
+          (let lj ((j 0) (acc (hq 0 0)))
+            (if (= j n)
+                (begin (vector-set! Hpsi i acc) (li (+ i 1)))
+                (lj (+ j 1) (hq+ acc (hq* (hq-mat-ref H i j) (vector-ref psi j))))))))
+    (let check ((i 0))
+      (cond ((= i n) #t)
+            ((hq= (vector-ref Hpsi i) (hq* E (vector-ref psi i))) (check (+ i 1)))
+            (else (vector 'eigenstate-violation i (vector-ref Hpsi i)
+                          (hq* E (vector-ref psi i))))))))

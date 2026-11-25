@@ -1,0 +1,181 @@
+;;; core.integrable.lax -- Exact Lax pairs (Flaschka Toda lattice, Euler-Arnold
+;;;   top), exact isospectral invariant conservation d/dt Tr(L^k) = 0, exact
+;;;   Classical Yang-Baxter Equation (CYBE) over Q[i], and Hirota bilinear
+;;;   KdV soliton tau-function verification via native AD (ADR-0063).
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.hodge.structure)
+
+(provide
+  toda-lax-pair lax-verify-invariants-exact euler-top-verify-invariants
+  yang-classical-r-matrix cybe-verify-exact
+  hirota-kdv-1soliton-residual)
+
+;; ---------------------------------------------------------------------------
+;; 1. Flaschka Toda Lattice Lax Pair (L, B) over Exact Q
+;;    L is symmetric tridiagonal: diag = b_0..b_{n-1}, off-diag = a_0..a_{n-2}
+;;    B is skew-symmetric tridiagonal: upper = +a_i, lower = -a_i
+;;    Lax equation: dL/dt = [B, L]
+;;    Isospectral conservation: d/dt Tr(L^k) = k * Tr(L^{k-1} * [B, L]) == 0!
+;; ---------------------------------------------------------------------------
+
+(define (toda-lax-pair b-vec a-vec)
+  (let* ((n (vector-length b-vec))
+         (L (exact-matrix-zero n n))
+         (B (exact-matrix-zero n n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (exact-matrix-set! L i i (vector-ref b-vec i))
+            (if (< i (- n 1))
+                (let ((ai (vector-ref a-vec i)))
+                  (exact-matrix-set! L i (+ i 1) ai)
+                  (exact-matrix-set! L (+ i 1) i ai)
+                  (exact-matrix-set! B i (+ i 1) ai)
+                  (exact-matrix-set! B (+ i 1) i (- 0 ai))))
+            (loop (+ i 1)))))
+    (cons L B)))
+
+(define (rat-trace M)
+  (let ((n (exact-matrix-rows M)))
+    (let loop ((i 0) (s 0))
+      (if (= i n) s (loop (+ i 1) (+ s (exact-matrix-ref M i i)))))))
+
+(define (rat-mat-sub-l A B)
+  (let* ((n (exact-matrix-rows A)) (R (exact-matrix-zero n n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (exact-matrix-set! R i j (- (exact-matrix-ref A i j)
+                                                     (exact-matrix-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-mat-id-l n)
+  (let ((I (exact-matrix-zero n n)))
+    (let loop ((i 0)) (if (< i n) (begin (exact-matrix-set! I i i 1) (loop (+ i 1)))))
+    I))
+
+;; Verify exact isospectral conservation for Ldot = [B, L] (or arbitrary Ldot):
+;;   d/dt Tr(L^k) = k * Tr(L^{k-1} * Ldot) == 0 for k = 1..max-k!
+;; Passing a genuine Lax flow Ldot = [B, L] returns #t; passing a non-isospectral
+;; perturbation Ldot returns #(isospectral-violation k dTrLk/dt)!
+(define (lax-verify-invariants-exact L Ldot max-k)
+  (let ((n (exact-matrix-rows L)))
+    (let loop ((k 1) (Lpow (rat-mat-id-l n)))
+      (if (> k max-k) #t
+          (let ((dI (* k (rat-trace (exact-matrix-mul Lpow Ldot)))))
+            (if (= dI 0)
+                (loop (+ k 1) (exact-matrix-mul Lpow L))
+                (vector 'isospectral-violation k dI)))))))
+
+;; ---------------------------------------------------------------------------
+;; 2. Euler-Arnold Rigid Body on so(3)*:
+;;    dM/dt = M x Omega, Omega_i = M_i / I_i
+;;    Exact algebraic conservation:
+;;      dH/dt = Omega . (M x Omega) == 0
+;;      dC/dt = 2 * M . (M x Omega) == 0   (Casimir C = |M|^2)
+;; ---------------------------------------------------------------------------
+
+(define (euler-top-verify-invariants M-vec I-vec)
+  (let* ((m1 (vector-ref M-vec 0)) (m2 (vector-ref M-vec 1)) (m3 (vector-ref M-vec 2))
+         (o1 (/ m1 (vector-ref I-vec 0)))
+         (o2 (/ m2 (vector-ref I-vec 1)))
+         (o3 (/ m3 (vector-ref I-vec 2)))
+         ;; dM/dt = M x Omega
+         (dm1 (- (* m2 o3) (* m3 o2)))
+         (dm2 (- (* m3 o1) (* m1 o3)))
+         (dm3 (- (* m1 o2) (* m2 o1)))
+         (dH (+ (* o1 dm1) (* o2 dm2) (* o3 dm3)))
+         (dC (* 2 (+ (* m1 dm1) (* m2 dm2) (* m3 dm3)))))
+    (if (and (= dH 0) (= dC 0))
+        #t
+        (vector 'euler-top-conservation-violation dH dC))))
+
+;; ---------------------------------------------------------------------------
+;; 3. Exact Classical Yang-Baxter Equation (CYBE) over Q[i] on (C^2)^{\otimes 3}:
+;;    [r_12(u-v), r_13(u)] + [r_12(u-v), r_23(v)] + [r_13(u), r_23(v)] = 0
+;; ---------------------------------------------------------------------------
+
+;; Permutation operator P on C^2 (x) C^2 (4x4 over Q[i])
+(define (perm-4x4)
+  (vector (vector (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0))
+          (vector (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 0))
+          (vector (hq 0 0) (hq 1 0) (hq 0 0) (hq 0 0))
+          (vector (hq 0 0) (hq 0 0) (hq 0 0) (hq 1 0))))
+
+;; Rational Yangian classical r-matrix: r(u) = P / u
+(define (yang-classical-r-matrix u)
+  (if (hq-zero? u) (error "yang-classical-r-matrix: pole at u = 0"))
+  (hq-mat-scale (hq/ (hq 1 0) u) (perm-4x4)))
+
+;; Embed 4x4 operator M on slots (slotA, slotB) of (C^2)^{\otimes 3} (8x8 matrix)
+;; Basis index |a b c> = 4*a + 2*b + c
+(define (embed-4x4-in-8x8 M slotA slotB)
+  (let ((R (hq-mat-zero 8 8)))
+    (define (get-bit idx s)
+      (cond ((= s 1) (quotient idx 4))
+            ((= s 2) (remainder (quotient idx 2) 2))
+            (else    (remainder idx 2))))
+    (define (other-slot) (- 6 (+ slotA slotB)))
+    (let ((slotC (other-slot)))
+      (let li ((row 0))
+        (if (< row 8)
+            (let ((ra (get-bit row slotA))
+                  (rb (get-bit row slotB))
+                  (rc (get-bit row slotC)))
+              (let lj ((col 0))
+                (if (< col 8)
+                    (let ((ca (get-bit col slotA))
+                          (cb (get-bit col slotB))
+                          (cc (get-bit col slotC)))
+                      (if (= rc cc)
+                          (hq-mat-set! R row col
+                                       (hq-mat-ref M (+ (* 2 ra) rb) (+ (* 2 ca) cb))))
+                      (lj (+ col 1)))))
+              (li (+ row 1))))))
+    R))
+
+(define (cybe-verify-exact r-fn u v)
+  (let* ((r12 (embed-4x4-in-8x8 (r-fn (hq- u v)) 1 2))
+         (r13 (embed-4x4-in-8x8 (r-fn u)         1 3))
+         (r23 (embed-4x4-in-8x8 (r-fn v)         2 3))
+         (res (hq-mat+ (hq-mat+ (hq-mat-commutator r12 r13)
+                                (hq-mat-commutator r12 r23))
+                       (hq-mat-commutator r13 r23)))
+         (Z (hq-mat-zero 8 8)))
+    (if (hq-mat= res Z)
+        #t
+        (vector 'cybe-violation u v res))))
+
+;; ---------------------------------------------------------------------------
+;; 4. Hirota Bilinear KdV 1-Soliton tau-function Verification via Native AD!
+;;    tau(x, t) = 1 + exp(k*x - k^3*t)
+;;    Hirota bilinear equation: (D_x D_t + D_x^4)(tau . tau) = 0
+;;    Explicitly:
+;;      D_x D_t (tau.tau) = 2*(tau * tau_xt - tau_x * tau_t)
+;;      D_x^4   (tau.tau) = 2*(tau * tau_xxxx - 4*tau_x*tau_xxx + 3*tau_xx^2)
+;; ---------------------------------------------------------------------------
+
+(define (hirota-kdv-1soliton-residual k x0 t0)
+  (let* ((tau      (lambda (x t) (+ 1.0 (exp (- (* k x) (* k k k t))))))
+         (tau-x    (lambda (x t) ((derivative (lambda (xx) (tau xx t))) x)))
+         (tau-t    (lambda (x t) ((derivative (lambda (tt) (tau x tt))) t)))
+         (tau-xt   (lambda (x t) ((derivative (lambda (tt) (tau-x x tt))) t)))
+         (tau-xx   (lambda (x t) ((derivative (lambda (xx) (tau-x xx t))) x)))
+         (tau-xxx  (lambda (x t) ((derivative (lambda (xx) (tau-xx xx t))) x)))
+         (tau-xxxx (lambda (x t) ((derivative (lambda (xx) (tau-xxx xx t))) x)))
+         (f    (tau x0 t0))
+         (fx   (tau-x x0 t0))
+         (ft   (tau-t x0 t0))
+         (fxt  (tau-xt x0 t0))
+         (fxx  (tau-xx x0 t0))
+         (fxxx (tau-xxx x0 t0))
+         (fxxxx (tau-xxxx x0 t0))
+         (dxdt (* 2.0 (- (* f fxt) (* fx ft))))
+         (dx4  (* 2.0 (+ (- (* f fxxxx) (* 4.0 fx fxxx)) (* 3.0 fxx fxx)))))
+    (+ dxdt dx4)))

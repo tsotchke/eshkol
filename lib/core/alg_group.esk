@@ -1,0 +1,22 @@
+;;; core.alg_group -- Umbrella for reductive algebraic groups, functor-of-points
+;;;   Zariski Lie algebras, diffeomorphic vs algebraic equivalence, exact GIT /
+;;;   Kempf-Ness stability, and volume-preserving diffeomorphism algebras (ADR-0063).
+
+(require core.alg_group.reductive)
+(require core.alg_group.diffeo)
+
+(provide
+  ;; Functor-of-points algebraic group schemes & Zariski Lie algebras
+  alg-group-sl-member? alg-group-sp-member? alg-group-so-member?
+  alg-group-zariski-lie-member?
+  symplectic-form-J
+  ;; Exact Bruhat decomposition & Cartan involutions
+  bruhat-decompose-gl2 bruhat-verify-gl2
+  cartan-involution-decompose killing-signature
+  ;; Diffeomorphic vs Algebraic equivalence, Cayley, BCH, GIT/Kempf-Ness, SDiff
+  alg-group-equivalence-classify
+  sl2r-to-su11-cayley-iso su2-to-so3-adjoint-cover
+  cayley-transform-exact cayley-inverse-exact
+  bch-order4-exact
+  git-hilbert-mumford-weight kempf-ness-moment-map-exact
+  sdiff-t2-bracket sdiff-t2-verify-jacobi)
