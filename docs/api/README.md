@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3287/7489 public symbols documented (43.9%), 4202 undocumented.
+**Coverage:** 3287/7727 public symbols documented (42.5%), 4440 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -219,6 +219,17 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`frontend/syntax_rules.h`](frontend/syntax_rules.md) | 2 | 2 |
 | [`frontend/syntax_rules_core.h`](frontend/syntax_rules_core.md) | 34 | 4 |
 | [`frontend/workspace.h`](frontend/workspace.md) | 21 | 0 |
+
+### `kernel/`
+
+0/238 symbols documented.
+
+| Header | Symbols | Documented |
+|---|---:|---:|
+| [`kernel/k1_boot_traps.h`](kernel/k1_boot_traps.md) | 79 | 0 |
+| [`kernel/k2_mmu_frames.h`](kernel/k2_mmu_frames.md) | 78 | 0 |
+| [`kernel/k3_smp_cap_ipc.h`](kernel/k3_smp_cap_ipc.md) | 54 | 0 |
+| [`kernel/k_kernel_policy.h`](kernel/k_kernel_policy.md) | 27 | 0 |
 
 ### `pkg/`
 
