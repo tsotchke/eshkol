@@ -1,0 +1,224 @@
+;;; Stochastic BLC 4-Control Experiment, Post-Return Ownership Guard,
+;;; and Scoped Receipt-Conflict Reconciliation Acceptance Test Suite.
+;;;
+;;; Verifies:
+;;;   - Control 1: Shared dynamic draw `let x = flip(d0) in (x, x)` across all 36
+;;;     allowed parallel schedules -> pathwise schedule independence & P(1) = 1/2
+;;;   - Negative Control 1B: Naive racing-cell publication mutant -> P(1) = 1/4 != 1/2
+;;;   - Control 2: Fresh dynamic draws `(flip(d1), flip(d2))` across all 36
+;;;     schedules -> exact uniform 1/4 over all 4 ordered pairs
+;;;   - Control 3: Unused diverging speculative branch -> zero perturbation of
+;;;     demanded DrawIds and invariant caller logical beta-step budget (= 4)
+;;;   - Control 4: Equal-valued distinct live thunk occurrences + post-return
+;;;     interior pair mutation across stock / shared / detached-deep / shallow
+;;;   - P1 Receipt-Conflict & Lost-Acknowledgement Reconciliation (including a
+;;;     33-request fixture mirroring 30 observed / 1 disputed / 1 unknown / 1 unclaimed)
+;;;     plus single-use authorization ticket consumption & generation expiry
+;;;   - Cross-module coexistence with core.blc, core.sblc, and core.grothendieck
+
+(require stdlib)
+(require core.blc)
+(require core.sblc)
+(require core.grothendieck)
+(require core.blc.stochastic_blc)
+
+(define sblc-checks 0)
+(define (sblc-expect name cond)
+  (set! sblc-checks (+ sblc-checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ----------------------------------------------------------------------------
+;; 1. Exact rational helpers
+;; ----------------------------------------------------------------------------
+(sblc-expect "rat-reduce-2-4" (sblc-st-rat=? (sblc-st-rat 2 4) (sblc-st-rat 1 2)))
+(sblc-expect "rat-add-quarters"
+             (sblc-st-rat=? (sblc-st-rat+ (sblc-st-rat 1 4) (sblc-st-rat 1 4))
+                            (sblc-st-rat 1 2)))
+(sblc-expect "bit-latency-0-is-1" (= (sblc-st-bit-latency 0) 1))
+(sblc-expect "bit-latency-1-is-2" (= (sblc-st-bit-latency 1) 2))
+
+;; ----------------------------------------------------------------------------
+;; 2. Control 1: Shared Dynamic Draw `let x = flip(d0) in (x, x)`
+;; ----------------------------------------------------------------------------
+(define c1-rep (sblc-st-verify-control1-schedule-independence))
+(sblc-expect "c1-tag" (eq? (vector-ref c1-rep 0) 'sblc-st-control1-report))
+(sblc-expect "c1-all-36-schedules" (= (vector-ref c1-rep 1) 36))
+(sblc-expect "c1-pathwise-schedule-independent" (eq? (vector-ref c1-rep 2) #t))
+(sblc-expect "c1-fair-marginal-all-schedules" (eq? (vector-ref c1-rep 3) #t))
+(sblc-expect "c1-marginal-exact-half"
+             (sblc-st-rat=? (vector-ref c1-rep 4) (sblc-st-rat 1 2)))
+
+;; Direct schedule-level spot checks via sblc-st-eval-schedule
+(define sched-a (sblc-st-make-schedule 'w0-first 0 2 0))
+(define sched-b (sblc-st-make-schedule 'w1-first 2 0 17))
+(define om-0 (sblc-st-make-oracle (list (cons 0 0))))
+(define om-1 (sblc-st-make-oracle (list (cons 0 1))))
+(define c1-a0 (sblc-st-eval-schedule 'control1-shared sched-a om-0))
+(define c1-b0 (sblc-st-eval-schedule 'control1-shared sched-b om-0))
+(define c1-a1 (sblc-st-eval-schedule 'control1-shared sched-a om-1))
+(define c1-b1 (sblc-st-eval-schedule 'control1-shared sched-b om-1))
+(sblc-expect "c1-spot-0-confluent" (equal? (vector-ref c1-a0 2) (vector-ref c1-b0 2)))
+(sblc-expect "c1-spot-0-pair" (equal? (vector-ref c1-a0 2) (cons 0 0)))
+(sblc-expect "c1-spot-1-confluent" (equal? (vector-ref c1-a1 2) (vector-ref c1-b1 2)))
+(sblc-expect "c1-spot-1-pair" (equal? (vector-ref c1-a1 2) (cons 1 1)))
+(sblc-expect "c1-single-logical-draw" (= (vector-ref c1-a1 3) 1))
+
+;; ----------------------------------------------------------------------------
+;; 3. Negative Control 1B: Naive Racing-Cell Publication Mutant -> P(1) = 1/4
+;; ----------------------------------------------------------------------------
+(define nr-rep (sblc-st-verify-naive-race-bias))
+(sblc-expect "nr-tag" (eq? (vector-ref nr-rep 0) 'sblc-st-naive-race-report))
+(sblc-expect "nr-4-outcomes" (= (vector-ref nr-rep 1) 4))
+(sblc-expect "nr-1-one" (= (vector-ref nr-rep 2) 1))
+(sblc-expect "nr-3-zeros" (= (vector-ref nr-rep 3) 3))
+(sblc-expect "nr-exact-quarter"
+             (sblc-st-rat=? (vector-ref nr-rep 4) (sblc-st-rat 1 4)))
+(sblc-expect "nr-bias-detected" (eq? (vector-ref nr-rep 5) #t))
+(sblc-expect "nr-pair-0-1-publishes-0" (= (vector-ref (sblc-st-run-naive-race 0 1) 5) 0))
+(sblc-expect "nr-pair-1-0-publishes-0" (= (vector-ref (sblc-st-run-naive-race 1 0) 5) 0))
+(sblc-expect "nr-pair-1-1-publishes-1" (= (vector-ref (sblc-st-run-naive-race 1 1) 5) 1))
+
+;; ----------------------------------------------------------------------------
+;; 4. Control 2: Fresh Dynamic Draws `(flip(d1), flip(d2))` -> Uniform 1/4
+;; ----------------------------------------------------------------------------
+(define c2-rep (sblc-st-verify-control2-uniform))
+(sblc-expect "c2-tag" (eq? (vector-ref c2-rep 0) 'sblc-st-control2-report))
+(sblc-expect "c2-all-36-schedules" (= (vector-ref c2-rep 1) 36))
+(sblc-expect "c2-pathwise-independent" (eq? (vector-ref c2-rep 2) #t))
+(sblc-expect "c2-uniform-all-schedules" (eq? (vector-ref c2-rep 3) #t))
+(define c2-probs (vector-ref c2-rep 4))
+(sblc-expect "c2-prob-00-quarter" (sblc-st-rat=? (car c2-probs) (sblc-st-rat 1 4)))
+(sblc-expect "c2-prob-01-quarter" (sblc-st-rat=? (cadr c2-probs) (sblc-st-rat 1 4)))
+(sblc-expect "c2-prob-10-quarter" (sblc-st-rat=? (caddr c2-probs) (sblc-st-rat 1 4)))
+(sblc-expect "c2-prob-11-quarter" (sblc-st-rat=? (cadddr c2-probs) (sblc-st-rat 1 4)))
+
+;; Check fresh draw distinctness via sblc-st-eval-schedule
+(define om-fresh (sblc-st-make-oracle (list (cons 1 0) (cons 2 1))))
+(define c2-sa (sblc-st-eval-schedule 'control2-fresh sched-a om-fresh))
+(define c2-sb (sblc-st-eval-schedule 'control2-fresh sched-b om-fresh))
+(sblc-expect "c2-spot-confluent" (equal? (vector-ref c2-sa 2) (vector-ref c2-sb 2)))
+(sblc-expect "c2-spot-ordered-0-1" (equal? (vector-ref c2-sa 2) (cons 0 1)))
+(sblc-expect "c2-two-logical-draws" (= (vector-ref c2-sa 3) 2))
+
+;; ----------------------------------------------------------------------------
+;; 5. Control 3: Unused Diverging / Speculative Branch Budget & Draw Isolation
+;; ----------------------------------------------------------------------------
+(define c3-rep (sblc-st-verify-control3-budget-isolation))
+(sblc-expect "c3-tag" (eq? (vector-ref c3-rep 0) 'sblc-st-control3-report))
+(sblc-expect "c3-5-budgets-checked" (= (vector-ref c3-rep 1) 5))
+(sblc-expect "c3-value-invariant" (eq? (vector-ref c3-rep 2) #t))
+(sblc-expect "c3-logical-budget-invariant" (eq? (vector-ref c3-rep 3) #t))
+(sblc-expect "c3-draw-ids-unperturbed" (eq? (vector-ref c3-rep 4) #t))
+
+(define c3-zero (sblc-st-run-control3-speculative-divergence sched-a om-1 0))
+(define c3-heavy (sblc-st-run-control3-speculative-divergence sched-a om-1 250))
+(sblc-expect "c3-heavy-same-logical-steps"
+             (= (vector-ref c3-zero 4) (vector-ref c3-heavy 4)))
+(sblc-expect "c3-heavy-physical-gt-zero"
+             (> (vector-ref c3-heavy 5) (vector-ref c3-zero 5)))
+
+;; ----------------------------------------------------------------------------
+;; 6. Control 4: Live Thunk Occurrences & Post-Return Ownership Guard
+;; ----------------------------------------------------------------------------
+(define c4-rep (sblc-st-verify-control4-ownership))
+(sblc-expect "c4-tag" (eq? (vector-ref c4-rep 0) 'sblc-st-control4-report))
+(sblc-expect "c4-ownership-all-4-modes-discriminated" (eq? (vector-ref c4-rep 1) #t))
+(sblc-expect "c4-exact-occurrence-admitted" (eq? (vector-ref c4-rep 2) #t))
+(sblc-expect "c4-wrong-occurrence-refused" (eq? (vector-ref c4-rep 3) #t))
+(sblc-expect "c4-stale-generation-refused" (eq? (vector-ref c4-rep 4) #t))
+
+(define p-stock (sblc-st-run-control4-ownership 'stock))
+(define p-shared (sblc-st-run-control4-ownership 'shared))
+(define p-deep (sblc-st-run-control4-ownership 'detached-deep))
+(define p-shallow (sblc-st-run-control4-ownership 'shallow))
+(sblc-expect "c4-stock-zero-aliases"
+             (and (= (vector-ref p-stock 3) 0) (= (vector-ref p-stock 4) 0)))
+(sblc-expect "c4-deep-zero-aliases"
+             (and (= (vector-ref p-deep 3) 0) (= (vector-ref p-deep 4) 0)))
+(sblc-expect "c4-shared-leaks-both"
+             (and (= (vector-ref p-shared 3) 1) (= (vector-ref p-shared 4) 1)))
+(sblc-expect "c4-shallow-leaks-both"
+             (and (= (vector-ref p-shallow 3) 1) (= (vector-ref p-shallow 4) 1)))
+
+;; ----------------------------------------------------------------------------
+;; 7. P1 Scoped Receipt-Conflict & Lost-Acknowledgement Reconciliation
+;; ----------------------------------------------------------------------------
+;; Single-row laws
+(define r-unclaimed (sblc-st-reconcile-one #f #f #f))
+(define r-unknown   (sblc-st-reconcile-one #t #f #f))
+(define r-prim-only (sblc-st-reconcile-one #t "8f16c107" #f))
+(define r-repl-only (sblc-st-reconcile-one #t #f "6fe82750"))
+(define r-agree     (sblc-st-reconcile-one #t "f02bb9da" "f02bb9da"))
+(define r-disp-ab   (sblc-st-reconcile-one #t "8f16c107" "6fe82750"))
+(define r-disp-ba   (sblc-st-reconcile-one #t "6fe82750" "8f16c107"))
+(define r-uncl-rcpt (sblc-st-reconcile-one #f "8f16c107" #f))
+
+(sblc-expect "rcpt-unclaimed" (eq? (car r-unclaimed) 'unclaimed))
+(sblc-expect "rcpt-unknown-lost-ack" (eq? (car r-unknown) 'unknown))
+(sblc-expect "rcpt-primary-only-observed"
+             (and (eq? (car r-prim-only) 'observed) (string=? (cdr r-prim-only) "8f16c107")))
+(sblc-expect "rcpt-replica-only-observed"
+             (and (eq? (car r-repl-only) 'observed) (string=? (cdr r-repl-only) "6fe82750")))
+(sblc-expect "rcpt-agree-observed"
+             (and (eq? (car r-agree) 'observed) (string=? (cdr r-agree) "f02bb9da")))
+(sblc-expect "rcpt-disputed-ab" (eq? (car r-disp-ab) 'disputed))
+(sblc-expect "rcpt-disputed-ba-symmetric" (eq? (car r-disp-ba) 'disputed))
+(sblc-expect "rcpt-unclaimed-with-receipt-disputed" (eq? (car r-uncl-rcpt) 'disputed))
+
+;; 33-request inventory fixture: 30 observed, 1 disputed (req 15), 1 unknown (req 31), 1 unclaimed (req 32)
+(define inv-records
+  (let loop ((i 0) (acc '()))
+    (if (= i 33)
+        (reverse acc)
+        (let ((rec
+                (cond
+                  ((= i 15) (sblc-st-make-receipt-record 15 #t "8f16c107" "6fe82750"))
+                  ((= i 31) (sblc-st-make-receipt-record 31 #t #f #f))
+                  ((= i 32) (sblc-st-make-receipt-record 32 #f #f #f))
+                  (else     (sblc-st-make-receipt-record i  #t "canonical-digest" "canonical-digest")))))
+          (loop (+ i 1) (cons rec acc))))))
+
+(define inv-rep (sblc-st-reconcile-receipts inv-records))
+(sblc-expect "rcpt-33-tag" (eq? (vector-ref inv-rep 0) 'sblc-st-reconcile-report))
+(sblc-expect "rcpt-33-observed-30" (= (vector-ref inv-rep 2) 30))
+(sblc-expect "rcpt-33-disputed-1" (= (vector-ref inv-rep 3) 1))
+(sblc-expect "rcpt-33-unknown-1" (= (vector-ref inv-rep 4) 1))
+(sblc-expect "rcpt-33-unclaimed-1" (= (vector-ref inv-rep 5) 1))
+
+;; Single-use authorization tickets & generation expiry
+(define tstore (sblc-st-make-ticket-store 1))
+(define t1 (sblc-st-issue-ticket tstore "tk-1" 15 'dispatch "8f16c107"))
+(define t2 (sblc-st-issue-ticket tstore "tk-2" 16 'dispatch "canonical-digest"))
+
+(sblc-expect "ticket-scope-mismatch-refused"
+             (eq? (sblc-st-consume-ticket tstore "tk-1" 15 'dispatch "6fe82750")
+                  'refused-scope-mismatch))
+(sblc-expect "ticket-first-use-authorized"
+             (eq? (sblc-st-consume-ticket tstore "tk-1" 15 'dispatch "8f16c107")
+                  'authorized))
+(sblc-expect "ticket-replay-refused"
+             (eq? (sblc-st-consume-ticket tstore "tk-1" 15 'dispatch "8f16c107")
+                  'refused-replay))
+(define gen2 (sblc-st-advance-generation tstore))
+(sblc-expect "ticket-generation-advanced" (= gen2 2))
+(sblc-expect "ticket-stale-generation-refused"
+             (eq? (sblc-st-consume-ticket tstore "tk-2" 16 'dispatch "canonical-digest")
+                  'refused-stale-generation))
+(define t3 (sblc-st-issue-ticket tstore "tk-3" 16 'dispatch "canonical-digest"))
+(sblc-expect "ticket-fresh-generation-authorized"
+             (eq? (sblc-st-consume-ticket tstore "tk-3" 16 'dispatch "canonical-digest")
+                  'authorized))
+
+;; ----------------------------------------------------------------------------
+;; 8. Cross-module coexistence check with core.blc, core.sblc, core.grothendieck
+;; ----------------------------------------------------------------------------
+(sblc-expect "cross-blc-I-bits" (string=? (blc-encode blc-I) "0010"))
+(sblc-expect "cross-grothendieck-hrr" (= (gsga-hrr-pn-line-bundle 2 1) 3))
+
+(display "PASS: esa_stochastic_blc_reconciliation_test (")
+(display sblc-checks)
+(display " checks)")
+(newline)
