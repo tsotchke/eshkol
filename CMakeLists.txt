@@ -2703,6 +2703,9 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/gflownet_ebm.cpp
   lib/core/resident_cognition.cpp
   lib/core/holomorphic_wfr.cpp
+  lib/core/staged_value_grad.cpp
+  lib/core/dbsp_zset_kg.cpp
+  lib/core/interval_taylor_enclosure.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4373,6 +4376,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce7_resident_hep_wfr_test PRIVATE eshkol-runtime)
     add_test(NAME ce7_resident_hep_wfr_test COMMAND ce7_resident_hep_wfr_test)
     set_tests_properties(ce7_resident_hep_wfr_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce8_staged_dbsp_taylor_test.cpp")
+    add_executable(ce8_staged_dbsp_taylor_test
+        tests/logic/ce8_staged_dbsp_taylor_test.cpp)
+    target_compile_features(ce8_staged_dbsp_taylor_test PRIVATE cxx_std_17)
+    target_include_directories(ce8_staged_dbsp_taylor_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce8_staged_dbsp_taylor_test PRIVATE eshkol-runtime)
+    add_test(NAME ce8_staged_dbsp_taylor_test COMMAND ce8_staged_dbsp_taylor_test)
+    set_tests_properties(ce8_staged_dbsp_taylor_test PROPERTIES TIMEOUT 120)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
