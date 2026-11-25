@@ -28,9 +28,9 @@ const expected = [
   ['Hello, world!', ''], ['45.14', '14'], ['5', '3'], ['5'], ['15', '25'], ['8'],
   ['(1 4 9 16 25)', '(2 4 6)', '15'], ['(0 1 1 2 3 5 8 13 21 34 55)'],
   ['(1 1 2 3 3 4 5 5 5 6 9)'], ['18446744073709551616', '1/2', '1'],
-  ['3+4i', '5', '4+3i'], ['ff', '11111111', '255', numeric(1 / 3)],
-  ['12', '7'], [numeric(2 * Math.cos(1))], ['-4'], ['15', '3'],
-  ['32', '(1 4 9 16)'], ['(1 2 3 4 5)', '(6 8 10)'], [numeric(euler)],
+  ['3.0+4.0i', '5.0', '4.0+3.0i'], ['ff', '11111111', '255', numeric(1 / 3)],
+  ['12.0', '7.0'], [numeric(2 * Math.cos(1))], ['-4.0'], ['15', '3.0'],
+  ['32', '(1 4 9 16)'], ['(1.0 2.0 3.0 4.0 5.0)', '(6 8 10)'], [numeric(euler)],
   ['3628800', '2432902008176640000'], [numeric(Math.sqrt(2), 0.00001), numeric(3, 0.00001)],
   ['({?food -> pizza} {?food -> sushi})'], ['({?x -> math} {?x -> physics})'],
   actual => {
@@ -40,8 +40,8 @@ const expected = [
   }
 ];
 const homeExpected = [
-  ['12'], [numeric(2, 1e-8)], [numeric(Math.exp(-4), 1e-8)],
-  ['({?child -> bob})'], ['-4'], ['#(17 39)'], ['(4 6 8)'], ['enter exit42', '']
+  ['12.0'], [numeric(2, 1e-8)], [numeric(Math.exp(-4), 1e-8)],
+  ['({?child -> bob})'], ['-4.0'], ['#(17.0 39.0)'], ['(4 6 8)'], ['enter exit42', '']
 ];
 let decay = 1, decayTime = 0;
 while (decayTime < 1) { decay += 0.001 * (-2 * decay); decayTime += 0.001; }
@@ -69,6 +69,21 @@ async function main() {
   for (const text of ['tail without newline', 'λ café 日本語 🚀', 'next independent evaluation']) {
     const result = evaluate(`(display ${JSON.stringify(text)})`);
     assert.deepEqual(result, {out: text, err: ''});
+  }
+  // Verify IEEE-754 binary64 precision (not f32-truncated), signed -0.0, and
+  // deep interpreter recursion within the 8MB WASM stack.
+  {
+    const f64Check = evaluate(
+      '(display (number->string (- 0.0))) (newline) ' +
+      '(display (number->string (+ 1.0 (expt 2.0 -52)))) (newline) ' +
+      '(display (number->string (expt 2.0 -44))) (newline) ' +
+      '(define (sum-rec n) (if (= n 0) 0 (+ n (sum-rec (- n 1))))) ' +
+      '(display (sum-rec 400))'
+    );
+    assert.deepEqual(f64Check, {
+      out: '-0.0\n1.0000000000000002\n5.684341886080802e-14\n80200',
+      err: ''
+    });
   }
   const source = fs.readFileSync(path.join(root, 'site/src/main.esk'), 'utf8');
   const learn = source.slice(source.indexOf('(define (render-learn-page '), source.indexOf('(define (render-example-card '));
