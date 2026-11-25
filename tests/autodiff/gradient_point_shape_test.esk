@@ -129,31 +129,32 @@
 (check "hessian through scaled-dot-attention H[1][1] matches FD"
        (near-fd? (tensor-ref H-att 1 1) (fd-diag att-loss att-point 1)))
 
-;; ── forward meets reverse: refused by name ─────────────────────────────
-(define (refused? thunk)
-  (call-with-current-continuation
-    (lambda (k)
-      (with-exception-handler
-        (lambda (e) (k #t))
-        (lambda () (thunk) #f)))))
+;; ── nested reverse-over-reverse through tensor-mul and tensor-matmul ──
+;; ADR-0057 supports nested reverse-mode differentiation; verify exact
+;; analytical values rather than silent zeros.
+(define nested-mul-grad
+  (gradient (lambda (w)
+              (vector-ref (gradient (lambda (x) (tensor-sum (tensor-mul w x)))
+                                    (vector 1.0 2.0))
+                          0))
+            (vector 3.0 4.0)))
+(check "nested gradient through tensor-mul matches exact derivative"
+       (and (near? (vector-ref nested-mul-grad 0) 1.0)
+            (near? (vector-ref nested-mul-grad 1) 0.0)))
 
-(check "nested gradient through tensor-mul is refused, not zero"
-       (refused? (lambda ()
-                   (gradient (lambda (w)
-                               (vector-ref (gradient (lambda (x) (tensor-sum (tensor-mul w x)))
-                                                     (vector 1.0 2.0))
-                                           0))
-                             (vector 3.0 4.0)))))
-
-(check "nested gradient through matmul is refused, not zero"
-       (refused? (lambda ()
-                   (gradient (lambda (w)
-                               (vector-ref (gradient (lambda (x)
-                                                       (tensor-sum (tensor-matmul (reshape w 2 2)
-                                                                                  (reshape x 2 2))))
-                                                     (vector 1.0 2.0 3.0 4.0))
-                                           0))
-                             (vector 3.0 4.0 5.0 6.0)))))
+(define nested-mm-grad
+  (gradient (lambda (w)
+              (vector-ref (gradient (lambda (x)
+                                      (tensor-sum (tensor-matmul (reshape w 2 2)
+                                                                 (reshape x 2 2))))
+                                    (vector 1.0 2.0 3.0 4.0))
+                          0))
+            (vector 3.0 4.0 5.0 6.0)))
+(check "nested gradient through matmul matches exact derivative"
+       (and (near? (vector-ref nested-mm-grad 0) 1.0)
+            (near? (vector-ref nested-mm-grad 1) 0.0)
+            (near? (vector-ref nested-mm-grad 2) 1.0)
+            (near? (vector-ref nested-mm-grad 3) 0.0)))
 
 (newline)
 (display "Passed: ") (display tests-passed) (newline)

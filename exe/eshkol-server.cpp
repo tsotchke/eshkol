@@ -388,10 +388,18 @@ bool cap_worker_resource(int resource, rlim_t cap) {
 
 bool prepare_worker() {
     alarm(worker_seconds);
+#ifdef __APPLE__
+    // XNU rejects lowering RLIMIT_AS/RLIMIT_DATA below its virtual reservation
+    // floor with EINVAL; enforce CPU, file-size, core, and wall-time caps.
+    if (!cap_worker_resource(RLIMIT_CPU, worker_seconds) ||
+        !cap_worker_resource(RLIMIT_FSIZE, worker_response_limit) ||
+        !cap_worker_resource(RLIMIT_CORE, 0)) return false;
+#else
     if (!cap_worker_resource(RLIMIT_AS, static_cast<rlim_t>(worker_memory_mb) << 20) ||
         !cap_worker_resource(RLIMIT_CPU, worker_seconds) ||
         !cap_worker_resource(RLIMIT_FSIZE, worker_response_limit) ||
         !cap_worker_resource(RLIMIT_CORE, 0)) return false;
+#endif
 
     DIR* fds = opendir("/dev/fd");
     if (!fds) return false;

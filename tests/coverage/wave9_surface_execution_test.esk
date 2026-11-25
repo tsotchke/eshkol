@@ -303,7 +303,7 @@
   (check "capability-policy & clear (inactive)"
     (and (not (capability-policy)) (capability-clear-policy!)))
   (check "stdlib random/time"
-    (and (tensor? rt) (tensor? rnt) (integer? tns) (integer? tus))))
+    (and (tensor? rt) (tensor? rnt) (integer? tns) (real? tus) (>= tus 0.0))))
 
 ;; 11. Core runtime forms: shared, procedure-arity, channel-try-recv!, make-logic-var,
 ;;     raise-continuable, let-syntax, letrec-syntax, type-name, hott, hott-eval
@@ -331,6 +331,31 @@
   (check "let-syntax" (= ls 42))
   (check "letrec-syntax" (= lrs 42))
   (check "hott-eval" (not (not he))))
+
+;; 12. core.pde.ns-residual flow/cflow accessors and Simpson quadrature helpers
+(let* ((flow (ns-flow (lambda (r z t) 0)
+                      (lambda (r z t) (* 1/3 r))
+                      (lambda (r z t) 0)
+                      (lambda (r z t) (* 1/2 1/3 1/3 r r))
+                      1/5))
+       (cflow (ns-cflow (lambda (x y z t) (vector x 0 0))
+                        (lambda (x y z t) 0)
+                        1/6)))
+  (check "ns-flow accessors"
+    (and (= ((ns-flow-ur flow) 2 1/3 1/2) 0)
+         (= ((ns-flow-utheta flow) 2 1/3 1/2) 2/3)
+         (= ((ns-flow-uz flow) 2 1/3 1/2) 0)
+         (= ((ns-flow-p flow) 2 1/3 1/2) 2/9)
+         (= (ns-flow-nu flow) 1/5)))
+  (check "ns-cflow accessors"
+    (and (= (vector-ref ((ns-cflow-u cflow) 3 5 7 0) 0) 3)
+         (= ((ns-cflow-p cflow) 3 5 7 0) 0)
+         (= (ns-cflow-nu cflow) 1/6)))
+  (check "ns-simpson & ns-grid-integral"
+    (and (equal? (ns-simpson-nodes 0 1 2) (list 0 1/2 1))
+         (equal? (ns-simpson-weights 2) (list 1 4 1))
+         (= (ns-simpson-step 0 1 2) 1/2)
+         (= (ns-grid-integral (lambda (x y z t) (* x x)) 0 1 2 0 1 2 0 1 2 0) 1/3))))
 
 (if (= failures 0)
     (begin
