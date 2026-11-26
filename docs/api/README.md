@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3139/7265 public symbols documented (43.2%), 4126 undocumented.
+**Coverage:** 3139/7675 public symbols documented (40.9%), 4536 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -134,49 +134,72 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-460/957 symbols documented.
+460/1367 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`core/arity_contract.h`](core/arity_contract.md) | 3 | 3 |
+| [`core/asp_solver.h`](core/asp_solver.md) | 15 | 0 |
 | [`core/ast_routing.h`](core/ast_routing.md) | 3 | 0 |
 | [`core/bignum.h`](core/bignum.md) | 45 | 27 |
+| [`core/cdcl_sat.h`](core/cdcl_sat.md) | 19 | 0 |
+| [`core/ce_persist.h`](core/ce_persist.md) | 11 | 0 |
+| [`core/cert_chain_v2.h`](core/cert_chain_v2.md) | 16 | 0 |
+| [`core/cls_zset_memory.h`](core/cls_zset_memory.md) | 10 | 0 |
 | [`core/collectives.h`](core/collectives.md) | 12 | 12 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 63 | 19 |
 | [`core/coroutine.h`](core/coroutine.md) | 33 | 11 |
 | [`core/curvature_runtime.h`](core/curvature_runtime.md) | 24 | 4 |
+| [`core/dbsp_zset_kg.h`](core/dbsp_zset_kg.md) | 22 | 0 |
+| [`core/diff_egglog.h`](core/diff_egglog.md) | 18 | 0 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 2 | 2 |
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/event_loop.h`](core/event_loop.md) | 33 | 24 |
 | [`core/execution_profile.h`](core/execution_profile.md) | 47 | 11 |
+| [`core/fenced_cognitive_ckpt.h`](core/fenced_cognitive_ckpt.md) | 12 | 0 |
+| [`core/forney_fg.h`](core/forney_fg.md) | 25 | 0 |
 | [`core/gensym_sequence.h`](core/gensym_sequence.md) | 1 | 0 |
+| [`core/gflownet_ebm.h`](core/gflownet_ebm.md) | 20 | 0 |
 | [`core/handle.h`](core/handle.md) | 21 | 14 |
+| [`core/holomorphic_wfr.h`](core/holomorphic_wfr.md) | 12 | 0 |
 | [`core/http_event_server.h`](core/http_event_server.md) | 15 | 0 |
 | [`core/http_syntax.h`](core/http_syntax.md) | 25 | 21 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
 | [`core/inference.h`](core/inference.md) | 21 | 8 |
+| [`core/interval_taylor_enclosure.h`](core/interval_taylor_enclosure.md) | 12 | 0 |
 | [`core/introspection.h`](core/introspection.md) | 32 | 31 |
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/linear_solve_portable.h`](core/linear_solve_portable.md) | 1 | 1 |
 | [`core/logic.h`](core/logic.md) | 43 | 11 |
+| [`core/nars_truth.h`](core/nars_truth.md) | 20 | 0 |
 | [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/prng_state.h`](core/prng_state.md) | 3 | 0 |
+| [`core/program_capsule.h`](core/program_capsule.md) | 17 | 0 |
 | [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
+| [`core/qtt_incremental_psi.h`](core/qtt_incremental_psi.md) | 23 | 0 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/rationalize_impl.h`](core/rationalize_impl.md) | 1 | 0 |
 | [`core/reader_limits.h`](core/reader_limits.md) | 9 | 7 |
+| [`core/recursive_ivm.h`](core/recursive_ivm.md) | 19 | 0 |
+| [`core/resident_cognition.h`](core/resident_cognition.md) | 9 | 0 |
 | [`core/resource_lease.h`](core/resource_lease.md) | 51 | 24 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 67 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 73 | 56 |
 | [`core/saturating_vjp.h`](core/saturating_vjp.md) | 2 | 1 |
 | [`core/seed_entropy.h`](core/seed_entropy.md) | 2 | 0 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
+| [`core/sheaf_workspace.h`](core/sheaf_workspace.md) | 14 | 0 |
+| [`core/slg_table.h`](core/slg_table.md) | 15 | 0 |
+| [`core/soft_unify_semiring.h`](core/soft_unify_semiring.md) | 38 | 0 |
 | [`core/stack_guard.h`](core/stack_guard.md) | 4 | 1 |
+| [`core/staged_value_grad.h`](core/staged_value_grad.md) | 21 | 0 |
+| [`core/starlight_unified_diff_zx.h`](core/starlight_unified_diff_zx.md) | 12 | 0 |
+| [`core/stl_control_loop.h`](core/stl_control_loop.md) | 10 | 0 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/subprocess_stream.h`](core/subprocess_stream.md) | 11 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
@@ -185,6 +208,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/tls.h`](core/tls.md) | 20 | 17 |
 | [`core/unicode.h`](core/unicode.md) | 7 | 2 |
 | [`core/unix_socket_stream.h`](core/unix_socket_stream.md) | 16 | 0 |
+| [`core/vsa_hdc.h`](core/vsa_hdc.md) | 20 | 0 |
 | [`core/websocket_handshake.h`](core/websocket_handshake.md) | 29 | 18 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 

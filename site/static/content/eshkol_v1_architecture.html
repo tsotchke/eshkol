@@ -551,9 +551,10 @@ CLOSURE_ENV_IS_VARIADIC(packed)        // Test bit 63</code></pre>
 <p>A lambda with free variables lowers to an LLVM function that takes one pointer parameter per captured variable, appended after its user parameters. A site that calls such a function directly has to supply those pointers itself, and two rules keep that sound:</p>
 <ol type="1">
 <li><strong>A captured value comes only from the function being emitted</strong> (one of its own arguments or instructions) or from the module (a global, constant or function). <code>valueUsableInFunction</code> is the structural check every capture site applies. A value that belongs to an enclosing function is reached through the current function’s own capture pointer; where no such pointer exists, code generation stops with a diagnostic that names the variable, the owning function, the function being emitted and the source location.</li>
-<li><strong>A callee reached through a name takes its captures from the closure object.</strong> <code>emitClosureCaptureArguments</code> reads them from the closure’s environment under the closure-call ABI, including the environment-pointer form used above 64 captures, which is what the runtime closure call does. An inline lambda created at the call site resolves its captures by name.</li>
+<li><strong>A callee reached through a name takes its captures from the closure object.</strong> <code>emitClosureCaptureArguments</code> reads them from the closure’s environment under the closure-call ABI — capture parameter <em>i</em> of the procedure body receives the address of capture slot <em>i</em>, for any number of captures — which is what the runtime closure call does. An inline lambda passed to <code>map</code> is compiled once to its closure and takes its capture slots from that closure in the same way when it has at most 64 captures; with more it is called through its closure value. An inline lambda used as a differentiand resolves its captures by name, under rule 1.</li>
 </ol>
 <p><code>appendDifferentiandCaptures</code> is the single resolver for a differentiated closure’s captures. <code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, every <code>gradient</code> path, <code>jacobian</code>, <code>hessian</code>, and through them <code>divergence</code>, <code>curl</code>, <code>laplacian</code> and <code>directional-derivative</code>, all use it. <code>MapCodegen</code> applies the same two rules for <code>map</code> and multi-list <code>map</code>, and <code>reduce</code> dispatches on the closure value.</p>
+<p>The closure call itself has one shape for every capture count: it passes the user arguments followed by the addresses of the first 64 capture slots. The code address stored in a closure object is the procedure body when the body has at most 64 captures, and otherwise an entry function that receives the address of slot 0 and forwards every slot address to the body, so the arity check and rest-list construction are the same for all procedures.</p>
 <h3 id="variadic-functions">Variadic Functions</h3>
 <p><strong>Rest parameters</strong>:</p>
 <pre class="scheme"><code>(define (variadic-fn a b . rest)
@@ -1106,7 +1107,7 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></
 <p><strong>Bottleneck</strong>: LLVM optimization passes (can be reduced with -O0)</p>
 <hr />
 <h2 id="build-system">Build System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,735 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a></p>
 <h3 id="requirements">Requirements</h3>
 <ul>
 <li><strong>CMake</strong>: 3.14 or higher</li>

@@ -13812,9 +13812,9 @@
     }
   },
   "counts": {
-    "builtins_total": 1069,
-    "builtins_in_vm_table": 800,
-    "builtins_in_llvm_aot_dispatch": 811,
+    "builtins_total": 1070,
+    "builtins_in_vm_table": 801,
+    "builtins_in_llvm_aot_dispatch": 812,
     "builtins_aot_only": 247,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 122,
@@ -13829,7 +13829,7 @@
     "geometry": 56,
     "list_pair": 53,
     "io_port": 52,
-    "misc": 45,
+    "misc": 46,
     "string_char": 42,
     "consciousness": 35,
     "vector": 24,
@@ -18669,6 +18669,19 @@
         "vm"
       ],
       "category": "consciousness"
+    },
+    {
+      "name": "free-energy-bethe",
+      "ids": [
+        528
+      ],
+      "arity": 2,
+      "min_arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "fs-unwatch",
