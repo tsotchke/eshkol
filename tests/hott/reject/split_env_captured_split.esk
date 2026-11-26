@@ -1,0 +1,21 @@
+;; expect-error: path does not end where its type says
+;; Two applications of one split term that capture different split values
+;; (neg, ident) must not be definitionally equal. Before the repair, captured
+;; values were compared by printed quotation, every split value printed as
+;; #<split>, and this file derived a closed term of type Empty.
+(hott
+  (data Bool true false)
+  (data Empty)
+  (data Unit tt)
+  (define neg : (-> Bool Bool) (split (true false) (false true)))
+  (define ident : (-> Bool Bool) (split (true true) (false false)))
+  (define (k (g : (-> Bool Bool))) : (-> Bool Bool)
+    (split (true (g true)) (false (g false))))
+  (define p : (Path (-> Bool Bool) (k neg) (k ident)) (lambda (i) (k neg)))
+  (define (use (q : (Path (-> Bool Bool) (k neg) (k ident)))) : (Path Bool false true)
+    (lambda (i) ((q i) true)))
+  (define false=true : (Path Bool false true) (use p))
+  (define Code : (-> Bool U) (split (true Empty) (false Unit)))
+  (define (absurd-from (e : (Path Bool false true))) : Empty
+    (transp (i) (Code (e i)) i0 tt))
+  (define absurd : Empty (absurd-from false=true)))

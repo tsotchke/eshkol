@@ -1,0 +1,8 @@
+;; expect-error: path does not end where its type says
+;; One level-polymorphic split at levels 0 and 1 must not be definitionally
+;; equal: its branches are (U 0) and (U 1). Before the repair, a split's level
+;; bindings were skipped when its environment was compared.
+(hott
+  (data Bool true false)
+  (define (f (l : Level)) : (-> Bool (U (lsuc l))) (split (true (U l)) (false (U l))))
+  (define p : (Path (-> Bool (U 2)) (f 0) (f 1)) (lambda (i) (f 0))))

@@ -1,0 +1,30 @@
+;;; Conversion of split values with captured environments: legitimate
+;;; equalities that the structural comparison of captured values accepts.
+(hott
+  (import circle)
+  (data Bool true false)
+  (define neg : (-> Bool Bool) (split (true false) (false true)))
+  (define (k (g : (-> Bool Bool))) : (-> Bool Bool)
+    (split (true (g true)) (false (g false))))
+  ;; the same captured global, evaluated separately on each side
+  (example (Path (-> Bool Bool) (k neg) (k neg)) (lambda (i) (k neg)))
+  ;; nested captured splits
+  (example (Path (-> Bool Bool) (k (k neg)) (k (k neg))) (lambda (i) (k (k neg))))
+  ;; the same captured variable
+  (define (c (g : Bool)) : (-> Bool Bool) (split (true g) (false g)))
+  (example (Path (-> Bool Bool (-> Bool Bool)) (lambda (a b) (c a)) (lambda (a b) (c a)))
+           (lambda (i) (lambda (a b) (c a))))
+  ;; a captured path applied at dimensions whose formulas are equal (i and ~~i)
+  (define cS : (-> Bool S1) (split (true base) (false base)))
+  (define (kS (g : (-> Bool S1))) : (-> Bool S1) (split (true (g true)) (false (g false))))
+  (example (Pi ((H : (Path (-> Bool S1) cS cS)))
+             (Path (Path (-> Bool S1) (kS cS) (kS cS))
+                   (lambda (i) (kS (H i))) (lambda (i) (kS (H (~ (~ i)))))))
+           (lambda (H) (lambda (j) (lambda (i) (kS (H i))))))
+  ;; a level-polymorphic split: the same level on both sides, constant and rigid
+  (define (f (l : Level)) : (-> Bool (U (lsuc l))) (split (true (U l)) (false (U l))))
+  (example (Path (-> Bool (U 1)) (f 0) (f 0)) (lambda (i) (f 0)))
+  (define (h (l : Level)) : (Path (-> Bool (U (lsuc l))) (f l) (f l)) (lambda (i) (f l)))
+  (define r : (-> Bool Bool) (k neg)))
+
+(display (hott-eval (r true))) (newline)
