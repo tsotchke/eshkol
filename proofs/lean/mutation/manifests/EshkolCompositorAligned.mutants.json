@@ -1,0 +1,131 @@
+{
+ "target": "../../EshkolCompositorAligned.lean",
+ "mutants": [
+  {
+   "id": "write-drop-owner-check",
+   "description": "write accepts a handle whose badge is not the surface owner's",
+   "old": "if s.ownerBadge \u2260 h.badge then (.badSurface, c)",
+   "new": "if False then (.badSurface, c)",
+   "witness": "def wc1 : CompositorState := \u27e84, [\u27e81, 0, 4, true\u27e9], fun _ => 0\u27e9\ntheorem witness_foreign_badge : \u00ac type_of% @write_handle_validity := by\n  intro h\n  obtain \u27e8s, hs, ho, _\u27e9 := h wc1 \u27e80, 2\u27e9 0 5 rfl\n  simp [wc1] at hs\n  subst hs\n  simp at ho",
+   "witness_name": "witness_foreign_badge",
+   "refutes": "write_handle_validity",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "write-drop-readonly-check",
+   "description": "write accepts a read-only surface",
+   "old": "else if s.writable = false then (.roTrap, c)",
+   "new": "else if False then (.roTrap, c)",
+   "witness": "def wc2 : CompositorState := \u27e84, [\u27e81, 0, 4, false\u27e9], fun _ => 0\u27e9\ntheorem witness_readonly_write : \u00ac type_of% @write_handle_validity := by\n  intro h\n  obtain \u27e8s, hs, _, hw\u27e9 := h wc2 \u27e80, 1\u27e9 0 5 rfl\n  simp [wc2] at hs\n  subst hs\n  simp at hw",
+   "witness_name": "witness_readonly_write",
+   "refutes": "write_handle_validity",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "write-drop-frame-check",
+   "description": "write omits the framebuffer bound: the same cells change on reachable states, but the status differs (BOUNDS becomes SURFACE_CONFLICT)",
+   "old": "else if c.width \u2264 x then (.bounds, c)",
+   "new": "else if False then (.bounds, c)",
+   "witness": "def wc3 : CompositorState := \u27e82, [\u27e81, 0, 4, true\u27e9], fun _ => 0\u27e9\ntheorem witness_past_frame : \u00ac type_of% @write_physical_confinement := by\n  intro h\n  have h0 := h wc3 \u27e80, 1\u27e9 3 5 rfl\n  revert h0\n  decide",
+   "witness_name": "witness_past_frame",
+   "refutes": "write_physical_confinement",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "write-drop-own-coverage",
+   "description": "write accepts a cell outside the caller's own surface",
+   "old": "else if s.covers x = false then (.surfaceConflict, c)",
+   "new": "else if False then (.surfaceConflict, c)",
+   "witness": "def wc4 : CompositorState := \u27e84, [\u27e81, 0, 2, true\u27e9], fun _ => 0\u27e9\ntheorem witness_outside_surface : \u00ac type_of% @write_spatial_confinement := by\n  intro h\n  obtain \u27e8s, hs, hc\u27e9 := h wc4 \u27e80, 1\u27e9 3 5 rfl\n  simp [wc4] at hs\n  subst hs\n  revert hc\n  decide",
+   "witness_name": "witness_outside_surface",
+   "refutes": "write_spatial_confinement",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "write-drop-conflict-check",
+   "description": "write omits the check against other owners' writable surfaces: equivalent on reachable states, given Isolated (status and effect)",
+   "old": "o.ownerBadge != s.ownerBadge && o.writable && o.covers x",
+   "new": "false",
+   "witness": "def wc5 : CompositorState := \u27e84, [\u27e81, 0, 4, true\u27e9, \u27e82, 0, 4, true\u27e9], fun _ => 0\u27e9\ntheorem witness_shared_cell : \u00ac type_of% @write_isolation := by\n  intro h\n  have h0 := h wc5 \u27e80, 1\u27e9 0 5 rfl \u27e82, 0, 4, true\u27e9 (by simp [wc5]) rfl rfl\n  simp at h0",
+   "witness_name": "witness_shared_cell",
+   "refutes": "write_isolation",
+   "expect": "REFUTED",
+   "differential": "AGREES"
+  },
+  {
+   "id": "write-wrong-cell",
+   "description": "write stores the value one cell to the right",
+   "old": "framebuffer := fun i => if i = x then v else c.framebuffer i",
+   "new": "framebuffer := fun i => if i = x + 1 then v else c.framebuffer i",
+   "witness": "def wc6 : CompositorState := \u27e84, [\u27e81, 0, 4, true\u27e9], fun _ => 0\u27e9\ntheorem witness_wrong_cell : \u00ac type_of% @write_effect := by\n  intro h\n  have h0 := h wc6 \u27e80, 1\u27e9 0 5 1 (by decide)\n  exact absurd h0.1 (by decide)",
+   "witness_name": "witness_wrong_cell",
+   "refutes": "write_effect",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "write-readonly-reports-bad-surface",
+   "description": "a read-only write is refused with BAD_SURFACE instead of RO_TRAP",
+   "old": "else if s.writable = false then (.roTrap, c)",
+   "new": "else if s.writable = false then (.badSurface, c)",
+   "expect": "SURVIVED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "register-drop-conflict-check",
+   "description": "registration admits overlapping writable surfaces of distinct owners",
+   "old": "else if c.surfaces.any (fun o => s.conflicts o) then (.surfaceConflict, c)",
+   "new": "else if False then (.surfaceConflict, c)",
+   "witness": "def wr1 : CompositorState := \u27e84, [\u27e81, 0, 2, true\u27e9], fun _ => 0\u27e9\ntheorem witness_overlap_admitted : \u00ac type_of% @register_preserves_isolated := by\n  intro h\n  have hi : wr1.Isolated := by\n    unfold CompositorState.Isolated\n    intro a ha b hb\n    simp [wr1] at ha hb\n    subst ha\n    subst hb\n    decide\n  have h0 := h wr1 \u27e82, 1, 2, true\u27e9 hi \u27e81, 0, 2, true\u27e9 (by decide) \u27e82, 1, 2, true\u27e9 (by decide)\n  revert h0\n  decide",
+   "witness_name": "witness_overlap_admitted",
+   "refutes": "register_preserves_isolated",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "register-drop-frame-bound",
+   "description": "registration admits a surface extending past the framebuffer",
+   "old": "else if c.width < s.xStart + s.xLen then (.bounds, c)",
+   "new": "else if False then (.bounds, c)",
+   "witness": "theorem witness_surface_past_frame : \u00ac type_of% @register_preserves_inframe := by\n  intro h\n  have hf : (CompositorState.init 4).InFrame := by\n    unfold CompositorState.InFrame\n    intro t ht\n    simp [CompositorState.init] at ht\n  have h0 := h (CompositorState.init 4) \u27e81, 3, 4, true\u27e9 hf \u27e81, 3, 4, true\u27e9 (by decide)\n  revert h0\n  decide",
+   "witness_name": "witness_surface_past_frame",
+   "refutes": "register_preserves_inframe",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "register-drop-slot-check",
+   "description": "registration admits a seventeenth surface",
+   "old": "else if maxSurfaces \u2264 c.surfaces.length then (.noSlots, c)",
+   "new": "else if False then (.noSlots, c)",
+   "witness": "def wr3 : CompositorState := \u27e8100, (List.range 16).map (fun i => \u27e81, i, 1, true\u27e9), fun _ => 0\u27e9\ntheorem witness_seventeenth : \u00ac type_of% @register_preserves_bounded := by\n  intro h\n  have h0 := h wr3 \u27e81, 16, 1, true\u27e9 (by unfold CompositorState.Bounded; decide)\n  revert h0\n  unfold CompositorState.Bounded\n  decide",
+   "witness_name": "witness_seventeenth",
+   "refutes": "register_preserves_bounded",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "register-strict-overlap",
+   "description": "registration refuses every overlap, as the original model did (over-strict)",
+   "old": "a.writable && b.writable && a.ownerBadge != b.ownerBadge && a.overlaps b",
+   "new": "a.overlaps b",
+   "witness": "def wr4 : CompositorState := \u27e84, [\u27e81, 0, 2, false\u27e9], fun _ => 0\u27e9\ntheorem witness_permitted_overlap_refused : \u00ac type_of% @register_ok_iff := by\n  intro h\n  have hrhs := (h wr4 \u27e82, 0, 2, true\u27e9).mpr \u27e8by decide, by decide, by decide, ?_, by decide\u27e9\n  \u00b7 revert hrhs\n    decide\n  \u00b7 intro o ho _ how\n    simp [wr4] at ho\n    subst ho\n    simp at how",
+   "witness_name": "witness_permitted_overlap_refused",
+   "refutes": "register_ok_iff",
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
+  },
+  {
+   "id": "slot-limit-17",
+   "description": "the slot limit is 17 rather than native's 16",
+   "old": "def maxSurfaces : Nat := 16",
+   "new": "def maxSurfaces : Nat := 17",
+   "expect": "SURVIVED",
+   "differential": "DIVERGES"
+  }
+ ]
+}

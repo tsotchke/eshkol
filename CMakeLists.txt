@@ -2283,6 +2283,11 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/platform/(platform\\.c|event/|window/|aud
 # underscore suffix, so it deliberately stays in the glob.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/event_loop_[a-z]+\\.c$")
 
+# Eshkol OS Phase U5: freestanding in-OS ESKB VM shell links exclusively against
+# `eshkol_os_syscall6` and ships in its own zero-LLVM/zero-POSIX target
+# (`eshkol-os-vm-shell`), never inside hosted `eshkol-static`.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/os_vm_shell\\.c$")
+
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
 # platform_runtime.cpp stays in eshkol-static so the REPL, compiler, and JIT
@@ -10552,6 +10557,280 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
                 COMMAND freestanding_lowlevel_object_test $<TARGET_FILE:eshkol-run>
             )
         endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u1_kernel_abi_test.cpp")
+        add_executable(os_u1_kernel_abi_test tests/toolchain/os_u1_kernel_abi_test.cpp)
+        target_compile_features(os_u1_kernel_abi_test PRIVATE cxx_std_17)
+        add_dependencies(os_u1_kernel_abi_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u1_kernel_abi_test
+                COMMAND os_u1_kernel_abi_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+            )
+        else()
+            add_test(
+                NAME os_u1_kernel_abi_test
+                COMMAND os_u1_kernel_abi_test $<TARGET_FILE:eshkol-run>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u2_hardware_layouts_test.cpp")
+        add_executable(os_u2_hardware_layouts_test tests/toolchain/os_u2_hardware_layouts_test.cpp)
+        target_compile_features(os_u2_hardware_layouts_test PRIVATE cxx_std_17)
+        add_dependencies(os_u2_hardware_layouts_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u2_hardware_layouts_test
+                COMMAND os_u2_hardware_layouts_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+            )
+        else()
+            add_test(
+                NAME os_u2_hardware_layouts_test
+                COMMAND os_u2_hardware_layouts_test $<TARGET_FILE:eshkol-run>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u3_stdlib_and_oalr_hooks_test.cpp")
+        add_executable(os_u3_stdlib_and_oalr_hooks_test tests/toolchain/os_u3_stdlib_and_oalr_hooks_test.cpp)
+        target_compile_features(os_u3_stdlib_and_oalr_hooks_test PRIVATE cxx_std_17)
+        add_dependencies(os_u3_stdlib_and_oalr_hooks_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u3_stdlib_and_oalr_hooks_test
+                COMMAND os_u3_stdlib_and_oalr_hooks_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+            )
+        else()
+            add_test(
+                NAME os_u3_stdlib_and_oalr_hooks_test
+                COMMAND os_u3_stdlib_and_oalr_hooks_test $<TARGET_FILE:eshkol-run>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u3_oalr_page_hooks_test.cpp")
+        add_executable(os_u3_oalr_page_hooks_test tests/toolchain/os_u3_oalr_page_hooks_test.cpp)
+        target_compile_features(os_u3_oalr_page_hooks_test PRIVATE cxx_std_17)
+        target_link_libraries(os_u3_oalr_page_hooks_test PRIVATE eshkol-runtime)
+        add_test(
+            NAME os_u3_oalr_page_hooks_test
+            COMMAND os_u3_oalr_page_hooks_test
+        )
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u4_userspace_elf_test.cpp")
+        add_executable(os_u4_userspace_elf_test tests/toolchain/os_u4_userspace_elf_test.cpp)
+        target_compile_features(os_u4_userspace_elf_test PRIVATE cxx_std_17)
+        add_dependencies(os_u4_userspace_elf_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u4_userspace_elf_test
+                COMMAND os_u4_userspace_elf_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            )
+        else()
+            add_test(
+                NAME os_u4_userspace_elf_test
+                COMMAND os_u4_userspace_elf_test $<TARGET_FILE:eshkol-run> "" "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_vm_shell.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u5_in_os_vm_test.cpp")
+        add_library(eshkol-os-vm-shell STATIC lib/core/os_vm_shell.c)
+        target_include_directories(eshkol-os-vm-shell PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-vm-shell PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-vm-shell PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_u5_in_os_vm_test tests/toolchain/os_u5_in_os_vm_test.cpp)
+        target_compile_features(os_u5_in_os_vm_test PRIVATE cxx_std_17)
+        target_link_libraries(os_u5_in_os_vm_test PRIVATE eshkol-os-vm-shell)
+        add_dependencies(os_u5_in_os_vm_test eshkol-run eshkol-os-vm-shell)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u5_in_os_vm_test
+                COMMAND os_u5_in_os_vm_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-vm-shell>
+            )
+        else()
+            add_test(
+                NAME os_u5_in_os_vm_test
+                COMMAND os_u5_in_os_vm_test $<TARGET_FILE:eshkol-run> "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-vm-shell>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_self_host.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u6_native_self_host_test.cpp")
+        add_library(eshkol-os-self-host STATIC lib/core/os_self_host.c)
+        target_include_directories(eshkol-os-self-host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-self-host PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-self-host PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_u6_native_self_host_test tests/toolchain/os_u6_native_self_host_test.cpp)
+        target_compile_features(os_u6_native_self_host_test PRIVATE cxx_std_17)
+        target_link_libraries(os_u6_native_self_host_test PRIVATE eshkol-os-self-host eshkol-os-vm-shell)
+        add_dependencies(os_u6_native_self_host_test eshkol-os-self-host eshkol-os-vm-shell)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u6_native_self_host_test
+                COMMAND os_u6_native_self_host_test "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-self-host>
+            )
+        else()
+            add_test(
+                NAME os_u6_native_self_host_test
+                COMMAND os_u6_native_self_host_test "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-self-host>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_drivers_vfs.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_k4_drivers_vfs_test.cpp")
+        add_library(eshkol-os-drivers-vfs STATIC lib/core/os_drivers_vfs.c)
+        target_include_directories(eshkol-os-drivers-vfs PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-drivers-vfs PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-drivers-vfs PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_k4_drivers_vfs_test tests/toolchain/os_k4_drivers_vfs_test.cpp)
+        target_compile_features(os_k4_drivers_vfs_test PRIVATE cxx_std_17)
+        target_link_libraries(os_k4_drivers_vfs_test PRIVATE eshkol-os-drivers-vfs)
+        add_dependencies(os_k4_drivers_vfs_test eshkol-os-drivers-vfs)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_k4_drivers_vfs_test
+                COMMAND os_k4_drivers_vfs_test "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-drivers-vfs>
+            )
+        else()
+            add_test(
+                NAME os_k4_drivers_vfs_test
+                COMMAND os_k4_drivers_vfs_test "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-drivers-vfs>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/os_k5_k6_services.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_k5_k6_services_selfhost_test.cpp")
+        add_library(eshkol-os-k5-k6-services STATIC lib/core/os_k5_k6_services.c)
+        target_include_directories(eshkol-os-k5-k6-services PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-os-k5-k6-services PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-os-k5-k6-services PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(os_k5_k6_services_selfhost_test tests/toolchain/os_k5_k6_services_selfhost_test.cpp)
+        target_compile_features(os_k5_k6_services_selfhost_test PRIVATE cxx_std_17)
+        target_link_libraries(os_k5_k6_services_selfhost_test PRIVATE
+            eshkol-os-k5-k6-services eshkol-os-drivers-vfs eshkol-os-self-host eshkol-os-vm-shell)
+        add_dependencies(os_k5_k6_services_selfhost_test
+            eshkol-os-k5-k6-services eshkol-os-drivers-vfs eshkol-os-self-host eshkol-os-vm-shell)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_k5_k6_services_selfhost_test
+                COMMAND os_k5_k6_services_selfhost_test "${ESHKOL_LLVM_DIS_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-k5-k6-services>
+            )
+        else()
+            add_test(
+                NAME os_k5_k6_services_selfhost_test
+                COMMAND os_k5_k6_services_selfhost_test "" "${CMAKE_CURRENT_SOURCE_DIR}" $<TARGET_FILE:eshkol-os-k5-k6-services>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/kernel/k1_boot_traps.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel/k1_boot_traps_test.cpp")
+        add_library(eshkol-kernel-k1 STATIC
+            lib/kernel/k1_boot_traps.c
+            lib/kernel/arch/k1_arch_x86_64.c
+            lib/kernel/arch/k1_arch_aarch64.c
+            lib/kernel/arch/k1_arch_riscv64.c
+            lib/kernel/arch/k1_arch_riscv32.c
+            lib/kernel/arch/k1_arch_cortex_m4.c
+        )
+        target_include_directories(eshkol-kernel-k1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-kernel-k1 PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-kernel-k1 PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(kernel_k1_boot_traps_test tests/kernel/k1_boot_traps_test.cpp)
+        target_compile_features(kernel_k1_boot_traps_test PRIVATE cxx_std_20)
+        target_link_libraries(kernel_k1_boot_traps_test PRIVATE eshkol-kernel-k1)
+        add_test(
+            NAME kernel_k1_boot_traps_test
+            COMMAND kernel_k1_boot_traps_test
+        )
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/kernel/k2_mmu_frames.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel/k2_mmu_frames_test.cpp")
+        add_library(eshkol-kernel-k2 STATIC
+            lib/kernel/k2_mmu_frames.c
+        )
+        target_include_directories(eshkol-kernel-k2 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-kernel-k2 PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-kernel-k2 PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(kernel_k2_mmu_frames_test tests/kernel/k2_mmu_frames_test.cpp)
+        target_compile_features(kernel_k2_mmu_frames_test PRIVATE cxx_std_20)
+        target_link_libraries(kernel_k2_mmu_frames_test PRIVATE eshkol-kernel-k2)
+        add_test(
+            NAME kernel_k2_mmu_frames_test
+            COMMAND kernel_k2_mmu_frames_test
+        )
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/kernel/k3_smp_cap_ipc.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel/k3_smp_cap_ipc_test.cpp")
+        add_library(eshkol-kernel-k3 STATIC
+            lib/kernel/k3_smp_cap_ipc.c
+        )
+        target_include_directories(eshkol-kernel-k3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-kernel-k3 PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-kernel-k3 PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(kernel_k3_smp_cap_ipc_test tests/kernel/k3_smp_cap_ipc_test.cpp)
+        target_compile_features(kernel_k3_smp_cap_ipc_test PRIVATE cxx_std_20)
+        target_link_libraries(kernel_k3_smp_cap_ipc_test PRIVATE eshkol-kernel-k3)
+        add_test(
+            NAME kernel_k3_smp_cap_ipc_test
+            COMMAND kernel_k3_smp_cap_ipc_test
+        )
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/kernel/k_kernel_policy.c" AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kernel/k_convergence_policy_test.cpp")
+        add_library(eshkol-kernel-policy STATIC
+            lib/kernel/k_kernel_policy.c
+        )
+        target_include_directories(eshkol-kernel-policy PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+        target_compile_features(eshkol-kernel-policy PRIVATE c_std_11)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(eshkol-kernel-policy PRIVATE -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -Werror)
+        endif()
+
+        add_executable(kernel_k_convergence_policy_test tests/kernel/k_convergence_policy_test.cpp)
+        target_compile_features(kernel_k_convergence_policy_test PRIVATE cxx_std_20)
+        target_link_libraries(kernel_k_convergence_policy_test PRIVATE
+            eshkol-kernel-policy
+            eshkol-kernel-k3
+            eshkol-kernel-k2
+            eshkol-kernel-k1
+        )
+        add_test(
+            NAME kernel_k_convergence_policy_test
+            COMMAND kernel_k_convergence_policy_test
+        )
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")

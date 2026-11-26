@@ -1,0 +1,12 @@
+{
+ "target": "../../EshkolKernelK3.lean",
+ "mutants": [
+  {
+   "id": "derive-escalates-rights",
+   "description": "derived child receives all rights",
+   "old": "            rights := childRights }",
+   "new": "            rights := 0xFFFFFFFF }",
+   "expect": "PROOF_BROKEN"
+  }
+ ]
+}

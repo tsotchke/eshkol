@@ -1,8 +1,8 @@
 <h1 id="eshkol-feature-matrix">Eshkol Feature Matrix</h1>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> = Production | <code>WIP</code> = In Progress | <code>Planned</code> = Planned | <code>No</code> = Not Planned | <code>Partial</code> = Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the “Final verification” section of <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>, and is bound to the tagged commit.</p>
-<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,470</strong> constructs. The generated manifest records 1,067 builtins, 116 special forms, 113 internal AST operations and 469 prelude records; the categories overlap, and the public count deduplicates names and excludes internal-only entries. See <code>tests/coverage/language_surface.json</code> and <code>scripts/language_coverage.py</code> for the exact inventory and counting rules.</p>
-<p>The required coverage floor is 1,470 entries at 100%, with no new execution deficit permitted. This is a target, not a measurement. The committed historical execution ledger still certifies 1,118 names; it has not been rewritten to claim coverage for the expanded candidate. Current execution evidence must close that gap before the coverage gate can pass. Exported data bindings also need an execution observation appropriate to reading data; a function name appearing in source or IR earns no invocation credit.</p>
+<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,663</strong> constructs. The generated manifest records 1,081 builtins, 122 special forms, 114 internal AST operations and 637 prelude records; the categories overlap, and the public count deduplicates names and excludes internal-only entries. See <code>tests/coverage/language_surface.json</code> and <code>scripts/language_coverage.py</code> for the exact inventory and counting rules.</p>
+<p>The required coverage floor is 1,663 entries at 100%, with zero execution deficit permitted (<code>tests/coverage/execution_deficit.json</code> records 1,663/1,663 execution-backed constructs with 0 uncovered). Exported data bindings are verified via runtime binding-read observation; a function name appearing in source or IR earns no invocation credit.</p>
 <p><code>scripts/check_surface_counts.py</code> checks the declared counts in these docs against the machine sources. Release verification remains bound to its tagged commit and is recorded separately in <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>.</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
@@ -2481,7 +2481,7 @@
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>1,067 builtins across a 1,470-construct declared surface (canonical count, see below)</td>
+<td>1,081 builtins across a 1,663-construct declared surface (canonical count, see below)</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -3809,7 +3809,7 @@
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v11">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (116 special forms, 1,067 builtins — 1,470-construct canonical surface, see “Language surface count” below)</li>
+<li>Core language (122 special forms, 1,081 builtins — 1,663-construct canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>

@@ -633,6 +633,14 @@ private:
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
     bool freestanding_codegen_;
+    bool freestanding_kernel_codegen_ = false;
+    bool current_function_is_arch_hal_ = false;
+    bool current_function_is_naked_ = false;
+    std::unordered_set<Function*> no_alloc_functions_;
+    std::unordered_set<Function*> interrupt_functions_;
+    std::unordered_set<Function*> fpu_safe_functions_;
+    std::unordered_set<Function*> arch_hal_functions_;
+    std::unordered_set<Function*> naked_functions_;
     // SHARED-LIBRARY EXPORT ABI: true only for the linked --shared-lib
     // flavour.  See g_shared_library_exports and
     // emitSharedLibraryExportWrappers().
@@ -685,7 +693,8 @@ private:
 public:
     EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false,
                        const char* target_triple = nullptr,
-                       bool is_freestanding_codegen = false);
+                       bool is_freestanding_codegen = false,
+                       bool is_freestanding_kernel_codegen = false);
 
     // Register return types for builtin functions
     void registerBuiltinReturnTypes();
@@ -1058,6 +1067,8 @@ private:
      * __aeabi_unwind_cpp_pr0 that only a hosted C++ runtime provides. */
     void markFreestandingNoUnwind();
 
+    void verifyFreestandingKernelSafety();
+
     void pruneUnusedFreestandingDeclarations();
 
     // ESH-0216: pair the eshkol_runtime_init() call emitted at C main()
@@ -1404,7 +1415,11 @@ private:
     struct TargetIntrinsicCallInfo {
         LowLevelValueTypeInfo return_type;
         std::vector<LowLevelValueTypeInfo> arg_types;
-        Function* declaration;
+        Function* declaration = nullptr;
+        bool is_inline_asm = false;
+        std::string asm_template;
+        std::string asm_constraints;
+        bool asm_has_side_effects = true;
     };
 
     std::optional<LowLevelValueTypeInfo> resolveLowLevelTypeInfo(const eshkol_ast_t* type_ast,
@@ -1423,6 +1438,63 @@ private:
 
     std::optional<TargetIntrinsicCallInfo> resolveTargetIntrinsicCall(
         const eshkol_operations_t* op, const char* builtin_name);
+
+    std::optional<TargetIntrinsicCallInfo> resolveUnsafeAsmCall(
+        const eshkol_operations_t* op, const char* builtin_name);
+
+    CallInst* emitLowLevelInlineAsmCall(
+        const TargetIntrinsicCallInfo& info,
+        ArrayRef<Type*> arg_types,
+        ArrayRef<Value*> args,
+        const char* name);
+
+    struct HardwareLayoutField {
+        std::string name;
+        std::string type_name;
+        bool is_nested_layout = false;
+        bool is_array = false;
+        uint64_t array_count = 1;
+        bool is_bitfield = false;
+        uint32_t bit_width = 0;
+        uint32_t bit_offset = 0;
+        uint64_t byte_offset = 0;
+        uint64_t elem_size = 0;
+        uint64_t total_size = 0;
+        uint64_t alignment = 1;
+        LowLevelValueTypeInfo scalar_info;
+    };
+
+    struct HardwareLayoutDef {
+        std::string name;
+        bool is_packed = false;
+        bool side_effect_free_read = false;
+        uint64_t explicit_align = 0;
+        uint64_t size = 0;
+        uint64_t alignment = 1;
+        std::vector<HardwareLayoutField> fields;
+        std::unordered_map<std::string, size_t> field_index;
+    };
+
+    std::unordered_map<std::string, HardwareLayoutDef> hardware_layouts_;
+
+    void registerHardwareLayoutsAndStaticAsserts(const eshkol_ast_t* asts, size_t num_asts);
+    bool registerHardwareLayout(const eshkol_operations_t* op);
+    bool resolveLayoutTypeMetrics(const eshkol_ast_t* type_ast,
+                                  uint64_t& out_size,
+                                  uint64_t& out_align,
+                                  const char* who) const;
+    std::optional<int64_t> evaluateConstLayoutExpr(const eshkol_ast_t* expr,
+                                                   const char* who) const;
+    bool evaluateStaticAssert(const eshkol_operations_t* op);
+    const HardwareLayoutField* lookupLayoutField(const eshkol_ast_t* layout_ast,
+                                                 const eshkol_ast_t* field_ast,
+                                                 const HardwareLayoutDef** out_layout,
+                                                 const char* who);
+    Value* emitLayoutFieldAccess(const eshkol_operations_t* op,
+                                 bool is_set,
+                                 bool is_volatile,
+                                 bool is_addr,
+                                 const char* who);
 
     std::optional<AtomicOrdering> resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
                                                        const char* builtin_name) const;
@@ -1496,6 +1568,8 @@ private:
     uint32_t current_source_column = 0;
 
     Value* languageCoverageString(const std::string& value);
+
+    bool canEmitCoverageHooks(Function* function) const;
 
     void emitLanguageCoverage(const eshkol_ast_t* ast);
 

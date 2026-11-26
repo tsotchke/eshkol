@@ -395,9 +395,9 @@
 ;; nesting through the point: g(t) = d2/dr2 [r^4] at r = 1+t = 12 (1+t)^2
 (define (h r) (* r r r r))
 (display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)</code></pre>
-<pre><code>192
-216
-2
+<pre><code>192.0
+216.0
+2.0
 (0 12 24)</code></pre>
 <p>Exactness follows the numeric tower through every level: an exact point gives an exact answer while every operation is exactness-preserving.</p>
 <pre class="scheme"><code>(display (derivative (lambda (x) (derivative   (lambda (y) (* x x y y))   1/2))   1/3)) (newline)
@@ -634,7 +634,7 @@
 (define (apply-grad f pt) (gradient f pt))
 (apply-grad loss (vector 3.0 4.0))   ; through a wrapper
 ((gradient loss) (vector 3.0 4.0))   ; curried
-;; =&gt; #(6 8) — identical to (gradient loss (vector 3.0 4.0))</code></pre>
+;; =&gt; #(6.0 8.0) — identical to (gradient loss (vector 3.0 4.0))</code></pre>
 <p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/architecture.md#callable-arity-recovery--gradient-through-wrappers-and-curried-forms" target="_blank" rel="noopener noreferrer">../reference/ad/architecture.md</a> for the arity-recovery mechanism.</p>
 <h3 id="library-modules-require-coreadname">Library modules (<code>(require core.ad.&lt;name&gt;)</code>)</h3>
 <table>

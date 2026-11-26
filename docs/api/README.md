@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3137/7256 public symbols documented (43.2%), 4119 undocumented.
+**Coverage:** 3287/7730 public symbols documented (42.5%), 4443 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-484/1039 symbols documented.
+485/1043 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -31,7 +31,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 45 | 33 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 42 | 16 |
-| [`llvm_backend.h`](llvm_backend.md) | 85 | 5 |
+| [`llvm_backend.h`](llvm_backend.md) | 89 | 6 |
 | [`logger.h`](logger.md) | 42 | 26 |
 | [`memory_abi_v2.h`](memory_abi_v2.md) | 20 | 15 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
@@ -48,7 +48,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1368/3310 symbols documented.
+1368/3357 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -75,7 +75,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/ir_builder.h`](backend/ir_builder.md) | 10 | 0 |
 | [`backend/libm_codegen.h`](backend/libm_codegen.md) | 5 | 5 |
 | [`backend/link_probe.h`](backend/link_probe.md) | 1 | 1 |
-| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 935 | 24 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 982 | 24 |
 | [`backend/llvm_compat.h`](backend/llvm_compat.md) | 4 | 0 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 43 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 54 | 23 |
@@ -134,7 +134,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-459/949 symbols documented.
+608/1132 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -165,6 +165,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
+| [`core/os_drivers_vfs.h`](core/os_drivers_vfs.md) | 66 | 66 |
+| [`core/os_k5_k6_services.h`](core/os_k5_k6_services.md) | 44 | 44 |
+| [`core/os_page_hooks.h`](core/os_page_hooks.md) | 13 | 0 |
+| [`core/os_self_host.h`](core/os_self_host.md) | 12 | 12 |
+| [`core/os_syscall_abi.h`](core/os_syscall_abi.md) | 25 | 9 |
+| [`core/os_vm_shell.h`](core/os_vm_shell.md) | 18 | 18 |
 | [`core/prng_state.h`](core/prng_state.md) | 3 | 0 |
 | [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
@@ -177,6 +183,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/seed_entropy.h`](core/seed_entropy.md) | 2 | 0 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/stack_guard.h`](core/stack_guard.md) | 4 | 1 |
+| [`core/stdlib_partition.h`](core/stdlib_partition.md) | 5 | 0 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/subprocess_stream.h`](core/subprocess_stream.md) | 11 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
@@ -212,6 +219,17 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`frontend/syntax_rules.h`](frontend/syntax_rules.md) | 2 | 2 |
 | [`frontend/syntax_rules_core.h`](frontend/syntax_rules_core.md) | 34 | 4 |
 | [`frontend/workspace.h`](frontend/workspace.md) | 21 | 0 |
+
+### `kernel/`
+
+0/240 symbols documented.
+
+| Header | Symbols | Documented |
+|---|---:|---:|
+| [`kernel/k1_boot_traps.h`](kernel/k1_boot_traps.md) | 79 | 0 |
+| [`kernel/k2_mmu_frames.h`](kernel/k2_mmu_frames.md) | 80 | 0 |
+| [`kernel/k3_smp_cap_ipc.h`](kernel/k3_smp_cap_ipc.md) | 54 | 0 |
+| [`kernel/k_kernel_policy.h`](kernel/k_kernel_policy.md) | 27 | 0 |
 
 ### `pkg/`
 

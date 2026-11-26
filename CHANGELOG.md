@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming, Darwin Seatbelt and Linux seccomp/Landlock sandboxing, deterministic
   socket collectives, Metal FP64 crossover dispatch, Verificatum ADR-0061 proof
   replay, and shared-library tail-transfer export ordering. (#956)
+- Add the complete Eshkol OS stack (Phases U1–U6 freestanding kernel ABI,
+  declarative hardware layouts, stdlib partition, OALR OS page hooks, userspace
+  ELF capability syscall ABI, zero-LLVM in-OS ESKB VM shell, and zero-LLVM
+  self-host W^X ELF64 compiler; Phases K1–K6 zero-alloc 5-ISA microkernel boot
+  and traps, verified 3-ISA MMU/MPU frame allocator, verified SMP scheduler with
+  CDT revocation and session IPC, userspace OALR VirtIO drivers and atomic CAS
+  VFS, capability supervisor and compositor, 56 Lean 4.12.0 formal policy
+  theorems, and v1.8.0-platform Vulkan/OpenCL roadmap). (#960)
 
 
 ### Added

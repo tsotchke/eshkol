@@ -1,0 +1,79 @@
+{
+ "target": "../../EshkolKernelPolicy.lean",
+ "mutants": [
+  {
+   "id": "compositor-write-escapes-surface",
+   "description": "successful write lands one surface-length past its own surface",
+   "old": "if idx = s.xStart + cellOffset then pixelVal",
+   "new": "if idx = s.xStart + s.xLen + cellOffset then pixelVal",
+   "expect": "PROOF_BROKEN"
+  },
+  {
+   "id": "compositor-drop-owner-check",
+   "description": "any badge may write any surface",
+   "old": "  else if callerBadge \u2260 s.ownerBadge then\n    (.surfaceConflict, c)",
+   "new": "  else if False then\n    (.surfaceConflict, c)",
+   "expect": "PROOF_BROKEN"
+  },
+  {
+   "id": "compositor-drop-readonly-trap",
+   "description": "writes to read-only surfaces succeed",
+   "old": "  else if !s.writable then",
+   "new": "  else if False then",
+   "witness": "theorem witness_ro_write_succeeds : \u00ac type_of% @compositor_readonly_write_always_traps := by\n  intro h\n  have h0 := congrArg Prod.fst (h (\u27e8[\u27e81, 0, 10, false\u27e9], fun _ => 0\u27e9 : CompositorState) \u27e81, 0, 10, false\u27e9 0 7 (List.Mem.head []) rfl)\n  revert h0\n  decide",
+   "witness_name": "witness_ro_write_succeeds",
+   "refutes": "compositor_readonly_write_always_traps",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "compositor-register-skips-overlap",
+   "description": "registration accepts overlapping surfaces",
+   "old": "  if c.surfaces.all (fun existing => !Surface.overlaps s existing) then",
+   "new": "  if True then",
+   "witness": "theorem witness_overlap_registered : \u00ac type_of% @compositor_surface_spatial_disjointness := by\n  intro h\n  have h0 := h (fun _ => 0) [\u27e81, 0, 10, true\u27e9, \u27e82, 5, 10, true\u27e9]\n  revert h0\n  unfold CompositorState.Disjoint\n  decide",
+   "witness_name": "witness_overlap_registered",
+   "refutes": "compositor_surface_spatial_disjointness",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "supervisor-fault-keeps-locks",
+   "description": "faulting a service leaves its locks held",
+   "old": "          lastFaultedGen := newFaultGen }\n      else\n        st.services i\n    lockOwner := fun l =>\n      if st.lockOwner l = some sid then Option.none else st.lockOwner l }",
+   "new": "          lastFaultedGen := newFaultGen }\n      else\n        st.services i\n    lockOwner := st.lockOwner }",
+   "witness": "theorem witness_zombie_lock : \u00ac type_of% @supervisor_no_zombie_lock_on_restart := by\n  intro h\n  have h0 := h ({ services := fun _ => \u27e8.running, true, 3, 0\u27e9, lockOwner := fun _ => some 0 } : SupervisorState) 0\n  dsimp only at h0\n  have h1 := h0.1 0\n  revert h1\n  decide",
+   "witness_name": "witness_zombie_lock",
+   "refutes": "supervisor_no_zombie_lock_on_restart",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "supervisor-restart-reuses-token",
+   "description": "restart does not advance the token generation",
+   "old": "      let freshGen := max svc.tokenGen svc.lastFaultedGen + 1",
+   "new": "      let freshGen := max svc.tokenGen svc.lastFaultedGen",
+   "witness": "theorem witness_token_not_fresh : \u00ac type_of% @supervisor_restart_never_leaks_prior_token := by\n  intro h\n  have h0 := h ({ services := fun _ => \u27e8.running, true, 3, 0\u27e9, lockOwner := fun _ => some 0 } : SupervisorState) 0 rfl\n  simp [SupervisorState.faultService, SupervisorState.restartService, SupervisorState.validateToken] at h0",
+   "witness_name": "witness_token_not_fresh",
+   "refutes": "supervisor_restart_never_leaks_prior_token",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "supervisor-revoked-restart-runs",
+   "description": "restart with a revoked capability leaves the service running",
+   "old": "{ svc with status := .stopped }",
+   "new": "{ svc with status := .running }",
+   "witness": "theorem witness_revoked_runs : \u00ac type_of% @supervisor_revoked_cap_rejects_restart := by\n  intro h\n  have h0 := h ({ services := fun _ => \u27e8.faulted, false, 3, 3\u27e9, lockOwner := fun _ => none } : SupervisorState) 0 rfl\n  simp [SupervisorState.restartService] at h0",
+   "witness_name": "witness_revoked_runs",
+   "refutes": "supervisor_revoked_cap_rejects_restart",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "audio-produce-overruns",
+   "description": "produce accepts one sample past capacity",
+   "old": "    if a.count < a.cap then",
+   "new": "    if a.count \u2264 a.cap then",
+   "witness": "theorem witness_audio_overrun : \u00ac type_of% @compositor_audio_bounds_preserved := by\n  intro h\n  have h0 := h \u27e81, 1, 0, 0, false\u27e9 [.produce] (by unfold AudioRing.Valid; decide)\n  revert h0\n  unfold AudioRing.Valid AudioRing.run AudioRing.step\n  decide",
+   "witness_name": "witness_audio_overrun",
+   "refutes": "compositor_audio_bounds_preserved",
+   "expect": "REFUTED"
+  }
+ ]
+}

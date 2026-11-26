@@ -2490,6 +2490,64 @@ static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
                 return false;
             }
             ast->operation.define_op.is_no_return = 1;
+        } else if (modifier == "naked") {
+            if (!ast->operation.define_op.is_function) {
+                PARSE_ERROR_AT(modifier_start, "define :naked is only valid on function definitions");
+                return false;
+            }
+            if (ast->operation.define_op.is_naked) {
+                PARSE_ERROR_AT(modifier_start, "define :naked may only appear once");
+                return false;
+            }
+            if (ast->operation.define_op.is_interrupt) {
+                PARSE_ERROR_AT(modifier_start, "define :naked cannot be combined with :interrupt");
+                return false;
+            }
+            ast->operation.define_op.is_naked = 1;
+        } else if (modifier == "interrupt") {
+            if (!ast->operation.define_op.is_function) {
+                PARSE_ERROR_AT(modifier_start, "define :interrupt is only valid on function definitions");
+                return false;
+            }
+            if (ast->operation.define_op.is_interrupt) {
+                PARSE_ERROR_AT(modifier_start, "define :interrupt may only appear once");
+                return false;
+            }
+            if (ast->operation.define_op.is_naked) {
+                PARSE_ERROR_AT(modifier_start, "define :interrupt cannot be combined with :naked");
+                return false;
+            }
+            ast->operation.define_op.is_interrupt = 1;
+        } else if (modifier == "arch-hal") {
+            if (!ast->operation.define_op.is_function) {
+                PARSE_ERROR_AT(modifier_start, "define :arch-hal is only valid on function definitions");
+                return false;
+            }
+            if (ast->operation.define_op.is_arch_hal) {
+                PARSE_ERROR_AT(modifier_start, "define :arch-hal may only appear once");
+                return false;
+            }
+            ast->operation.define_op.is_arch_hal = 1;
+        } else if (modifier == "no-alloc") {
+            if (!ast->operation.define_op.is_function) {
+                PARSE_ERROR_AT(modifier_start, "define :no-alloc is only valid on function definitions");
+                return false;
+            }
+            if (ast->operation.define_op.is_no_alloc) {
+                PARSE_ERROR_AT(modifier_start, "define :no-alloc may only appear once");
+                return false;
+            }
+            ast->operation.define_op.is_no_alloc = 1;
+        } else if (modifier == "fpu-safe") {
+            if (!ast->operation.define_op.is_function) {
+                PARSE_ERROR_AT(modifier_start, "define :fpu-safe is only valid on function definitions");
+                return false;
+            }
+            if (ast->operation.define_op.is_fpu_safe) {
+                PARSE_ERROR_AT(modifier_start, "define :fpu-safe may only appear once");
+                return false;
+            }
+            ast->operation.define_op.is_fpu_safe = 1;
         } else {
             PARSE_ERROR_AT(modifier_start, "unsupported define declaration modifier '%s'",
                            modifier.c_str());
@@ -2559,6 +2617,12 @@ static bool parse_extern_modifier_tail(SchemeTokenizer& tokenizer,
                 return false;
             }
             ast->operation.extern_op.is_no_return = 1;
+        } else if (modifier == "no-alloc" || modifier == "interrupt-safe") {
+            if (ast->operation.extern_op.is_no_alloc) {
+                PARSE_ERROR_AT(modifier_start, "extern :no-alloc/:interrupt-safe may only appear once");
+                return false;
+            }
+            ast->operation.extern_op.is_no_alloc = 1;
         } else {
             PARSE_ERROR_AT(modifier_start, "unsupported extern declaration modifier '%s'",
                            modifier.c_str());
@@ -10682,6 +10746,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.extern_op.real_name = nullptr;
             ast.operation.extern_op.is_weak = 0;
             ast.operation.extern_op.is_no_return = 0;
+            ast.operation.extern_op.is_no_alloc = 0;
 
             // Parse parameter types and declaration modifiers.
             std::vector<eshkol_ast_t> param_types;

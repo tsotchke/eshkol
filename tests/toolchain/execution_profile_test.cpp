@@ -23,6 +23,13 @@ int main() {
         return fail("failed to resolve embedded-vm profile");
     }
 
+    if (const Info* info = find("eshkol-os-user");
+        !info || info->id != ExecutionProfile::EshkolOsUser ||
+        info->backend != Backend::Native || info->hosted || !info->freestanding ||
+        !info->implies_compile_only || !info->implies_no_stdlib) {
+        return fail("failed to resolve eshkol-os-user profile metadata");
+    }
+
     if (find("not-a-profile") != nullptr) {
         return fail("unexpectedly resolved an invalid profile name");
     }
@@ -108,6 +115,53 @@ int main() {
         Resolution resolved = resolve(selection);
         if (resolved.error.empty()) {
             return fail("freestanding-kernel-native + --shared-lib should fail");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EshkolOsUser;
+        selection.explicit_request = true;
+        Resolution resolved = resolve(selection);
+        if (resolved.error.empty()) {
+            return fail("eshkol-os-user without explicit target should fail");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EshkolOsUser;
+        selection.explicit_request = true;
+        selection.explicit_target_triple = "x86_64-unknown-none";
+        Resolution resolved = resolve(selection);
+        if (!resolved.error.empty() || !resolved.compile_only || !resolved.no_stdlib ||
+            resolved.wasm_output ||
+            std::string(resolved.target_triple ? resolved.target_triple : "") != "x86_64-unknown-none") {
+            return fail("eshkol-os-user should resolve cleanly to compile-only no-stdlib native target");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EshkolOsUser;
+        selection.explicit_request = true;
+        selection.explicit_target_triple = "x86_64-unknown-none";
+        selection.wasm_flag = true;
+        Resolution resolved = resolve(selection);
+        if (resolved.error.empty()) {
+            return fail("eshkol-os-user + --wasm should fail");
+        }
+    }
+
+    {
+        Selection selection;
+        selection.requested = ExecutionProfile::EshkolOsUser;
+        selection.explicit_request = true;
+        selection.explicit_target_triple = "x86_64-unknown-none";
+        selection.shared_lib = true;
+        Resolution resolved = resolve(selection);
+        if (resolved.error.empty()) {
+            return fail("eshkol-os-user + --shared-lib should fail");
         }
     }
 

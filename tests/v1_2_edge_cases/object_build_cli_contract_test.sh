@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# object_build_cli_contract_test.sh - Noesis Bug LL positive regression.
+# Object output contract used by Noesis builds.
 #
 # Build systems need an exact object-output contract. This verifies the
 # compatibility surface Noesis expects:
 #   --emit-object -o <exact.o> [--shared-lib] [-fPIC] [-I dir] [-D name=value]
 #
-# The important regression points are:
+# The contract covers these cases:
 #   - --emit-object is accepted as an alias for --compile-only
 #   - -o requested.o creates exactly requested.o, not requested.o.o
 #   - -I contributes to module/load resolution
@@ -27,7 +27,9 @@ WORK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-object-cli.XXXXXX") || exit 1
 cleanup() {
     [ -n "${WORK_TMP:-}" ] && [ -d "$WORK_TMP" ] && rm -rf -- "$WORK_TMP"
 }
-trap cleanup EXIT
+if [ -z "${ESHKOL_TEST_KEEP_TMPDIR:-}" ]; then
+    trap cleanup EXIT
+fi
 
 mkdir -p "$WORK_TMP/src" "$WORK_TMP/include"
 
@@ -109,11 +111,20 @@ check "--profile freestanding-kernel-native requires --target" \
 
 PROFILE_OBJECT_TMP="$WORK_TMP/profile-contract.o"
 PROFILE_OUT_TMP="$WORK_TMP/profile-contract.out"
+cat > "$WORK_TMP/src/profile_contract.esk" <<'ESK'
+(load "object_dep.esk")
+(define (object-contract-entry) (object-contract-value))
+(define (kernel-entry) : null
+  (compiler-fence seq-cst)
+  :export-symbol kernel_contract_entry)
+ESK
 PROFILE_TARGET="$(native_target_triple)"
-"$RUN" --profile freestanding-kernel-native \
+PROFILE_TRACE_DIR="${ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR:-$WORK_TMP/coverage}"
+mkdir -p "$PROFILE_TRACE_DIR" || exit 1
+ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR="$PROFILE_TRACE_DIR" "$RUN" --profile freestanding-kernel-native \
     --target "$PROFILE_TARGET" \
     -o "$PROFILE_OBJECT_TMP" \
-    "$WORK_TMP/src/object_contract.esk" \
+    "$WORK_TMP/src/profile_contract.esk" \
     -I "$WORK_TMP/include" >"$PROFILE_OUT_TMP" 2>&1
 rc=$?
 
@@ -123,6 +134,14 @@ check "--profile freestanding-kernel-native exact .o exists" \
     "$([ -f "$PROFILE_OBJECT_TMP" ] && echo yes || echo no)"
 check "--profile freestanding-kernel-native does not append .o" \
     "$([ ! -e "$PROFILE_OBJECT_TMP.o" ] && echo yes || echo no)"
+
+if "${NM:-nm}" -g "$PROFILE_OBJECT_TMP" >"$WORK_TMP/profile-symbols" &&
+    grep -Eq '[[:space:]][Tt][[:space:]]+_?kernel_contract_entry$' "$WORK_TMP/profile-symbols" &&
+    ! grep -q 'eshkol_language_coverage_' "$WORK_TMP/profile-symbols"; then
+    check "traced kernel object is independent of coverage runtime" yes
+else
+    check "traced kernel object is independent of coverage runtime" no
+fi
 
 UNKNOWN_PROFILE_TMP="$WORK_TMP/unknown-profile.out"
 "$RUN" --profile not-a-profile "$WORK_TMP/src/object_contract.esk" \
