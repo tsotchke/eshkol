@@ -1,0 +1,277 @@
+;;; core.hodge.cycles -- Algebraic cycles, Chow rings, exact Hodge-class gap
+;;;   detection, Schubert calculus on Gr(2,4), and Mumford-Tate Lie algebra
+;;;   invariant-tensor verification (ADR-0063).
+;;;
+;;; Operational Correspondence (Rigor Ledger):
+;;;   - The Hodge Conjecture is open. The unaccounted-Hodge-class gap basis
+;;;     Hdg^p(X) / im(cl: A^p_Q -> Hdg^p) is a first-class output.
+;;;   - A class is tagged 'certified-algebraic ONLY when an explicit rational
+;;;     Chow-ring combination matches cl(Z) = alpha and carries an exact witness.
+;;;   - Any heuristic period match without a Chow cycle is tagged 'hypothesis-only.
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.certificate)
+(require core.hodge.structure)
+
+(provide
+  make-chow-cycle-map chow-cycle-map?
+  hodge-cycle-class-certify hodge-classify-candidate
+  schubert-gr24-mul schubert-gr24-degree
+  mumford-tate-lie-algebra-check mumford-tate-invariant-tensor?)
+
+;; ---------------------------------------------------------------------------
+;; Chow Cycle Class Map & Unaccounted Hodge-Class Gap Basis
+;; ---------------------------------------------------------------------------
+;; cycle-entries: list of (cycle-name . exact-rational-cohomology-vector)
+
+(define (make-chow-cycle-map hodge-struct cycle-entries)
+  (vector 'chow-cycle-map hodge-struct cycle-entries))
+
+(define (chow-cycle-map? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'chow-cycle-map)))
+
+;; Build d x k exact rational matrix from list of k rational d-vectors
+(define (vecs->col-matrix d vecs)
+  (let* ((k (length vecs))
+         (M (exact-matrix-zero d k)))
+    (let loop ((vs vecs) (j 0))
+      (if (not (null? vs))
+          (let ((v (car vs)))
+            (let li ((i 0))
+              (if (< i d)
+                  (begin (exact-matrix-set! M i j (vector-ref v i)) (li (+ i 1)))))
+            (loop (cdr vs) (+ j 1)))))
+    M))
+
+;; Check if rational vector v lies in column span of rational vectors basis-vecs
+;; Returns exact coordinate vector c (with sum c_j b_j = v) or #f!
+(define (exact-in-span-coords d basis-vecs v)
+  (if (null? basis-vecs)
+      (let loop ((i 0))
+        (cond ((= i d) (vector))
+              ((= (vector-ref v i) 0) (loop (+ i 1)))
+              (else #f)))
+      (let* ((k (length basis-vecs))
+             (B (vecs->col-matrix d basis-vecs))
+             ;; Augment [B | -v], look for nullspace vector with last entry != 0
+             (Aug (exact-matrix-zero d (+ k 1))))
+        (let li ((i 0))
+          (if (< i d)
+              (begin
+                (let lj ((j 0))
+                  (if (< j k)
+                      (begin (exact-matrix-set! Aug i j (exact-matrix-ref B i j))
+                             (lj (+ j 1)))))
+                (exact-matrix-set! Aug i k (- 0 (vector-ref v i)))
+                (li (+ i 1)))))
+        (let ((ker (exact-nullspace Aug)))
+          (let search ((ks ker))
+            (if (null? ks) #f
+                (let* ((kv (car ks))
+                       (last (vector-ref kv k)))
+                  (if (= last 0)
+                      (search (cdr ks))
+                      (let ((c (make-vector k 0)))
+                        (let lj ((j 0))
+                          (if (< j k)
+                              (begin (vector-set! c j (/ (vector-ref kv j) last))
+                                     (lj (+ j 1)))))
+                        c)))))))))
+
+;; Certify a Chow cycle map against Hdg^p(H):
+;;   1. Verifies every cycle class cl(Z_j) actually lies in Hdg^p(H) (refuses non-Hodge class!).
+;;   2. Computes dim Hdg^p(H), dim im(cl), and exact basis of unaccounted Hodge classes!
+;;   3. Emits a core.certificate rank witness for im(cl).
+;; Returns:
+;;   #(hodge-gap-report status hdg-dim alg-dim gap-dim gap-basis rank-cert)
+;; where status is 'surjective-on-given-cycles OR 'unaccounted-hodge-gap
+;; (or #(cycle-not-hodge cycle-name class-vec) on invalid cycle).
+(define (hodge-cycle-class-certify cmap)
+  (let* ((H (vector-ref cmap 1))
+         (entries (vector-ref cmap 2))
+         (d (hodge-dim H))
+         (hdg-basis (hodge-classes H))
+         (hdg-dim (length hdg-basis))
+         (cycle-vecs (map cdr entries)))
+    ;; 1. Verify every algebraic cycle class lies in Hdg^p(H)
+    (let check-all ((es entries))
+      (if (not (null? es))
+          (let* ((name (car (car es)))
+                 (cv (cdr (car es))))
+            (if (not (exact-in-span-coords d hdg-basis cv))
+                (vector 'cycle-not-hodge name cv)
+                (check-all (cdr es))))
+          ;; 2. Compute exact span of cycle classes and find exact complement basis in Hdg^p(H)
+          (let* ((alg-mat (if (null? cycle-vecs) #f (vecs->col-matrix d cycle-vecs)))
+                 (rank-cert (if alg-mat (certify-rank alg-mat) #f))
+                 (alg-dim (if rank-cert (certificate-value rank-cert) 0))
+                 (gap-basis '())
+                 (grown cycle-vecs))
+            (for-each
+             (lambda (hv)
+               (if (not (exact-in-span-coords d grown hv))
+                   (begin
+                     (set! gap-basis (append gap-basis (list hv)))
+                     (set! grown (append grown (list hv))))))
+             hdg-basis)
+            (let ((gap-dim (length gap-basis)))
+              (vector 'hodge-gap-report
+                      (if (= gap-dim 0) 'surjective-on-given-cycles 'unaccounted-hodge-gap)
+                      hdg-dim alg-dim gap-dim gap-basis rank-cert)))))))
+
+;; Classify a candidate cohomology class alpha against known Chow cycles:
+;;   - If alpha is not in Hdg^p(H) -> #(not-a-hodge-class alpha)
+;;   - If alpha = sum c_j cl(Z_j) has an exact rational Chow witness ->
+;;       #(certified-algebraic ((name . coeff) ...))
+;;   - Otherwise -> #(hypothesis-only uncertified-hodge-class alpha)
+(define (hodge-classify-candidate cmap alpha)
+  (let* ((H (vector-ref cmap 1))
+         (entries (vector-ref cmap 2))
+         (d (hodge-dim H))
+         (hdg-basis (hodge-classes H)))
+    (if (not (exact-in-span-coords d hdg-basis alpha))
+        (vector 'not-a-hodge-class alpha)
+        (let ((coords (exact-in-span-coords d (map cdr entries) alpha)))
+          (if coords
+              (let ((terms '())
+                    (ev (list->vector entries)))
+                (let loop ((j 0))
+                  (if (< j (vector-length coords))
+                      (let ((c (vector-ref coords j)))
+                        (if (not (= c 0))
+                            (set! terms (append terms (list (cons (car (vector-ref ev j)) c)))))
+                        (loop (+ j 1)))))
+                (vector 'certified-algebraic terms))
+              (vector 'hypothesis-only 'uncertified-hodge-class alpha))))))
+
+;; ---------------------------------------------------------------------------
+;; Exact Schubert Calculus in the Chow Ring A^*(Gr(2, 4))
+;; ---------------------------------------------------------------------------
+;; Basis of A^*(Gr(2,4)) (dimension 6):
+;;   0: s0   = 1        (codim 0)
+;;   1: s1   = sigma_1  (codim 1)
+;;   2: s2   = sigma_2  (codim 2)
+;;   3: s11  = sigma_1,1 (codim 2)
+;;   4: s21  = sigma_2,1 (codim 3)
+;;   5: s22  = sigma_2,2 (codim 4, point class)
+;; Exact multiplication rules (Pieri & Giambelli):
+;;   s1 * s1  = s2 + s11
+;;   s1 * s2  = s21,    s1 * s11 = s21
+;;   s1 * s21 = s22,    s2 * s2  = s22,   s11 * s11 = s22,  s2 * s11 = 0
+;;   all products of codim > 4 vanish!
+
+(define (schubert-gr24-mul a b)
+  (let ((c (make-vector 6 0)))
+    (define (add! idx val) (vector-set! c idx (+ (vector-ref c idx) val)))
+    (let ((a0 (vector-ref a 0)) (a1 (vector-ref a 1)) (a2 (vector-ref a 2))
+          (a3 (vector-ref a 3)) (a4 (vector-ref a 4)) (a5 (vector-ref a 5))
+          (b0 (vector-ref b 0)) (b1 (vector-ref b 1)) (b2 (vector-ref b 2))
+          (b3 (vector-ref b 3)) (b4 (vector-ref b 4)) (b5 (vector-ref b 5)))
+      ;; codim 0
+      (add! 0 (* a0 b0))
+      ;; codim 1
+      (add! 1 (+ (* a0 b1) (* a1 b0)))
+      ;; codim 2: s1*s1 = s2 + s11
+      (add! 2 (+ (* a0 b2) (* a2 b0) (* a1 b1)))
+      (add! 3 (+ (* a0 b3) (* a3 b0) (* a1 b1)))
+      ;; codim 3: s1*s2 = s21, s1*s11 = s21
+      (add! 4 (+ (* a0 b4) (* a4 b0) (* a1 b2) (* a2 b1) (* a1 b3) (* a3 b1)))
+      ;; codim 4: s1*s21 = s22, s2*s2 = s22, s11*s11 = s22, s2*s11 = 0
+      (add! 5 (+ (* a0 b5) (* a5 b0) (* a1 b4) (* a4 b1) (* a2 b2) (* a3 b3))))
+    c))
+
+(define (schubert-gr24-degree a) (vector-ref a 5))
+
+;; ---------------------------------------------------------------------------
+;; Mumford-Tate Lie Algebra Invariant Tensor Verification
+;; ---------------------------------------------------------------------------
+;; A matrix X in gl(V_Q) infinitesimally preserves:
+;;   - a bilinear tensor Q (up to similitude scalar lambda) iff X^T Q + Q X = lambda Q
+;;   - an endomorphism E (e.g., CM action) iff [X, E] = 0
+;;   - a (2,0)-tensor T (represented as d x d matrix) iff X T + T X^T = lambda T.
+;; We check exact rational algebraic invariance for arbitrary Lie algebra generators X!
+
+(define (rat-mat-transpose M)
+  (let* ((r (exact-matrix-rows M)) (c (exact-matrix-cols M))
+         (R (exact-matrix-zero c r)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (exact-matrix-set! R j i (exact-matrix-ref M i j))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-mat-add A B)
+  (let* ((r (exact-matrix-rows A)) (c (exact-matrix-cols A))
+         (R (exact-matrix-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (exact-matrix-set! R i j (+ (exact-matrix-ref A i j)
+                                                     (exact-matrix-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-mat-eq? A B)
+  (and (= (exact-matrix-rows A) (exact-matrix-rows B))
+       (= (exact-matrix-cols A) (exact-matrix-cols B))
+       (let li ((i 0))
+         (cond ((= i (exact-matrix-rows A)) #t)
+               ((let lj ((j 0))
+                  (cond ((= j (exact-matrix-cols A)) #t)
+                        ((= (exact-matrix-ref A i j) (exact-matrix-ref B i j)) (lj (+ j 1)))
+                        (else #f)))
+                (li (+ i 1)))
+               (else #f)))))
+
+(define (rat-mat-scale-local s M)
+  (let* ((r (exact-matrix-rows M)) (c (exact-matrix-cols M))
+         (R (exact-matrix-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (exact-matrix-set! R i j (* s (exact-matrix-ref M i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+;; Check if generator X preserves polarization Q (with similitude weight c: X^T Q + Q X = c Q)
+;; AND commutes with every endomorphism E in endomorphisms.
+(define (mumford-tate-lie-algebra-check X Q similitude-c endomorphisms)
+  (let ((lhs (rat-mat-add (exact-matrix-mul (rat-mat-transpose X) Q)
+                          (exact-matrix-mul Q X)))
+        (rhs (rat-mat-scale-local similitude-c Q)))
+    (if (not (rat-mat-eq? lhs rhs))
+        (vector 'mt-violation 'polarization-not-preserved lhs rhs)
+        (let loop ((es endomorphisms))
+          (if (null? es) #t
+              (let* ((E (car es))
+                     (XE (exact-matrix-mul X E))
+                     (EX (exact-matrix-mul E X)))
+                (if (not (rat-mat-eq? XE EX))
+                    (vector 'mt-violation 'endomorphism-not-commuting E XE EX)
+                    (loop (cdr es)))))))))
+
+;; Check whether a Hodge (1,1)-type bilinear tensor T is annihilated (invariant)
+;; by a list of Hodge-group (special Mumford-Tate) Lie algebra generators:
+;;   X^T T + T X = 0 for all X in hg-generators.
+(define (mumford-tate-invariant-tensor? hg-generators T)
+  (let* ((d (exact-matrix-rows T))
+         (Z (exact-matrix-zero d d)))
+    (let loop ((xs hg-generators))
+      (if (null? xs) #t
+          (let* ((X (car xs))
+                 (act (rat-mat-add (exact-matrix-mul (rat-mat-transpose X) T)
+                                   (exact-matrix-mul T X))))
+            (if (rat-mat-eq? act Z)
+                (loop (cdr xs))
+                (vector 'not-mt-invariant X act)))))))

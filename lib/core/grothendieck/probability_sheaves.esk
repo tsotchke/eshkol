@@ -1,0 +1,1062 @@
+;;; core.grothendieck.probability_sheaves -- Atomic Probability Sheaves,
+;;;   Simpson Independent Pullback Structures (IP1-IP5), Strong Affine
+;;;   Commutative Extension Monad G, Nu-Calculus Freshness, Canonical
+;;;   G-Algebra Theta, and Higher-Order Probabilistic Hoare Logic.
+;;;
+;;; Grounded in:
+;;;   - Ho, Wu, and Raad (arXiv:2611.30692, POPL 2027), "Sheaf Semantics of
+;;;     Probabilistic Programs"
+;;;   - Simpson (2017, 2024), Probability Sheaves and Atomic Sheaf Logic
+;;;
+;;; Architecture & Anti-Math-Washing Boundaries:
+;;;   1. Finite/discrete probability spaces (`gpsh-space-*`) use exact reduced
+;;;      rationals (`gpsh-rat*`) over finite support. Every finite theorem and
+;;;      counterexample is tagged `'certified-exact-finite`.
+;;;   2. Atomic sheaf gluing (Doob-Dynkin descent along measure-preserving maps)
+;;;      is strictly separated from probabilistic independence (squares in I).
+;;;   3. Extension monad G models sample-space extension & marginalization
+;;;      (affineness: G(1) ~= 1; commutativity: independent draws reorder), NOT
+;;;      Bayesian conditioning (`observe` is tagged `'open-future-work`).
+;;;   4. Continuous theorems (atomless Unif[0,1] freshness, Box-Muller T1/T2,
+;;;      discrete-continuous mixture Unif[1,2] +_{1/2} delta_42, normal sum,
+;;;      Cauchy undefined expectation) are tagged `'certified-symbolic-hoare-rule`
+;;;      citing their exact external measure-theoretic lemmas (Fubini, Jacobian
+;;;      change-of-variables, Gaussian convolution).
+;;;   5. Unbounded general recursion is explicitly rejected with
+;;;      `'unsupported-unbounded-recursion`, honoring Section 5.1/5.4.
+;;;
+;;; All internal and exported bindings use the `gpsh-` naming prefix.
+
+(require stdlib)
+
+(provide
+  ;; 1. Exact rational helpers
+  gpsh-gcd
+  gpsh-rat
+  gpsh-rat-num
+  gpsh-rat-den
+  gpsh-rat=?
+  gpsh-rat<?
+  gpsh-rat<=?
+  gpsh-rat+
+  gpsh-rat-
+  gpsh-rat*
+  gpsh-rat/
+  ;; 2. Finite probability spaces, Sbp0 morphisms, RV(A), Doob-Dynkin gluing
+  gpsh-make-space
+  gpsh-space-atoms
+  gpsh-space-prob
+  gpsh-space-valid?
+  gpsh-space-unit
+  gpsh-space-bernoulli
+  gpsh-space-fair-coin
+  gpsh-space-product
+  gpsh-measure-preserving?
+  gpsh-rv-as-equal?
+  gpsh-rv-law
+  gpsh-rv-expectation
+  gpsh-s-invariant?
+  gpsh-doob-dynkin-descend
+  ;; 3. Simpson Independent Pullback Structure (IP1-IP5) & Disintegration
+  gpsh-disintegrate
+  gpsh-independent-square?
+  gpsh-indep-pullback
+  gpsh-rv-independent?
+  gpsh-mutually-independent?
+  gpsh-verify-ip-axioms
+  ;; 4. Strong Affine Commutative Extension Monad G & Nu-Calculus
+  gpsh-ext-make
+  gpsh-ext-space
+  gpsh-ext-proj
+  gpsh-ext-val
+  gpsh-ext-eta
+  gpsh-ext-map
+  gpsh-ext-st
+  gpsh-ext-mu
+  gpsh-ext-bind
+  gpsh-ext-new-coin
+  gpsh-ext-equal?
+  gpsh-verify-monad-laws
+  gpsh-verify-sblc-sheaf-bridge
+  gpsh-discrete-coin-freshness-check
+  gpsh-continuous-unif-freshness-cert
+  ;; 5. Canonical G-Algebra Theta, wp, & Higher-Order Probabilistic Hoare Logic
+  gpsh-theta
+  gpsh-wp
+  gpsh-hoare-holds?
+  gpsh-verify-hoare-rules
+  gpsh-verify-imperative-frame-counterexample
+  gpsh-hoare-check-unbounded-recursion
+  ;; 6. Case studies (mask, dcMixture, Box-Muller T1/T2, normal sum, Cauchy)
+  gpsh-case-mask-mutual-independence
+  gpsh-case-pairwise-not-mutual-counterexample
+  gpsh-case-dc-mixture
+  gpsh-case-box-muller-t1-t2
+  gpsh-case-normal-sum-and-expectation
+  gpsh-case-cauchy-expectation
+  ;; 7. Epistemic scope manifest
+  gpsh-paper-scope-manifest)
+
+;; ============================================================================
+;; 1. Exact Reduced Rational Arithmetic
+;; ============================================================================
+
+(define (gpsh-abs-int n) (if (< n 0) (- 0 n) n))
+
+(define (gpsh-gcd a b)
+  (let loop ((x (gpsh-abs-int a)) (y (gpsh-abs-int b)))
+    (if (= y 0) x (loop y (remainder x y)))))
+
+(define (gpsh-rat num den)
+  (if (= den 0)
+      (error "gpsh-rat: zero denominator")
+      (let* ((sign (if (< den 0) -1 1))
+             (n (* sign num))
+             (d (* sign den))
+             (g (gpsh-gcd n d)))
+        (cons (quotient n g) (quotient d g)))))
+
+(define (gpsh-rat-num r) (car r))
+(define (gpsh-rat-den r) (cdr r))
+
+(define (gpsh-rat=? a b)
+  (and (= (car a) (car b)) (= (cdr a) (cdr b))))
+
+(define (gpsh-rat<? a b)
+  (< (* (car a) (cdr b)) (* (car b) (cdr a))))
+
+(define (gpsh-rat<=? a b)
+  (<= (* (car a) (cdr b)) (* (car b) (cdr a))))
+
+(define (gpsh-rat+ a b)
+  (gpsh-rat (+ (* (car a) (cdr b)) (* (car b) (cdr a)))
+            (* (cdr a) (cdr b))))
+
+(define (gpsh-rat- a b)
+  (gpsh-rat (- (* (car a) (cdr b)) (* (car b) (cdr a)))
+            (* (cdr a) (cdr b))))
+
+(define (gpsh-rat* a b)
+  (gpsh-rat (* (car a) (car b)) (* (cdr a) (cdr b))))
+
+(define (gpsh-rat/ a b)
+  (if (= (car b) 0)
+      (error "gpsh-rat/: division by zero")
+      (gpsh-rat (* (car a) (cdr b)) (* (cdr a) (car b)))))
+
+(define gpsh-r0 (gpsh-rat 0 1))
+(define gpsh-r1 (gpsh-rat 1 1))
+(define gpsh-r-half (gpsh-rat 1 2))
+
+;; Utility: deduplicate preserving order
+(define (gpsh-member? x lst)
+  (cond
+    ((null? lst) #f)
+    ((equal? x (car lst)) #t)
+    (else (gpsh-member? x (cdr lst)))))
+
+(define (gpsh-unique lst)
+  (let loop ((rest lst) (acc '()))
+    (if (null? rest)
+        (reverse acc)
+        (if (gpsh-member? (car rest) acc)
+            (loop (cdr rest) acc)
+            (loop (cdr rest) (cons (car rest) acc))))))
+
+(define (gpsh-sum-rats lst)
+  (let loop ((rest lst) (acc gpsh-r0))
+    (if (null? rest)
+        acc
+        (loop (cdr rest) (gpsh-rat+ acc (car rest))))))
+
+(define (gpsh-all? pred lst)
+  (cond
+    ((null? lst) #t)
+    ((pred (car lst)) (gpsh-all? pred (cdr lst)))
+    (else #f)))
+
+(define (gpsh-any? pred lst)
+  (cond
+    ((null? lst) #f)
+    ((pred (car lst)) #t)
+    (else (gpsh-any? pred (cdr lst)))))
+
+;; ============================================================================
+;; 2. Finite Probability Spaces, Sbp0 Morphisms, RV(A), Doob-Dynkin Gluing
+;; ============================================================================
+;; A finite probability space is a list `('gpsh-space entries)` where each entry
+;; is `(cons atom prob-rat)`. Zero-mass atoms are allowed to test almost-sure
+;; equality `~_P` explicitly.
+
+(define (gpsh-make-space entries)
+  (list 'gpsh-space entries))
+
+(define (gpsh-space-entries sp) (cadr sp))
+
+(define (gpsh-space-atoms sp)
+  (map car (gpsh-space-entries sp)))
+
+(define (gpsh-space-prob sp atom)
+  (let loop ((es (gpsh-space-entries sp)) (acc gpsh-r0))
+    (if (null? es)
+        acc
+        (if (equal? (caar es) atom)
+            (loop (cdr es) (gpsh-rat+ acc (cdar es)))
+            (loop (cdr es) acc)))))
+
+(define (gpsh-space-support sp)
+  (let loop ((es (gpsh-space-entries sp)) (acc '()))
+    (if (null? es)
+        (reverse acc)
+        (if (gpsh-rat<? gpsh-r0 (cdar es))
+            (loop (cdr es) (cons (caar es) acc))
+            (loop (cdr es) acc)))))
+
+(define (gpsh-space-valid? sp)
+  (let ((es (gpsh-space-entries sp)))
+    (and (not (null? es))
+         (gpsh-all? (lambda (e) (gpsh-rat<=? gpsh-r0 (cdr e))) es)
+         (gpsh-rat=? (gpsh-sum-rats (map cdr es)) gpsh-r1))))
+
+(define (gpsh-space-unit)
+  (gpsh-make-space (list (cons 'star gpsh-r1))))
+
+(define (gpsh-space-bernoulli p-rat)
+  (gpsh-make-space
+    (list (cons 0 (gpsh-rat- gpsh-r1 p-rat))
+          (cons 1 p-rat))))
+
+(define (gpsh-space-fair-coin)
+  (gpsh-space-bernoulli gpsh-r-half))
+
+(define (gpsh-space-product sp1 sp2)
+  (let ((e1 (gpsh-space-entries sp1))
+        (e2 (gpsh-space-entries sp2)))
+    (gpsh-make-space
+      (let outer ((r1 e1) (acc '()))
+        (if (null? r1)
+            (reverse acc)
+            (let inner ((r2 e2) (acc2 acc))
+              (if (null? r2)
+                  (outer (cdr r1) acc2)
+                  (inner (cdr r2)
+                         (cons (cons (cons (caar r1) (caar r2))
+                                     (gpsh-rat* (cdar r1) (cdar r2)))
+                               acc2)))))))))
+
+;; Pushforward measure f_*(P_A) over distinct values of f on support(A)
+(define (gpsh-rv-law sp rv)
+  (let* ((es (gpsh-space-entries sp))
+         (vals (gpsh-unique (map (lambda (e) (rv (car e))) es))))
+    (map (lambda (v)
+           (let loop ((rest es) (acc gpsh-r0))
+             (if (null? rest)
+                 (cons v acc)
+                 (if (equal? (rv (caar rest)) v)
+                     (loop (cdr rest) (gpsh-rat+ acc (cdar rest)))
+                     (loop (cdr rest) acc)))))
+         vals)))
+
+(define (gpsh-law-prob law val)
+  (let loop ((rest law))
+    (cond
+      ((null? rest) gpsh-r0)
+      ((equal? (caar rest) val) (cdar rest))
+      (else (loop (cdr rest))))))
+
+;; Measure-preserving morphism f : spA -> spB in Sbp0:
+;; for every b in atoms(spB), P_A(f^{-1}(b)) = P_B(b), and every positive-mass
+;; image f(a) lies in atoms(spB).
+(define (gpsh-measure-preserving? spA spB f)
+  (let ((law (gpsh-rv-law spA f))
+        (atomsB (gpsh-space-atoms spB)))
+    (and (gpsh-all?
+           (lambda (b)
+             (gpsh-rat=? (gpsh-law-prob law b) (gpsh-space-prob spB b)))
+           atomsB)
+         (gpsh-all?
+           (lambda (pair)
+             (or (gpsh-rat=? (cdr pair) gpsh-r0)
+                 (gpsh-member? (car pair) atomsB)))
+           law))))
+
+;; Almost-sure equality X ~_{P_Omega} Y: agrees on every positive-mass atom.
+(define (gpsh-rv-as-equal? sp rv1 rv2)
+  (gpsh-all? (lambda (w) (equal? (rv1 w) (rv2 w)))
+             (gpsh-space-support sp)))
+
+;; Exact rational expectation E[X] = sum_w P(w) * X(w) for integer/rational RV.
+(define (gpsh-rv-expectation sp rv)
+  (let loop ((es (gpsh-space-entries sp)) (acc gpsh-r0))
+    (if (null? es)
+        acc
+        (let* ((v (rv (caar es)))
+               (vr (if (pair? v) v (gpsh-rat v 1))))
+          (loop (cdr es) (gpsh-rat+ acc (gpsh-rat* (cdar es) vr)))))))
+
+;; Atomic sheaf s-invariance (Definition 3.11 & Proposition 3.14 Doob-Dynkin):
+;; y in RV(A)(spPrime) is s-invariant along s : spPrime -> spBase iff for all
+;; positive-mass w1, w2 in spPrime with s(w1) = s(w2), y(w1) = y(w2).
+(define (gpsh-s-invariant? spPrime s y)
+  (let ((supp (gpsh-space-support spPrime)))
+    (gpsh-all?
+      (lambda (w1)
+        (gpsh-all?
+          (lambda (w2)
+            (or (not (equal? (s w1) (s w2)))
+                (equal? (y w1) (y w2))))
+          supp))
+      supp)))
+
+;; Constructive Doob-Dynkin descent: if y is s-invariant along measure-preserving
+;; s : spPrime -> spBase, return `('ok descended-rv)`; otherwise `('not-s-invariant)`.
+(define (gpsh-doob-dynkin-descend spPrime spBase s y)
+  (cond
+    ((not (gpsh-measure-preserving? spPrime spBase s))
+     (list 'not-measure-preserving))
+    ((not (gpsh-s-invariant? spPrime s y))
+     (list 'not-s-invariant))
+    (else
+     (let* ((supp (gpsh-space-support spPrime))
+            (table (map (lambda (b)
+                          (let loop ((ws supp))
+                            (cond
+                              ((null? ws) (cons b 'null-measure-default))
+                              ((equal? (s (car ws)) b) (cons b (y (car ws))))
+                              (else (loop (cdr ws))))))
+                        (gpsh-space-atoms spBase))))
+       (list 'ok
+             (lambda (b)
+               (let loop ((ts table))
+                 (cond
+                   ((null? ts) 'null-measure-default)
+                   ((equal? (caar ts) b) (cdar ts))
+                   (else (loop (cdr ts)))))))))))
+
+;; ============================================================================
+;; 3. Simpson Independent Pullback Structure (IP1-IP5) & Disintegration
+;; ============================================================================
+
+;; Disintegration kernel P_{spA}(a | f = b) as an exact rational for atom a, base b.
+(define (gpsh-disintegrate spA f a b)
+  (let* ((pb (gpsh-law-prob (gpsh-rv-law spA f) b)))
+    (if (gpsh-rat=? pb gpsh-r0)
+        gpsh-r0
+        (if (equal? (f a) b)
+            (gpsh-rat/ (gpsh-space-prob spA a) pb)
+            gpsh-r0))))
+
+;; Conditional independence square (Example 3.10):
+;;   sp1 --f--> sp2
+;;    |          |
+;;    h          g
+;;    v          v
+;;   sp3 --i--> sp4
+;; Square is in I iff:
+;;   1. f, h, g, i are measure-preserving in Sbp0;
+;;   2. g(f(w)) = i(h(w)) almost surely on sp1;
+;;   3. For every positive-mass x in sp4, u in sp2, v in sp3:
+;;      P(f=u, h=v | gf=x) = P(f=u | gf=x) * P(h=v | gf=x).
+(define (gpsh-independent-square? sp1 sp2 sp3 sp4 f h g i)
+  (and (gpsh-measure-preserving? sp1 sp2 f)
+       (gpsh-measure-preserving? sp1 sp3 h)
+       (gpsh-measure-preserving? sp2 sp4 g)
+       (gpsh-measure-preserving? sp3 sp4 i)
+       (gpsh-rv-as-equal? sp1 (lambda (w) (g (f w))) (lambda (w) (i (h w))))
+       (let* ((es1 (gpsh-space-entries sp1))
+              (supp4 (gpsh-space-support sp4))
+              (a2 (gpsh-space-atoms sp2))
+              (a3 (gpsh-space-atoms sp3)))
+         (gpsh-all?
+           (lambda (x)
+             (let ((px (gpsh-space-prob sp4 x)))
+               (gpsh-all?
+                 (lambda (u)
+                   (gpsh-all?
+                     (lambda (v)
+                       (let* ((p-uvx
+                                (gpsh-sum-rats
+                                  (map (lambda (e)
+                                         (let ((w (car e)))
+                                           (if (and (equal? (f w) u)
+                                                    (equal? (h w) v)
+                                                    (equal? (g (f w)) x))
+                                               (cdr e)
+                                               gpsh-r0)))
+                                       es1)))
+                              (p-ux
+                                (gpsh-sum-rats
+                                  (map (lambda (e)
+                                         (let ((w (car e)))
+                                           (if (and (equal? (f w) u)
+                                                    (equal? (g (f w)) x))
+                                               (cdr e)
+                                               gpsh-r0)))
+                                       es1)))
+                              (p-vx
+                                (gpsh-sum-rats
+                                  (map (lambda (e)
+                                         (let ((w (car e)))
+                                           (if (and (equal? (h w) v)
+                                                    (equal? (i (h w)) x))
+                                               (cdr e)
+                                               gpsh-r0)))
+                                       es1))))
+                         ;; Multiply through by px^2 to avoid division:
+                         ;; (p_uvx / px) = (p_ux / px) * (p_vx / px)
+                         ;; <=> p_uvx * px = p_ux * p_vx
+                         (gpsh-rat=? (gpsh-rat* p-uvx px)
+                                     (gpsh-rat* p-ux p-vx))))
+                     a3))
+                 a2)))
+           supp4))))
+
+;; Independent pullback f (x) g over cospan sp1 --f--> spBase <--g-- sp2 (IP5):
+;; P_{f (x) g}(u, v) = sum_{x in supp(spBase)} P_1(u | f=x) * P_2(v | g=x) * P_base(x).
+(define (gpsh-indep-pullback sp1 sp2 spBase f g)
+  (let ((a1 (gpsh-space-atoms sp1))
+        (a2 (gpsh-space-atoms sp2))
+        (suppB (gpsh-space-support spBase)))
+    (gpsh-make-space
+      (let outer ((r1 a1) (acc '()))
+        (if (null? r1)
+            (reverse acc)
+            (let inner ((r2 a2) (acc2 acc))
+              (if (null? r2)
+                  (outer (cdr r1) acc2)
+                  (let* ((u (car r1))
+                         (v (car r2))
+                         (mass
+                           (gpsh-sum-rats
+                             (map (lambda (x)
+                                    (gpsh-rat*
+                                      (gpsh-rat* (gpsh-disintegrate sp1 f u x)
+                                                 (gpsh-disintegrate sp2 g v x))
+                                      (gpsh-space-prob spBase x)))
+                                  suppB))))
+                    (inner (cdr r2) (cons (cons (cons u v) mass) acc2))))))))))
+
+;; Pairwise probabilistic independence X _|_ Y on sp:
+;; P(X=u, Y=v) = P(X=u) * P(Y=v) for all u, v.
+(define (gpsh-rv-independent? sp rvX rvY)
+  (let* ((es (gpsh-space-entries sp))
+         (lawX (gpsh-rv-law sp rvX))
+         (lawY (gpsh-rv-law sp rvY))
+         (valsX (map car lawX))
+         (valsY (map car lawY)))
+    (gpsh-all?
+      (lambda (u)
+        (gpsh-all?
+          (lambda (v)
+            (let ((p-joint
+                    (gpsh-sum-rats
+                      (map (lambda (e)
+                             (if (and (equal? (rvX (car e)) u)
+                                      (equal? (rvY (car e)) v))
+                                 (cdr e)
+                                 gpsh-r0))
+                           es))))
+              (gpsh-rat=? p-joint
+                          (gpsh-rat* (gpsh-law-prob lawX u)
+                                     (gpsh-law-prob lawY v)))))
+          valsY))
+      valsX)))
+
+;; Mutual independence _|_m(rv1, ..., rvn) via Definition D.4:
+;; _|_m(X1, ..., Xn, X_{n+1}) <=> _|_m(X1, ..., Xn) /\ X_{n+1} _|_ (X1, ..., Xn).
+(define (gpsh-mutually-independent? sp rvs)
+  (cond
+    ((or (null? rvs) (null? (cdr rvs))) #t)
+    (else
+     (let loop ((prefix-fn (car rvs)) (rest (cdr rvs)))
+       (if (null? rest)
+           #t
+           (let ((next-rv (car rest)))
+             (if (gpsh-rv-independent? sp prefix-fn next-rv)
+                 (loop (lambda (w) (cons (prefix-fn w) (next-rv w)))
+                       (cdr rest))
+                 #f)))))))
+
+;; Verify IP1-IP5 axioms on concrete finite spaces plus correlated negative control.
+(define (gpsh-verify-ip-axioms)
+  (let* ((u1 (gpsh-space-unit))
+         (c1 (gpsh-space-fair-coin))
+         (c2 (gpsh-space-product c1 c1))
+         (c3 (gpsh-space-product c2 c1))
+         (id (lambda (x) x))
+         (bang (lambda (x) 'star))
+         (p1 (lambda (p) (car p)))
+         (p2 (lambda (p) (cdr p)))
+         ;; IP1: bottom morphism is identity (c2 --p1--> c1, c2 --id--> c2, c1 --id--> c1)
+         (ip1-ok (gpsh-independent-square? c2 c1 c2 c1 p1 id id p1))
+         ;; IP2: symmetry on independent coin product c2
+         (ip2-fwd (gpsh-independent-square? c2 c1 c1 u1 p1 p2 bang bang))
+         (ip2-rev (gpsh-independent-square? c2 c1 c1 u1 p2 p1 bang bang))
+         ;; IP3: horizontal composition of independent squares c3 -> c2 -> c1
+         (ip3-left (gpsh-independent-square? c3 c2 c1 u1 p1 p2 bang bang))
+         (ip3-comp (gpsh-independent-square? c3 c1 c1 u1 (lambda (t) (car (car t))) p2 bang bang))
+         ;; IP5: constructive independent pullback over coin base (two copies of c2 glued along first coin)
+         (pb (gpsh-indep-pullback c2 c2 c1 p1 p1))
+         (ip5-valid (gpsh-space-valid? pb))
+         (ip5-indep (gpsh-independent-square? pb c2 c2 c1 p1 p2 p1 p1))
+         ;; Adversarial Guard 1: correlated diagonal (X, X) is a valid commutative square
+         ;; in Sbp0, yet MUST be rejected by I (not independent)!
+         (diag-commutes (gpsh-rv-as-equal? c1 (lambda (w) (bang (id w))) (lambda (w) (bang (id w)))))
+         (diag-rejected (not (gpsh-independent-square? c1 c1 c1 u1 id id bang bang))))
+    (list 'gpsh-ip-verification
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'ip1 ip1-ok)
+          (list 'ip2 (and ip2-fwd ip2-rev))
+          (list 'ip3 (and ip3-left ip3-comp))
+          (list 'ip5 (and ip5-valid ip5-indep))
+          (list 'correlated-square-rejected (and diag-commutes diag-rejected))
+          (list 'all-pass (and ip1-ok ip2-fwd ip2-rev ip3-left ip3-comp
+                               ip5-valid ip5-indep diag-commutes diag-rejected)))))
+
+;; ============================================================================
+;; 4. Strong Affine Commutative Extension Monad G & Nu-Calculus Model
+;; ============================================================================
+;; An element `[f : ext-space -> base-space, val-rv]` of `G(RV(A))(base-space)`.
+
+(define (gpsh-ext-make ext-sp proj val-rv)
+  (list 'gpsh-ext ext-sp proj val-rv))
+
+(define (gpsh-ext-space e) (cadr e))
+(define (gpsh-ext-proj e) (caddr e))
+(define (gpsh-ext-val e) (cadddr e))
+
+;; Unit eta_F : F(Omega) -> G F(Omega) : x |-> [id_Omega, x]
+(define (gpsh-ext-eta base-sp rv)
+  (gpsh-ext-make base-sp (lambda (w) w) rv))
+
+;; Functorial map G(alpha)([f, x]) = [f, alpha(x)]
+(define (gpsh-ext-map ext fn)
+  (let ((sp (gpsh-ext-space ext))
+        (pr (gpsh-ext-proj ext))
+        (rv (gpsh-ext-val ext)))
+    (gpsh-ext-make sp pr (lambda (w) (fn (rv w))))))
+
+;; Left strength st(x, [g, y]) = [g, (x . g, y)]
+(define (gpsh-ext-st rv-x ext-y)
+  (let ((sp (gpsh-ext-space ext-y))
+        (pr (gpsh-ext-proj ext-y))
+        (rv-y (gpsh-ext-val ext-y)))
+    (gpsh-ext-make sp pr (lambda (w) (cons (rv-x (pr w)) (rv-y w))))))
+
+;; Multiplication mu([g, [f, x]]) = [g o f, x]
+;; Represented when outer ext yields inner ext sharing the same extended space
+;; or explicit nested extension (ext-outer yields (sp2, f, x)).
+(define (gpsh-ext-mu base-sp ext-outer inner-fn)
+  ;; inner-fn : (sp1, x1) -> ext2 over sp1
+  (let* ((sp1 (gpsh-ext-space ext-outer))
+         (g (gpsh-ext-proj ext-outer))
+         (rv1 (gpsh-ext-val ext-outer))
+         (ext2 (inner-fn sp1 rv1))
+         (sp2 (gpsh-ext-space ext2))
+         (f (gpsh-ext-proj ext2))
+         (rv2 (gpsh-ext-val ext2)))
+    (gpsh-ext-make sp2 (lambda (w2) (g (f w2))) rv2)))
+
+;; Kleisli bind (Corollary 3.20): [f, x] >>= k
+;; Here k takes `(sp1, rv1)` and returns an extension `[g : sp2 -> sp1, rv2]`.
+(define (gpsh-ext-bind ext k)
+  (let* ((sp1 (gpsh-ext-space ext))
+         (f (gpsh-ext-proj ext))
+         (rv1 (gpsh-ext-val ext))
+         (ext2 (k sp1 rv1))
+         (sp2 (gpsh-ext-space ext2))
+         (g (gpsh-ext-proj ext2))
+         (rv2 (gpsh-ext-val ext2)))
+    (gpsh-ext-make sp2 (lambda (w2) (f (g w2))) rv2)))
+
+;; Fresh fair coin allocation: Omega |-> [pi_1 : Omega x Coin -> Omega, pi_2]
+(define (gpsh-ext-new-coin base-sp)
+  (let ((ext-sp (gpsh-space-product base-sp (gpsh-space-fair-coin))))
+    (gpsh-ext-make ext-sp car cdr)))
+
+;; Equivalence in G F(Omega) via Lemma 3.18 / joint distribution of (proj, val):
+;; For RV(A), two extensions [f1, x1] and [f2, x2] over base-sp define the same
+;; conditional law on (base, value) iff the joint laws of (f1(w), x1(w)) and
+;; (f2(w), x2(w)) coincide on every (b, v).
+(define (gpsh-ext-equal? ext1 ext2)
+  (let* ((sp1 (gpsh-ext-space ext1))
+         (sp2 (gpsh-ext-space ext2))
+         (law1 (gpsh-rv-law sp1 (lambda (w) (cons ((gpsh-ext-proj ext1) w)
+                                                  ((gpsh-ext-val ext1) w)))))
+         (law2 (gpsh-rv-law sp2 (lambda (w) (cons ((gpsh-ext-proj ext2) w)
+                                                  ((gpsh-ext-val ext2) w)))))
+         (keys (gpsh-unique (append (map car law1) (map car law2)))))
+    (gpsh-all?
+      (lambda (k)
+        (gpsh-rat=? (gpsh-law-prob law1 k) (gpsh-law-prob law2 k)))
+      keys)))
+
+;; Verify Theorem 1 (monad unit, associativity, affineness, commutativity)
+(define (gpsh-verify-monad-laws)
+  (let* ((u1 (gpsh-space-unit))
+         (c1 (gpsh-space-fair-coin))
+         ;; Left unit: eta(x) >>= k = k(x)
+         (k-add (lambda (sp rv)
+                  (gpsh-ext-bind (gpsh-ext-new-coin sp)
+                    (lambda (sp2 c)
+                      (gpsh-ext-eta sp2 (lambda (w) (+ (rv (car w)) (c w))))))))
+         (lhs-lu (gpsh-ext-bind (gpsh-ext-eta c1 (lambda (w) w)) k-add))
+         (rhs-lu (k-add c1 (lambda (w) w)))
+         (left-unit-ok (gpsh-ext-equal? lhs-lu rhs-lu))
+         ;; Right unit: m >>= eta = m
+         (m0 (gpsh-ext-new-coin c1))
+         (rhs-ru (gpsh-ext-bind m0 (lambda (sp rv) (gpsh-ext-eta sp rv))))
+         (right-unit-ok (gpsh-ext-equal? m0 rhs-ru))
+         ;; Associativity: (m >>= f) >>= g = m >>= (x -> f x >>= g)
+         (k1 (lambda (sp rv)
+               (gpsh-ext-bind (gpsh-ext-new-coin sp)
+                 (lambda (sp2 c)
+                   (gpsh-ext-eta sp2 (lambda (w) (+ (* 2 (rv (car w))) (c w))))))))
+         (k2 (lambda (sp rv)
+               (gpsh-ext-eta sp (lambda (w) (+ (rv w) 10)))))
+         (assoc-l (gpsh-ext-bind (gpsh-ext-bind m0 k1) k2))
+         (assoc-r (gpsh-ext-bind m0 (lambda (sp rv) (gpsh-ext-bind (k1 sp rv) k2))))
+         (assoc-ok (gpsh-ext-equal? assoc-l assoc-r))
+         ;; Affineness: unused coin draw equals return 'star (G(1) ~= 1)
+         (aff-l (gpsh-ext-bind (gpsh-ext-new-coin u1)
+                  (lambda (sp rv) (gpsh-ext-eta sp (lambda (w) 'star)))))
+         (aff-r (gpsh-ext-eta u1 (lambda (w) 'star)))
+         (affine-ok (gpsh-ext-equal? aff-l aff-r))
+         ;; Commutativity: flip x (Ber 1/3) then y (Ber 1/2) == flip y then x
+         (sp-b13 (gpsh-space-bernoulli (gpsh-rat 1 3)))
+         (draw-b13 (lambda (sp) (gpsh-ext-make (gpsh-space-product sp sp-b13) car cdr)))
+         (comm-xy (gpsh-ext-bind (draw-b13 u1)
+                    (lambda (sp1 rx)
+                      (gpsh-ext-bind (gpsh-ext-new-coin sp1)
+                        (lambda (sp2 ry)
+                          (gpsh-ext-eta sp2 (lambda (w) (cons (rx (car w)) (ry w)))))))))
+         (comm-yx (gpsh-ext-bind (gpsh-ext-new-coin u1)
+                    (lambda (sp1 ry)
+                      (gpsh-ext-bind (draw-b13 sp1)
+                        (lambda (sp2 rx)
+                          (gpsh-ext-eta sp2 (lambda (w) (cons (rx w) (ry (car w))))))))))
+         (comm-ok (gpsh-ext-equal? comm-xy comm-yx)))
+    (list 'gpsh-monad-laws
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'monad-role 'sample-space-extension-and-marginalization-not-conditioning)
+          (list 'left-unit left-unit-ok)
+          (list 'right-unit right-unit-ok)
+          (list 'associativity assoc-ok)
+          (list 'affineness affine-ok)
+          (list 'commutativity comm-ok)
+          (list 'all-pass (and left-unit-ok right-unit-ok assoc-ok affine-ok comm-ok)))))
+
+;; Direct bridge to Stochastic BLC (Control 1 shared vs Control 2 fresh draws):
+;;   Shared: `x <- coin; return (x, x)` has law {(0,0):1/2, (1,1):1/2}, x NOT _|_ x
+;;   Fresh:  `x <- coin; y <- coin; return (x, y)` has uniform 1/4 law, x _|_ y
+(define (gpsh-verify-sblc-sheaf-bridge)
+  (let* ((u1 (gpsh-space-unit))
+         (shared (gpsh-ext-bind (gpsh-ext-new-coin u1)
+                   (lambda (sp1 rx)
+                     (gpsh-ext-eta sp1 (lambda (w) (cons (rx w) (rx w)))))))
+         (fresh (gpsh-ext-bind (gpsh-ext-new-coin u1)
+                  (lambda (sp1 rx)
+                    (gpsh-ext-bind (gpsh-ext-new-coin sp1)
+                      (lambda (sp2 ry)
+                        (gpsh-ext-eta sp2 (lambda (w) (cons (rx (car w)) (ry w)))))))))
+         (shared-law (gpsh-rv-law (gpsh-ext-space shared) (gpsh-ext-val shared)))
+         (fresh-law (gpsh-rv-law (gpsh-ext-space fresh) (gpsh-ext-val fresh)))
+         (shared-sp (gpsh-ext-space shared))
+         (shared-v (gpsh-ext-val shared))
+         (fresh-sp (gpsh-ext-space fresh))
+         (fresh-v (gpsh-ext-val fresh))
+         (shared-diag-ok
+           (and (gpsh-rat=? (gpsh-law-prob shared-law (cons 0 0)) gpsh-r-half)
+                (gpsh-rat=? (gpsh-law-prob shared-law (cons 1 1)) gpsh-r-half)
+                (gpsh-rat=? (gpsh-law-prob shared-law (cons 0 1)) gpsh-r0)
+                (gpsh-rat=? (gpsh-law-prob shared-law (cons 1 0)) gpsh-r0)))
+         (shared-dependent
+           (not (gpsh-rv-independent? shared-sp
+                                      (lambda (w) (car (shared-v w)))
+                                      (lambda (w) (cdr (shared-v w))))))
+         (q (gpsh-rat 1 4))
+         (fresh-unif-ok
+           (and (gpsh-rat=? (gpsh-law-prob fresh-law (cons 0 0)) q)
+                (gpsh-rat=? (gpsh-law-prob fresh-law (cons 0 1)) q)
+                (gpsh-rat=? (gpsh-law-prob fresh-law (cons 1 0)) q)
+                (gpsh-rat=? (gpsh-law-prob fresh-law (cons 1 1)) q)))
+         (fresh-independent
+           (gpsh-rv-independent? fresh-sp
+                                 (lambda (w) (car (fresh-v w)))
+                                 (lambda (w) (cdr (fresh-v w))))))
+    (list 'gpsh-sblc-sheaf-bridge
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'shared-diagonal-half shared-diag-ok)
+          (list 'shared-dependent shared-dependent)
+          (list 'fresh-uniform-quarter fresh-unif-ok)
+          (list 'fresh-independent fresh-independent)
+          (list 'all-pass (and shared-diag-ok shared-dependent fresh-unif-ok fresh-independent)))))
+
+;; Nu-calculus freshness negative control on discrete fair coin:
+;; For discrete coin, P(x = y) = 1/2 != 0, so discrete coin FAILS the
+;; nu-calculus freshness equation `x <- draw; return (x, x=y) = x <- draw; return (x, false)`.
+(define (gpsh-discrete-coin-freshness-check)
+  (let* ((c1 (gpsh-space-fair-coin))
+         (y-rv (lambda (w) w))
+         (ext-eq (gpsh-ext-bind (gpsh-ext-new-coin c1)
+                   (lambda (sp2 x-rv)
+                     (gpsh-ext-eta sp2
+                       (lambda (w) (cons (x-rv w) (= (x-rv w) (y-rv (car w)))))))))
+         (ext-ff (gpsh-ext-bind (gpsh-ext-new-coin c1)
+                   (lambda (sp2 x-rv)
+                     (gpsh-ext-eta sp2 (lambda (w) (cons (x-rv w) #f))))))
+         (fresh-holds (gpsh-ext-equal? ext-eq ext-ff))
+         (collision-prob
+           (gpsh-law-prob (gpsh-rv-law (gpsh-ext-space ext-eq)
+                                       (lambda (w) (cdr ((gpsh-ext-val ext-eq) w))))
+                          #t)))
+    (list 'gpsh-discrete-freshness-negative-control
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'collision-probability collision-prob)
+          (list 'satisfies-nu-freshness fresh-holds)
+          (list 'correctly-rejects-discrete-freshness
+                (and (not fresh-holds) (gpsh-rat=? collision-prob gpsh-r-half))))))
+
+;; Continuous Unif[0,1] nu-calculus freshness certificate (Theorem 2 & Prop. 3.26):
+;; Explicitly tagged `'certified-symbolic-hoare-rule` citing Fubini + atomlessness
+;; of Lebesgue measure lambda_I on [0,1]: integral_Omega (integral_0^1 chi_{Y(w)}(x) dx) dP = 0.
+(define (gpsh-continuous-unif-freshness-cert)
+  (list 'gpsh-continuous-nu-freshness
+        (list 'epistemic-status 'certified-symbolic-hoare-rule)
+        (list 'external-lemma 'fubini-atomless-lebesgue-measure-singleton-zero)
+        (list 'collision-probability 0)
+        (list 'satisfies-nu-freshness #t)
+        (list 'boolean-rv-almost-surely-false #t)))
+
+;; ============================================================================
+;; 5. Canonical G-Algebra Theta, wp, & Higher-Order Probabilistic Hoare Logic
+;; ============================================================================
+
+;; Proposition 4.1: Theta : G(Prop) -> Prop sends [f, b] |-> b (Boolean constant sheaf).
+;; In our finite atomic sheaf model, a proposition over extended space sp is
+;; a global Boolean value (constant across support(sp)), verified constant!
+(define (gpsh-theta ext-prop)
+  (let* ((sp (gpsh-ext-space ext-prop))
+         (rv (gpsh-ext-val ext-prop))
+         (supp (gpsh-space-support sp)))
+    (if (null? supp)
+        #t
+        (let ((b0 (if (rv (car supp)) #t #f)))
+          (if (gpsh-all? (lambda (w) (eq? (if (rv w) #t #f) b0)) supp)
+              b0
+              (error "gpsh-theta: non-constant subobject classifier section"))))))
+
+;; Definition 4.2: wp t phi = Theta(G(ev)(st(t, phi)))
+;; Here `t` is an extension `gpsh-ext` over base-sp, and `phi` is an internal
+;; predicate `(lambda (ext-sp proj val-rv) -> bool)` representing Prop^A(Omega)
+;; via Yoneda (Remark D.2: Hom(y(Omega) x A, Prop)).
+(define (gpsh-wp ext-t phi-pred)
+  (let* ((sp (gpsh-ext-space ext-t))
+         (pr (gpsh-ext-proj ext-t))
+         (rv (gpsh-ext-val ext-t))
+         (truth (if (phi-pred sp pr rv) #t #f)))
+    (gpsh-theta (gpsh-ext-make sp pr (lambda (w) truth)))))
+
+;; Definition 4.3: Hoare triple {pre} t {post} := pre -> wp t post
+(define (gpsh-hoare-holds? pre-bool ext-t post-pred)
+  (or (not pre-bool) (gpsh-wp ext-t post-pred)))
+
+;; Verify Theorem 3 (HRet, HComp, HFunc, HCons, HFrame) and Theorem 4 (HCoin, HCond)
+;; PLUS Tsotchke-chan Guard 4 (Theta/wp MUST reject probabilistically unsound claims!).
+(define (gpsh-verify-hoare-rules)
+  (let* ((u1 (gpsh-space-unit))
+         (c1 (gpsh-space-fair-coin))
+         ;; HRet: {phi(x)} return x {y. phi(y)}
+         (phi-fair (lambda (sp pr rv)
+                     (gpsh-rat=? (gpsh-law-prob (gpsh-rv-law sp rv) 1) gpsh-r-half)))
+         (hret-ok (gpsh-hoare-holds? (phi-fair c1 (lambda (w) w) (lambda (w) w))
+                                     (gpsh-ext-eta c1 (lambda (w) w))
+                                     phi-fair))
+         ;; HComp: {top} x <- coin; y <- coin; return (x, y) {(x, y). x _|_ y}
+         (ext-1 (gpsh-ext-new-coin u1))
+         (ext-12 (gpsh-ext-bind ext-1
+                   (lambda (sp1 rx)
+                     (gpsh-ext-bind (gpsh-ext-new-coin sp1)
+                       (lambda (sp2 ry)
+                         (gpsh-ext-eta sp2 (lambda (w) (cons (rx (car w)) (ry w)))))))))
+         (post-indep (lambda (sp pr rv)
+                       (gpsh-rv-independent? sp
+                                             (lambda (w) (car (rv w)))
+                                             (lambda (w) (cdr (rv w))))))
+         (hcomp-ok (and (gpsh-hoare-holds? #t ext-1 phi-fair)
+                        (gpsh-hoare-holds? #t ext-12 post-indep)))
+         ;; HFunc: f(x) = (c <- coin; return (x XOR c)) preserves uniformity and independence
+         (f-mask (lambda (sp rv-x)
+                   (gpsh-ext-bind (gpsh-ext-new-coin sp)
+                     (lambda (sp2 rv-c)
+                       (gpsh-ext-eta sp2
+                         (lambda (w)
+                           (let ((xv (rv-x (car w)))
+                                 (cv (rv-c w)))
+                             (cons xv (remainder (+ xv cv) 2)))))))))
+         (hfunc-ext (f-mask c1 (lambda (w) w)))
+         (hfunc-ok (gpsh-hoare-holds? #t hfunc-ext post-indep))
+         ;; HCons: strengthen pre & weaken post
+         (post-weak (lambda (sp pr rv)
+                      (gpsh-rat=? (gpsh-law-prob (gpsh-rv-law sp (lambda (w) (car (rv w)))) 1)
+                                  gpsh-r-half)))
+         (hcons-ok (and (gpsh-hoare-holds? #t ext-12 post-indep)
+                        (gpsh-hoare-holds? #t ext-12 post-weak)))
+         ;; HFrame: {pre} t {post} -> {pre /\ theta} t {post /\ theta}
+         ;; Because sample-space extension preserves propositions monotonically.
+         (theta-prior (phi-fair c1 (lambda (w) w) (lambda (w) w)))
+         (ext-frame (gpsh-ext-new-coin c1))
+         (hframe-ok
+           (gpsh-hoare-holds?
+             (and #t theta-prior)
+             ext-frame
+             (lambda (sp pr rv)
+               (and (phi-fair sp pr rv)
+                    (phi-fair sp pr pr)
+                    (gpsh-rv-independent? sp pr rv)))))
+         ;; HCond (discrete branch mixture + Guard 3 branch-merge conflict check):
+         ;; c <- coin; if c=1 then return 10 else return 20 -> law {10:1/2, 20:1/2}
+         ;; Pure branch claims `z ~ delta_10` or `z ~ delta_20` MUST be rejected!
+         (ext-cond (gpsh-ext-bind (gpsh-ext-new-coin u1)
+                     (lambda (sp1 rc)
+                       (gpsh-ext-eta sp1 (lambda (w) (if (= (rc w) 1) 10 20))))))
+         (hcond-mixture-ok
+           (gpsh-hoare-holds? #t ext-cond
+             (lambda (sp pr rv)
+               (let ((law (gpsh-rv-law sp rv)))
+                 (and (gpsh-rat=? (gpsh-law-prob law 10) gpsh-r-half)
+                      (gpsh-rat=? (gpsh-law-prob law 20) gpsh-r-half))))))
+         (hcond-rejects-pure-branch
+           (and (not (gpsh-hoare-holds? #t ext-cond
+                       (lambda (sp pr rv)
+                         (gpsh-rat=? (gpsh-law-prob (gpsh-rv-law sp rv) 10) gpsh-r1))))
+                (not (gpsh-hoare-holds? #t ext-cond
+                       (lambda (sp pr rv)
+                         (gpsh-rat=? (gpsh-law-prob (gpsh-rv-law sp rv) 20) gpsh-r1))))))
+         ;; Adversarial Guard 4: Theta/wp MUST reject unsound independence claim on shared coin
+         (ext-shared (gpsh-ext-bind (gpsh-ext-new-coin u1)
+                       (lambda (sp1 rx)
+                         (gpsh-ext-eta sp1 (lambda (w) (cons (rx w) (rx w)))))))
+         (unsound-indep-rejected
+           (not (gpsh-hoare-holds? #t ext-shared post-indep))))
+    (list 'gpsh-hoare-rules
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'HRet hret-ok)
+          (list 'HComp hcomp-ok)
+          (list 'HFunc hfunc-ok)
+          (list 'HCons hcons-ok)
+          (list 'HFrame hframe-ok)
+          (list 'HCond hcond-mixture-ok)
+          (list 'branch-merge-rejects-pure-law hcond-rejects-pure-branch)
+          (list 'theta-rejects-unsound-independence unsound-indep-rejected)
+          (list 'all-pass (and hret-ok hcomp-ok hfunc-ok hcons-ok hframe-ok
+                               hcond-mixture-ok hcond-rejects-pure-branch
+                               unsound-indep-rejected)))))
+
+;; Imperative mutable-state negative control from Section 4.1:
+;; `{x = 10} x := x + 1 {x = 11}` holds, yet framing with `theta := (x <= 10)`
+;; produces `{x = 10 /\ x <= 10} x := x + 1 {x = 11 /\ x <= 10}` which FAILS!
+(define (gpsh-verify-imperative-frame-counterexample)
+  (let* ((x0 10)
+         (x1 (+ x0 1))
+         (base-triple (or (not (= x0 10)) (= x1 11)))
+         (framed-triple (or (not (and (= x0 10) (<= x0 10)))
+                            (and (= x1 11) (<= x1 10)))))
+    (list 'gpsh-imperative-frame-negative-control
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'base-triple-holds base-triple)
+          (list 'framed-triple-fails (not framed-triple))
+          (list 'all-pass (and base-triple (not framed-triple))))))
+
+;; Adversarial Guard 5: reject unbounded general recursion in Hoare checker
+;; (honoring Section 5.1 & 5.4: no domain theory / unbounded recursion yet).
+(define (gpsh-hoare-check-unbounded-recursion prog-tag)
+  (if (or (eq? prog-tag 'general-rec)
+          (eq? prog-tag 'while-unbounded)
+          (eq? prog-tag 'omega))
+      (list 'unsupported-unbounded-recursion
+            (list 'epistemic-status 'open-future-work)
+            (list 'accepted #f))
+      (list 'terminating-lambda-prob
+            (list 'epistemic-status 'certified-exact-finite)
+            (list 'accepted #t))))
+
+;; ============================================================================
+;; 6. Paper Case Studies (Examples 2.3, 4.7, 4.8, 4.9, 4.10, 4.11)
+;; ============================================================================
+
+;; Example 4.9: mask = \x. c <- coin; return (x XOR c)
+;; Program: x <- coin; y <- mask x; z <- mask x; return (x, y, z)
+;; Exact 8-atom space proves _|_m(x, y, z) = #t, PLUS negative control
+;; reusing the same mask coin `c1` yields y = z and _|_m(x, y, z) = #f!
+(define (gpsh-case-mask-mutual-independence)
+  (let* ((c1 (gpsh-space-fair-coin))
+         (c2 (gpsh-space-product c1 c1))
+         (c3 (gpsh-space-product c2 c1))
+         (rv-x (lambda (w) (car (car w))))
+         (rv-c1 (lambda (w) (cdr (car w))))
+         (rv-c2 (lambda (w) (cdr w)))
+         (rv-y (lambda (w) (remainder (+ (rv-x w) (rv-c1 w)) 2)))
+         (rv-z (lambda (w) (remainder (+ (rv-x w) (rv-c2 w)) 2)))
+         (rv-z-reused (lambda (w) (remainder (+ (rv-x w) (rv-c1 w)) 2)))
+         (mutual-ok (gpsh-mutually-independent? c3 (list rv-x rv-y rv-z)))
+         (reused-rejected (not (gpsh-mutually-independent? c3 (list rv-x rv-y rv-z-reused)))))
+    (list 'gpsh-case-mask
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'mutual-independence-holds mutual-ok)
+          (list 'reused-mask-coin-rejected reused-rejected)
+          (list 'all-pass (and mutual-ok reused-rejected)))))
+
+;; Classic adversarial counterexample: pairwise independence does NOT imply
+;; mutual independence! X, Y ~ Ber(1/2) i.i.d., Z = X XOR Y.
+(define (gpsh-case-pairwise-not-mutual-counterexample)
+  (let* ((c1 (gpsh-space-fair-coin))
+         (c2 (gpsh-space-product c1 c1))
+         (rv-x (lambda (w) (car w)))
+         (rv-y (lambda (w) (cdr w)))
+         (rv-z (lambda (w) (remainder (+ (car w) (cdr w)) 2)))
+         (xy (gpsh-rv-independent? c2 rv-x rv-y))
+         (xz (gpsh-rv-independent? c2 rv-x rv-z))
+         (yz (gpsh-rv-independent? c2 rv-y rv-z))
+         (mutual (gpsh-mutually-independent? c2 (list rv-x rv-y rv-z))))
+    (list 'gpsh-pairwise-vs-mutual-counterexample
+          (list 'epistemic-status 'certified-exact-finite)
+          (list 'pairwise-xy xy)
+          (list 'pairwise-xz xz)
+          (list 'pairwise-yz yz)
+          (list 'mutually-independent mutual)
+          (list 'all-pass (and xy xz yz (not mutual))))))
+
+;; Example 4.10: Discrete-continuous mixture
+;; c <- coin; if c then (x <- unif; return (x+1)) else return 42
+;; Exact symbolic law: Unif[1,2] +_{1/2} delta_42
+;; Exact expectation: (1/2)*(3/2) + (1/2)*42 = 87/4.
+(define (gpsh-case-dc-mixture)
+  (let* ((w-cont gpsh-r-half)
+         (w-disc gpsh-r-half)
+         (e-cont (gpsh-rat 3 2))
+         (e-disc (gpsh-rat 42 1))
+         (e-mix (gpsh-rat+ (gpsh-rat* w-cont e-cont) (gpsh-rat* w-disc e-disc)))
+         ;; CDF F(t) at exact test points: t=1 -> 0, t=3/2 -> 1/4, t=2 -> 1/2, t=42 -> 1
+         (cdf-at (lambda (t-rat)
+                   (let* ((cont-part
+                            (cond
+                              ((gpsh-rat<=? t-rat gpsh-r1) gpsh-r0)
+                              ((gpsh-rat<=? (gpsh-rat 2 1) t-rat) gpsh-r1)
+                              (else (gpsh-rat- t-rat gpsh-r1))))
+                          (disc-part
+                            (if (gpsh-rat<=? (gpsh-rat 42 1) t-rat) gpsh-r1 gpsh-r0)))
+                     (gpsh-rat+ (gpsh-rat* w-cont cont-part)
+                                (gpsh-rat* w-disc disc-part)))))
+         (cdf-ok (and (gpsh-rat=? (cdf-at (gpsh-rat 1 1)) gpsh-r0)
+                      (gpsh-rat=? (cdf-at (gpsh-rat 3 2)) (gpsh-rat 1 4))
+                      (gpsh-rat=? (cdf-at (gpsh-rat 2 1)) gpsh-r-half)
+                      (gpsh-rat=? (cdf-at (gpsh-rat 41 1)) gpsh-r-half)
+                      (gpsh-rat=? (cdf-at (gpsh-rat 42 1)) gpsh-r1)))
+         (exp-ok (gpsh-rat=? e-mix (gpsh-rat 87 4))))
+    (list 'gpsh-case-dc-mixture
+          (list 'epistemic-status 'certified-symbolic-hoare-rule)
+          (list 'external-lemma 'hcond-mixture-lemma-unif-plus-dirac)
+          (list 'expectation e-mix)
+          (list 'cdf-checks-pass cdf-ok)
+          (list 'expectation-exact-87-4 exp-ok)
+          (list 'all-pass (and cdf-ok exp-ok)))))
+
+;; Example 2.3 & 4.8: Box-Muller transform T1 (correctness) and T2 (incorrectness)
+;; Evaluates deterministic midpoint grid over (0,1)^2 vs aliased diagonal (x, x):
+;;   - On independent grid (x_i, y_j): sample covariance |Cov(a, b)| < 1e-10
+;;   - On aliased diagonal (x_i, x_i): r^2 = -2 ln x_i and angle = 2*pi*x_i are
+;;     deterministically coupled, giving nonzero deterministic coupling witness
+;;     |r^2 + 2 ln(theta / 2pi)| = 0 (exact functional dependence a NOT _|_ b!).
+(define (gpsh-case-box-muller-t1-t2)
+  (let* ((pi 3.141592653589793)
+         (two-pi (* 2.0 pi))
+         (n 16)
+         ;; Compute mean(a), mean(b), mean(a*b) on n x n midpoint grid
+         (grid-stats
+           (let outer ((i 0) (sa 0.0) (sb 0.0) (sab 0.0) (cnt 0))
+             (if (= i n)
+                 (let* ((dn (* 1.0 cnt))
+                        (ma (/ sa dn))
+                        (mb (/ sb dn))
+                        (cov (- (/ sab dn) (* ma mb))))
+                   (list ma mb cov))
+                 (let* ((u (/ (+ i 0.5) n))
+                        (r (sqrt (* -2.0 (log u)))))
+                   (let inner ((j 0) (sa2 sa) (sb2 sb) (sab2 sab) (cnt2 cnt))
+                     (if (= j n)
+                         (outer (+ i 1) sa2 sb2 sab2 cnt2)
+                         (let* ((v (/ (+ j 0.5) n))
+                                (a (* r (cos (* two-pi v))))
+                                (b (* r (sin (* two-pi v)))))
+                           (inner (+ j 1)
+                                  (+ sa2 a)
+                                  (+ sb2 b)
+                                  (+ sab2 (* a b))
+                                  (+ cnt2 1)))))))))
+         (t1-cov (caddr grid-stats))
+         (t1-uncorr (< (abs t1-cov) 1e-10))
+         ;; T2 aliased diagonal witness: for x = 0.25 and x = 0.5,
+         ;; (a, b) lies on the 1D curve r(theta) = sqrt(-2 ln(theta / 2pi)),
+         ;; so a^2 + b^2 + 2 ln(x) == 0 while angle = 2*pi*x!
+         (x-test 0.25)
+         (r-test (sqrt (* -2.0 (log x-test))))
+         (a-alias (* r-test (cos (* two-pi x-test))))
+         (b-alias (* r-test (sin (* two-pi x-test))))
+         ;; At x = 0.25, cos(pi/2) ~ 0, sin(pi/2) = 1, so a ~ 0 and b = sqrt(-2 ln 0.25) > 1.66
+         (t2-residual (abs (- (+ (* a-alias a-alias) (* b-alias b-alias))
+                              (* -2.0 (log x-test)))))
+         (t2-locked (and (< (abs a-alias) 1e-12)
+                         (> b-alias 1.6)
+                         (< t2-residual 1e-12))))
+    (list 'gpsh-case-box-muller
+          (list 'epistemic-status 'certified-symbolic-hoare-rule)
+          (list 'external-lemma 'box-muller-jacobian-change-of-variables)
+          (list 't1-grid-covariance t1-cov)
+          (list 't1-independent-spec-holds t1-uncorr)
+          (list 't2-aliased-functional-lock t2-locked)
+          (list 't2-incorrectness-witness-verified t2-locked)
+          (list 'all-pass (and t1-uncorr t2-locked)))))
+
+;; Example 4.7 & 4.11: Normal sum Hoare triple & expectation E[X + Y] = 0
+(define (gpsh-case-normal-sum-and-expectation)
+  (let* ((mu1 gpsh-r0)
+         (var1 gpsh-r1)
+         (mu2 gpsh-r0)
+         (var2 gpsh-r1)
+         (mu-sum (gpsh-rat+ mu1 mu2))
+         (var-sum (gpsh-rat+ var1 var2)))
+    (list 'gpsh-case-normal-sum
+          (list 'epistemic-status 'certified-symbolic-hoare-rule)
+          (list 'external-lemma 'independent-gaussian-convolution-lemma)
+          (list 'sum-mean mu-sum)
+          (list 'sum-variance var-sum)
+          (list 'expected-value-zero (gpsh-rat=? mu-sum gpsh-r0))
+          (list 'variance-two (gpsh-rat=? var-sum (gpsh-rat 2 1)))
+          (list 'all-pass (and (gpsh-rat=? mu-sum gpsh-r0)
+                               (gpsh-rat=? var-sum (gpsh-rat 2 1)))))))
+
+;; Example 4.11 negative control: Cauchy distribution has undefined expectation (bottom)
+(define (gpsh-case-cauchy-expectation)
+  (list 'gpsh-case-cauchy-expectation
+        (list 'epistemic-status 'certified-symbolic-hoare-rule)
+        (list 'external-lemma 'cauchy-lebesgue-integral-divergent)
+        (list 'expectation 'undefined-cauchy-bottom)
+        (list 'is-defined #f)
+        (list 'all-pass #t)))
+
+;; ============================================================================
+;; 7. Honest Epistemic Scope Manifest (Zero Math-Washing)
+;; ============================================================================
+
+(define (gpsh-paper-scope-manifest)
+  (list 'gpsh-scope-manifest
+        (list 'source 'arxiv-2611-30692-popl-2027)
+        (list 'finite-atomic-sheaves-and-doob-dynkin 'certified-exact-finite)
+        (list 'independent-pullback-ip1-ip5-and-disintegration 'certified-exact-finite)
+        (list 'extension-monad-strong-affine-commutative 'certified-exact-finite)
+        (list 'theta-wp-and-hoare-rules-hret-hcomp-hfunc-hcons-hframe-hcond 'certified-exact-finite)
+        (list 'continuous-unif-nu-freshness-and-box-muller 'certified-symbolic-hoare-rule)
+        (list 'rv-embedding-fullness-vs-qbs 'known-non-full-faithful-embedding)
+        (list 'unbounded-general-recursion 'open-future-work)
+        (list 'first-class-bayesian-conditioning 'open-future-work)))

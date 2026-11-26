@@ -1,0 +1,17 @@
+;;; core.set -- set theory, ordinals, forcing, and condensed sets as one library.
+;;;
+;;; Usage: (require core.set)
+;;;
+;;; Loads:
+;;;   core.set.ordinal      Cantor normal form ordinals up to epsilon_0 and
+;;;                         Veblen hierarchy phi_alpha(beta)
+;;;   core.set.forcing      complete finite Boolean algebras, Cohen forcing
+;;;                         posets, regular-open completion, Boolean-valued
+;;;                         models V^B, and Kripke-Cohen forcing semantics
+;;;   core.sheaf.condensed  finite-profinite-site condensed sets, condensed
+;;;                         abelian groups, Stone duality, and extremally
+;;;                         disconnected covers
+
+(require core.set.ordinal)
+(require core.set.forcing)
+(require core.sheaf.condensed)

@@ -1,0 +1,12 @@
+;;; core.operator -- exact finite-dimensional C*-algebras, sigma-C*-algebras,
+;;; and Choi-PSD certified sigma-CP-instruments (ADR-0062).
+;;;
+;;; Grounded in Loregian & Lorenzin (2026), "Monadicity of noncommutative
+;;; measurable spaces over C*-algebras" (arXiv:2611.32363) and Fritz & Lorenzin
+;;; (2026), "Categories of abstract and noncommutative measurable spaces".
+;;;
+;;; Usage: (require core.operator)
+
+(require core.operator.cstar)
+(require core.operator.sigma_cstar)
+(require core.operator.cp_instrument)

@@ -1,0 +1,14 @@
+;;; core.hep -- High-Energy Physics, Lie Algebras & Scattering Amplitudes
+;;;
+;;; Usage: (require core.hep)
+;;;
+;;; Loads:
+;;;   core.hep.lie         Exact Cartan-Killing classification (A_n, B_n, C_n,
+;;;                        D_n, G_2, F_4, E_6, E_7, E_8), Weyl reflections,
+;;;                        root system generation, Killing form, Coxeter numbers
+;;;   core.hep.amplitudes  4D spinor-helicity over Q[i]/f64, Schouten identity,
+;;;                        momentum conservation, Parke-Taylor MHV, exact BCFW
+;;;                        recursion, planar ABHY associahedron mesh relations
+
+(require core.hep.lie)
+(require core.hep.amplitudes)

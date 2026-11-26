@@ -1,0 +1,294 @@
+;;; Verification suite for Grothendieck Era 2 (1955-1970):
+;;;   1. SGA Etale Cohomology & Weil Conjectures over Finite Fields F_q
+;;;   2. Grothendieck Ring of Varieties K_0(Var_k) & Pure Chow Motives
+;;;   3. Grothendieck-Riemann-Roch (GRR) & Hirzebruch-Riemann-Roch (HRR)
+;;; Includes positive mathematical verifications and adversarial negative controls.
+
+(require stdlib)
+(require core.grothendieck.sga_motives_grr)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ===========================================================================
+;; 1. SGA Etale Cohomology & Weil Conjectures over Finite Fields F_q
+;; ===========================================================================
+
+;; Smooth elliptic curve E1: y^2 = x^3 + x + 1 over F_5
+;; Delta = -16(4 + 27) = -496 = 4 (mod 5) != 0
+(expect "weil-E1-F5-smooth" (gsga-elliptic-smooth-fp? 1 1 5))
+(define n-e1-f5 (gsga-elliptic-count-fp 1 1 5))
+(define n-e1-f5-bf (gsga-elliptic-count-fp-bruteforce 1 1 5))
+(expect "weil-E1-F5-count=9" (= n-e1-f5 9))
+(expect "weil-E1-F5-matches-bruteforce" (= n-e1-f5 n-e1-f5-bf))
+(define a5-e1 (gsga-elliptic-frobenius-trace 1 1 5))
+(expect "weil-E1-F5-trace=-3" (= a5-e1 -3))
+
+;; Frobenius recurrence counts over F_{5^r} for r = 1..6:
+;;   s_1=-3, s_2=-1, s_3=18, s_4=-49, s_5=57, s_6=74
+;;   #E(F_{5^r}) = 9, 27, 108, 675, 3069, 15552
+(define e1-ext (gsga-elliptic-extension-counts 1 1 5 6))
+(expect "weil-E1-ext-counts-exact"
+        (gsga-fps-equal? e1-ext (list 9 27 108 675 3069 15552)))
+
+;; Independent brute-force enumeration over explicit quadratic extension F_5[sqrt(d)]
+(define n-e1-f25-bf (gsga-elliptic-count-fp2-bruteforce 1 1 5))
+(expect "weil-E1-F25-bruteforce=27" (= n-e1-f25-bf 27))
+(expect "weil-E1-F25-frobenius-matches-bruteforce" (= (cadr e1-ext) n-e1-f25-bf))
+
+;; Additional curves over F_3 and F_7 cross-checked against F_{p^2} brute force
+;; E2: y^2 = x^3 + 2x + 1 over F_3 -> #E(F_3) = 7, a_3 = -3, #E(F_9) = 7
+(define n-e2-f3 (gsga-elliptic-count-fp 2 1 3))
+(define e2-ext (gsga-elliptic-extension-counts 2 1 3 6))
+(define n-e2-f9-bf (gsga-elliptic-count-fp2-bruteforce 2 1 3))
+(expect "weil-E2-F3-count=7" (= n-e2-f3 7))
+(expect "weil-E2-F9-frobenius-matches-bruteforce" (= (cadr e2-ext) n-e2-f9-bf))
+(expect "weil-E2-F3-zeta-log-deriv-deg6" (gsga-verify-weil-zeta-elliptic-series? 2 1 3 6))
+
+;; E3: y^2 = x^3 + x + 3 over F_7 -> independent F_49 brute-force verification
+(define n-e3-f7 (gsga-elliptic-count-fp 1 3 7))
+(define n-e3-f7-bf (gsga-elliptic-count-fp-bruteforce 1 3 7))
+(define e3-ext (gsga-elliptic-extension-counts 1 3 7 6))
+(define n-e3-f49-bf (gsga-elliptic-count-fp2-bruteforce 1 3 7))
+(expect "weil-E3-F7-matches-bruteforce" (= n-e3-f7 n-e3-f7-bf))
+(expect "weil-E3-F49-frobenius-matches-bruteforce" (= (cadr e3-ext) n-e3-f49-bf))
+(expect "weil-E3-F7-zeta-log-deriv-deg6" (gsga-verify-weil-zeta-elliptic-series? 1 3 7 6))
+
+;; Exact rational Weil Zeta function log-derivative T * d/dT log Z(E1, T) to degree 6
+(define z-logd-e1 (gsga-weil-zeta-elliptic-log-deriv a5-e1 5 6))
+(expect "weil-E1-zeta-log-deriv-exact-rationals" (gsga-fps-all-exact? z-logd-e1))
+(expect "weil-E1-zeta-log-deriv-deg6-exact"
+        (gsga-fps-equal? z-logd-e1 (list 0 9 27 108 675 3069 15552)))
+(expect "weil-E1-zeta-verify-predicate" (gsga-verify-weil-zeta-elliptic-series? 1 1 5 6))
+
+;; Weil Conjectures: Functional Equation & Hasse-Weil Riemann Hypothesis
+(expect "weil-E1-functional-eq" (gsga-verify-weil-functional-eq-elliptic? a5-e1 5))
+(expect "weil-E2-functional-eq" (gsga-verify-weil-functional-eq-elliptic? (- 4 n-e2-f3) 3))
+(expect "weil-E3-functional-eq" (gsga-verify-weil-functional-eq-elliptic? (- 8 n-e3-f7) 7))
+(expect "weil-E1-hasse-weil-RH" (gsga-verify-weil-rh? a5-e1 5))
+(expect "weil-E2-hasse-weil-RH" (gsga-verify-weil-rh? (- 4 n-e2-f3) 3))
+(expect "weil-E3-hasse-weil-RH" (gsga-verify-weil-rh? (- 8 n-e3-f7) 7))
+
+(define cert-e1 (gsga-verify-weil-conjectures-elliptic 1 1 5 6))
+(expect "weil-E1-full-bundle-tag" (eq? (vector-ref cert-e1 0) 'weil-elliptic-verified))
+(expect "weil-E1-full-bundle-all-true"
+        (and (vector-ref cert-e1 5) (vector-ref cert-e1 6) (vector-ref cert-e1 7)))
+
+;; Projective space P^n Weil Zeta function & functional equation (chi = n + 1)
+(expect "weil-P1-F3-zeta-deg6" (gsga-verify-weil-zeta-pn-series? 1 3 6))
+(expect "weil-P2-F5-zeta-deg6" (gsga-verify-weil-zeta-pn-series? 2 5 6))
+(expect "weil-P3-F2-zeta-deg6" (gsga-verify-weil-zeta-pn-series? 3 2 6))
+(expect "weil-P1-F3-functional-eq" (gsga-verify-weil-functional-eq-pn? 1 3))
+(expect "weil-P2-F5-functional-eq" (gsga-verify-weil-functional-eq-pn? 2 5))
+(expect "weil-P3-F2-functional-eq" (gsga-verify-weil-functional-eq-pn? 3 2))
+
+;; NEGATIVE CONTROL 1A: Singular curves (cuspidal and nodal, Delta = 0 mod p)
+;; Cuspidal curve y^2 = x^3 (a=0, b=0) has Delta = 0
+(expect "neg-ctrl-cuspidal-not-smooth" (not (gsga-elliptic-smooth-fp? 0 0 5)))
+(expect "neg-ctrl-cuspidal-rejected"
+        (eq? (gsga-elliptic-count-fp 0 0 5) 'err-singular-curve))
+(expect "neg-ctrl-cuspidal-fp2-rejected"
+        (eq? (gsga-elliptic-count-fp2-bruteforce 0 0 5) 'err-singular-curve))
+;; Nodal curve y^2 = x^3 - 3x + 2 = (x-1)^2(x+2) has Delta = -16(4*(-27) + 27*4) = 0
+(expect "neg-ctrl-nodal-rejected-F7"
+        (eq? (gsga-elliptic-count-fp -3 2 7) 'err-singular-curve))
+;; Curve y^2 = x^3 + 2x + 2 has Delta = -16(32 + 108) = -16*140 = 0 (mod 5)
+(expect "neg-ctrl-nodal-mod5-rejected"
+        (eq? (gsga-elliptic-count-fp 2 2 5) 'err-singular-curve))
+(expect "neg-ctrl-singular-conjectures-rejected"
+        (eq? (gsga-verify-weil-conjectures-elliptic 2 2 5 6) 'err-singular-curve))
+
+;; NEGATIVE CONTROL 1B: Forged Frobenius trace violating Hasse-Weil bound |a_p|^2 <= 4p
+(expect "neg-ctrl-forged-trace-F5-fails-RH" (not (gsga-verify-weil-rh? 5 5)))
+(expect "neg-ctrl-forged-neg-trace-F7-fails-RH" (not (gsga-verify-weil-rh? -6 7)))
+(expect "neg-ctrl-forged-trace-F3-fails-RH" (not (gsga-verify-weil-rh? 4 3)))
+
+;; ===========================================================================
+;; 2. Grothendieck Ring of Varieties K_0(Var_k) & Pure Chow Motives
+;; ===========================================================================
+
+(define m-pt (gsga-motive-const 1))
+(define m-L  (gsga-motive-lefschetz))
+(define m-p1 (gsga-motive-pn 1))
+(define m-p2 (gsga-motive-pn 2))
+(define m-p3 (gsga-motive-pn 3))
+
+(expect "motive-P2-poly" (gsga-motive-equal? m-p2 (list 1 1 1)))
+(expect "motive-P3-poly" (gsga-motive-equal? m-p3 (list 1 1 1 1)))
+
+;; Ring axioms: (P^1 * P^1) = 1 + 2L + L^2, commutativity, distributivity
+(define m-p1-sq (gsga-motive-mul m-p1 m-p1))
+(expect "motive-P1xP1-poly" (gsga-motive-equal? m-p1-sq (list 1 2 1)))
+(expect "motive-ring-distributive"
+        (gsga-motive-equal?
+          (gsga-motive-mul m-p2 (gsga-motive-add m-p1 m-L))
+          (gsga-motive-add (gsga-motive-mul m-p2 m-p1)
+                           (gsga-motive-mul m-p2 m-L))))
+
+;; [GL_2] = (L^2 - 1)(L^2 - L) = L - L^2 - L^3 + L^4
+(define m-gl2 (gsga-motive-gln 2))
+(expect "motive-GL2-poly" (gsga-motive-equal? m-gl2 (list 0 1 -1 -1 1)))
+(define m-gl3 (gsga-motive-gln 3))
+
+;; [Gr(2,4)] = 1 + L + 2L^2 + L^3 + L^4 = (1 + L^2)(1 + L + L^2)
+(define m-gr24 (gsga-motive-grassmannian 2 4))
+(expect "motive-Gr24-poly" (gsga-motive-equal? m-gr24 (list 1 1 2 1 1)))
+(expect "motive-Gr24-factored"
+        (gsga-motive-equal? m-gr24 (gsga-motive-mul (list 1 0 1) (list 1 1 1))))
+;; [Gr(1, n+1)] == [P^n]
+(expect "motive-Gr14-equals-P3"
+        (gsga-motive-equal? (gsga-motive-grassmannian 1 4) m-p3))
+;; Duality [Gr(k, n)] == [Gr(n-k, n)]
+(expect "motive-Gr-duality-2-5"
+        (gsga-motive-equal? (gsga-motive-grassmannian 2 5)
+                            (gsga-motive-grassmannian 3 5)))
+
+;; Blowup formula: [Bl_pt(P^2)] = [P^2] - [pt] + [pt]*[P^1] = 1 + 2L + L^2
+(define m-bl-p2 (gsga-motive-blowup m-p2 m-pt 2))
+(expect "motive-Bl-pt-P2-poly" (gsga-motive-equal? m-bl-p2 (list 1 2 1)))
+;; Blowing up a codimension-1 divisor is an isomorphism: [Bl_Z(X)] == [X]
+(expect "motive-Bl-codim1-iso"
+        (gsga-motive-equal? (gsga-motive-blowup m-p2 m-p1 1) m-p2))
+;; Blowing up a line P^1 inside P^3 (codim 2): [P^3] - [P^1] + [P^1]^2 = 1 + 2L + 2L^2 + L^3
+(define m-bl-line-p3 (gsga-motive-blowup m-p3 m-p1 2))
+(expect "motive-Bl-P1-P3-poly" (gsga-motive-equal? m-bl-line-p3 (list 1 2 2 1)))
+
+;; Universal Motivic Realization 1: Point-count realization (L |-> q)
+(let loop ((qs (list 2 3 5 7)))
+  (if (not (null? qs))
+      (let ((q (car qs)))
+        (expect "motive-realize-Gr24-Fq"
+                (= (gsga-motive-realize-point-count m-gr24 q)
+                   (* (+ 1 (* q q)) (+ 1 q (* q q)))))
+        (expect "motive-realize-GL2-Fq"
+                (= (gsga-motive-realize-point-count m-gl2 q)
+                   (* (- (* q q) 1) (- (* q q) q))))
+        (expect "motive-realize-GL3-Fq"
+                (= (gsga-motive-realize-point-count m-gl3 q)
+                   (* (- (* q q q) 1) (- (* q q q) q) (- (* q q q) (* q q)))))
+        (expect "motive-realize-Bl-P2-Fq"
+                (= (gsga-motive-realize-point-count m-bl-p2 q)
+                   (+ 1 (* 2 q) (* q q))))
+        (loop (cdr qs)))))
+
+;; Universal Motivic Realization 2: Euler characteristic (L |-> 1)
+(expect "motive-euler-P0=1" (= (gsga-motive-realize-euler (gsga-motive-pn 0)) 1))
+(expect "motive-euler-P2=3" (= (gsga-motive-realize-euler m-p2) 3))
+(expect "motive-euler-P3=4" (= (gsga-motive-realize-euler m-p3) 4))
+(expect "motive-euler-Gr24=6" (= (gsga-motive-realize-euler m-gr24) 6))
+(expect "motive-euler-Bl-pt-P2=4" (= (gsga-motive-realize-euler m-bl-p2) 4))
+(expect "motive-euler-GL2=0" (= (gsga-motive-realize-euler m-gl2) 0))
+
+;; Universal Motivic Realization 3: Hodge-Poincare polynomial (L |-> u*v)
+;; For Gr(2,4): 1 + uv + 2 u^2 v^2 + u^3 v^3 + u^4 v^4
+(expect "motive-hodge-poincare-Gr24"
+        (= (gsga-motive-realize-hodge-poincare m-gr24 2 3)
+           (+ 1 6 (* 2 36) 216 1296)))
+;; Verify homomorphism property on product P^1 x P^2
+(expect "motive-hodge-poincare-multiplicative"
+        (= (gsga-motive-realize-hodge-poincare (gsga-motive-mul m-p1 m-p2) 3 5)
+           (* (gsga-motive-realize-hodge-poincare m-p1 3 5)
+              (gsga-motive-realize-hodge-poincare m-p2 3 5))))
+;; Hodge numbers of Bl_pt(P^2): h^{0,0}=1, h^{1,1}=2, h^{2,2}=1
+(define h-bl-p2 (gsga-motive-hodge-numbers m-bl-p2))
+(expect "motive-hodge-numbers-Bl-pt-P2"
+        (and (= (length h-bl-p2) 3)
+             (= (caddr (car h-bl-p2)) 1)
+             (= (caddr (cadr h-bl-p2)) 2)
+             (= (caddr (caddr h-bl-p2)) 1)))
+
+;; NEGATIVE CONTROL 2: Blowup with codimension <= 0 rejected fail-closed
+(expect "neg-ctrl-blowup-codim0-rejected"
+        (eq? (gsga-motive-blowup m-p2 m-pt 0) 'err-invalid-codimension))
+(expect "neg-ctrl-blowup-neg-codim-rejected"
+        (eq? (gsga-motive-blowup m-p2 m-pt -2) 'err-invalid-codimension))
+(expect "neg-ctrl-grassmannian-out-of-range"
+        (eq? (gsga-motive-grassmannian 5 4) 'err-invalid-grassmannian))
+
+;; ===========================================================================
+;; 3. Grothendieck-Riemann-Roch (GRR) & Hirzebruch-Riemann-Roch (HRR)
+;; ===========================================================================
+
+;; Exact Todd classes Td(T_{P^n}) derived by exact power-series inversion
+(define td-p1 (gsga-todd-pn 1))
+(define td-p2 (gsga-todd-pn 2))
+(define td-p3 (gsga-todd-pn 3))
+(expect "grr-Td-P1-exact" (gsga-fps-equal? td-p1 (list 1 1)))
+(expect "grr-Td-P2-exact" (gsga-fps-equal? td-p2 (list 1 3/2 1)))
+(expect "grr-Td-P3-exact" (gsga-fps-equal? td-p3 (list 1 2 11/6 1)))
+
+;; Chern character additivity and multiplicativity
+(define ch-o2 (gsga-ch-line-bundle 2 3))
+(define ch-o3 (gsga-ch-line-bundle 3 3))
+(define ch-o5 (gsga-ch-line-bundle 5 3))
+(expect "grr-ch-tensor-multiplicative"
+        (gsga-fps-equal? (gsga-ch-tensor-product ch-o2 ch-o3) ch-o5))
+(expect "grr-ch-dual-matches-neg-twist"
+        (gsga-fps-equal? (gsga-ch-dual ch-o2) (gsga-ch-line-bundle -2 3)))
+;; Direct sum: chi(P^2, O(1) (+) O(2)) == chi(P^2, O(1)) + chi(P^2, O(2)) = 3 + 6 = 9
+(define ch-sum-p2
+  (gsga-ch-direct-sum (gsga-ch-line-bundle 1 2) (gsga-ch-line-bundle 2 2)))
+(expect "grr-ch-direct-sum-additive-chi"
+        (= (gsga-grr-to-point ch-sum-p2 2) 9))
+
+;; Exact HRR on P^1, P^2, P^3 for positive, zero, AND negative twists m
+(let loop-n ((ns (list 1 2 3)))
+  (if (not (null? ns))
+      (let ((n (car ns)))
+        (let loop-m ((ms (list -4 -3 -2 -1 0 1 2 3 4)))
+          (if (not (null? ms))
+              (let* ((m (car ms))
+                     (chi-hrr (gsga-hrr-pn-line-bundle n m))
+                     (chi-binom (gsga-binom-signed m n)))
+                (expect "grr-HRR-Pn-exact-match"
+                        (and (exact? chi-hrr) (= chi-hrr chi-binom)))
+                (loop-m (cdr ms)))))
+        (loop-n (cdr ns)))))
+
+;; Explicit Serre duality checks on P^2 and P^3
+(expect "grr-P2-O(-1)=0" (= (gsga-hrr-pn-line-bundle 2 -1) 0))
+(expect "grr-P2-O(-2)=0" (= (gsga-hrr-pn-line-bundle 2 -2) 0))
+(expect "grr-P2-O(-3)=1-serre-duality" (= (gsga-hrr-pn-line-bundle 2 -3) 1))
+(expect "grr-P3-O(-4)=-1-serre-duality" (= (gsga-hrr-pn-line-bundle 3 -4) -1))
+
+;; GRR for X -> pt on tangent bundle T_{P^n}: chi(P^n, T_{P^n}) = (n+1)^2 - 1 = n(n+2)
+(expect "grr-tangent-P1-chi=3" (= (gsga-grr-to-point (gsga-ch-tangent-pn 1) 1) 3))
+(expect "grr-tangent-P2-chi=8" (= (gsga-grr-to-point (gsga-ch-tangent-pn 2) 2) 8))
+(expect "grr-tangent-P3-chi=15" (= (gsga-grr-to-point (gsga-ch-tangent-pn 3) 3) 15))
+
+;; GRR for morphisms: finite degree-d branched cover f: C -> P^1 of genus-g curve
+;; Case A: elliptic double cover d=2, g=1 (4 branch points, deg(R)=4), deg(L)=3
+(expect "grr-branched-cover-elliptic-d2-g1"
+        (eq? (gsga-grr-branched-cover-verify 2 1 3 4) #t))
+(define grr-d2-g1 (gsga-grr-branched-cover-pushforward 2 1 0))
+;; For O_C on hyperelliptic curve of genus g=1: f_* O_C = O (+) O(-2), so ch = 2 - 2h
+(expect "grr-hyperelliptic-g1-pushforward-ch"
+        (gsga-fps-equal? (vector-ref grr-d2-g1 1) (list 2 -2)))
+;; Case B: genus-2 hyperelliptic cover d=2, g=2 (6 branch points, deg(R)=6), deg(L)=5
+(expect "grr-branched-cover-hyperelliptic-d2-g2"
+        (eq? (gsga-grr-branched-cover-verify 2 2 5 6) #t))
+;; Case C: degree-3 cover of genus-4 curve: 2(4)-2 = 3(-2) + deg(R) => deg(R) = 12
+(expect "grr-branched-cover-trigonal-d3-g4"
+        (eq? (gsga-grr-branched-cover-verify 3 4 -2 12) #t))
+
+;; NEGATIVE CONTROL 3A: Wrong Todd class (naive Td = 1 instead of 1 + 3/2 h + h^2)
+(define wrong-chi-p2-o1 (gsga-hrr-with-todd (gsga-ch-line-bundle 1 2) (list 1 0 0) 2))
+(expect "neg-ctrl-wrong-todd-gives-half" (= wrong-chi-p2-o1 1/2))
+(expect "neg-ctrl-wrong-todd-fails-HRR"
+        (not (= wrong-chi-p2-o1 (gsga-hrr-pn-line-bundle 2 1))))
+
+;; NEGATIVE CONTROL 3B: Riemann-Hurwitz mismatch on branched cover rejected
+(expect "neg-ctrl-riemann-hurwitz-mismatch-rejected"
+        (eq? (gsga-grr-branched-cover-verify 2 1 3 6) 'err-riemann-hurwitz-mismatch))
+(expect "neg-ctrl-invalid-cover-degree0-rejected"
+        (eq? (gsga-grr-branched-cover-verify 0 1 3 0) 'err-invalid-cover))
+
+(display "PASS: grothendieck_sga_motives_grr_test (")
+(display checks)
+(display " checks)")
+(newline)

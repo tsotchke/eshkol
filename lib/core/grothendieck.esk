@@ -1,0 +1,16 @@
+;;; core.grothendieck — Umbrella module for Grothendieck's Three-Era Vision
+;;; and Beyond-Grothendieck Frontiers:
+;;;   - Era 1 (1949-1955): Nuclear spaces, topological tensor products, Grothendieck's inequality
+;;;   - Era 2 (1955-1970): SGA etale Weil conjectures, K0(Var) motives, Grothendieck-Riemann-Roch
+;;;   - Missing Pillars:   Standard conjectures, crystalline/Dieudonne, six operations, weights, universes
+;;;   - Era 3A (1983-1991): Pursuing Stacks, Kan vs Lurie quasi-categories, higher stacks, Les Derivateurs
+;;;   - Era 3B (1981-1984): Esquisse d'un Programme, dessins d'enfants, anabelian/GT, tame topology, perfectoid tilting
+;;;   - Beyond Frontiers:  F1/Borger lambda-rings, noncommutative Ore failure, Arakelov, (infty,2) directed, Bers T(1)/abc
+
+(require core.grothendieck.functional)
+(require core.grothendieck.sga_motives_grr)
+(require core.grothendieck.pillars_six_ops)
+(require core.grothendieck.stacks_derivators)
+(require core.grothendieck.esquisse_tame_perfectoid)
+(require core.grothendieck.beyond_frontiers)
+(require core.grothendieck.probability_sheaves)

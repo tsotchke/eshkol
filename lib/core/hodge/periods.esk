@@ -1,0 +1,151 @@
+;;; core.hodge.periods -- Siegel upper half-space period matrices (certified
+;;;   via exact PSD), abelian variety Hurwitz endomorphism verification,
+;;;   Griffiths transversality, and exact Picard-Fuchs ODE verification (ADR-0063).
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.exact_psd)
+(require core.certificate)
+(require core.hodge.structure)
+
+(provide
+  make-siegel-period siegel-period? siegel-period-certify
+  abelian-endomorphism-check
+  griffiths-transversality-check picard-fuchs-legendre-verify)
+
+;; ---------------------------------------------------------------------------
+;; Siegel Upper Half-Space H_g: Omega = (I_g | tau), tau in M_g(Q[i])
+;; ---------------------------------------------------------------------------
+;; Riemann Period Relations for principally polarized abelian variety of dim g:
+;;   1. tau^T = tau   (exact symmetry over Q[i])
+;;   2. Im(tau) > 0   (exact rational strictly positive definite via core.exact_psd!)
+
+(define (make-siegel-period g tau)
+  (vector 'siegel-period g tau))
+
+(define (siegel-period? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'siegel-period)))
+
+(define (siegel-period-certify sp)
+  (let* ((g (vector-ref sp 1))
+         (tau (vector-ref sp 2)))
+    (cond
+      ((not (and (= (hq-mat-rows tau) g) (= (hq-mat-cols tau) g)))
+       (vector 'siegel-violation 'dimension-mismatch g))
+      ((not (hq-mat= tau (hq-mat-transpose tau)))
+       (vector 'siegel-violation 'not-symmetric tau))
+      (else
+       (let ((im-mat (exact-matrix-zero g g)))
+         (let li ((i 0))
+           (if (< i g)
+               (begin
+                 (let lj ((j 0))
+                   (if (< j g)
+                       (begin (exact-matrix-set! im-mat i j (hq-im (hq-mat-ref tau i j)))
+                              (lj (+ j 1)))))
+                 (li (+ i 1)))))
+         (let* ((cert (certify-psd im-mat))
+                (res (certificate-value cert)))
+           (if (and (psd-factor? res) (= (exact-rank im-mat) g))
+               (vector 'certified-siegel-period cert)
+               (vector 'siegel-violation 'im-tau-not-positive-definite
+                       (if (psd-factor? res) 'degenerate (psd-negative-direction res))))))))))
+
+;; Verify exact Hurwitz endomorphism relation M * Omega = Omega * R
+;; where Omega = (I_g | tau) (g x 2g over Q[i]),
+;;       M in M_g(Q[i]) (analytic representation),
+;;       R in M_{2g}(Q) (rational/integer Betti representation).
+(define (abelian-endomorphism-check sp M R)
+  (let* ((g (vector-ref sp 1))
+         (tau (vector-ref sp 2))
+         (Omega (hq-mat-zero g (* 2 g)))
+         (Rhq (hq-mat-zero (* 2 g) (* 2 g))))
+    (let li ((i 0))
+      (if (< i g)
+          (begin
+            (hq-mat-set! Omega i i (hq 1 0))
+            (let lj ((j 0))
+              (if (< j g)
+                  (begin (hq-mat-set! Omega i (+ g j) (hq-mat-ref tau i j))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    (let li ((i 0))
+      (if (< i (* 2 g))
+          (begin
+            (let lj ((j 0))
+              (if (< j (* 2 g))
+                  (begin (hq-mat-set! Rhq i j (hq (exact-matrix-ref R i j) 0))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    (let ((lhs (hq-mat-mul M Omega))
+          (rhs (hq-mat-mul Omega Rhq)))
+      (if (hq-mat= lhs rhs)
+          #t
+          (vector 'endomorphism-violation lhs rhs)))))
+
+;; ---------------------------------------------------------------------------
+;; Griffiths Transversality on a Variation of Hodge Structure (VHS)
+;; ---------------------------------------------------------------------------
+;; Given filtration flag F^w <= ... <= F^0 represented as ascending-indexed
+;; basis lists (list F0 F1 ... Fw) where Fk is list of Q[i] basis vectors,
+;; and Gauss-Manin connection matrix nabla (d x d over Q[i]),
+;; Griffiths transversality requires: nabla(F^p) subseteq F^{p-1} for all p >= 1.
+
+(define (hq-mat-vec M v)
+  (let* ((r (hq-mat-rows M)) (c (hq-mat-cols M))
+         (out (make-vector r (hq 0 0))))
+    (let li ((i 0))
+      (if (< i r)
+          (let lj ((j 0) (acc (hq 0 0)))
+            (if (= j c)
+                (begin (vector-set! out i acc) (li (+ i 1)))
+                (lj (+ j 1) (hq+ acc (hq* (hq-mat-ref M i j) (vector-ref v j))))))))
+    out))
+
+(define (hq-in-c-span? d basis-vecs v)
+  (if (null? basis-vecs)
+      (let loop ((i 0))
+        (cond ((= i d) #t)
+              ((hq-zero? (vector-ref v i)) (loop (+ i 1)))
+              (else #f)))
+      (let* ((M1 (hq-cols-to-real-matrix d basis-vecs))
+             (M2 (hq-cols-to-real-matrix d (append basis-vecs (list v)))))
+        (= (exact-rank M1) (exact-rank M2)))))
+
+(define (griffiths-transversality-check d filtration-vec nabla)
+  (let ((levels (vector-length filtration-vec)))
+    (let lp ((p 1))
+      (if (= p levels) #t
+          (let ((Fp (vector-ref filtration-vec p))
+                (Fpm1 (vector-ref filtration-vec (- p 1))))
+            (let lv ((vs Fp))
+              (if (null? vs)
+                  (lp (+ p 1))
+                  (let ((nv (hq-mat-vec nabla (car vs))))
+                    (if (hq-in-c-span? d Fpm1 nv)
+                        (lv (cdr vs))
+                        (vector 'griffiths-transversality-violation p (car vs) nv))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Exact Picard-Fuchs ODE Verifier for the Legendre Elliptic Family
+;;   E_t: y^2 = x(x-1)(x-t)
+;;   L(varpi) = t(1-t) varpi'' + (1 - 2t) varpi' - (1/4) varpi = 0
+;; ---------------------------------------------------------------------------
+;; Given exact rational Taylor series coefficients c_0, c_1, ..., c_N of
+;; varpi(t) = sum_{n=0}^N c_n t^n, verifies exact coefficient vanishing of
+;; L(varpi) through degree N-1:
+;;   [t^n] L(varpi) = (n+1)^2 c_{n+1} - (n + 1/2)^2 c_n = 0  for n = 0..N-1!
+;; Returns #t if exact Picard-Fuchs holds, or #(picard-fuchs-violation n residual).
+
+(define (picard-fuchs-legendre-verify coeffs)
+  (let ((N (- (vector-length coeffs) 1)))
+    (let loop ((n 0))
+      (if (>= n N) #t
+          (let* ((cn (vector-ref coeffs n))
+                 (cn1 (vector-ref coeffs (+ n 1)))
+                 (np1 (+ n 1))
+                 (nh (+ n 1/2))
+                 (res (- (* np1 np1 cn1) (* nh nh cn))))
+            (if (= res 0)
+                (loop (+ n 1))
+                (vector 'picard-fuchs-violation n res)))))))

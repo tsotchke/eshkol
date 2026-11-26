@@ -1,0 +1,109 @@
+;;; tests/stdlib/esa_packet2_work_stealing_tx_sblc_test.esk
+;;; Verifies all Packet 2 mechanisms in JIT & AOT:
+;;;   1. Work-stealing branch-transfer ledger (stale generation, wrong offset,
+;;;      missing permit, one-short budget, renewed exact charge 11, no double publish)
+;;;   2. Speculative late-choice cap (logical budget invariance + capped waste <= 8)
+;;;   3. Example-partition minibatch disjoint/complete coverage & order invariance
+;;;   4. SBLC unresolved-mass vs. no-consistent-program status (`(I I)` 0-step vs 1-step)
+;;;   5. TX-4 atomic failure continuation & BF16 parameter-31 rounding-tie divergence
+;;;   6. Verified arena bump alignment/freshness & two-cell alias refusal
+
+(require core.blc.work_stealing_ledger)
+
+(define *ws-pass* 0)
+(define *ws-fail* 0)
+
+(define (ws-check name cond)
+  (if cond
+      (set! *ws-pass* (+ *ws-pass* 1))
+      (begin
+        (set! *ws-fail* (+ *ws-fail* 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(define (ws-field rec key)
+  (let loop ((xs (cdr rec)))
+    (cond
+      ((null? xs) #f)
+      ((eq? (caar xs) key) (cadar xs))
+      (else (loop (cdr xs))))))
+
+;; 1. Branch-transfer ledger controls
+(let ((bt (blc-ws-verify-branch-transfer-controls)))
+  (ws-check "bt-stale-refused" (ws-field bt 'stale-refused))
+  (ws-check "bt-bad-occ-refused" (ws-field bt 'bad-occ-refused))
+  (ws-check "bt-noperm-refused" (ws-field bt 'noperm-refused))
+  (ws-check "bt-one-short-budget-refused" (ws-field bt 'one-short-budget-refused))
+  (ws-check "bt-renewed-accepted-charge-11" (ws-field bt 'renewed-accepted-charge-11))
+  (ws-check "bt-double-publish-refused" (ws-field bt 'double-publish-refused))
+  (ws-check "bt-all-pass" (ws-field bt 'all-pass)))
+
+;; 2. Speculative late-choice cap
+(let ((sc (blc-ws-verify-speculative-cap)))
+  (ws-check "spec-logical-budget-invariant" (ws-field sc 'logical-budget-invariant))
+  (ws-check "spec-discarded-bounded-by-8" (ws-field sc 'discarded-work-bounded-by-cap)))
+
+;; 3. Example-partition minibatch coverage & order invariance
+(let* ((serial-rows (list (cons 0 (blc-ws-rat 1 4))
+                          (cons 1 (blc-ws-rat 3 4))
+                          (cons 2 (blc-ws-rat 1 2))
+                          (cons 3 (blc-ws-rat 1 2))))
+       (stolen-rows (list (cons 3 (blc-ws-rat 1 2))
+                          (cons 1 (blc-ws-rat 3 4))
+                          (cons 0 (blc-ws-rat 1 4))
+                          (cons 2 (blc-ws-rat 1 2))))
+       (dup-rows (list (cons 0 (blc-ws-rat 1 4))
+                       (cons 0 (blc-ws-rat 1 4))
+                       (cons 2 (blc-ws-rat 1 2))
+                       (cons 3 (blc-ws-rat 1 2))))
+       (missing-rows (list (cons 0 (blc-ws-rat 1 4))
+                           (cons 1 (blc-ws-rat 3 4))
+                           (cons 2 (blc-ws-rat 1 2))))
+       (avg-serial (blc-ws-partition-average-update 4 serial-rows))
+       (avg-stolen (blc-ws-partition-average-update 4 stolen-rows))
+       (avg-dup (blc-ws-partition-average-update 4 dup-rows))
+       (avg-missing (blc-ws-partition-average-update 4 missing-rows)))
+  (ws-check "partition-serial-valid" (eq? (car avg-serial) 'ok))
+  (ws-check "partition-stolen-valid" (eq? (car avg-stolen) 'ok))
+  (ws-check "partition-order-invariant-exact-half"
+            (and (blc-ws-rat=? (cadr avg-serial) (blc-ws-rat 1 2))
+                 (blc-ws-rat=? (cadr avg-serial) (cadr avg-stolen))))
+  (ws-check "partition-duplicate-idx-rejected" (eq? (car avg-dup) 'invalid-partition))
+  (ws-check "partition-missing-idx-rejected" (eq? (car avg-missing) 'invalid-partition)))
+
+;; 4. SBLC unresolved-mass vs. no-consistent-program
+(let ((sv (blc-ws-verify-sblc-unresolved-status)))
+  (ws-check "sblc-zero-step-unresolved-not-inconsistent" (ws-field sv 'zero-step-unresolved))
+  (ws-check "sblc-one-step-resolves-consistent" (ws-field sv 'one-step-consistent))
+  (ws-check "sblc-zero-unresolved-inconsistent" (ws-field sv 'zero-unresolved-inconsistent)))
+
+;; 5. TX-4 atomic failure continuation & BF16 rounding tie
+(let ((tx (blc-ws-verify-tx-failure-atomicity))
+      (bf (blc-ws-verify-bf16-rounding-tie)))
+  (ws-check "tx-valid-sequence-commits" (ws-field tx 'valid-sequence-commits))
+  (ws-check "tx-oob-after-success-atomic-err-1" (ws-field tx 'oob-after-success-atomic-err-1))
+  (ws-check "bf16-rounding-tie-diverges-from-exact" (ws-field bf 'histories-diverge)))
+
+;; 6. Arena bump alignment/freshness & two-cell alias separation
+(let* ((live-ok (list (cons 4096 24) (cons 8192 64)))
+       (bump-ok (blc-ws-arena-bump-check 4096 24 1024 32 16 live-ok))
+       ;; Overlapping live span in unallocated tail must fail freshness!
+       (live-overlap (list (cons 4096 24) (cons 4128 16)))
+       (bump-overlap (blc-ws-arena-bump-check 4096 24 1024 32 16 live-overlap))
+       ;; Capacity overflow must fail!
+       (bump-oom (blc-ws-arena-bump-check 4096 1000 1024 64 16 live-ok)))
+  (ws-check "arena-bump-aligned-ptr-4128" (= (ws-field bump-ok 'ptr) 4128))
+  (ws-check "arena-bump-admitted" (ws-field bump-ok 'admitted))
+  (ws-check "arena-bump-overlap-rejected" (not (ws-field bump-overlap 'admitted)))
+  (ws-check "arena-bump-oom-rejected" (not (ws-field bump-oom 'admitted)))
+  (ws-check "two-cell-distinct-admitted" (blc-ws-two-cell-admit? 100 101))
+  (ws-check "two-cell-alias-refused" (not (blc-ws-two-cell-admit? 100 100))))
+
+(display "esa_packet2_work_stealing_tx_sblc_test: ")
+(display *ws-pass*)
+(display " passed, ")
+(display *ws-fail*)
+(display " failed")
+(newline)
+(if (> *ws-fail* 0) (error "esa_packet2_work_stealing_tx_sblc_test failed") #t)

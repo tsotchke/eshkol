@@ -1,0 +1,371 @@
+;;; core.diagram -- Computationally Verified & Rendered Commutative Diagrams (M0).
+;;;
+;;; Declaratively constructs sophisticated commutative diagrams (squares, cubes,
+;;; pullbacks/pushouts, exact sequences, Snake/Five Lemma grids, arbitrary
+;;; quivers), computationally verifies commutativity across EVERY parallel pair
+;;; of morphism paths in any category (finite-category, exact matrices, custom
+;;; morphism algebras) returning exact failing path witnesses on obstruction,
+;;; verifies exactness (im f = ker g) at every node of a chain diagram, and
+;;; renders verified diagrams directly to TikZ-cd (LaTeX), SVG, and Mermaid.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.exact_linalg)
+
+(provide
+  ;; Diagram constructors
+  make-diagram diagram? diagram-nodes diagram-edges
+  diagram-node-id diagram-node-label diagram-node-row diagram-node-col
+  diagram-edge-name diagram-edge-src diagram-edge-tgt diagram-edge-morphism
+  diagram-square diagram-cube diagram-chain
+  ;; Path enumeration & universal commutativity verification
+  diagram-all-simple-paths
+  diagram-verify-custom diagram-verify-in-category diagram-verify-matrices
+  diagram-commutes? diagram-obstructions
+  ;; Exactness verification for chains of exact rational/integer matrices
+  diagram-chain-exact-verify diagram-chain-exact?
+  ;; Publication-grade diagram renderers
+  diagram->tikzcd diagram->svg diagram->mermaid)
+
+;; ---------------------------------------------------------------------------
+;; Representation:
+;;   node = (vector id label row col)
+;;   edge = (vector name src tgt morphism)
+;;   diagram = (vector 'diagram-v1 nodes-list edges-list)
+;; ---------------------------------------------------------------------------
+
+(define (make-diagram nodes edges)
+  (vector 'diagram-v1
+          (map (lambda (nd) (if (vector? nd) nd (list->vector nd))) nodes)
+          (map (lambda (ed) (if (vector? ed) ed (list->vector ed))) edges)))
+
+(define (diagram? D)
+  (and (vector? D) (= (vector-length D) 3) (eq? (vector-ref D 0) 'diagram-v1)))
+
+(define (diagram-nodes D) (vector-ref D 1))
+(define (diagram-edges D) (vector-ref D 2))
+
+(define (diagram-node-id nd) (vector-ref nd 0))
+(define (diagram-node-label nd) (vector-ref nd 1))
+(define (diagram-node-row nd) (vector-ref nd 2))
+(define (diagram-node-col nd) (vector-ref nd 3))
+
+(define (diagram-edge-name ed) (vector-ref ed 0))
+(define (diagram-edge-src ed) (vector-ref ed 1))
+(define (diagram-edge-tgt ed) (vector-ref ed 2))
+(define (diagram-edge-morphism ed) (vector-ref ed 3))
+
+(define (dg-find-node D id)
+  (let loop ((ns (diagram-nodes D)))
+    (cond ((null? ns) #f)
+          ((equal? (diagram-node-id (car ns)) id) (car ns))
+          (else (loop (cdr ns))))))
+
+;; Classic diagram shape builders
+;; Square:
+;;   A --top--> B
+;;   |          |
+;;  left      right
+;;   v          v
+;;   C --bot--> D
+(define (diagram-square la lb lc ld top-name top-m left-name left-m right-name right-m bot-name bot-m)
+  (make-diagram
+    (list (vector 'A la 0 0) (vector 'B lb 0 1)
+          (vector 'C lc 1 0) (vector 'D ld 1 1))
+    (list (vector top-name   'A 'B top-m)
+          (vector left-name  'A 'C left-m)
+          (vector right-name 'B 'D right-m)
+          (vector bot-name   'C 'D bot-m))))
+
+;; 3D Cube (front square A-B-C-D mapped to back square A'-B'-C'-D'):
+;; 8 vertices, 12 edges
+(define (diagram-cube labels edges-spec)
+  ;; labels: (l000 l001 l010 l011 l100 l101 l110 l111)
+  ;; grid layout projects 3D cube cleanly onto 4x4 grid for TikZ-cd & SVG
+  (let ((coords (list (cons 0 0) (cons 0 2) (cons 2 0) (cons 2 2)
+                      (cons 1 1) (cons 1 3) (cons 3 1) (cons 3 3)))
+        (ids    (list 'v000 'v001 'v010 'v011 'v100 'v101 'v110 'v111)))
+    (let ((nodes (let loop ((is ids) (ls labels) (cs coords) (acc '()))
+                   (if (null? is) (reverse acc)
+                       (loop (cdr is) (cdr ls) (cdr cs)
+                             (cons (vector (car is) (car ls) (caar cs) (cdar cs)) acc))))))
+      (make-diagram nodes edges-spec))))
+
+;; Linear chain A_0 --f0--> A_1 --f1--> ... --f_{k-1}--> A_k
+(define (diagram-chain node-labels edge-names morphisms)
+  (let* ((nodes (let loop ((ls node-labels) (i 0) (acc '()))
+                  (if (null? ls) (reverse acc)
+                      (loop (cdr ls) (+ i 1)
+                            (cons (vector i (car ls) 0 i) acc)))))
+         (edges (let loop ((en edge-names) (ms morphisms) (i 0) (acc '()))
+                  (if (null? en) (reverse acc)
+                      (loop (cdr en) (cdr ms) (+ i 1)
+                            (cons (vector (car en) i (+ i 1) (car ms)) acc))))))
+    (make-diagram nodes edges)))
+
+;; ---------------------------------------------------------------------------
+;; Exhaustive directed simple-path enumeration (every pair u -> v)
+;; ---------------------------------------------------------------------------
+
+(define (diagram-all-simple-paths D src tgt)
+  (let ((edges (diagram-edges D)))
+    (define (dfs cur visited)
+      (if (equal? cur tgt)
+          (list '())
+          (let ((out (filter (lambda (e)
+                               (and (equal? (diagram-edge-src e) cur)
+                                    (not (member (diagram-edge-tgt e) visited))))
+                             edges)))
+            (let loop ((es out) (acc '()))
+              (if (null? es) acc
+                  (let* ((e (car es))
+                         (nxt (diagram-edge-tgt e))
+                         (sub (dfs nxt (cons nxt visited))))
+                    (loop (cdr es)
+                          (append acc (map (lambda (p) (cons e p)) sub)))))))))
+    (if (equal? src tgt) '() (dfs src (list src)))))
+
+;; Compose a non-empty path of edges using compose-fn (g o f convention: second after first)
+(define (dg-eval-path path compose-fn)
+  (let loop ((es (cdr path)) (acc (diagram-edge-morphism (car path))))
+    (if (null? es) acc
+        (loop (cdr es) (compose-fn (diagram-edge-morphism (car es)) acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Computational Commutativity Verifier
+;;   Checks EVERY parallel pair of directed paths between EVERY pair of nodes!
+;;   Returns:
+;;     #(diagram-verdict commutes paths-checked pairs-checked)
+;;   or:
+;;     #(diagram-verdict obstructed obstructions-list)
+;; ---------------------------------------------------------------------------
+
+(define (diagram-verify-custom D compose-fn eq-fn)
+  (let ((nodes (diagram-nodes D))
+        (paths-checked 0)
+        (pairs-checked 0)
+        (obstructions '()))
+    (for-each
+      (lambda (nu)
+        (let ((u (diagram-node-id nu)))
+          (for-each
+            (lambda (nv)
+              (let ((v (diagram-node-id nv)))
+                (if (not (equal? u v))
+                    (let ((paths (diagram-all-simple-paths D u v)))
+                      (if (>= (length paths) 2)
+                          (let ((evaluated (map (lambda (p)
+                                                  (set! paths-checked (+ paths-checked 1))
+                                                  (cons (map diagram-edge-name p)
+                                                        (dg-eval-path p compose-fn)))
+                                                paths)))
+                            (let ((ref-pair (car evaluated)))
+                              (for-each
+                                (lambda (other)
+                                  (set! pairs-checked (+ pairs-checked 1))
+                                  (if (not (eq-fn (cdr ref-pair) (cdr other)))
+                                      (set! obstructions
+                                            (cons (list 'non-commuting-paths u v
+                                                        (car ref-pair) (car other)
+                                                        (cdr ref-pair) (cdr other))
+                                                  obstructions))))
+                                (cdr evaluated)))))))))
+            nodes)))
+      nodes)
+    (if (null? obstructions)
+        (vector 'diagram-verdict 'commutes paths-checked pairs-checked)
+        (vector 'diagram-verdict 'obstructed (reverse obstructions) pairs-checked))))
+
+(define (diagram-verify-in-category D C)
+  (diagram-verify-custom D
+    (lambda (g f)
+      (let ((c (category-compose C g f)))
+        (if (eq? c #f) (error "diagram-verify-in-category: non-composable arrows" g f))
+        c))
+    equal?))
+
+(define (dg-exact-mat=? A B)
+  (and (= (vector-length A) (vector-length B))
+       (= (vector-length (vector-ref A 0)) (vector-length (vector-ref B 0)))
+       (let ((r (vector-length A)) (c (vector-length (vector-ref A 0))))
+         (let li ((i 0))
+           (cond ((= i r) #t)
+                 ((let lj ((j 0))
+                    (cond ((= j c) #t)
+                          ((= (exact-matrix-ref A i j) (exact-matrix-ref B i j)) (lj (+ j 1)))
+                          (else #f)))
+                  (li (+ i 1)))
+                 (else #f))))))
+
+(define (diagram-verify-matrices D)
+  (diagram-verify-custom D exact-matrix-mul dg-exact-mat=?))
+
+(define (diagram-commutes? verdict)
+  (and (vector? verdict) (eq? (vector-ref verdict 0) 'diagram-verdict)
+       (eq? (vector-ref verdict 1) 'commutes)))
+
+(define (diagram-obstructions verdict)
+  (if (diagram-commutes? verdict) '() (vector-ref verdict 2)))
+
+;; ---------------------------------------------------------------------------
+;; Exactness verification for a chain of exact rational matrices:
+;;   V_0 --M_0--> V_1 --M_1--> ... --M_{k-1}--> V_k
+;;   Exact at V_i iff M_i * M_{i-1} = 0 AND rank(M_{i-1}) + rank(M_i) = dim(V_i)
+;; ---------------------------------------------------------------------------
+
+(define (dg-matrix-zero? M)
+  (let ((r (vector-length M)) (c (vector-length (vector-ref M 0))))
+    (let li ((i 0))
+      (cond ((= i r) #t)
+            ((let lj ((j 0))
+               (cond ((= j c) #t)
+                     ((= (exact-matrix-ref M i j) 0) (lj (+ j 1)))
+                     (else #f)))
+             (li (+ i 1)))
+            (else #f)))))
+
+(define (diagram-chain-exact-verify matrices)
+  (let loop ((ms matrices) (idx 1) (viols '()))
+    (if (or (null? ms) (null? (cdr ms)))
+        (if (null? viols)
+            (vector 'exactness-verdict 'exact (- idx 1))
+            (vector 'exactness-verdict 'not-exact (reverse viols)))
+        (let* ((f (car ms))
+               (g (cadr ms))
+               (mid-dim (vector-length f))
+               (comp (exact-matrix-mul g f))
+               (rf (exact-rank f))
+               (rg (exact-rank g))
+               (ker-g (- mid-dim rg)))
+          (cond
+            ((not (dg-matrix-zero? comp))
+             (loop (cdr ms) (+ idx 1)
+                   (cons (list 'not-complex-at idx 'nonzero-composition comp) viols)))
+            ((not (= rf ker-g))
+             (loop (cdr ms) (+ idx 1)
+                   (cons (list 'homology-defect-at idx 'dim-homology (- ker-g rf)
+                               'rank-in rf 'ker-out ker-g) viols)))
+            (else (loop (cdr ms) (+ idx 1) viols)))))))
+
+(define (diagram-chain-exact? verdict)
+  (and (vector? verdict) (eq? (vector-ref verdict 0) 'exactness-verdict)
+       (eq? (vector-ref verdict 1) 'exact)))
+
+;; ---------------------------------------------------------------------------
+;; Renderers: TikZ-cd (LaTeX), standalone SVG, and Mermaid
+;; ---------------------------------------------------------------------------
+
+(define (dg-repeat-str s n)
+  (let loop ((i 0) (acc ""))
+    (if (>= i n) acc (loop (+ i 1) (string-append acc s)))))
+
+(define (dg-tikz-dir dr dc)
+  (string-append
+    (if (> dr 0) (dg-repeat-str "d" dr) (if (< dr 0) (dg-repeat-str "u" (- 0 dr)) ""))
+    (if (> dc 0) (dg-repeat-str "r" dc) (if (< dc 0) (dg-repeat-str "l" (- 0 dc)) ""))))
+
+(define (diagram->tikzcd D)
+  (let* ((nodes (diagram-nodes D))
+         (edges (diagram-edges D))
+         (max-r (let loop ((ns nodes) (m 0))
+                  (if (null? ns) m (loop (cdr ns) (max m (diagram-node-row (car ns)))))))
+         (max-c (let loop ((ns nodes) (m 0))
+                  (if (null? ns) m (loop (cdr ns) (max m (diagram-node-col (car ns)))))))
+         (out "\\begin{tikzcd}\n"))
+    (let lr ((r 0))
+      (if (<= r max-r)
+          (begin
+            (let lc ((c 0))
+              (if (<= c max-c)
+                  (let ((nd (let find ((ns nodes))
+                              (cond ((null? ns) #f)
+                                    ((and (= (diagram-node-row (car ns)) r)
+                                          (= (diagram-node-col (car ns)) c)) (car ns))
+                                    (else (find (cdr ns)))))))
+                    (if nd
+                        (let ((out-edges (filter (lambda (e) (equal? (diagram-edge-src e) (diagram-node-id nd)))
+                                                 edges)))
+                          (set! out (string-append out (diagram-node-label nd)))
+                          (for-each
+                            (lambda (e)
+                              (let* ((tnd (dg-find-node D (diagram-edge-tgt e)))
+                                     (dir (dg-tikz-dir (- (diagram-node-row tnd) r)
+                                                       (- (diagram-node-col tnd) c))))
+                                (set! out (string-append out " \\arrow[" dir ", \""
+                                                         (diagram-edge-name e) "\"]"))))
+                            out-edges)))
+                    (if (< c max-c) (set! out (string-append out " & ")))
+                    (lc (+ c 1)))))
+            (if (< r max-r) (set! out (string-append out " \\\\\n"))
+                (set! out (string-append out "\n")))
+            (lr (+ r 1)))))
+    (string-append out "\\end{tikzcd}")))
+
+(define (diagram->svg D)
+  (let* ((nodes (diagram-nodes D))
+         (edges (diagram-edges D))
+         (step 140)
+         (pad 60)
+         (max-r (let loop ((ns nodes) (m 0))
+                  (if (null? ns) m (loop (cdr ns) (max m (diagram-node-row (car ns)))))))
+         (max-c (let loop ((ns nodes) (m 0))
+                  (if (null? ns) m (loop (cdr ns) (max m (diagram-node-col (car ns)))))))
+         (w (+ (* (+ max-c 1) step) pad))
+         (h (+ (* (+ max-r 1) step) pad))
+         (out (string-append
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" (number->string w)
+                "\" height=\"" (number->string h) "\">\n"
+                "  <defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" "
+                "markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\">"
+                "<path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#222\"/></marker></defs>\n")))
+    (for-each
+      (lambda (e)
+        (let* ((sn (dg-find-node D (diagram-edge-src e)))
+               (tn (dg-find-node D (diagram-edge-tgt e)))
+               (x1 (+ pad (* (diagram-node-col sn) step)))
+               (y1 (+ pad (* (diagram-node-row sn) step)))
+               (x2 (+ pad (* (diagram-node-col tn) step)))
+               (y2 (+ pad (* (diagram-node-row tn) step)))
+               (mx (quotient (+ x1 x2) 2))
+               (my (- (quotient (+ y1 y2) 2) 8)))
+          (set! out (string-append out
+                      "  <line x1=\"" (number->string x1) "\" y1=\"" (number->string y1)
+                      "\" x2=\"" (number->string x2) "\" y2=\"" (number->string y2)
+                      "\" stroke=\"#222\" stroke-width=\"1.5\" marker-end=\"url(#arrow)\"/>\n"
+                      "  <text x=\"" (number->string mx) "\" y=\"" (number->string my)
+                      "\" font-size=\"13\" text-anchor=\"middle\">"
+                      (diagram-edge-name e) "</text>\n"))))
+      edges)
+    (for-each
+      (lambda (nd)
+        (let ((x (+ pad (* (diagram-node-col nd) step)))
+              (y (+ pad (* (diagram-node-row nd) step))))
+          (set! out (string-append out
+                      "  <circle cx=\"" (number->string x) "\" cy=\"" (number->string y)
+                      "\" r=\"18\" fill=\"#fff\" stroke=\"#222\" stroke-width=\"1.5\"/>\n"
+                      "  <text x=\"" (number->string x) "\" y=\"" (number->string (+ y 5))
+                      "\" font-size=\"14\" text-anchor=\"middle\">"
+                      (diagram-node-label nd) "</text>\n"))))
+      nodes)
+    (string-append out "</svg>")))
+
+(define (dg-id-str id)
+  (cond ((string? id) id)
+        ((symbol? id) (symbol->string id))
+        ((number? id) (string-append "n" (number->string id)))
+        (else "node")))
+
+(define (diagram->mermaid D)
+  (let ((out "flowchart LR\n"))
+    (for-each
+      (lambda (nd)
+        (set! out (string-append out "  " (dg-id-str (diagram-node-id nd))
+                                 "[\"" (diagram-node-label nd) "\"]\n")))
+      (diagram-nodes D))
+    (for-each
+      (lambda (e)
+        (set! out (string-append out "  " (dg-id-str (diagram-edge-src e))
+                                 " -->|\"" (diagram-edge-name e) "\"| "
+                                 (dg-id-str (diagram-edge-tgt e)) "\n")))
+      (diagram-edges D))
+    out))

@@ -1,0 +1,177 @@
+;;; Executable verification suite for Pillar M15: core.integrable (ADR-0063)
+;;; Covers: Flaschka Toda lattice Lax pair & exact isospectral invariant conservation,
+;;; Euler-Arnold top invariants, exact Q[i] Classical Yang-Baxter Equation (CYBE),
+;;; Hirota bilinear KdV 1-soliton tau-function via native 4th-order AD,
+;;; exact-field Hitchin spectral curves & genus over Q[lambda, eta],
+;;; exact sl_2 Gaudin-Hitchin Poisson involution {H_i, H_j} = 0,
+;;; exact Q[i] Quantum Yang-Baxter Equation (QYBE) for Yang & 6-vertex XXZ,
+;;; exact spin-chain transfer-matrix commutation [T(u), T(v)] = 0,
+;;; and exact Heisenberg XXX Algebraic Bethe Ansatz eigenstates.
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.hodge.structure)
+(require core.integrable)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Flaschka Toda Lattice Lax Pair (4-site) & Exact Isospectral Invariants
+;; ---------------------------------------------------------------------------
+(define toda (toda-lax-pair (vector 1 -2 3/2 -1/2) (vector 1/2 3/4 2/3)))
+(define L-toda (car toda))
+(define B-toda (cdr toda))
+
+;; Compute exact Lax commutator Ldot = [B, L]
+(define (rat-comm-test A B)
+  (let* ((AB (exact-matrix-mul A B))
+         (BA (exact-matrix-mul B A))
+         (n (exact-matrix-rows A))
+         (R (exact-matrix-zero n n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (exact-matrix-set! R i j (- (exact-matrix-ref AB i j)
+                                                     (exact-matrix-ref BA i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define Ldot-toda (rat-comm-test B-toda L-toda))
+(expect "toda-lax-isospectral-invariants-k1..4-exact"
+        (eq? (lax-verify-invariants-exact L-toda Ldot-toda 4) #t))
+
+;; Negative control: non-isospectral perturbation violates d/dt Tr(L^k) = 0!
+(define Ldot-bad (exact-matrix-zero 4 4))
+(exact-matrix-set! Ldot-bad 0 0 1)
+(expect "non-isospectral-flow-rejected"
+        (eq? (vector-ref (lax-verify-invariants-exact L-toda Ldot-bad 4) 0)
+             'isospectral-violation))
+
+;; Euler-Arnold rigid body exact Energy & Casimir conservation
+(expect "euler-top-conserves-H-and-Casimir-exact"
+        (eq? (euler-top-verify-invariants (vector 3 -5 7/2) (vector 1 2 3)) #t))
+
+;; ---------------------------------------------------------------------------
+;; 2. Exact Q[i] Classical Yang-Baxter Equation (CYBE) for Yang r(u) = P/u
+;; ---------------------------------------------------------------------------
+(expect "cybe-yang-rational-exact-real-params"
+        (eq? (cybe-verify-exact yang-classical-r-matrix (hq 5 0) (hq 2 0)) #t))
+(expect "cybe-yang-rational-exact-complex-params"
+        (eq? (cybe-verify-exact yang-classical-r-matrix (hq 3 1) (hq 1 -2)) #t))
+
+;; Negative control: corrupted r-matrix violates CYBE with exact discrepancy witness!
+(define (bad-r-matrix u)
+  (let ((M (yang-classical-r-matrix u)))
+    (hq-mat-set! M 0 0 (hq 7 0))
+    M))
+(expect "cybe-corrupted-r-rejected"
+        (eq? (vector-ref (cybe-verify-exact bad-r-matrix (hq 5 0) (hq 2 0)) 0)
+             'cybe-violation))
+
+;; ---------------------------------------------------------------------------
+;; 3. Hirota Bilinear KdV 1-Soliton tau-function via Native 4th-Order AD!
+;; ---------------------------------------------------------------------------
+(define res-kdv (hirota-kdv-1soliton-residual 1.2 0.7 0.3))
+(expect "hirota-kdv-1soliton-bilinear-zero" (< (abs res-kdv) 1e-10))
+
+;; ---------------------------------------------------------------------------
+;; 4. Exact-Field Hitchin Spectral Curves & sl_2 Gaudin Poisson Involution
+;; ---------------------------------------------------------------------------
+;; Elliptic spectral curve (genus 1): L(lambda) = [[0, 1], [lambda^3 - lambda, 0]]
+;;   det(eta*I - L) = eta^2 - (lambda^3 - lambda) = 0, disc deg = 3 => g = 1!
+(define curve-g1
+  (hitchin-spectral-poly-2x2 (vector 0) (vector 1) (vector 0 -1 0 1) (vector 0)))
+(expect "hitchin-elliptic-spectral-curve-genus=1"
+        (= (hitchin-spectral-curve-genus-2x2 curve-g1) 1))
+
+;; Hyperelliptic genus-2 Hitchin spectral curve: L(lambda) = [[0, 1], [lambda^5 - 2*lambda + 1, 0]]
+;;   disc deg = 5 => g = 2!
+(define curve-g2
+  (hitchin-spectral-poly-2x2 (vector 0) (vector 1) (vector 1 -2 0 0 0 1) (vector 0)))
+(expect "hitchin-hyperelliptic-spectral-curve-genus=2"
+        (= (hitchin-spectral-curve-genus-2x2 curve-g2) 2))
+
+;; Exact 4-site sl_2 Gaudin-Hitchin Hamiltonians & exact Poisson involution {H_i, H_j} = 0!
+(define g-poles (vector 0 1 3 7))
+(define g-spins (vector (vector 1 2 -1) (vector -3 1 4) (vector 2 -2 5) (vector 1/2 3/2 -2)))
+(define g-H (sl2-gaudin-hamiltonians g-poles g-spins))
+;; Sum of Gaudin Hamiltonians always vanishes identically: sum_i H_i = 0!
+(expect "gaudin-sum-of-hamiltonians-zero-exact"
+        (= (+ (vector-ref g-H 0) (vector-ref g-H 1) (vector-ref g-H 2) (vector-ref g-H 3)) 0))
+(expect "gaudin-hitchin-poisson-involution-exact"
+        (eq? (sl2-gaudin-verify-involution g-poles g-spins) #t))
+
+;; ---------------------------------------------------------------------------
+;; 5. Exact Q[i] Quantum Yang-Baxter Equation (QYBE) — Yang & 6-Vertex XXZ
+;; ---------------------------------------------------------------------------
+(define eta-q (hq 0 1))  ;; eta = i
+(expect "qybe-yang-rational-exact"
+        (eq? (qybe-verify-exact (lambda (u) (yang-quantum-R-matrix u eta-q))
+                                (hq 5 1) (hq 2 -1) 'additive)
+             #t))
+
+(define q-xxz (hq 2 1))  ;; anisotropic q = 2 + i in Q[i]
+(expect "qybe-xxz-trigonometric-exact"
+        (eq? (qybe-verify-exact (lambda (x) (xxz-quantum-R-matrix x q-xxz))
+                                (hq 3 1) (hq 1 2) 'multiplicative)
+             #t))
+
+;; Negative control: corrupted R-matrix violates QYBE!
+(define (bad-R u)
+  (let ((M (yang-quantum-R-matrix u eta-q)))
+    (hq-mat-set! M 1 2 (hq 9 0))
+    M))
+(expect "qybe-corrupted-R-rejected"
+        (eq? (vector-ref (qybe-verify-exact bad-R (hq 5 0) (hq 2 0) 'additive) 0)
+             'qybe-violation))
+
+;; ---------------------------------------------------------------------------
+;; 6. Exact Transfer-Matrix Commutation [T(u), T(v)] = 0 over Q[i] (L=2, L=3)
+;; ---------------------------------------------------------------------------
+(expect "transfer-matrix-commute-yang-L2-exact"
+        (eq? (transfer-matrix-commute-verify 2 (lambda (u) (yang-quantum-R-matrix u eta-q))
+                                             (hq 3 0) (hq 7 1))
+             #t))
+(expect "transfer-matrix-commute-yang-L3-exact"
+        (eq? (transfer-matrix-commute-verify 3 (lambda (u) (yang-quantum-R-matrix u eta-q))
+                                             (hq 2 1) (hq 5 -1))
+             #t))
+(expect "transfer-matrix-commute-xxz-L3-exact"
+        (eq? (transfer-matrix-commute-verify 3 (lambda (x) (xxz-quantum-R-matrix x q-xxz))
+                                             (hq 2 0) (hq 3 1))
+             #t))
+
+;; ---------------------------------------------------------------------------
+;; 7. Exact Heisenberg XXX (L=3) Bethe Ansatz Eigenstate Verification
+;; ---------------------------------------------------------------------------
+(define H-xxx (xxx-hamiltonian-L3))
+;; Vacuum |000> (index 0): E = 0
+(define psi-vac (vector (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0)
+                        (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0)))
+(expect "xxx-L3-vacuum-E=0" (eq? (xxx-verify-eigenstate H-xxx psi-vac (hq 0 0)) #t))
+
+;; 1-magnon p=0 state |001> + |010> + |100> (indices 1, 2, 4): E = 0
+(define psi-p0 (vector (hq 0 0) (hq 1 0) (hq 1 0) (hq 0 0)
+                       (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0)))
+(expect "xxx-L3-1magnon-p0-E=0" (eq? (xxx-verify-eigenstate H-xxx psi-p0 (hq 0 0)) #t))
+
+;; Exact Bethe 1-magnon standing wave |001> - |010> (exact linear comb of p=+/-2pi/3): E = -3!
+(define psi-bethe (vector (hq 0 0) (hq 1 0) (hq -1 0) (hq 0 0)
+                          (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0)))
+(expect "xxx-L3-bethe-1magnon-E=-3" (eq? (xxx-verify-eigenstate H-xxx psi-bethe (hq -3 0)) #t))
+
+;; Negative control: wrong eigenvalue rejected
+(expect "xxx-L3-wrong-eigenvalue-rejected"
+        (eq? (vector-ref (xxx-verify-eigenstate H-xxx psi-bethe (hq -2 0)) 0)
+             'eigenstate-violation))
+
+(display "PASS: integrable_lax_hitchin_qybe_test (") (display checks) (display " checks)") (newline)

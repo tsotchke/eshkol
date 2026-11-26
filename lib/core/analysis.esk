@@ -1,0 +1,17 @@
+;;; core.analysis -- complex analysis and variational calculus built on
+;;; Eshkol's native complex arithmetic and exact automatic differentiation.
+;;;
+;;; Usage: (require core.analysis)
+;;;
+;;; Submodules:
+;;;   core.analysis.complex      Cauchy-Riemann checker, contour integration,
+;;;                              winding numbers, Cauchy integral formula,
+;;;                              rational residues, Mobius transformations
+;;;   core.analysis.variational  Euler-Lagrange residual operator and Noether
+;;;                              conserved-charge evaluator via native AD
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require core.analysis.complex)
+(require core.analysis.variational)

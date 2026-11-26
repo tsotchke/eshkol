@@ -1,0 +1,16 @@
+;;; core.higher_algebra -- Differential Graded Algebras, DGLAs, Maurer-Cartan,
+;;; Stasheff A_infinity and L_infinity algebras, Operads, and Monads.
+;;;
+;;; Usage: (require core.higher_algebra)
+;;;
+;;; Loads:
+;;;   core.higher_algebra.dg      DGAs, exact rational cohomology algebras,
+;;;                               DGLAs, Maurer-Cartan, nilpotent gauge action
+;;;   core.higher_algebra.operad  A_infinity & L_infinity algebras, finite
+;;;                               planar and symmetric operads (Ass, Com, Lie)
+;;;   core.category.monad         monads, Kleisli & Eilenberg-Moore categories,
+;;;                               Beck monadicity precondition checks
+
+(require core.higher_algebra.dg)
+(require core.higher_algebra.operad)
+(require core.category.monad)

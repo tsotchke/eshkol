@@ -1,0 +1,385 @@
+;;; core.measure.markov -- exact rational finite-support sub-distributions and
+;;; Partial Markov Categories (arXiv:2502.03477).
+;;;
+;;; Every probability mass is kept in Eshkol's exact rational tower (no
+;;; floating-point rounding). A finite sub-distribution on a set X is an
+;;; association list of strictly positive exact rational masses whose total
+;;; mass lies in [0, 1]. A Partial Markov kernel K : X -> Y maps every x in X
+;;; to a finite sub-distribution on Y.
+;;;
+;;; Partial Markov Category axioms (Di Lavore & Roman, arXiv:2502.03477):
+;;;   - copy_X : X -> X x X is a commutative, coassociative comonoid with
+;;;     counit discard_X : X -> I
+;;;   - partiality / sub-probability: (discard_Y o K) <= discard_X pointwise,
+;;;     with equality iff K is total (probability mass 1 on every input)
+;;;   - partial determinism: (copy_Y o K) = ((K (x) K) o copy_X) iff for every
+;;;     x in X, K(x) is either a Dirac point mass or the zero sub-distribution
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+
+(provide make-dist dist? dist-entries dist-support
+         dist-zero dist-dirac dist-prob dist-event-prob
+         dist-mass dist-subprobability? dist-total?
+         dist-normalize dist-scale dist-equal? dist-leq?
+         dist-bind dist-map dist-product
+         dist-marginal-left dist-marginal-right
+         make-kernel make-kernel-from-alist
+         kernel? kernel-domain kernel-codomain kernel-apply
+         kernel-equal? kernel-leq?
+         kernel-id kernel-compose kernel-tensor
+         kernel-copy kernel-discard kernel-swap kernel-zero
+         kernel-subprobability? kernel-total?
+         kernel-deterministic? kernel-total-deterministic?
+         verify-copy-coassociativity verify-copy-commutativity
+         verify-copy-counitality verify-partial-discard-inequality
+         verify-determinism-law verify-markov-category-laws)
+
+;; ---------------------------------------------------------------------------
+;; Internal helpers
+;; ---------------------------------------------------------------------------
+
+(define (mk-member? x xs)
+  (cond ((null? xs) #f)
+        ((equal? x (car xs)) #t)
+        (else (mk-member? x (cdr xs)))))
+
+(define (mk-dedup xs)
+  (let loop ((rest xs) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((mk-member? (car rest) acc) (loop (cdr rest) acc))
+          (else (loop (cdr rest) (cons (car rest) acc))))))
+
+(define (mk-all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (mk-all? pred (cdr xs)))
+        (else #f)))
+
+(define (mk-cartesian xs ys)
+  (let outer ((rx xs) (acc '()))
+    (if (null? rx)
+        (reverse acc)
+        (let inner ((ry ys) (acc acc))
+          (if (null? ry)
+              (outer (cdr rx) acc)
+              (inner (cdr ry) (cons (cons (car rx) (car ry)) acc)))))))
+
+(define (mk-exact-nonneg? q)
+  (and (number? q) (real? q) (exact? q) (>= q 0)))
+
+(define (mk-alist-add entries key mass)
+  (if (= mass 0)
+      entries
+      (let loop ((rest entries) (acc '()))
+        (cond
+          ((null? rest) (reverse (cons (cons key mass) acc)))
+          ((equal? (caar rest) key)
+           (let ((sum (+ (cdar rest) mass)))
+             (if (= sum 0)
+                 (append (reverse acc) (cdr rest))
+                 (append (reverse acc) (cons (cons key sum) (cdr rest))))))
+          (else (loop (cdr rest) (cons (car rest) acc)))))))
+
+;; ---------------------------------------------------------------------------
+;; Exact rational finite-support sub-distributions
+;; ---------------------------------------------------------------------------
+
+(define (make-dist entries)
+  (let loop ((rest entries) (acc '()))
+    (if (null? rest)
+        (list 'fin-dist acc)
+        (let* ((p (car rest))
+               (x (car p))
+               (m (cdr p)))
+          (if (not (mk-exact-nonneg? m))
+              (error "make-dist: mass must be a non-negative exact rational" m)
+              (loop (cdr rest) (mk-alist-add acc x m)))))))
+
+(define (dist? d)
+  (and (pair? d) (eq? (car d) 'fin-dist)))
+
+(define (dist-entries d) (cadr d))
+
+(define (dist-support d)
+  (map car (dist-entries d)))
+
+(define dist-zero (list 'fin-dist '()))
+
+(define (dist-dirac x)
+  (list 'fin-dist (list (cons x 1))))
+
+(define (dist-prob d x)
+  (let loop ((rest (dist-entries d)))
+    (cond ((null? rest) 0)
+          ((equal? (caar rest) x) (cdar rest))
+          (else (loop (cdr rest))))))
+
+(define (dist-event-prob d event)
+  (let loop ((rest (mk-dedup event)) (acc 0))
+    (if (null? rest)
+        acc
+        (loop (cdr rest) (+ acc (dist-prob d (car rest)))))))
+
+(define (dist-mass d)
+  (let loop ((rest (dist-entries d)) (acc 0))
+    (if (null? rest)
+        acc
+        (loop (cdr rest) (+ acc (cdar rest))))))
+
+(define (dist-subprobability? d)
+  (and (dist? d)
+       (mk-all? (lambda (e) (mk-exact-nonneg? (cdr e))) (dist-entries d))
+       (<= (dist-mass d) 1)))
+
+(define (dist-total? d)
+  (and (dist-subprobability? d)
+       (= (dist-mass d) 1)))
+
+(define (dist-scale q d)
+  (if (not (mk-exact-nonneg? q))
+      (error "dist-scale: scalar must be a non-negative exact rational" q)
+      (if (= q 0)
+          dist-zero
+          (make-dist (map (lambda (e) (cons (car e) (* q (cdr e))))
+                          (dist-entries d))))))
+
+(define (dist-normalize d)
+  (let ((total (dist-mass d)))
+    (if (= total 0)
+        (error "dist-normalize: cannot normalize zero sub-distribution")
+        (dist-scale (/ 1 total) d))))
+
+(define (dist-equal? d1 d2)
+  (let ((supp (mk-dedup (append (dist-support d1) (dist-support d2)))))
+    (mk-all? (lambda (x) (= (dist-prob d1 x) (dist-prob d2 x))) supp)))
+
+(define (dist-leq? d1 d2)
+  (let ((supp (mk-dedup (append (dist-support d1) (dist-support d2)))))
+    (mk-all? (lambda (x) (<= (dist-prob d1 x) (dist-prob d2 x))) supp)))
+
+(define (dist-bind d f)
+  (let outer ((xs (dist-entries d)) (acc '()))
+    (if (null? xs)
+        (list 'fin-dist acc)
+        (let* ((x (caar xs))
+               (px (cdar xs))
+               (sub (f x)))
+          (let inner ((ys (dist-entries sub)) (acc acc))
+            (if (null? ys)
+                (outer (cdr xs) acc)
+                (inner (cdr ys)
+                       (mk-alist-add acc (caar ys) (* px (cdar ys))))))))))
+
+(define (dist-map g d)
+  (dist-bind d (lambda (x) (dist-dirac (g x)))))
+
+(define (dist-product d1 d2)
+  (dist-bind d1 (lambda (x)
+                  (dist-bind d2 (lambda (y)
+                                  (dist-dirac (cons x y)))))))
+
+(define (dist-marginal-left joint)
+  (dist-map car joint))
+
+(define (dist-marginal-right joint)
+  (dist-map cdr joint))
+
+;; ---------------------------------------------------------------------------
+;; Partial Markov Category kernels
+;; ---------------------------------------------------------------------------
+
+(define (make-kernel domain codomain fn)
+  (list 'markov-kernel (mk-dedup domain) (mk-dedup codomain) fn))
+
+(define (make-kernel-from-alist domain codomain table)
+  (make-kernel
+   domain codomain
+   (lambda (x)
+     (let ((hit (assoc x table)))
+       (if hit (cdr hit) dist-zero)))))
+
+(define (kernel? k)
+  (and (pair? k) (eq? (car k) 'markov-kernel)))
+
+(define (kernel-domain k) (cadr k))
+(define (kernel-codomain k) (caddr k))
+(define (kernel-fn k) (cadddr k))
+
+(define (kernel-apply k x)
+  ((kernel-fn k) x))
+
+(define (kernel-equal? k1 k2)
+  (let ((dom1 (kernel-domain k1))
+        (dom2 (kernel-domain k2))
+        (cod1 (kernel-codomain k1))
+        (cod2 (kernel-codomain k2)))
+    (and (= (length dom1) (length dom2))
+         (mk-all? (lambda (x) (mk-member? x dom2)) dom1)
+         (= (length cod1) (length cod2))
+         (mk-all? (lambda (y) (mk-member? y cod2)) cod1)
+         (mk-all? (lambda (x)
+                    (dist-equal? (kernel-apply k1 x) (kernel-apply k2 x)))
+                  dom1))))
+
+(define (kernel-leq? k1 k2)
+  (let ((dom1 (kernel-domain k1)))
+    (mk-all? (lambda (x)
+               (dist-leq? (kernel-apply k1 x) (kernel-apply k2 x)))
+             dom1)))
+
+(define (kernel-id domain)
+  (make-kernel domain domain dist-dirac))
+
+;; Categorical composition (G o F)(x) = dist-bind (F x) G.
+(define (kernel-compose g f)
+  (make-kernel
+   (kernel-domain f)
+   (kernel-codomain g)
+   (lambda (x)
+     (dist-bind (kernel-apply f x) (lambda (y) (kernel-apply g y))))))
+
+;; Monoidal product (F (x) G)(x1 . x2) = (F x1) (x) (G x2).
+(define (kernel-tensor f g)
+  (make-kernel
+   (mk-cartesian (kernel-domain f) (kernel-domain g))
+   (mk-cartesian (kernel-codomain f) (kernel-codomain g))
+   (lambda (xy)
+     (dist-product (kernel-apply f (car xy)) (kernel-apply g (cdr xy))))))
+
+(define (kernel-copy domain)
+  (make-kernel
+   domain
+   (mk-cartesian domain domain)
+   (lambda (x) (dist-dirac (cons x x)))))
+
+(define (kernel-discard domain)
+  (make-kernel
+   domain
+   (list 'unit)
+   (lambda (x) (dist-dirac 'unit))))
+
+(define (kernel-swap dom-x dom-y)
+  (make-kernel
+   (mk-cartesian dom-x dom-y)
+   (mk-cartesian dom-y dom-x)
+   (lambda (xy) (dist-dirac (cons (cdr xy) (car xy))))))
+
+(define (kernel-zero domain codomain)
+  (make-kernel domain codomain (lambda (x) dist-zero)))
+
+;; ---------------------------------------------------------------------------
+;; Structural & categorical predicates on kernels
+;; ---------------------------------------------------------------------------
+
+(define (kernel-subprobability? k)
+  (let ((cod (kernel-codomain k)))
+    (and (kernel? k)
+         (mk-all? (lambda (x)
+                    (let ((d (kernel-apply k x)))
+                      (and (dist-subprobability? d)
+                           (mk-all? (lambda (y) (mk-member? y cod))
+                                    (dist-support d)))))
+                  (kernel-domain k)))))
+
+(define (kernel-total? k)
+  (and (kernel-subprobability? k)
+       (mk-all? (lambda (x) (= (dist-mass (kernel-apply k x)) 1))
+                (kernel-domain k))))
+
+;; Categorical determinism in a Partial Markov Category:
+;;   copy_Y o K = (K (x) K) o copy_X.
+;; Holds iff every K(x) is either a Dirac delta (mass 1) or zero (mass 0).
+(define (kernel-deterministic? k)
+  (let ((lhs (kernel-compose (kernel-copy (kernel-codomain k)) k))
+        (rhs (kernel-compose (kernel-tensor k k)
+                             (kernel-copy (kernel-domain k)))))
+    (kernel-equal? lhs rhs)))
+
+(define (kernel-total-deterministic? k)
+  (and (kernel-total? k) (kernel-deterministic? k)))
+
+;; ---------------------------------------------------------------------------
+;; Markov category law verifiers
+;; ---------------------------------------------------------------------------
+
+(define (mk-assoc-left-to-right dom-a dom-b dom-c)
+  (make-kernel
+   (mk-cartesian (mk-cartesian dom-a dom-b) dom-c)
+   (mk-cartesian dom-a (mk-cartesian dom-b dom-c))
+   (lambda (abc)
+     (dist-dirac (cons (caar abc) (cons (cdar abc) (cdr abc)))))))
+
+(define (verify-copy-coassociativity domain)
+  (let* ((c (kernel-copy domain))
+         (id (kernel-id domain))
+         (lhs (kernel-compose (mk-assoc-left-to-right domain domain domain)
+                              (kernel-compose (kernel-tensor c id) c)))
+         (rhs (kernel-compose (kernel-tensor id c) c)))
+    (kernel-equal? lhs rhs)))
+
+(define (verify-copy-commutativity domain)
+  (let ((c (kernel-copy domain)))
+    (kernel-equal? (kernel-compose (kernel-swap domain domain) c) c)))
+
+(define (verify-copy-counitality domain)
+  (let* ((c (kernel-copy domain))
+         (d (kernel-discard domain))
+         (id (kernel-id domain))
+         (left-proj (make-kernel (mk-cartesian (list 'unit) domain)
+                                 domain
+                                 (lambda (ux) (dist-dirac (cdr ux)))))
+         (right-proj (make-kernel (mk-cartesian domain (list 'unit))
+                                  domain
+                                  (lambda (xu) (dist-dirac (car xu)))))
+         (lhs-l (kernel-compose left-proj (kernel-compose (kernel-tensor d id) c)))
+         (lhs-r (kernel-compose right-proj (kernel-compose (kernel-tensor id d) c))))
+    (and (kernel-equal? lhs-l id)
+         (kernel-equal? lhs-r id))))
+
+;; Partial Markov discard inequality: discard_Y o K <= discard_X, with exact
+;; equality iff K is total.
+(define (verify-partial-discard-inequality k)
+  (let ((lhs (kernel-compose (kernel-discard (kernel-codomain k)) k))
+        (rhs (kernel-discard (kernel-domain k))))
+    (and (kernel-leq? lhs rhs)
+         (eq? (kernel-equal? lhs rhs) (kernel-total? k)))))
+
+;; Verify that categorical copy preservation coincides with the structural
+;; partial-determinism criterion (every K(x) is Dirac or zero).
+(define (verify-determinism-law k)
+  (let ((structural
+         (mk-all? (lambda (x)
+                    (let* ((d (kernel-apply k x))
+                           (es (dist-entries d)))
+                      (or (null? es)
+                          (and (= (length es) 1) (= (cdar es) 1)))))
+                  (kernel-domain k))))
+    (eq? (kernel-deterministic? k) structural)))
+
+;; Full law bundle for composable kernels F : X -> Y, G : Y -> Z, H : Z -> W
+;; (or two composable kernels F : X -> Y, G : Y -> Z).
+(define (verify-markov-category-laws f g)
+  (let* ((x (kernel-domain f))
+         (y (kernel-codomain f))
+         (z (kernel-codomain g))
+         (gf (kernel-compose g f)))
+    (and (kernel-subprobability? f)
+         (kernel-subprobability? g)
+         (kernel-subprobability? gf)
+         (kernel-equal? (kernel-compose f (kernel-id x)) f)
+         (kernel-equal? (kernel-compose (kernel-id y) f) f)
+         (kernel-equal? (kernel-compose (kernel-id z) g) g)
+         (verify-copy-coassociativity x)
+         (verify-copy-coassociativity y)
+         (verify-copy-commutativity x)
+         (verify-copy-commutativity y)
+         (verify-copy-counitality x)
+         (verify-copy-counitality y)
+         (verify-partial-discard-inequality f)
+         (verify-partial-discard-inequality g)
+         (verify-partial-discard-inequality gf)
+         (verify-determinism-law f)
+         (verify-determinism-law g)
+         (verify-determinism-law gf))))

@@ -1,0 +1,26 @@
+;;; core.integrable -- Umbrella for exact classical, algebraic-geometric
+;;;   (Hitchin spectral curves), and quantum integrable systems (ADR-0063).
+
+(require core.integrable.lax)
+(require core.integrable.hitchin)
+(require core.integrable.quantum)
+(require core.integrable.hitchin_hodge)
+(require core.integrable.painleve_kp)
+
+(provide
+  ;; Lax pairs, Toda, Euler-Arnold, exact CYBE, Hirota KdV tau-function
+  toda-lax-pair lax-verify-invariants-exact euler-top-verify-invariants
+  yang-classical-r-matrix cybe-verify-exact
+  hirota-kdv-1soliton-residual
+  hirota-kdv-2soliton-residual kowalevski-top-verify-4-integrals painleve-ii-residual
+  ;; Exact-field Hitchin spectral curves & Gaudin Poisson involution
+  hitchin-spectral-poly-2x2 hitchin-spectral-curve-genus-2x2
+  sl2-gaudin-hamiltonians sl2-gaudin-verify-involution
+  ;; Hitchin-Hodge period bridge (M15 <-> M13)
+  hitchin-cm-elliptic-bridge hitchin-genus2-cm-bridge
+  elliptic-period-ratio-gauss-legendre
+  ;; Exact Q[i] QYBE, Transfer Matrix [T(u),T(v)]=0, Heisenberg XXX Bethe Ansatz
+  yang-quantum-R-matrix xxz-quantum-R-matrix
+  qybe-verify-exact
+  spin-chain-transfer-matrix transfer-matrix-commute-verify
+  xxx-hamiltonian-L3 xxx-verify-eigenstate)

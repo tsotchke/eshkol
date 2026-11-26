@@ -1,0 +1,550 @@
+;;; set_higher_algebra_test.esk -- Executable verification suite for:
+;;;   Pillar M3: Ordinals (CNF + Veblen), Forcing & V^B, Condensed Sets & Ab
+;;;   Pillar M4: DGAs, DGLAs & Maurer-Cartan, A_inf / L_inf, Operads, Monads
+;;; Includes explicit negative / counterexample tests for every verifier.
+
+(require stdlib)
+(require core.set)
+(require core.higher_algebra)
+(require core.sheaf.site)
+(require core.category.finite)
+(require core.category.functor)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display label) (newline))
+
+;; ===========================================================================
+;; PILLAR M3.1: Exact CNF Ordinals up to epsilon_0 & Veblen Hierarchy
+;; ===========================================================================
+
+(define o0 ord-zero)
+(define o1 ord-one)
+(define o2 (ord-from-nat 2))
+(define o3 (ord-from-nat 3))
+(define ow ord-omega)
+(define ow2 (ord-expt ow o2))
+(define oww (ord-expt ow ow))
+
+(check "M3.1 CNF basic ordering 0 < 1 < 2 < omega < omega+1 < omega*2 < omega^2 < omega^omega"
+       (and (ord<? o0 o1) (ord<? o1 o2) (ord<? o2 ow)
+            (ord<? ow (ord-add ow o1))
+            (ord<? (ord-add ow o1) (ord-mul ow o2))
+            (ord<? (ord-mul ow o2) ow2)
+            (ord<? ow2 oww)))
+
+(check "M3.1 CNF non-commutativity of addition: 1 + omega = omega /= omega + 1"
+       (let ((w (ord-noncommutativity-add-witness)))
+         (and (cdr (assq 'distinct? w))
+              (ord=? (ord-add o1 ow) ow)
+              (not (ord=? (ord-add o1 ow) (ord-add ow o1))))))
+
+(check "M3.1 CNF non-commutativity of multiplication: 2 * omega = omega /= omega * 2"
+       (let ((w (ord-noncommutativity-mul-witness)))
+         (and (cdr (assq 'distinct? w))
+              (ord=? (ord-mul o2 ow) ow)
+              (not (ord=? (ord-mul o2 ow) (ord-mul ow o2))))))
+
+(check "M3.1 CNF left distributivity holds while right distributivity fails with witness"
+       (let ((w (ord-right-distributivity-failure-witness)))
+         (and (ord=? (ord-mul ow (ord-add o2 o3))
+                     (ord-add (ord-mul ow o2) (ord-mul ow o3)))
+              (ord=? (ord-mul (ord-add ow o1) (ord-add ow o2))
+                     (ord-add (ord-mul (ord-add ow o1) ow) (ord-mul (ord-add ow o1) o2)))
+              (cdr (assq 'distinct? w))
+              (ord=? (cdr (assq 'lhs w)) ow)
+              (ord=? (cdr (assq 'rhs w)) (ord-mul ow o2)))))
+
+(check "M3.1 CNF exponentiation laws: 2^omega = omega, 2^(omega^2) = omega^omega, (omega+1)^2 = omega^2+omega+1, (omega+1)^omega = omega^omega"
+       (and (ord=? (ord-expt o2 ow) ow)
+            (ord=? (ord-expt o2 ow2) oww)
+            (ord=? (ord-expt (ord-add ow o1) o2) (ord-add ow2 (ord-add ow o1)))
+            (ord=? (ord-expt (ord-add ow o1) ow) oww)
+            (ord=? (ord-add o1 (ord-sub (ord-add ow o3) o1)) (ord-add ow o3))))
+
+(check "M3.1 CNF successor/limit classification and strictly increasing fundamental sequences"
+       (and (not (ord-successor? o0)) (not (ord-limit? o0))
+            (ord-successor? o1) (not (ord-limit? o1))
+            (ord-limit? ow) (not (ord-successor? ow))
+            (ord-successor? (ord-add ow o1))
+            (ord=? (ord-fundamental-seq ow 5) (ord-from-nat 5))
+            (ord=? (ord-fundamental-seq ow2 4) (ord-mul ow (ord-from-nat 4)))
+            (ord=? (ord-fundamental-seq oww 3) (ord-expt ow o3))
+            (ord<? (ord-fundamental-seq oww 2) (ord-fundamental-seq oww 3))
+            (ord<? (ord-fundamental-seq oww 3) oww)))
+
+(check "M3.1 NEGATIVE: non-CNF ordinal rejected by ord-normal-form? with explicit witness"
+       (let* ((bad-order (make-ordinal-raw (list (cons o0 1) (cons o1 1))))
+              (bad-coeff (make-ordinal-raw (list (cons o1 0))))
+              (v1 (ord-normal-form-violations bad-order))
+              (v2 (ord-normal-form-violations bad-coeff)))
+         (and (ord-normal-form? oww)
+              (not (ord-normal-form? bad-order)) (pair? v1)
+              (eq? (caar v1) 'exponents-not-strictly-decreasing)
+              (not (ord-normal-form? bad-coeff)) (pair? v2)
+              (eq? (caar v2) 'non-positive-coeff))))
+
+(check "M3.1 Veblen phi_alpha(beta): ordering, embedding, and critical-ordinal absorption"
+       (let* ((vw (veblen-from-ord ow))
+              (vww (veblen-from-ord oww))
+              (e0 veblen-epsilon0)
+              (e1 (veblen-phi veblen-one veblen-one))
+              (z0 veblen-zeta0))
+         (and (veblen=? vw veblen-omega)
+              (veblen<? vww e0)
+              (veblen<? e0 e1)
+              (veblen<? e1 z0)
+              ;; omega^{epsilon_0} = phi_0(phi_1(0)) = phi_1(0) = epsilon_0
+              (veblen=? (veblen-phi veblen-zero e0) e0)
+              ;; phi_1(zeta_0) = zeta_0
+              (veblen=? (veblen-phi veblen-one z0) z0)
+              ;; phi_0(1) = omega < phi_0(omega) = omega^omega < epsilon_0
+              (veblen<? (veblen-phi veblen-zero veblen-one)
+                        (veblen-phi veblen-zero veblen-omega))
+              (veblen<? (veblen-phi veblen-zero veblen-omega) e0))))
+
+;; ===========================================================================
+;; PILLAR M3.2: Finite Boolean Algebras, Cohen Forcing & V^B
+;; ===========================================================================
+
+(define P2 (cohen-tree-poset 2)) ;; 7 binary strings of length <= 2
+(define RO2 (regular-open-algebra P2))
+
+(check "M3.2 Powerset BA and Regular Open completion RO(P2) satisfy all Boolean algebra axioms"
+       (and (boolean-algebra-valid? (powerset-boolean-algebra 3))
+            (boolean-algebra-valid? RO2)
+            (= (length (ba-elements RO2)) 16))) ;; 4 leaves => 2^4 = 16 regular opens
+
+(check "M3.2 NEGATIVE: corrupted Boolean algebra fails boolean-algebra-violations with witness"
+       (let* ((B3 (powerset-boolean-algebra 2))
+              (bad-B (make-boolean-algebra (ba-elements B3) (ba-bot B3) (ba-top B3)
+                                           (lambda (a b) (ba-leq? B3 a b))
+                                           (lambda (a b) (ba-join B3 a b))
+                                           (lambda (a b) (ba-meet B3 a b))
+                                           (lambda (a) a))) ;; identity as fake complement
+              (viols (boolean-algebra-violations bad-B)))
+         (and (not (boolean-algebra-valid? bad-B)) (pair? viols))))
+
+(define D-len1 (filter (lambda (p) (>= (length p) 1)) (fp-elements P2)))
+(define D-len2 (filter (lambda (p) (= (length p) 2)) (fp-elements P2)))
+(define D-not-dense (list '(0) '(0 0) '(0 1)))
+
+(check "M3.2 Dense open sets, generic filter search, and negative non-dense / non-generic witnesses"
+       (let* ((G (forcing-find-generic-filter P2 (list D-len1 D-len2)))
+              (non-dense-v (forcing-dense-violations P2 D-not-dense))
+              (non-generic-v (forcing-generic-violations P2 (list '()) (list D-len1 D-len2))))
+         (and (forcing-dense-open? P2 D-len1)
+              (forcing-dense-open? P2 D-len2)
+              (not (forcing-dense? P2 D-not-dense))
+              (pair? non-dense-v)
+              G (forcing-generic-filter? P2 G (list D-len1 D-len2))
+              (not (forcing-generic-filter? P2 (list '()) (list D-len1 D-len2)))
+              (pair? non-generic-v))))
+
+;; Forcing interpretation on Cohen tree: atomic predicate (bit i) holds at p iff
+;; length(p) > i and p[i] = 1.
+(define fi-cohen
+  (make-forcing-interpretation
+   P2 '(0 1)
+   (lambda (p pred args)
+     (if (eq? pred 'bit)
+         (let ((i (car args)))
+           (and (> (length p) i) (= (list-ref p i) 1)))
+         #f))))
+
+(define phi-bit0 '(atom bit 0))
+(define phi-bit1 '(atom bit 1))
+(define phi-lem (list 'or phi-bit0 (list 'not phi-bit0)))
+(define phi-exists '(exists x (atom bit x)))
+(define phi-forall '(forall x (atom bit x)))
+(define phi-imp (list 'implies phi-forall phi-exists))
+
+(check "M3.2 Forcing soundness, persistence, exact V^{RO(P)} correspondence, and Cohen independence witness"
+       (let* ((snd (forcing-soundness-check fi-cohen))
+              (pers (forcing-persistence-check fi-cohen phi-bit0))
+              (corr (forcing-ro-correspondence-violations
+                     fi-cohen (list 'top 'bot phi-bit0 phi-bit1 (list 'not phi-bit0)
+                                    phi-lem phi-exists phi-forall phi-imp)))
+              (indep (forcing-independence-witness fi-cohen phi-bit0)))
+         (and (cdr (assq 'sound? snd))
+              (cdr (assq 'persistent? pers))
+              (null? corr)
+              (forces? fi-cohen '() phi-lem)
+              (forces? fi-cohen '() phi-imp)
+              (cdr (assq 'independent? indep))
+              (forces? fi-cohen '(1) phi-bit0)
+              (forces? fi-cohen '(0) (list 'not phi-bit0)))))
+
+;; ===========================================================================
+;; PILLAR M3.3: Condensed Sets, Stone Duality & Condensed Abelian Groups
+;; ===========================================================================
+
+(check "M3.3 Stone duality on finite Stone spaces & Boolean algebras + extremally disconnected lifting"
+       (let* ((duality (stone-duality-check 3 RO2))
+              (lift-ok (verify-projective-lifting 2 3 2 '(0 1 0)))
+              (lift-fail (verify-projective-lifting 2 2 2 '(0 0))))
+         (and (cdr (assq 'duality-holds? duality))
+              (= (cdr (assq 'spectrum-size duality)) 4)
+              (cdr (assq 'lifts-all? lift-ok))
+              (not (cdr (assq 'lifts-all? lift-fail)))
+              (list? (cdr (assq 'counterexample lift-fail))))))
+
+(check "M3.3 Condensed set sheaf axioms (disjoint union -> product & surjection equalizer) + negative constant presheaf"
+       (let* ((T-rep (condensed-representable '(a b) 3))
+              (T-prod (condensed-product T-rep (condensed-representable '(0 1) 3)))
+              (T-const (condensed-constant '(a b) 3))
+              (v-rep (condensed-set-violations T-rep))
+              (v-prod (condensed-set-violations T-prod))
+              (v-const (condensed-set-violations T-const)))
+         (and (null? v-rep)
+              (null? v-prod)
+              (pair? v-const))))
+
+(check "M3.3 Condensed abelian groups: Z/4 -> Z/2 exact kernel, cokernel, Hom-set, and exact sequence"
+       (let* ((Z4 (condensed-ab-from-zmod 4 2))
+              (Z2 (condensed-ab-from-zmod 2 2))
+              ;; Reduction mod 2: Z/4 ->> Z/2
+              (red (make-condensed-ab-hom Z4 Z2 (lambda (n x) (map (lambda (u) (modulo u 2)) x))))
+              ;; Multiplication by 2: Z/4 -> Z/4
+              (mul2 (make-condensed-ab-hom Z4 Z4 (lambda (n x) (map (lambda (u) (modulo (* 2 u) 4)) x))))
+              (K (condensed-ab-kernel red))
+              (Q (condensed-ab-cokernel mul2))
+              (homs (condensed-ab-hom-set Z4 Z2))
+              (incl (make-condensed-ab-hom K Z4 (lambda (n x) x)))
+              (proj (make-condensed-ab-hom Z4 Q (lambda (n x) (map (lambda (u) (modulo u 2)) x)))))
+         (and (null? (condensed-ab-violations Z4))
+              (null? (condensed-ab-violations Z2))
+              (null? (condensed-ab-hom-violations red))
+              (null? (condensed-ab-hom-violations mul2))
+              (null? (condensed-ab-violations K))
+              (null? (condensed-ab-violations Q))
+              ;; |Hom(Z/4, Z/2)| = 2 (zero and mod-2 reduction)
+              (= (length homs) 2)
+              ;; |ker(red)(S_1)| = 2, |coker(mul2)(S_1)| = 2
+              (= (length (condensed-ab-eval K 1)) 2)
+              (= (length (condensed-ab-eval Q 1)) 2)
+              ;; Exactness: ker(red) -> Z/4 -> Z/2 and Z/4 -mul2-> Z/4 -> coker(mul2)
+              (condensed-ab-exact-at? incl red)
+              (condensed-ab-exact-at? mul2 proj))))
+
+;; ===========================================================================
+;; PILLAR M4.1: DGAs, Exact Cohomology Algebra, DGLAs & Maurer-Cartan
+;; ===========================================================================
+
+;; Exterior DGA Lambda(x, y, z) with d(x) = 0, d(y) = 0, d(z) = x ^ y!
+;; Basis of Lambda^2: (0 1)=x^y, (0 2)=x^z, (1 2)=y^z.
+;; Cohomology: H^0 = Q, H^1 = Q^2 (<x, y>), H^2 = Q^2 (<x^z, y^z>), H^3 = Q (<x^y^z>)!
+(define heisenberg-dga
+  (exterior-dga 3 (list (vector 0 0 0) (vector 0 0 0) (vector 1 0 0))))
+
+(check "M4.1 Exterior DGA (Heisenberg Chevalley-Eilenberg): d^2=0, graded Leibniz, assoc, exact H^*(A,d) & cup product"
+       (let* ((viols (dga-verify-all heisenberg-dga))
+              (H (dga-cohomology heisenberg-dga))
+              (b0 (cohomology-dim H 0)) (b1 (cohomology-dim H 1))
+              (b2 (cohomology-dim H 2)) (b3 (cohomology-dim H 3))
+              ;; [x] * [y] = [x^y] = [dz] = 0 in H^2!
+              (xy (cohomology-mul H 1 1 (vector 1 0) (vector 0 1))))
+         (and (null? viols)
+              (= b0 1) (= b1 2) (= b2 2) (= b3 1)
+              (cohomology-mul-well-defined? H)
+              (dg-vec-zero? xy))))
+
+(check "M4.1 NEGATIVE: non-zero d^2 and graded Leibniz violation caught with counterexample witnesses"
+       (let* ((bad-d2 (make-dga '(0 1 2) '((0 . 1) (1 . 1) (2 . 1))
+                                (list (cons 0 (vector (vector 1))) (cons 1 (vector (vector 1))))
+                                (lambda (p q a b) (dg-zero-vec (if (<= (+ p q) 2) 1 0)))))
+              (v-d2 (dga-verify-differential bad-d2))
+              ;; Zero differential on Lambda^0,1,2 except d(x_0) = 1 in deg 2? Better:
+              ;; DGA on deg 0, 1 with d^0 = [1], mul = ordinary scalar product:
+              ;; d(1 * 1) = d(1) = 1, while d(1)*1 + 1*d(1) = 2 /= 1!
+              (bad-leib (make-dga '(0 1) '((0 . 1) (1 . 1))
+                                  (list (cons 0 (vector (vector 1))))
+                                  (lambda (p q a b)
+                                    (if (<= (+ p q) 1)
+                                        (vector (* (vector-ref a 0) (vector-ref b 0)))
+                                        (dg-zero-vec 0)))))
+              (v-leib (dga-verify-leibniz bad-leib)))
+         (and (pair? v-d2) (eq? (caar v-d2) 'd-squared-nonzero)
+              (pair? v-leib) (eq? (caar v-leib) 'leibniz-violation))))
+
+;; Nilpotent DGLA: strictly upper triangular 3x3 matrices (Heisenberg Lie algebra h_3)
+;; tensored with exterior algebra Lambda(t) with |t|=1, d=0 -> L = h_3 (deg 0) + t*h_3 (deg 1) + t1^t2*h_3 (deg 2)
+;; Actually even richer: take g = strictly upper 3x3 matrices (basis e12, e23, e13 with [e12, e23] = e13)
+;; tensored with DGA Lambda(u, v) where |u|=|v|=1, d(u)=0, d(v)=0, u^v in deg 2!
+;; Even better: include nonzero differential! Take A = Lambda(s, t) with |s|=0? No, |s|=1, |t|=1, d(t)=0,
+;; or A = Q[0] + Q[1] (with d^0(1) = e in deg 1) tensored with g:
+;;   L^0 = g (dim 3: E12, E23, E13), L^1 = g (dim 3: e*E12, e*E23, e*E13), L^2 = 0?
+;; To test non-trivial Maurer-Cartan d(alpha) + (1/2)[alpha, alpha] = 0 in L^2:
+;;   Take A = Lambda(x, y) (deg 0: 1, deg 1: x, y, deg 2: x^y) with d(1)=0, d(x)=x^y, d(y)=0!
+;;   Wait: check d^2 = 0 and Leibniz on A: d(x^y) = 0, d(x*y) = d(x)*y - x*d(y) = (x^y)*y - 0 = 0!
+;;   Now let L = A tensor h_3 (nilpotent Heisenberg Lie algebra: [E12, E23] = E13)!
+;;   dims: L^0 = 3, L^1 = 6 (x*E12, x*E23, x*E13, y*E12, y*E23, y*E13), L^2 = 3 (xy*E12, xy*E23, xy*E13).
+;;   Bracket on (a tensor X, b tensor Y) = (a * b) tensor [X, Y] (graded skew-symmetric because A is graded commutative!).
+;;   Check sign for |a|=|b|=1: [aX, bY] = (a^b)[X,Y], and [bY, aX] = (b^a)[Y,X] = (-a^b)(-[X,Y]) = +(a^b)[X,Y] = -(-1)^{1*1}[aX, bY]!
+;;   EXACT! And Maurer-Cartan in L^1 for alpha = x*A + y*B is:
+;;     d(alpha) + (1/2)[alpha, alpha] = (x^y) * (A + [A, B]) = 0  <=>  A + [A, B] = 0!
+;;   Take A = c*E13 (Wait: [E13, B] = 0) or take A = -E13, B = ... wait:
+;;   If A = a1*E12 + a2*E23 + a3*E13 and B = b1*E12 + b2*E23 + b3*E13,
+;;   then [A, B] = (a1*b2 - a2*b1)*E13!
+;;   So A + [A, B] = a1*E12 + a2*E23 + (a3 + a1*b2 - a2*b1)*E13 = 0!
+;;   Wait: to make [A, B] nonzero AND A + [A, B] = 0, make d(1)=0, d(x)=0, d(y)=0? No, make d(x) = x^y on A?
+;;   With d(x) = x^y: A + [A, B] = 0 forces a1 = a2 = 0, hence [A, B] = 0.
+;;   Instead, make d(x) = x^y and twist? Or simply make d : L^1 -> L^2 act on y*E13 -> xy*E13 while d(x*E12)=0!
+;;   Wait: d must be a derivation of the bracket!
+;;   On A = Lambda(x, y): if d(x) = 0, d(y) = 0, then d = 0 and MC is [A, B] = 0, AND gauge action with d=0 still conjugates!
+;;   Even better: let A have deg 0 (1), deg 1 (u, v), deg 2 (u^v) with d(u) = 0, d(v) = u^v:
+;;   Then for alpha = u*A + v*B, d(alpha) = (u^v)*B and (1/2)[alpha, alpha] = (u^v)*[A, B]!
+;;   So MC is: B + [A, B] = 0... wait if A = E12, B = ... still B is nilpotent so [A, B] is strictly higher in central series.
+;;   What if A = u*E12 + v*E23 + w*E13 with d(w) = u^v (i.e. A = heisenberg-dga tensor h_3, OR simply d(z) = x^y)!
+;;   YES!! In L = (heisenberg-dga) tensor h_3 (restricted to deg 0, 1, 2):
+;;   Wait: simpler! In L = Lambda(x, y, z) (with d(z) = x^y) tensor h_3, take alpha = x*E12 + y*E23 - z*E13!
+;;   Compute d(alpha) + (1/2)[alpha, alpha]:
+;;     d(alpha) = -d(z)*E13 = -(x^y)*E13!
+;;     (1/2)[alpha, alpha] = [x*E12, y*E23] = (x^y)*[E12, E23] = +(x^y)*E13!
+;;     SUM = 0!! BOTH d(alpha) AND (1/2)[alpha, alpha] ARE NONZERO AND CANCEL EXACTLY!
+;;   Even better: to keep dimensions tiny (fast exhaustive Jacobi check!), take the sub-DGA of Lambda(x,y,z) in deg 0,1,2:
+;;     A^0 = Q (1), A^1 = Q^3 (x, y, z), A^2 = Q (w = x^y), with d(z) = w, x*y = w, y*x = -w, all other deg 1 products 0!
+;;   Check A is a valid DGA (all products in deg >= 3 are 0, d^2=0, Leibniz holds trivially!).
+;;   And L = A tensor h_3 has dims: L^0 = 3, L^1 = 9, L^2 = 3 (total dim 15, super fast AND rich!).
+(define (h3-bracket X Y)
+  ;; [X, Y] in Heisenberg Lie algebra h_3 (basis: 0=E12, 1=E23, 2=E13)
+  (vector 0 0 (- (* (vector-ref X 0) (vector-ref Y 1))
+                 (* (vector-ref X 1) (vector-ref Y 0)))))
+
+(define mc-dgla
+  (let* (;; Diff d^1 : L^1 (dim 9: x*h3, y*h3, z*h3) -> L^2 (dim 3: w*h3), d(z*X) = w*X
+         (d1 (vector (vector 0 0 0 0 0 0 1 0 0)
+                     (vector 0 0 0 0 0 0 0 1 0)
+                     (vector 0 0 0 0 0 0 0 0 1)))
+         (slice3 (lambda (v off) (vector (vector-ref v off) (vector-ref v (+ off 1)) (vector-ref v (+ off 2)))))
+         (bracket
+          (lambda (p q a b)
+            (cond ((and (= p 0) (= q 0)) (h3-bracket a b))
+                  ((and (= p 0) (= q 1))
+                   (let ((r0 (h3-bracket a (slice3 b 0)))
+                         (r1 (h3-bracket a (slice3 b 3)))
+                         (r2 (h3-bracket a (slice3 b 6))))
+                     (vector (vector-ref r0 0) (vector-ref r0 1) (vector-ref r0 2)
+                             (vector-ref r1 0) (vector-ref r1 1) (vector-ref r1 2)
+                             (vector-ref r2 0) (vector-ref r2 1) (vector-ref r2 2))))
+                  ((and (= p 1) (= q 0))
+                   (let ((r0 (h3-bracket (slice3 a 0) b))
+                         (r1 (h3-bracket (slice3 a 3) b))
+                         (r2 (h3-bracket (slice3 a 6) b)))
+                     (vector (vector-ref r0 0) (vector-ref r0 1) (vector-ref r0 2)
+                             (vector-ref r1 0) (vector-ref r1 1) (vector-ref r1 2)
+                             (vector-ref r2 0) (vector-ref r2 1) (vector-ref r2 2))))
+                  ((and (= p 0) (= q 2)) (h3-bracket a b))
+                  ((and (= p 2) (= q 0)) (h3-bracket a b))
+                  ((and (= p 1) (= q 1))
+                   ;; (x*Ax + y*Ay + z*Az) with (x*Bx + y*By + z*Bz):
+                   ;; (x^y)*[Ax, By] + (y^x)*[Ay, Bx] = w*([Ax, By] - [Ay, Bx])
+                   ;; Note: [Ay, Bx] = -[Bx, Ay], so [Ax, By] - [Ay, Bx] = [Ax, By] + [Bx, Ay] (symmetric!)
+                   (dg-vec-sub (h3-bracket (slice3 a 0) (slice3 b 3))
+                               (h3-bracket (slice3 a 3) (slice3 b 0))))
+                  (else (dg-zero-vec 0))))))
+    (make-dgla '(0 1 2) '((0 . 3) (1 . 9) (2 . 3)) (list (cons 1 d1)) bracket)))
+
+;; alpha = x*E12 + y*E23 - z*E13  =>  d(alpha) = -w*E13, (1/2)[alpha, alpha] = +w*E13, sum = 0!
+(define mc-sol (vector 1 0 0  0 1 0  0 0 -1))
+;; non-solution: alpha2 = x*E12 + y*E23 + z*E13  =>  residual = 2*w*E13 /= 0!
+(define mc-nonsol (vector 1 0 0  0 1 0  0 0 1))
+(define mc-gauge-lam (vector 2 3 0))
+
+(check "M4.1 DGLA axioms (d^2=0, graded skew-symmetry, graded Jacobi, Leibniz) + nontrivial Maurer-Cartan + gauge action"
+       (let* ((viols (dgla-verify-all mc-dgla))
+              (res-ok (maurer-cartan-residual mc-dgla mc-sol))
+              (res-bad (maurer-cartan-residual mc-dgla mc-nonsol))
+              (gauge-res (dgla-gauge-preserves-mc? mc-dgla mc-gauge-lam mc-sol)))
+         (and (null? viols)
+              (not (dg-vec-zero? (dgla-diff mc-dgla 1 mc-sol)))
+              (not (dg-vec-zero? (dgla-bracket mc-dgla 1 1 mc-sol mc-sol)))
+              (maurer-cartan? mc-dgla mc-sol)
+              (dg-vec-zero? res-ok)
+              (not (maurer-cartan? mc-dgla mc-nonsol))
+              (dg-vec=? res-bad (vector 0 0 2))
+              (cdr (assq 'valid? gauge-res))
+              ;; Gauge action genuinely moves mc-sol!
+              (not (dg-vec=? (cdr (assq 'transformed gauge-res)) mc-sol)))))
+
+;; ===========================================================================
+;; PILLAR M4.2: A_infinity Algebras, L_infinity Algebras & Operads
+;; ===========================================================================
+
+;; Genuine non-strict homotopy-associative A_infinity algebra with m3 /= 0!
+;; Degrees 0 (dim 2: e0, e1), 1 (dim 1: f), 2 (dim 1: g).
+;; m1(f) = g (so m1^2 = 0).
+;; m2(e0, e0) = e1, m2(e1, e0) = g (all other m2 = 0):
+;;   Notice m2 is NOT strictly associative:
+;;     m2(m2(e0, e0), e0) = m2(e1, e0) = g, while m2(e0, m2(e0, e0)) = m2(e0, e1) = 0!
+;;   Wait: check m1(m2(a, b)) = m2(m1 a, b) + (-1)^|a| m2(a, m1 b):
+;;     All inputs to nonzero m2 are in deg 0 where m1=0, and outputs are e1 (m1=0) and g (m1=0)! So n=2 holds!
+;;   Now define m3(e0, e0, e0) = f (degree 0+0+0-1? Wait: |m3| = -1, so deg(m3(e0,e0,e0)) = -1!).
+;;   Let's shift degrees to 1, 2, 3!
+;;     deg 1: x (dim 1), deg 2: y (dim 1), deg 3: z (dim 1), deg 2: also w (so deg 2 has dim 2: y, w)
+;;     Wait: |m1| = +1, |m2| = 0, |m3| = -1!
+;;     Let a in deg 1 (dim 1: a), b in deg 2 (dim 2: b0, b1), c in deg 3 (dim 1: c).
+;;     - m1(b1) = c (deg 2 -> deg 3), m1 = 0 elsewhere => m1^2 = 0!
+;;     - m2(a, a) = b0 (deg 1+1 = 2), m2(b0, a) = c (deg 2+1 = 3), all other m2 = 0!
+;;       Check n=2: m1(m2(a,a)) = m1(b0) = 0; m2(m1 a, a) = 0; m1(m2(b0,a)) = m1(c) = 0. Holds!
+;;     - Associator on (a, a, a):
+;;       m2(m2(a, a), a) - m2(a, m2(a, a)) = m2(b0, a) - m2(a, b0) = c - 0 = c (in deg 3)!
+;;     - Define m3(a, a, a) = b1 (in deg 1+1+1-1 = 2)!
+;;       Then m1(m3(a, a, a)) + m3(m1 a, ...) = m1(b1) = c!
+;;       EXACT MATCH: m2(m2(a,a),a) - m2(a,m2(a,a)) = m1(m3(a,a,a)) = c /= 0!!
+(define nonstrict-ainf
+  (make-ainf-algebra
+   '(1 2 3) '((1 . 1) (2 . 2) (3 . 1))
+   (lambda (p v)
+     (if (= p 2) (vector (vector-ref v 1)) (dg-zero-vec (if (= (+ p 1) 2) 2 (if (= (+ p 1) 3) 1 0)))))
+   (lambda (p q u v)
+     (cond ((and (= p 1) (= q 1)) (vector (* (vector-ref u 0) (vector-ref v 0)) 0))
+           ((and (= p 2) (= q 1)) (vector (* (vector-ref u 0) (vector-ref v 0))))
+           (else (dg-zero-vec (if (= (+ p q) 2) 2 (if (= (+ p q) 3) 1 0))))))
+   (lambda (p q r u v w)
+     (if (and (= p 1) (= q 1) (= r 1))
+         (vector 0 (* (vector-ref u 0) (vector-ref v 0) (vector-ref w 0)))
+         (dg-zero-vec (let ((d (+ p q r -1))) (if (= d 2) 2 (if (or (= d 1) (= d 3)) 1 0))))))))
+
+;; Same algebra with m3 = 0 fails Stasheff n = 3 with explicit counterexample witness!
+(define nonassoc-ainf
+  (make-ainf-algebra
+   '(1 2 3) '((1 . 1) (2 . 2) (3 . 1))
+   (lambda (p v) (ainf-m1 nonstrict-ainf p v))
+   (lambda (p q u v) (ainf-m2 nonstrict-ainf p q u v))
+   (lambda (p q r u v w) (dg-zero-vec (ainf-dim nonstrict-ainf (+ p q r -1))))))
+
+(check "M4.2 Stasheff A_inf algebra: strict DGA->A_inf, genuine non-strict m3 /= 0, and negative n=3 witness"
+       (let ((v-dga (ainf-verify (dga->ainf heisenberg-dga)))
+             (v-nonstrict (ainf-verify nonstrict-ainf))
+             (v-bad (ainf-verify nonassoc-ainf)))
+         (and (null? v-dga)
+              (null? v-nonstrict)
+              (not (dg-vec-zero? (ainf-m3 nonstrict-ainf 1 1 1 (vector 1) (vector 1) (vector 1))))
+              (pair? v-bad)
+              (eq? (caar v-bad) 'stasheff-n3))))
+
+;; Genuine L_infinity algebra (string Lie 2-algebra style: deg -1 (dim 1: h) and deg 0 (dim 3: su(2)/so(3) or h_3),
+;; or simply deg 0 (dim 3: e1, e2, e3) and deg 1 (dim 1: c) with l1 = 0, l2 = cross product, l3 = 0,
+;; PLUS a genuine non-strict homotopy-Lie algebra with l3 /= 0):
+;;   deg 1: dim 1 (a), deg 2: dim 2 (b0, b1), deg 3: dim 1 (c):
+;;   l1(b1) = c; l2(a, a) = b0 (symmetric since |a|=1 => -(-1)^{1*1} = +1!);
+;;   l2(b0, a) = c, l2(a, b0) = -c (since |b0|=2, |a|=1 => -(-1)^{2*1} = -1!);
+;;   Check Jac(a, a, a) = l2(l2(a,a),a) + (-1)^2 l2(l2(a,a),a) + (-1)^2 l2(l2(a,a),a) = 3*c /= 0!
+;;   Set l3(a, a, a) = -3*b1 (symmetric on deg 1 inputs since -(-1)^{1*1} = +1!):
+;;   Then Jac(a, a, a) + l1(l3(a, a, a)) = 3*c + (-3)*c = 0!
+(define nonstrict-linf
+  (make-linf-algebra
+   '(1 2 3) '((1 . 1) (2 . 2) (3 . 1))
+   (lambda (p v) (if (= p 2) (vector (vector-ref v 1)) (dg-zero-vec (if (= (+ p 1) 2) 2 (if (= (+ p 1) 3) 1 0)))))
+   (lambda (p q u v)
+     (cond ((and (= p 1) (= q 1)) (vector (* (vector-ref u 0) (vector-ref v 0)) 0))
+           ((and (= p 2) (= q 1)) (vector (* (vector-ref u 0) (vector-ref v 0))))
+           ((and (= p 1) (= q 2)) (vector (- (* (vector-ref u 0) (vector-ref v 0)))))
+           (else (dg-zero-vec (if (= (+ p q) 2) 2 (if (= (+ p q) 3) 1 0))))))
+   (lambda (p q r u v w)
+     (if (and (= p 1) (= q 1) (= r 1))
+         (vector 0 (* -3 (vector-ref u 0) (vector-ref v 0) (vector-ref w 0)))
+         (dg-zero-vec (let ((d (+ p q r -1))) (if (= d 2) 2 (if (or (= d 1) (= d 3)) 1 0))))))))
+
+(check "M4.2 L_inf algebra: DGLA->L_inf and genuine non-strict homotopy-Jacobi l3 /= 0"
+       (and (null? (linf-verify (dgla->linf mc-dgla)))
+            (null? (linf-verify nonstrict-linf))
+            (not (dg-vec-zero? (linf-l3 nonstrict-linf 1 1 1 (vector 1) (vector 1) (vector 1))))))
+
+(check "M4.2 Symmetric Operads Ass, Com, Lie pass unit/associativity/equivariance + negative non-associative operad"
+       (let* ((O-com (commutative-operad 4))
+              (O-ass (associative-operad 4))
+              (O-lie (lie-operad))
+              ;; Corrupted planar operad with failing associativity on arity 2+2+2-2 = 4:
+              ;; (a o_1 a) o_1 a = a o_1 a = a, while a o_1 (a o_1 b) = a o_1 b = b!
+              (O-bad (make-operad "BadOp" 4 'set
+                                  (lambda (n) (if (= n 1) '(u) '(a b)))
+                                  'u
+                                  (lambda (m n i x y)
+                                    (cond ((eq? x 'u) y)
+                                          ((eq? y 'u) x)
+                                          ((eq? y 'b) 'b)
+                                          ((= i 1) 'a)
+                                          (else 'b)))))
+              (v-bad (operad-verify O-bad)))
+         (and (null? (operad-verify O-com))
+              (null? (operad-verify O-ass))
+              (null? (operad-verify O-lie))
+              (= (length (operad-ops O-ass 3)) 6)
+              (= (length (operad-ops O-lie 3)) 2)
+              (pair? v-bad))))
+
+;; ===========================================================================
+;; PILLAR M4.3: Monads, Kleisli, Eilenberg-Moore & Beck Monadicity
+;; ===========================================================================
+
+;; Adjunction between 2-chain (0 -> 1) and 3-chain (0 -> 1 -> 2):
+;;   L : 0 |-> 0, 1 |-> 2; R : 0 |-> 0, 1 |-> 0, 2 |-> 1 (left adjoint to R, right adjoint to L!)
+;; Let's build R via core.category.functor's (right-adjoint L)!
+(define C2 (poset-category 2 (lambda (x y) (<= x y))))
+(define C3 (poset-category 3 (lambda (x y) (<= x y))))
+(define L-inc (functor-from-procedures C2 C3 (lambda (x) (if (= x 0) 0 2))
+                (lambda (a) (car (category-hom C3 (if (= (arrow-source C2 a) 0) 0 2)
+                                               (if (= (arrow-target C2 a) 0) 0 2))))))
+(define adj-23 (right-adjoint L-inc))
+(define T-monad (adjunction->monad adj-23))
+
+;; Non-trivial idempotent closure monad on C3: 0 -> 1 -> 2 with T(0)=1, T(1)=1, T(2)=2!
+(define L-c3 (functor-from-procedures C3 C2 (lambda (x) (if (<= x 1) 0 1))
+               (lambda (a) (car (category-hom C2 (if (<= (arrow-source C3 a) 1) 0 1)
+                                              (if (<= (arrow-target C3 a) 1) 0 1))))))
+(define adj-32 (right-adjoint L-c3))
+(define T-c3 (adjunction->monad adj-32))
+
+(check "M4.3 Monad laws, Kleisli category & adjunction, Eilenberg-Moore category & algebras"
+       (let* ((mv (monad-verify T-c3))
+              (KT (kleisli-category T-c3))
+              (K-adj (kleisli-adjunction T-c3))
+              (EM (eilenberg-moore-category T-c3))
+              (EM-adj (em-adjunction T-c3))
+              (algs (monad-algebras T-c3))
+              ;; Invalid algebra candidate: object 0 with arrow T(0)=1 -> 0 doesn't even exist,
+              ;; test wrong arrow on object 1: arrow 0 -> 1 has wrong source
+              (bad-alg (cons 1 (car (category-hom C3 0 1)))))
+         (and (null? mv)
+              (null? (category-laws-violations KT))
+              (null? (adjunction-violations K-adj))
+              (functor-equal? (monad-functor (adjunction->monad K-adj)) (monad-functor T-c3))
+              (null? (category-laws-violations EM))
+              (null? (adjunction-violations EM-adj))
+              (functor-equal? (monad-functor (adjunction->monad EM-adj)) (monad-functor T-c3))
+              (= (length algs) 2) ;; objects 1 and 2 are the closed elements
+              (monad-algebra? T-c3 (car algs))
+              (not (monad-algebra? T-c3 bad-alg))
+              (pair? (monad-algebra-violations T-c3 bad-alg)))))
+
+(check "M4.3 Beck monadicity preconditions: Eilenberg-Moore adjunction passes; non-conservative adjunction fails with witness"
+       (let* ((EM-adj (em-adjunction T-c3))
+              (beck-em (beck-monadicity-check EM-adj))
+              ;; Non-conservative adjunction: R : C3 -> C2 sends 0 -> 1 to id_0 (iso in C2) while 0 -> 1 is NOT iso in C3!
+              (R-noncons (adjunction-right adj-23))
+              (beck-noncons (beck-monadicity-check adj-23)))
+         (and (cdr (assq 'monadic-preconditions-hold? beck-em))
+              (cdr (assq 'conservative? beck-em))
+              (not (cdr (assq 'monadic-preconditions-hold? beck-noncons)))
+              (not (cdr (assq 'conservative? beck-noncons)))
+              (pair? (cdr (assq 'conservative-violations beck-noncons))))))
+
+(check "M4.3 NEGATIVE: invalid monad multiplication fails monad-verify with failing object witness"
+       (let* ((C (poset-category 2 (lambda (x y) (<= x y))))
+              (T-id (identity-functor C))
+              (eta (vector (category-identity C 0) (category-identity C 1)))
+              ;; mu_0 = (0 -> 1) has wrong target!
+              (bad-mu (vector (car (category-hom C 0 1)) (category-identity C 1)))
+              (bad-M (make-monad C T-id eta bad-mu))
+              (viols (monad-verify bad-M)))
+         (pair? viols)))
+
+(if (= failed 0)
+    (begin (display "PASS: set_higher_algebra_test (") (display passed) (display " checks)") (newline))
+    (begin (display "FAIL: set_higher_algebra_test (") (display failed) (display " failed)") (newline)))

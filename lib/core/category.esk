@@ -40,6 +40,7 @@
 (require core.sheaf.presheaf)
 (require core.category.finite)
 (require core.category.functor)
+(require core.category.monad)
 (require core.category.set)
 (require core.category.kan)
 (require core.category.linear)

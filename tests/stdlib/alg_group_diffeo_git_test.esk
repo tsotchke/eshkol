@@ -1,0 +1,199 @@
+;;; Executable verification suite for Pillar M14: core.alg_group (ADR-0063)
+;;; Covers: functor-of-points algebraic group schemes over Q and Z/7Z,
+;;; Zariski tangent Lie algebras via dual-number jets k[eps]/(eps^2),
+;;; exact Bruhat decomposition, Cartan involution & Killing signature (SU(2) vs SL_2(R)),
+;;; strict separation of smooth diffeomorphism vs algebraic isomorphism,
+;;; Cayley SL_2(R) <-> SU(1,1) isomorphism, 2-to-1 SU(2) -> SO(3) adjoint cover,
+;;; exact rational Cayley transform, exact BCH order-4 series, exact rational
+;;; Hilbert-Mumford GIT & Kempf-Ness moment map, and SDiff(T^2) Jacobi identity.
+
+(require stdlib)
+(require core.ring)
+(require core.exact_linalg)
+(require core.hodge.structure)
+(require core.alg_group)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Functor-of-Points Algebraic Group Schemes over Q and Z/7Z
+;; ---------------------------------------------------------------------------
+(define g-sl2 (vector (vector 2 1) (vector 3 2)))  ;; det = 4 - 3 = 1
+(expect "SL2-over-Q-member" (alg-group-sl-member? rationals g-sl2))
+(expect "Sp2-equals-SL2-over-Q" (alg-group-sp-member? rationals g-sl2))
+
+(define F7 (make-zmod 7))
+;; Over Z/7Z: [[2 1] [3 2]] has det = 1 mod 7; [[3 4] [3 3]] has det = 9-12 = 4 != 1
+(define g-f7-ok  (vector (vector (r-int F7 2) (r-int F7 1))
+                         (vector (r-int F7 3) (r-int F7 2))))
+(define g-f7-bad (vector (vector (r-int F7 3) (r-int F7 4))
+                         (vector (r-int F7 3) (r-int F7 3))))
+(expect "SL2-over-F7-member" (alg-group-sl-member? F7 g-f7-ok))
+(expect "SL2-over-F7-nonmember-rejected" (not (alg-group-sl-member? F7 g-f7-bad)))
+
+;; Rational SO(2) element via Pythagorean triple (3/5, 4/5)
+(define g-so2 (vector (vector 3/5 -4/5) (vector 4/5 3/5)))
+(expect "SO2-over-Q-member" (alg-group-so-member? rationals g-so2))
+
+;; ---------------------------------------------------------------------------
+;; 2. Zariski Tangent Lie Algebra via Dual Numbers R[eps]/(eps^2)
+;; ---------------------------------------------------------------------------
+(define X-sl2 (vector (vector 3 5) (vector -2 -3)))    ;; Tr = 0
+(define X-non-sl2 (vector (vector 3 5) (vector -2 1))) ;; Tr = 4 != 0
+(define X-so2 (vector (vector 0 -7) (vector 7 0)))     ;; skew-symmetric
+(define X-sym (vector (vector 1 0) (vector 0 -1)))     ;; symmetric traceless (not in so_2!)
+
+(expect "zariski-Lie-sl2-admits-traceless"
+        (alg-group-zariski-lie-member? alg-group-sl-member? rationals X-sl2))
+(expect "zariski-Lie-sl2-rejects-trace-nonzero"
+        (not (alg-group-zariski-lie-member? alg-group-sl-member? rationals X-non-sl2)))
+(expect "zariski-Lie-sp2-admits-traceless"
+        (alg-group-zariski-lie-member? alg-group-sp-member? rationals X-sl2))
+(expect "zariski-Lie-so2-admits-skew"
+        (alg-group-zariski-lie-member? alg-group-so-member? rationals X-so2))
+(expect "zariski-Lie-so2-rejects-symmetric"
+        (not (alg-group-zariski-lie-member? alg-group-so-member? rationals X-sym)))
+
+;; ---------------------------------------------------------------------------
+;; 3. Exact Bruhat Decomposition in GL_2(Q)
+;; ---------------------------------------------------------------------------
+(define g-cell-e (vector (vector 2 5) (vector 0 3)))
+(define g-cell-s (vector (vector 2 1) (vector 3 2)))
+(define dec-e (bruhat-decompose-gl2 g-cell-e))
+(define dec-s (bruhat-decompose-gl2 g-cell-s))
+(expect "bruhat-cell-e-label" (eq? (vector-ref dec-e 1) 'e))
+(expect "bruhat-cell-e-exact" (bruhat-verify-gl2 g-cell-e dec-e))
+(expect "bruhat-cell-s-label" (eq? (vector-ref dec-s 1) 's))
+(expect "bruhat-cell-s-exact" (bruhat-verify-gl2 g-cell-s dec-s))
+
+;; ---------------------------------------------------------------------------
+;; 4. Cartan Involution & Exact Killing Signature: Compact su(2) vs Split sl_2(R)
+;; ---------------------------------------------------------------------------
+;; su(2) basis: i*sigma_x, i*sigma_y, i*sigma_z -> compact Killing signature (0, 3, 0)!
+(define su2-basis
+  (list (vector (vector (hq 0 0) (hq 0 1)) (vector (hq 0 1) (hq 0 0)))
+        (vector (vector (hq 0 0) (hq 1 0)) (vector (hq -1 0) (hq 0 0)))
+        (vector (vector (hq 0 1) (hq 0 0)) (vector (hq 0 0) (hq 0 -1)))))
+(define ks-su2 (killing-signature su2-basis))
+(expect "killing-signature-su2-compact=(0,3,0)"
+        (and (= (vector-ref ks-su2 1) 0)
+             (= (vector-ref ks-su2 2) 3)
+             (= (vector-ref ks-su2 3) 0)))
+
+;; sl_2(R) basis: H = [[1 0][0 -1]], E = [[0 1][0 0]], F = [[0 0][1 0]]
+;; Split real form Killing signature (2, 1, 0)!
+(define sl2r-basis
+  (list (vector (vector (hq 1 0) (hq 0 0)) (vector (hq 0 0) (hq -1 0)))
+        (vector (vector (hq 0 0) (hq 1 0)) (vector (hq 0 0) (hq 0 0)))
+        (vector (vector (hq 0 0) (hq 0 0)) (vector (hq 1 0) (hq 0 0)))))
+(define ks-sl2r (killing-signature sl2r-basis))
+(expect "killing-signature-sl2R-split=(2,1,0)"
+        (and (= (vector-ref ks-sl2r 1) 2)
+             (= (vector-ref ks-sl2r 2) 1)
+             (= (vector-ref ks-sl2r 3) 0)))
+
+;; Cartan decomposition X = k + p on sl_2(R) element E = [[0 1][0 0]]
+(define cd-E (cartan-involution-decompose (cadr sl2r-basis)))
+(expect "cartan-decomp-reconstructs-E"
+        (hq-mat= (hq-mat+ (vector-ref cd-E 1) (vector-ref cd-E 2)) (cadr sl2r-basis)))
+(expect "cartan-k-skew-hermitian"
+        (hq-mat= (hq-mat-dagger (vector-ref cd-E 1))
+                 (hq-mat-scale (hq -1 0) (vector-ref cd-E 1))))
+(expect "cartan-p-hermitian"
+        (hq-mat= (hq-mat-dagger (vector-ref cd-E 2)) (vector-ref cd-E 2)))
+
+;; ---------------------------------------------------------------------------
+;; 5. Strict Separation: Smooth Diffeomorphism vs Algebraic Isomorphism
+;; ---------------------------------------------------------------------------
+(define eq-sl2-su11 (alg-group-equivalence-classify 'SL2R-vs-SU11))
+(define eq-su2-so3  (alg-group-equivalence-classify 'SU2-vs-SO3))
+(define eq-ga-gm    (alg-group-equivalence-classify 'Ga-R-vs-Gm-pos-R))
+(expect "SL2R-vs-SU11-algebraic-and-diffeo"
+        (and (vector-ref eq-sl2-su11 2) (vector-ref eq-sl2-su11 5)))
+(expect "SU2-vs-SO3-local-diffeo-but-not-global-diffeo"
+        (and (not (vector-ref eq-su2-so3 2))
+             (vector-ref eq-su2-so3 4)
+             (not (vector-ref eq-su2-so3 5))))
+(expect "Ga-vs-Gm-globally-diffeo-but-NOT-algebraic-iso"
+        (and (not (vector-ref eq-ga-gm 2))
+             (vector-ref eq-ga-gm 5)))
+
+;; Verify SL_2(R) -> SU(1,1) Cayley conjugation preserves J11 = diag(1, -1)!
+(define g-sl2-hq (vector (vector (hq 2 0) (hq 1 0)) (vector (hq 3 0) (hq 2 0))))
+(define u-su11 (sl2r-to-su11-cayley-iso g-sl2-hq))
+(define J11 (vector (vector (hq 1 0) (hq 0 0)) (vector (hq 0 0) (hq -1 0))))
+(expect "SL2R-Cayley-image-in-SU11"
+        (hq-mat= (hq-mat-mul (hq-mat-mul (hq-mat-dagger u-su11) J11) u-su11) J11))
+
+;; Verify 2-to-1 adjoint covering Ad: SU(2) -> SO(3) maps +u and -u identically!
+(define u-su2 (vector (vector (hq 3/5 0) (hq 0 4/5))
+                      (vector (hq 0 4/5) (hq 3/5 0))))
+(define neg-u (hq-mat-scale (hq -1 0) u-su2))
+(define R-pos (su2-to-so3-adjoint-cover u-su2))
+(define R-neg (su2-to-so3-adjoint-cover neg-u))
+(expect "SU2-adjoint-image-in-SO3" (alg-group-so-member? rationals R-pos))
+(expect "SU2-double-cover-maps-plus-minus-u-identically"
+        (let li ((i 0))
+          (cond ((= i 3) #t)
+                ((let lj ((j 0))
+                   (cond ((= j 3) #t)
+                         ((= (exact-matrix-ref R-pos i j) (exact-matrix-ref R-neg i j)) (lj (+ j 1)))
+                         (else #f)))
+                 (li (+ i 1)))
+                (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; 6. Exact Rational Cayley Transform & Exact BCH Order-4 Series
+;; ---------------------------------------------------------------------------
+(define X-so3 (vector (vector 0 -1 2) (vector 1 0 -3) (vector -2 3 0)))
+(define R-cay (cayley-transform-exact X-so3))
+(define X-back (cayley-inverse-exact R-cay))
+(expect "cayley-transform-lands-in-SO3" (alg-group-so-member? rationals R-cay))
+(expect "cayley-transform-exact-roundtrip"
+        (and (= (exact-matrix-ref X-back 0 1) -1)
+             (= (exact-matrix-ref X-back 0 2) 2)
+             (= (exact-matrix-ref X-back 1 2) -3)))
+
+;; Exact BCH on Heisenberg nilpotent 3x3 algebra (where order >= 3 vanishes!):
+;; X = e_{12}, Y = e_{23} => [X, Y] = e_{13}, higher commutators = 0 => BCH = X + Y + (1/2) e_{13}
+(define Hx (vector (vector 0 1 0) (vector 0 0 0) (vector 0 0 0)))
+(define Hy (vector (vector 0 0 0) (vector 0 0 1) (vector 0 0 0)))
+(define Z-bch (bch-order4-exact Hx Hy))
+(expect "bch-heisenberg-exact-1/2-commutator"
+        (and (= (exact-matrix-ref Z-bch 0 1) 1)
+             (= (exact-matrix-ref Z-bch 1 2) 1)
+             (= (exact-matrix-ref Z-bch 0 2) 1/2)))
+
+;; ---------------------------------------------------------------------------
+;; 7. Exact Rational GIT Stability & Kempf-Ness Moment Map
+;; ---------------------------------------------------------------------------
+(define w-torus (vector -2 1 1))
+(define x-stable   (vector 1 1 1))   ;; mu_K = (-2*1 + 1*1 + 1*1)/3 = 0 EXACTLY!
+(define x-unstable (vector 0 2 3))   ;; active weights {1, 1} > 0 -> unstable!
+(expect "git-HM-stable-point"
+        (eq? (vector-ref (git-hilbert-mumford-weight x-stable w-torus) 3) 'stable))
+(expect "kempf-ness-moment-map-zero-exact"
+        (= (kempf-ness-moment-map-exact x-stable w-torus) 0))
+(expect "git-HM-unstable-point"
+        (eq? (vector-ref (git-hilbert-mumford-weight x-unstable w-torus) 3) 'unstable))
+(expect "kempf-ness-moment-map-nonzero-on-unstable"
+        (= (kempf-ness-moment-map-exact x-unstable w-torus) 1))
+
+;; ---------------------------------------------------------------------------
+;; 8. Truncated SDiff(T^2) Poisson Bracket & Exact Jacobi Identity
+;; ---------------------------------------------------------------------------
+(define sA (list (cons (cons 1 0) 1) (cons (cons 0 1) 2)))
+(define sB (list (cons (cons 1 1) 3) (cons (cons -1 2) -1)))
+(define sC (list (cons (cons 2 -1) 1) (cons (cons 0 -1) 5)))
+(expect "sdiff-t2-skew-symmetry"
+        (null? (append (sdiff-t2-bracket sA sA))))
+(expect "sdiff-t2-jacobi-exact"
+        (eq? (sdiff-t2-verify-jacobi sA sB sC) #t))
+
+(display "PASS: alg_group_diffeo_git_test (") (display checks) (display " checks)") (newline)

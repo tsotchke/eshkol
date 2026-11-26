@@ -1,0 +1,442 @@
+;;; core.set.forcing -- finite complete Boolean algebras, Cohen forcing
+;;; posets, dense open sets, generic filters, regular-open completion RO(P),
+;;; Boolean-valued models V^B, and Kripke-Cohen forcing semantics.
+;;;
+;;; Usage: (require core.set.forcing)   or   (require core.set)
+;;;
+;;; Forcing poset convention (Kunen / Jech): q <= p means q is a stronger
+;;; condition extending p; top is the weakest condition.
+
+(require stdlib)
+
+(provide
+  ;; Finite Boolean algebras
+  make-boolean-algebra boolean-algebra? ba-elements ba-bot ba-top
+  ba-leq? ba-join ba-meet ba-compl ba-implies
+  ba-join-all ba-meet-all powerset-boolean-algebra
+  boolean-algebra-violations boolean-algebra-valid?
+  ;; Forcing posets
+  make-forcing-poset forcing-poset? fp-elements fp-leq? fp-top
+  cohen-tree-poset
+  forcing-compatible? forcing-incompatible? forcing-extensions
+  forcing-downward-closed? forcing-dense? forcing-dense-open?
+  forcing-dense-violations
+  forcing-filter? forcing-filter-violations
+  forcing-generic-filter? forcing-generic-violations forcing-find-generic-filter
+  ;; Regular open completion RO(P)
+  regular-open-perp regular-open-closure regular-open-algebra regular-open-embed
+  ;; Boolean-valued model V^B & poset forcing
+  make-vb-model vb-model? vb-algebra vb-domain vb-val
+  make-forcing-interpretation forces?
+  forcing-soundness-check forcing-persistence-check
+  forcing-ro-correspondence-violations forcing-independence-witness)
+
+;; ===========================================================================
+;; Private helpers (prefix sf-)
+;; ===========================================================================
+
+(define (sf-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (sf-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (sf-all? p (cdr xs))) (else #f)))
+(define (sf-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (sf-any? p (cdr xs)))))
+(define (sf-subset? xs ys) (sf-all? (lambda (x) (member x ys)) xs))
+(define (sf-set=? xs ys) (and (sf-subset? xs ys) (sf-subset? ys xs)))
+(define (sf-dedup xs)
+  (let loop ((l xs) (acc '()))
+    (cond ((null? l) (reverse acc))
+          ((member (car l) acc) (loop (cdr l) acc))
+          (else (loop (cdr l) (cons (car l) acc))))))
+(define (sf-subsets xs)
+  (if (null? xs) (list '())
+      (let ((r (sf-subsets (cdr xs))))
+        (append r (map (lambda (s) (cons (car xs) s)) r)))))
+
+;; ===========================================================================
+;; Finite Complete Boolean Algebras
+;; ===========================================================================
+
+(define (make-boolean-algebra elems bot top leq? join meet compl)
+  (vector 'boolean-algebra elems bot top leq? join meet compl))
+(define (boolean-algebra? x)
+  (and (vector? x) (= (vector-length x) 8) (eq? (vector-ref x 0) 'boolean-algebra)))
+(define (ba-elements B) (vector-ref B 1))
+(define (ba-bot B) (vector-ref B 2))
+(define (ba-top B) (vector-ref B 3))
+(define (ba-leq? B a b) ((vector-ref B 4) a b))
+(define (ba-join B a b) ((vector-ref B 5) a b))
+(define (ba-meet B a b) ((vector-ref B 6) a b))
+(define (ba-compl B a) ((vector-ref B 7) a))
+(define (ba-implies B a b) (ba-join B (ba-compl B a) b))
+
+(define (ba-join-all B xs)
+  (fold-left (lambda (acc x) (ba-join B acc x)) (ba-bot B) xs))
+(define (ba-meet-all B xs)
+  (fold-left (lambda (acc x) (ba-meet B acc x)) (ba-top B) xs))
+
+(define (powerset-boolean-algebra n)
+  (let* ((base (sf-range n))
+         (elems (sf-subsets base)))
+    (make-boolean-algebra
+     elems '() base
+     (lambda (a b) (sf-subset? a b))
+     (lambda (a b) (filter (lambda (x) (or (memv x a) (memv x b))) base))
+     (lambda (a b) (filter (lambda (x) (and (memv x a) (memv x b))) base))
+     (lambda (a) (filter (lambda (x) (not (memv x a))) base)))))
+
+;; Exhaustive Boolean algebra axiom verification with counterexample witnesses.
+(define (boolean-algebra-violations B)
+  (let ((es (ba-elements B)) (bot (ba-bot B)) (top (ba-top B)) (out '()))
+    (define (note! v) (set! out (cons v out)))
+    (for-each
+     (lambda (a)
+       (if (not (ba-leq? B a a)) (note! (list 'reflexivity a)))
+       (if (not (ba-leq? B bot a)) (note! (list 'bot-least a)))
+       (if (not (ba-leq? B a top)) (note! (list 'top-greatest a)))
+       (if (not (equal? (ba-join B a (ba-compl B a)) top)) (note! (list 'complement-join a)))
+       (if (not (equal? (ba-meet B a (ba-compl B a)) bot)) (note! (list 'complement-meet a)))
+       (if (not (equal? (ba-compl B (ba-compl B a)) a)) (note! (list 'double-complement a)))
+       (for-each
+        (lambda (b)
+          (if (and (ba-leq? B a b) (ba-leq? B b a) (not (equal? a b)))
+              (note! (list 'antisymmetry a b)))
+          (let ((j (ba-join B a b)) (m (ba-meet B a b)))
+            (if (not (and (ba-leq? B a j) (ba-leq? B b j))) (note! (list 'join-upper a b j)))
+            (if (not (and (ba-leq? B m a) (ba-leq? B m b))) (note! (list 'meet-lower a b m)))
+            (if (not (equal? j (ba-join B b a))) (note! (list 'join-comm a b)))
+            (if (not (equal? m (ba-meet B b a))) (note! (list 'meet-comm a b))))
+          (for-each
+           (lambda (c)
+             (if (and (ba-leq? B a b) (ba-leq? B b c) (not (ba-leq? B a c)))
+                 (note! (list 'transitivity a b c)))
+             (if (not (equal? (ba-meet B a (ba-join B b c))
+                              (ba-join B (ba-meet B a b) (ba-meet B a c))))
+                 (note! (list 'distributivity a b c))))
+           es))
+        es))
+     es)
+    (reverse out)))
+
+(define (boolean-algebra-valid? B) (null? (boolean-algebra-violations B)))
+
+;; ===========================================================================
+;; Forcing Posets (P, <=, 1)
+;; ===========================================================================
+
+(define (make-forcing-poset elems leq? top)
+  (vector 'forcing-poset elems leq? top))
+(define (forcing-poset? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'forcing-poset)))
+(define (fp-elements P) (vector-ref P 1))
+(define (fp-leq? P q p) ((vector-ref P 2) q p))
+(define (fp-top P) (vector-ref P 3))
+
+(define (forcing-extensions P p)
+  (filter (lambda (q) (fp-leq? P q p)) (fp-elements P)))
+
+(define (forcing-compatible? P p q)
+  (sf-any? (lambda (r) (and (fp-leq? P r p) (fp-leq? P r q))) (fp-elements P)))
+
+(define (forcing-incompatible? P p q)
+  (not (forcing-compatible? P p q)))
+
+;; Truncated Cohen forcing Add(omega, 1) up to depth d: binary strings of length <= d,
+;; ordered by reverse prefix: q <= p iff p is a prefix of q.
+(define (sf-prefix? p q)
+  (cond ((null? p) #t)
+        ((null? q) #f)
+        ((equal? (car p) (car q)) (sf-prefix? (cdr p) (cdr q)))
+        (else #f)))
+
+(define (cohen-tree-poset depth)
+  (let ((elems
+         (let loop ((k 0) (layer (list '())) (acc (list '())))
+           (if (= k depth)
+               acc
+               (let ((next (apply append (map (lambda (s) (list (append s (list 0)) (append s (list 1)))) layer))))
+                 (loop (+ k 1) next (append acc next)))))))
+    (make-forcing-poset elems (lambda (q p) (sf-prefix? p q)) '())))
+
+;; ===========================================================================
+;; Dense Open Sets & Generic Filters
+;; ===========================================================================
+
+(define (forcing-downward-closed? P D)
+  (sf-all? (lambda (p) (sf-all? (lambda (q) (if (fp-leq? P q p) (if (member q D) #t #f) #t)) (fp-elements P))) D))
+
+(define (forcing-dense-violations P D)
+  (filter (lambda (p) (not (sf-any? (lambda (q) (and (fp-leq? P q p) (member q D))) (fp-elements P))))
+          (fp-elements P)))
+
+(define (forcing-dense? P D) (null? (forcing-dense-violations P D)))
+
+(define (forcing-dense-open? P D)
+  (and (forcing-downward-closed? P D) (forcing-dense? P D)))
+
+(define (forcing-filter-violations P G)
+  (let ((out '()))
+    (if (null? G) (set! out (cons (list 'empty-filter) out)))
+    (for-each
+     (lambda (p)
+       (if (not (member p (fp-elements P)))
+           (set! out (cons (list 'not-in-poset p) out)))
+       (for-each
+        (lambda (q)
+          (if (and (fp-leq? P p q) (not (member q G)))
+              (set! out (cons (list 'not-upward-closed p q) out))))
+        (fp-elements P))
+       (for-each
+        (lambda (q)
+          (if (not (sf-any? (lambda (r) (and (fp-leq? P r p) (fp-leq? P r q))) G))
+              (set! out (cons (list 'not-directed p q) out))))
+        G))
+     G)
+    (reverse out)))
+
+(define (forcing-filter? P G) (null? (forcing-filter-violations P G)))
+
+(define (forcing-generic-violations P G dense-family)
+  (let ((fv (forcing-filter-violations P G)) (out '()))
+    (for-each (lambda (v) (set! out (cons (list 'filter v) out))) fv)
+    (let loop ((ds dense-family) (i 0))
+      (if (null? ds)
+          (reverse out)
+          (begin
+            (if (not (sf-any? (lambda (p) (member p (car ds))) G))
+                (set! out (cons (list 'misses-dense-set i (car ds)) out)))
+            (loop (cdr ds) (+ i 1)))))))
+
+(define (forcing-generic-filter? P G dense-family)
+  (null? (forcing-generic-violations P G dense-family)))
+
+;; For a finite poset, any maximal filter (principal up-set of a minimal element)
+;; meets every dense set. Returns a generic filter or #f if none exists.
+(define (forcing-find-generic-filter P dense-family)
+  (let ((es (fp-elements P)))
+    (let loop ((cands es))
+      (if (null? cands)
+          #f
+          (let* ((p (car cands))
+                 (G (filter (lambda (q) (fp-leq? P p q)) es)))
+            (if (forcing-generic-filter? P G dense-family)
+                G
+                (loop (cdr cands))))))))
+
+;; ===========================================================================
+;; Regular Open Completion RO(P)
+;; ===========================================================================
+
+(define (regular-open-perp P U)
+  (filter (lambda (p) (sf-all? (lambda (u) (forcing-incompatible? P p u)) U))
+          (fp-elements P)))
+
+(define (regular-open-closure P U)
+  (regular-open-perp P (regular-open-perp P U)))
+
+;; Canonicalize a subset of P in the canonical order of (fp-elements P).
+(define (sf-canon-subset P U)
+  (filter (lambda (p) (member p U)) (fp-elements P)))
+
+(define (regular-open-embed P p)
+  (sf-canon-subset P (regular-open-closure P (forcing-extensions P p))))
+
+(define (regular-open-algebra P)
+  ;; Generate all regular opens by taking closures of all downward-closed subsets
+  ;; (or closures of unions of principal down-sets).
+  (let* ((es (fp-elements P))
+         (principals (map (lambda (p) (regular-open-embed P p)) es))
+         (cl (lambda (U) (sf-canon-subset P (regular-open-closure P U))))
+         (perp (lambda (U) (sf-canon-subset P (regular-open-perp P U))))
+         ;; Close under joins (closure of union) and complements (perp) starting from bot and principals.
+         (ros
+          (let loop ((queue (cons '() principals)) (seen '()))
+            (if (null? queue)
+                seen
+                (let ((u (car queue)))
+                  (if (member u seen)
+                      (loop (cdr queue) seen)
+                      (let* ((seen2 (cons u seen))
+                             (cu (perp u))
+                             (joins (map (lambda (v) (cl (append u v))) seen2)))
+                        (loop (append (cdr queue) (cons cu joins)) seen2))))))))
+    (make-boolean-algebra
+     ros
+     '()
+     (sf-canon-subset P es)
+     (lambda (a b) (sf-subset? a b))
+     (lambda (a b) (cl (append a b)))
+     (lambda (a b) (filter (lambda (x) (and (member x a) (member x b))) es))
+     perp)))
+
+;; ===========================================================================
+;; Boolean-Valued Model V^B
+;; ===========================================================================
+;;
+;; Formulas:
+;;   'top | 'bot
+;;   (atom pred arg ...)    where each arg is a variable symbol or domain element
+;;   (not phi)
+;;   (and phi psi)
+;;   (or phi psi)
+;;   (implies phi psi)
+;;   (iff phi psi)
+;;   (forall x phi)
+;;   (exists x phi)
+;;
+;; V^B model: #(vb-model B domain interp)
+;;   interp: (pred-name arg-vals) -> element of B
+
+(define (make-vb-model B domain interp) (vector 'vb-model B domain interp))
+(define (vb-model? x) (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'vb-model)))
+(define (vb-algebra M) (vector-ref M 1))
+(define (vb-domain M) (vector-ref M 2))
+(define (vb-interp M) (vector-ref M 3))
+
+(define (sf-resolve arg env)
+  (let ((hit (assq arg env))) (if hit (cdr hit) arg)))
+
+(define (vb-val M phi . env-opt)
+  (let ((B (vb-algebra M))
+        (D (vb-domain M))
+        (interp (vb-interp M))
+        (env (if (null? env-opt) '() (car env-opt))))
+    (cond ((eq? phi 'top) (ba-top B))
+          ((eq? phi 'bot) (ba-bot B))
+          ((not (pair? phi)) (error "vb-val: invalid formula" phi))
+          ((eq? (car phi) 'atom)
+           (interp (cadr phi) (map (lambda (a) (sf-resolve a env)) (cddr phi))))
+          ((eq? (car phi) 'not) (ba-compl B (vb-val M (cadr phi) env)))
+          ((eq? (car phi) 'and) (ba-meet B (vb-val M (cadr phi) env) (vb-val M (caddr phi) env)))
+          ((eq? (car phi) 'or) (ba-join B (vb-val M (cadr phi) env) (vb-val M (caddr phi) env)))
+          ((eq? (car phi) 'implies) (ba-implies B (vb-val M (cadr phi) env) (vb-val M (caddr phi) env)))
+          ((eq? (car phi) 'iff)
+           (let ((a (vb-val M (cadr phi) env)) (b (vb-val M (caddr phi) env)))
+             (ba-meet B (ba-implies B a b) (ba-implies B b a))))
+          ((eq? (car phi) 'forall)
+           (let ((x (cadr phi)) (body (caddr phi)))
+             (ba-meet-all B (map (lambda (d) (vb-val M body (cons (cons x d) env))) D))))
+          ((eq? (car phi) 'exists)
+           (let ((x (cadr phi)) (body (caddr phi)))
+             (ba-join-all B (map (lambda (d) (vb-val M body (cons (cons x d) env))) D))))
+          (else (error "vb-val: unknown connective" (car phi))))))
+
+;; ===========================================================================
+;; Direct Poset Forcing Relation p ||- phi (Strong / Cohen Forcing)
+;; ===========================================================================
+;;
+;; Forcing interpretation: #(forcing-interp P domain atom-raw?)
+;;   atom-raw?: (p pred arg-vals) -> boolean
+;;   Strong atomic forcing: p ||- atom(pred, args) iff
+;;     forall q <= p, exists r <= q such that (atom-raw? r pred args)
+;;   (regular-open semantics, matching RO(P) exactly).
+
+(define (make-forcing-interpretation P domain atom-raw?)
+  (vector 'forcing-interp P domain atom-raw?))
+(define (sf-fi-P fi) (vector-ref fi 1))
+(define (sf-fi-D fi) (vector-ref fi 2))
+(define (sf-fi-atom fi) (vector-ref fi 3))
+
+(define (forces? fi p phi . env-opt)
+  (let ((P (sf-fi-P fi))
+        (D (sf-fi-D fi))
+        (atom-raw? (sf-fi-atom fi))
+        (env (if (null? env-opt) '() (car env-opt))))
+    (cond ((eq? phi 'top) #t)
+          ((eq? phi 'bot) #f)
+          ((not (pair? phi)) (error "forces?: invalid formula" phi))
+          ((eq? (car phi) 'atom)
+           (let ((pred (cadr phi))
+                 (args (map (lambda (a) (sf-resolve a env)) (cddr phi))))
+             (sf-all? (lambda (q)
+                        (sf-any? (lambda (r) (atom-raw? r pred args))
+                                 (forcing-extensions P q)))
+                      (forcing-extensions P p))))
+          ((eq? (car phi) 'not)
+           (sf-all? (lambda (q) (not (forces? fi q (cadr phi) env)))
+                    (forcing-extensions P p)))
+          ((eq? (car phi) 'and)
+           (and (forces? fi p (cadr phi) env)
+                (forces? fi p (caddr phi) env)))
+          ((eq? (car phi) 'or)
+           (sf-all? (lambda (q)
+                      (sf-any? (lambda (r)
+                                 (or (forces? fi r (cadr phi) env)
+                                     (forces? fi r (caddr phi) env)))
+                               (forcing-extensions P q)))
+                    (forcing-extensions P p)))
+          ((eq? (car phi) 'implies)
+           (sf-all? (lambda (q)
+                      (or (not (forces? fi q (cadr phi) env))
+                          (forces? fi q (caddr phi) env)))
+                    (forcing-extensions P p)))
+          ((eq? (car phi) 'iff)
+           (and (forces? fi p (list 'implies (cadr phi) (caddr phi)) env)
+                (forces? fi p (list 'implies (caddr phi) (cadr phi)) env)))
+          ((eq? (car phi) 'forall)
+           (let ((x (cadr phi)) (body (caddr phi)))
+             (sf-all? (lambda (d) (forces? fi p body (cons (cons x d) env))) D)))
+          ((eq? (car phi) 'exists)
+           (let ((x (cadr phi)) (body (caddr phi)))
+             (sf-all? (lambda (q)
+                        (sf-any? (lambda (r)
+                                   (sf-any? (lambda (d) (forces? fi r body (cons (cons x d) env))) D))
+                                 (forcing-extensions P q)))
+                      (forcing-extensions P p))))
+          (else (error "forces?: unknown connective" (car phi))))))
+
+;; Soundness check: no condition forces bot.
+(define (forcing-soundness-check fi)
+  (let ((bad (filter (lambda (p) (forces? fi p 'bot)) (fp-elements (sf-fi-P fi)))))
+    (list (cons 'sound? (null? bad)) (cons 'witnesses bad))))
+
+;; Monotonicity / persistence check: p ||- phi and q <= p => q ||- phi.
+(define (forcing-persistence-check fi phi)
+  (let ((P (sf-fi-P fi)) (bad '()))
+    (for-each
+     (lambda (p)
+       (if (forces? fi p phi)
+           (for-each
+            (lambda (q)
+              (if (not (forces? fi q phi))
+                  (set! bad (cons (list p q) bad))))
+            (forcing-extensions P p))))
+     (fp-elements P))
+    (list (cons 'persistent? (null? bad)) (cons 'violations (reverse bad)))))
+
+;; Cross-check forcing against V^{RO(P)}: p ||- phi iff e(p) <= [[phi]]_{RO(P)}.
+(define (forcing-ro-correspondence-violations fi formulas)
+  (let* ((P (sf-fi-P fi))
+         (RO (regular-open-algebra P))
+         (atom-raw? (sf-fi-atom fi))
+         (M (make-vb-model
+             RO (sf-fi-D fi)
+             (lambda (pred args)
+               (sf-canon-subset P (regular-open-closure P
+                                    (filter (lambda (p) (atom-raw? p pred args)) (fp-elements P)))))))
+         (bad '()))
+    (for-each
+     (lambda (phi)
+       (let ((val (vb-val M phi)))
+         (for-each
+          (lambda (p)
+            (let ((f? (forces? fi p phi))
+                  (b? (ba-leq? RO (regular-open-embed P p) val)))
+              (if (not (eq? f? b?))
+                  (set! bad (cons (list phi p f? b?) bad)))))
+          (fp-elements P))))
+     formulas)
+    (reverse bad)))
+
+;; Independence witness: finds p1 <= top forcing phi and p2 <= top forcing (not phi).
+(define (forcing-independence-witness fi phi)
+  (let* ((P (sf-fi-P fi))
+         (es (fp-elements P))
+         (pos (filter (lambda (p) (forces? fi p phi)) es))
+         (neg (filter (lambda (p) (forces? fi p (list 'not phi))) es)))
+    (if (and (pair? pos) (pair? neg)
+             (not (forces? fi (fp-top P) phi))
+             (not (forces? fi (fp-top P) (list 'not phi))))
+        (list (cons 'independent? #t)
+              (cons 'forces-true (car pos))
+              (cons 'forces-false (car neg)))
+        (list (cons 'independent? #f)
+              (cons 'forces-true (if (pair? pos) (car pos) #f))
+              (cons 'forces-false (if (pair? neg) (car neg) #f))))))

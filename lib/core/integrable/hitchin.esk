@@ -1,0 +1,175 @@
+;;; core.integrable.hitchin -- Exact-field Hitchin spectral curves
+;;;   Sigma: det(eta*I - L(lambda)) = 0 over Q[lambda, eta], exact arithmetic
+;;;   genus via Riemann-Hurwitz, and sl_2 Gaudin-Hitchin Poisson involution
+;;;   {H_i, H_j} = 0 bridging directly to M13 Jacobians & period matrices (ADR-0063).
+
+(require stdlib)
+(require core.exact_linalg)
+
+(provide
+  hitchin-spectral-poly-2x2 hitchin-spectral-curve-genus-2x2
+  sl2-gaudin-hamiltonians sl2-gaudin-verify-involution)
+
+;; ---------------------------------------------------------------------------
+;; Exact univariate polynomial arithmetic over Q (coefficient vectors [c0 c1 ... cd])
+;; ---------------------------------------------------------------------------
+
+(define (qpoly-trim v)
+  (let loop ((k (- (vector-length v) 1)))
+    (cond ((< k 0) (vector 0))
+          ((= (vector-ref v k) 0) (loop (- k 1)))
+          (else
+           (let ((out (make-vector (+ k 1) 0)))
+             (let ci ((i 0))
+               (if (<= i k) (begin (vector-set! out i (vector-ref v i)) (ci (+ i 1)))))
+             out)))))
+
+(define (qpoly-deg p)
+  (let ((t (qpoly-trim p)))
+    (if (and (= (vector-length t) 1) (= (vector-ref t 0) 0)) -1 (- (vector-length t) 1))))
+
+(define (qpoly+ a b)
+  (let* ((na (vector-length a)) (nb (vector-length b)) (n (max na nb))
+         (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! r i (+ (if (< i na) (vector-ref a i) 0)
+                                (if (< i nb) (vector-ref b i) 0)))
+            (loop (+ i 1)))))
+    (qpoly-trim r)))
+
+(define (qpoly- a b)
+  (let* ((na (vector-length a)) (nb (vector-length b)) (n (max na nb))
+         (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! r i (- (if (< i na) (vector-ref a i) 0)
+                                (if (< i nb) (vector-ref b i) 0)))
+            (loop (+ i 1)))))
+    (qpoly-trim r)))
+
+(define (qpoly* a b)
+  (let* ((na (vector-length a)) (nb (vector-length b))
+         (r (make-vector (+ na nb -1) 0)))
+    (let li ((i 0))
+      (if (< i na)
+          (begin
+            (let lj ((j 0))
+              (if (< j nb)
+                  (begin
+                    (vector-set! r (+ i j)
+                                 (+ (vector-ref r (+ i j))
+                                    (* (vector-ref a i) (vector-ref b j))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    (qpoly-trim r)))
+
+(define (qpoly-scale s a)
+  (let* ((n (vector-length a)) (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (* s (vector-ref a i))) (loop (+ i 1)))))
+    (qpoly-trim r)))
+
+;; ---------------------------------------------------------------------------
+;; 1. Exact-Field 2x2 Hitchin Spectral Curve over Q[lambda, eta]:
+;;    Given L(lambda) = [[p11(lambda) p12(lambda)] [p21(lambda) p22(lambda)]]
+;;    where each entry is an exact rational polynomial vector in lambda:
+;;      det(eta*I - L(lambda)) = eta^2 - Tr(L(lambda))*eta + det(L(lambda)) = 0
+;;    For a traceless sl_2 Higgs field (Tr L = 0):
+;;      eta^2 = -det(L(lambda)) = P(lambda)   (hyperelliptic spectral curve!)
+;; ---------------------------------------------------------------------------
+
+(define (hitchin-spectral-poly-2x2 p11 p12 p21 p22)
+  (let* ((tr (qpoly+ p11 p22))
+         (det (qpoly- (qpoly* p11 p22) (qpoly* p12 p21)))
+         (disc (qpoly- (qpoly* tr tr) (qpoly-scale 4 det))))
+    (vector 'hitchin-spectral-curve
+            (vector det (qpoly-scale -1 tr) (vector 1))  ;; coeffs of eta^0, eta^1, eta^2
+            disc)))
+
+;; Exact arithmetic genus of hyperelliptic 2-sheeted cover eta^2 - tr*eta + det = 0:
+;; If discriminant D(lambda) has degree d (with distinct roots),
+;; Riemann-Hurwitz yields g = floor((d - 1) / 2)!
+(define (hitchin-spectral-curve-genus-2x2 curve)
+  (let* ((disc (vector-ref curve 2))
+         (d (qpoly-deg disc)))
+    (if (<= d 0) 0 (quotient (- d 1) 2))))
+
+;; ---------------------------------------------------------------------------
+;; 2. Classical sl_2 Gaudin-Hitchin Integrable System:
+;;    N sites at distinct rational poles z_1, ..., z_N with sl_2 spins S_i = (x_i, y_i, z_i)
+;;    Kirillov-Kostant-Souriau Poisson bracket:
+;;      {S_i^a, S_j^b} = delta_{ij} * eps_{abc} S_i^c
+;;    Hitchin-Gaudin Hamiltonians (residues of (1/2) Tr L(lambda)^2 at z_i):
+;;      H_i = sum_{j != i} (S_i . S_j) / (z_i - z_j)
+;;    Exact theorem: {H_i, H_k} == 0 for ALL pairs (i, k) over exact Q!
+;; ---------------------------------------------------------------------------
+
+(define (vec3-dot u v)
+  (+ (* (vector-ref u 0) (vector-ref v 0))
+     (* (vector-ref u 1) (vector-ref v 1))
+     (* (vector-ref u 2) (vector-ref v 2))))
+
+(define (vec3-cross u v)
+  (vector (- (* (vector-ref u 1) (vector-ref v 2)) (* (vector-ref u 2) (vector-ref v 1)))
+          (- (* (vector-ref u 2) (vector-ref v 0)) (* (vector-ref u 0) (vector-ref v 2)))
+          (- (* (vector-ref u 0) (vector-ref v 1)) (* (vector-ref u 1) (vector-ref v 0)))))
+
+(define (vec3-scale s u)
+  (vector (* s (vector-ref u 0)) (* s (vector-ref u 1)) (* s (vector-ref u 2))))
+
+(define (vec3-add u v)
+  (vector (+ (vector-ref u 0) (vector-ref v 0))
+          (+ (vector-ref u 1) (vector-ref v 1))
+          (+ (vector-ref u 2) (vector-ref v 2))))
+
+(define (sl2-gaudin-hamiltonians poles spins)
+  (let* ((n (vector-length poles))
+         (Hs (make-vector n 0)))
+    (let li ((i 0))
+      (if (< i n)
+          (let ((zi (vector-ref poles i))
+                (si (vector-ref spins i)))
+            (let lj ((j 0) (acc 0))
+              (if (= j n)
+                  (begin (vector-set! Hs i acc) (li (+ i 1)))
+                  (if (= i j)
+                      (lj (+ j 1) acc)
+                      (lj (+ j 1) (+ acc (/ (vec3-dot si (vector-ref spins j))
+                                            (- zi (vector-ref poles j)))))))))
+          Hs))))
+
+;; Exact KKS Poisson bracket {H_a, H_b} = sum_m S_m . (grad_{S_m} H_a x grad_{S_m} H_b)
+;; evaluated over exact Q!
+(define (gaudin-grad-Hi poles spins i m)
+  (let ((n (vector-length poles)))
+    (if (= m i)
+        (let loop ((j 0) (acc (vector 0 0 0)))
+          (if (= j n) acc
+              (if (= j i)
+                  (loop (+ j 1) acc)
+                  (loop (+ j 1)
+                        (vec3-add acc (vec3-scale (/ 1 (- (vector-ref poles i)
+                                                          (vector-ref poles j)))
+                                                  (vector-ref spins j)))))))
+        (vec3-scale (/ 1 (- (vector-ref poles i) (vector-ref poles m)))
+                    (vector-ref spins i)))))
+
+(define (sl2-gaudin-verify-involution poles spins)
+  (let ((n (vector-length poles)))
+    (let la ((a 0))
+      (if (= a n) #t
+          (let lb ((b (+ a 1)))
+            (if (= b n) (la (+ a 1))
+                (let ((pb (let lm ((m 0) (acc 0))
+                            (if (= m n) acc
+                                (let ((ga (gaudin-grad-Hi poles spins a m))
+                                      (gb (gaudin-grad-Hi poles spins b m)))
+                                  (lm (+ m 1)
+                                      (+ acc (vec3-dot (vector-ref spins m)
+                                                       (vec3-cross ga gb)))))))))
+                  (if (= pb 0)
+                      (lb (+ b 1))
+                      (vector 'gaudin-involution-violation a b pb)))))))))

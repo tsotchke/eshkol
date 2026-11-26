@@ -1,0 +1,1210 @@
+;;; core.grothendieck.beyond_frontiers -- Beyond-Grothendieck Frontiers:
+;;;   1. Geometry over F_1 (Deitmar pointed-monoid Spec, q -> 1 Tits
+;;;      specialization, and Borger Lambda-ring Adams operations on Z[t]);
+;;;   2. Noncommutative algebraic geometry (Weyl algebra A_1 normal-form
+;;;      multiplication, Left Ore common multiple witnesses, free associative
+;;;      algebra Q<x,y> Left Ore failure, and exact DG-algebra verification);
+;;;   3. Arakelov geometry at the infinite prime (exact rational product
+;;;      formula, Arakelov degree-zero conservation, finite-only negative
+;;;      control, Weil height, and exact Northcott enumeration on P^1(Q));
+;;;   4. Directed homotopy & (infinity, 2)-categories (finite 2-category of
+;;;      functors/natural transformations on a directed-plus-automorphism
+;;;      category, Godement interchange law, and fail-closed rejection of
+;;;      irreversible 2-morphisms from (infinity, 1)-groupoid coercion);
+;;;   5. Universal Teichmuller taxonomy (Bers T(1) quasisymmetric distortion
+;;;      checker with non-quasisymmetric negative control, plus exact abc
+;;;      triple analyzer with honest 'disputed-open-unverified IUT boundary).
+;;;
+;;; All internal and exported definitions use the gbey- naming convention.
+
+(require stdlib)
+
+(provide
+  ;; 1. F_1 geometry & Borger Lambda-rings
+  gbey-f1-make-monoid
+  gbey-f1-spec-points
+  gbey-f1-spec-krull-dim
+  gbey-q-int-poly
+  gbey-q-factorial-poly
+  gbey-q-binomial-poly
+  gbey-poly-eval
+  gbey-f1-projective-points
+  gbey-f1-grassmannian-points
+  gbey-f1-gln-order
+  gbey-poly-add
+  gbey-poly-sub
+  gbey-poly-mul
+  gbey-poly-pow
+  gbey-poly-mod
+  gbey-poly-equal?
+  gbey-poly-compose
+  gbey-poly-adams
+  gbey-borger-verify-adams
+  gbey-f1-riemann-status
+
+  ;; 2. Noncommutative algebraic geometry: Weyl A_1, Ore failure, DGA
+  gbey-weyl-zero
+  gbey-weyl-one
+  gbey-weyl-x
+  gbey-weyl-d
+  gbey-weyl-term
+  gbey-weyl-add
+  gbey-weyl-sub
+  gbey-weyl-scale
+  gbey-weyl-mul
+  gbey-weyl-commutator
+  gbey-weyl-equal?
+  gbey-weyl-zero?
+  gbey-weyl-verify-left-ore
+  gbey-free-term
+  gbey-free-add
+  gbey-free-sub
+  gbey-free-mul
+  gbey-free-equal?
+  gbey-free-zero?
+  gbey-free-algebra-ore-check
+  gbey-dga-make-form
+  gbey-dga-wedge
+  gbey-dga-diff
+  gbey-dga-form-equal?
+  gbey-dga-verify-axioms
+
+  ;; 3. Arakelov geometry at the infinite prime
+  gbey-gcd
+  gbey-factorize-int
+  gbey-padic-valuation
+  gbey-arakelov-principal-divisor
+  gbey-arakelov-product-formula?
+  gbey-arakelov-degree
+  gbey-arakelov-finite-only-degree-check
+  gbey-weil-height
+  gbey-arakelov-log-height
+  gbey-northcott-p1-enumerate
+
+  ;; 4. Directed homotopy & (infinity, 2)-categories
+  gbey-d3-id
+  gbey-d3-compose
+  gbey-d3-invertible?
+  gbey-d3-invert
+  gbey-make-functor
+  gbey-functor-apply-obj
+  gbey-functor-apply-mor
+  gbey-functor-compose
+  gbey-make-2cell
+  gbey-2cell-natural?
+  gbey-2cell-vcomp
+  gbey-2cell-hcomp
+  gbey-2cell-equal?
+  gbey-verify-godement-interchange
+  gbey-coerce-infty1-groupoid
+
+  ;; 5. Universal Teichmuller taxonomy & abc/IUT boundary
+  gbey-bers-qs-ratio
+  gbey-bers-qs-check
+  gbey-radical-abc
+  gbey-abc-triple-analyze)
+
+;; ===========================================================================
+;; Shared Exact Arithmetic & List Utilities
+;; ===========================================================================
+
+(define (gbey-abs x)
+  (if (< x 0) (- 0 x) x))
+
+(define (gbey-max a b)
+  (if (>= a b) a b))
+
+(define (gbey-min a b)
+  (if (<= a b) a b))
+
+(define (gbey-gcd a b)
+  (let loop ((x (gbey-abs a)) (y (gbey-abs b)))
+    (if (= y 0)
+        x
+        (loop y (remainder x y)))))
+
+(define (gbey-pos-mod a m)
+  (let ((r (remainder a m)))
+    (if (< r 0) (+ r m) r)))
+
+(define (gbey-int-pow base exp)
+  (let loop ((b base) (e exp) (acc 1))
+    (cond
+      ((<= e 0) acc)
+      ((= (remainder e 2) 1) (loop (* b b) (quotient e 2) (* acc b)))
+      (else (loop (* b b) (quotient e 2) acc)))))
+
+(define (gbey-factorial n)
+  (let loop ((k 2) (acc 1))
+    (if (> k n) acc (loop (+ k 1) (* acc k)))))
+
+(define (gbey-binomial n k)
+  (cond
+    ((or (< k 0) (> k n)) 0)
+    ((or (= k 0) (= k n)) 1)
+    (else
+     (let ((kk (gbey-min k (- n k))))
+       (let loop ((i 1) (acc 1))
+         (if (> i kk)
+             acc
+             (loop (+ i 1) (quotient (* acc (+ (- n kk) i)) i))))))))
+
+(define (gbey-member-eq? x xs)
+  (cond
+    ((null? xs) #f)
+    ((equal? x (car xs)) #t)
+    (else (gbey-member-eq? x (cdr xs)))))
+
+(define (gbey-subset? xs ys)
+  (cond
+    ((null? xs) #t)
+    ((gbey-member-eq? (car xs) ys) (gbey-subset? (cdr xs) ys))
+    (else #f)))
+
+(define (gbey-last xs)
+  (if (null? (cdr xs))
+      (car xs)
+      (gbey-last (cdr xs))))
+
+(define (gbey-all? pred xs)
+  (cond
+    ((null? xs) #t)
+    ((pred (car xs)) (gbey-all? pred (cdr xs)))
+    (else #f)))
+
+(define (gbey-any? pred xs)
+  (cond
+    ((null? xs) #f)
+    ((pred (car xs)) #t)
+    (else (gbey-any? pred (cdr xs)))))
+
+(define (gbey-subsets xs)
+  (if (null? xs)
+      (list '())
+      (let ((rest (gbey-subsets (cdr xs)))
+            (head (car xs)))
+        (append rest (map (lambda (s) (cons head s)) rest)))))
+
+(define (gbey-unique-insert x xs)
+  (if (gbey-member-eq? x xs) xs (cons x xs)))
+
+;; ===========================================================================
+;; 1. Geometry Over F_1 (Deitmar Monoid Schemes & Borger Lambda-Rings)
+;; ===========================================================================
+
+;; Monoid descriptor: #(gbey-f1-monoid elems mult-fn one zero-opt)
+;; zero-opt is either #f (unpointed monoid) or a 1-element list (z) holding the
+;; absorbing zero element z.
+(define (gbey-f1-make-monoid elems mult-fn one zero-opt)
+  (vector 'gbey-f1-monoid elems mult-fn one zero-opt))
+
+(define (gbey-f1-ideal? elems mult-fn zero-opt one subset)
+  (and (not (gbey-member-eq? one subset))
+       (or (not zero-opt) (gbey-member-eq? (car zero-opt) subset))
+       (gbey-all?
+         (lambda (a)
+           (gbey-all?
+             (lambda (m) (gbey-member-eq? (mult-fn a m) subset))
+             elems))
+         subset)))
+
+(define (gbey-f1-prime-ideal? elems mult-fn zero-opt one subset)
+  (and (gbey-f1-ideal? elems mult-fn zero-opt one subset)
+       (gbey-all?
+         (lambda (a)
+           (gbey-all?
+             (lambda (b)
+               (if (gbey-member-eq? (mult-fn a b) subset)
+                   (or (gbey-member-eq? a subset)
+                       (gbey-member-eq? b subset))
+                   #t))
+             elems))
+         elems)))
+
+(define (gbey-f1-spec-points monoid)
+  (let ((elems (vector-ref monoid 1))
+        (mult-fn (vector-ref monoid 2))
+        (one (vector-ref monoid 3))
+        (zero-opt (vector-ref monoid 4)))
+    (let loop ((cands (gbey-subsets elems)) (acc '()))
+      (if (null? cands)
+          (reverse acc)
+          (let ((s (car cands)))
+            (if (gbey-f1-prime-ideal? elems mult-fn zero-opt one s)
+                (loop (cdr cands) (cons s acc))
+                (loop (cdr cands) acc)))))))
+
+(define (gbey-f1-strict-subset? a b)
+  (and (< (length a) (length b))
+       (gbey-subset? a b)))
+
+(define (gbey-f1-spec-krull-dim spec-pts)
+  (define (chain-len p)
+    (let loop ((qs spec-pts) (best 0))
+      (if (null? qs)
+          best
+          (let ((q (car qs)))
+            (if (gbey-f1-strict-subset? p q)
+                (loop (cdr qs) (gbey-max best (+ 1 (chain-len q))))
+                (loop (cdr qs) best))))))
+  (if (null? spec-pts)
+      -1
+      (let loop ((ps spec-pts) (best 0))
+        (if (null? ps)
+            best
+            (loop (cdr ps) (gbey-max best (chain-len (car ps))))))))
+
+;; Exact dense polynomials in Z[t] represented as coefficient lists (c_0 c_1 ... c_d)
+(define (gbey-poly-trim coeffs)
+  (let loop ((rev (reverse coeffs)))
+    (cond
+      ((null? rev) '())
+      ((= (car rev) 0) (loop (cdr rev)))
+      (else (reverse rev)))))
+
+(define (gbey-poly-add p q)
+  (define (add-raw a b)
+    (cond
+      ((null? a) b)
+      ((null? b) a)
+      (else (cons (+ (car a) (car b)) (add-raw (cdr a) (cdr b))))))
+  (gbey-poly-trim (add-raw p q)))
+
+(define (gbey-poly-sub p q)
+  (define (sub-raw a b)
+    (cond
+      ((null? a) (map (lambda (x) (- 0 x)) b))
+      ((null? b) a)
+      (else (cons (- (car a) (car b)) (sub-raw (cdr a) (cdr b))))))
+  (gbey-poly-trim (sub-raw p q)))
+
+(define (gbey-poly-shift p k)
+  (if (or (null? p) (<= k 0))
+      p
+      (let loop ((i 0) (acc p))
+        (if (= i k) acc (loop (+ i 1) (cons 0 acc))))))
+
+(define (gbey-poly-scale c p)
+  (if (= c 0)
+      '()
+      (gbey-poly-trim (map (lambda (x) (* c x)) p))))
+
+(define (gbey-poly-mul p q)
+  (let loop ((ps p) (deg 0) (acc '()))
+    (if (null? ps)
+        acc
+        (let ((term (gbey-poly-shift (gbey-poly-scale (car ps) q) deg)))
+          (loop (cdr ps) (+ deg 1) (gbey-poly-add acc term))))))
+
+(define (gbey-poly-pow p n)
+  (let loop ((base p) (e n) (acc (list 1)))
+    (cond
+      ((<= e 0) acc)
+      ((= (remainder e 2) 1)
+       (loop (gbey-poly-mul base base) (quotient e 2) (gbey-poly-mul acc base)))
+      (else
+       (loop (gbey-poly-mul base base) (quotient e 2) acc)))))
+
+(define (gbey-poly-mod p m)
+  (gbey-poly-trim (map (lambda (c) (gbey-pos-mod c m)) p)))
+
+(define (gbey-poly-equal? p q)
+  (equal? (gbey-poly-trim p) (gbey-poly-trim q)))
+
+(define (gbey-poly-eval p x)
+  (let loop ((rev (reverse p)) (acc 0))
+    (if (null? rev)
+        acc
+        (loop (cdr rev) (+ (* acc x) (car rev))))))
+
+;; Compose f(g(t)) in Z[t]
+(define (gbey-poly-compose f g)
+  (let loop ((rev (reverse (gbey-poly-trim f))) (acc '()))
+    (if (null? rev)
+        acc
+        (loop (cdr rev)
+              (gbey-poly-add (gbey-poly-mul acc g)
+                             (if (= (car rev) 0) '() (list (car rev))))))))
+
+;; Exact q-analogues as polynomials in Z[q] and q -> 1 Tits specialization
+(define (gbey-q-int-poly n)
+  (if (<= n 0)
+      '()
+      (let loop ((i 0) (acc '()))
+        (if (= i n) acc (loop (+ i 1) (cons 1 acc))))))
+
+(define (gbey-q-factorial-poly n)
+  (let loop ((k 1) (acc (list 1)))
+    (if (> k n)
+        acc
+        (loop (+ k 1) (gbey-poly-mul acc (gbey-q-int-poly k))))))
+
+(define (gbey-q-binomial-poly n k)
+  (cond
+    ((or (< k 0) (> k n)) '())
+    ((or (= k 0) (= k n)) (list 1))
+    (else
+     (gbey-poly-add
+       (gbey-poly-shift (gbey-q-binomial-poly (- n 1) k) k)
+       (gbey-q-binomial-poly (- n 1) (- k 1))))))
+
+(define (gbey-f1-projective-points n)
+  (gbey-poly-eval (gbey-q-int-poly (+ n 1)) 1))
+
+(define (gbey-f1-grassmannian-points k n)
+  (gbey-poly-eval (gbey-q-binomial-poly n k) 1))
+
+(define (gbey-f1-gln-order n)
+  ;; lim_{q -> 1} q^{n(n-1)/2} [n]_q! = n! = |S_n|
+  (let ((q-shift (quotient (* n (- n 1)) 2)))
+    (gbey-poly-eval (gbey-poly-shift (gbey-q-factorial-poly n) q-shift) 1)))
+
+;; Borger Lambda-ring Adams operation on Z[t]: psi^n(f(t)) = f(t^n)
+(define (gbey-poly-adams n f)
+  (let ((trimmed (gbey-poly-trim f)))
+    (if (null? trimmed)
+        '()
+        (let loop ((cs trimmed) (deg 0) (acc '()))
+          (if (null? cs)
+              acc
+              (let ((c (car cs)))
+                (if (= c 0)
+                    (loop (cdr cs) (+ deg 1) acc)
+                    (loop (cdr cs)
+                          (+ deg 1)
+                          (gbey-poly-add acc (gbey-poly-shift (list c) (* deg n)))))))))))
+
+;; Verify Borger Lambda-ring axioms for a candidate family psi-fn: (n poly) -> poly
+;; Checks:
+;;   (a) Ring endomorphism: psi^p(f+g) = psi^p(f)+psi^p(g) and psi^p(fg) = psi^p(f)psi^p(g)
+;;   (b) Frobenius lift mod p: psi^p(f) == f^p (mod p) for all primes in primes-list
+;;   (c) Commutativity & composition: psi^p(psi^q(f)) = psi^q(psi^p(f)) = psi^{pq}(f)
+;; Fails closed with #(err-not-lambda-ring reason detail).
+(define (gbey-borger-verify-adams psi-fn test-polys primes-list)
+  (let ((p1 (car test-polys))
+        (p2 (if (null? (cdr test-polys)) (car test-polys) (cadr test-polys))))
+    ;; Step (a): Ring homomorphism checks on primes
+    (define (check-hom ps)
+      (if (null? ps)
+          #t
+          (let* ((p (car ps))
+                 (lhs-add (psi-fn p (gbey-poly-add p1 p2)))
+                 (rhs-add (gbey-poly-add (psi-fn p p1) (psi-fn p p2)))
+                 (lhs-mul (psi-fn p (gbey-poly-mul p1 p2)))
+                 (rhs-mul (gbey-poly-mul (psi-fn p p1) (psi-fn p p2))))
+            (cond
+              ((not (gbey-poly-equal? lhs-add rhs-add))
+               (vector 'err-not-lambda-ring 'additivity-fails p))
+              ((not (gbey-poly-equal? lhs-mul rhs-mul))
+               (vector 'err-not-lambda-ring 'multiplicativity-fails p))
+              (else (check-hom (cdr ps)))))))
+    ;; Step (b): Frobenius lift mod p for every prime p and every test polynomial f
+    (define (check-frob ps)
+      (if (null? ps)
+          #t
+          (let ((p (car ps)))
+            (let loop-f ((fs test-polys))
+              (if (null? fs)
+                  (check-frob (cdr ps))
+                  (let* ((f (car fs))
+                         (lhs (gbey-poly-mod (psi-fn p f) p))
+                         (rhs (gbey-poly-mod (gbey-poly-pow f p) p)))
+                    (if (gbey-poly-equal? lhs rhs)
+                        (loop-f (cdr fs))
+                        (vector 'err-not-lambda-ring 'frobenius-lift-fails
+                                (list p f lhs rhs)))))))))
+    ;; Step (c1): Commutativity psi^p(psi^q(f)) = psi^q(psi^p(f))
+    (define (check-comm ps1)
+      (if (null? ps1)
+          #t
+          (let ((p (car ps1)))
+            (let loop-q ((ps2 primes-list))
+              (if (null? ps2)
+                  (check-comm (cdr ps1))
+                  (let ((q (car ps2)))
+                    (let loop-f ((fs test-polys))
+                      (if (null? fs)
+                          (loop-q (cdr ps2))
+                          (let* ((f (car fs))
+                                 (pq-comp (psi-fn p (psi-fn q f)))
+                                 (qp-comp (psi-fn q (psi-fn p f))))
+                            (if (gbey-poly-equal? pq-comp qp-comp)
+                                (loop-f (cdr fs))
+                                (vector 'err-not-lambda-ring 'commutativity-fails
+                                        (list p q f))))))))))))
+    ;; Step (c2): Composition psi^p(psi^q(f)) = psi^{pq}(f)
+    (define (check-comp ps1)
+      (if (null? ps1)
+          #t
+          (let ((p (car ps1)))
+            (let loop-q ((ps2 primes-list))
+              (if (null? ps2)
+                  (check-comp (cdr ps1))
+                  (let ((q (car ps2)))
+                    (let loop-f ((fs test-polys))
+                      (if (null? fs)
+                          (loop-q (cdr ps2))
+                          (let* ((f (car fs))
+                                 (pq-comp (psi-fn p (psi-fn q f)))
+                                 (prod-op (psi-fn (* p q) f)))
+                            (if (gbey-poly-equal? pq-comp prod-op)
+                                (loop-f (cdr fs))
+                                (vector 'err-not-lambda-ring 'composition-fails
+                                        (list p q f))))))))))))
+    (let ((r1 (check-hom primes-list)))
+      (if (not (eq? r1 #t))
+          r1
+          (let ((r2 (check-frob primes-list)))
+            (if (not (eq? r2 #t))
+                r2
+                (let ((r3 (check-comm primes-list)))
+                  (if (not (eq? r3 #t))
+                      r3
+                      (let ((r4 (check-comp primes-list)))
+                        (if (not (eq? r4 #t))
+                            r4
+                            (vector 'ok-lambda-ring
+                                    (length primes-list)
+                                    (length test-polys))))))))))))
+
+(define (gbey-f1-riemann-status)
+  (vector 'gbey-f1-riemann-boundary
+          'open-frontier-unproven
+          "Riemann Hypothesis via Spec(Z)/Spec(F_1) remains an open frontier"))
+
+;; ===========================================================================
+;; 2. Noncommutative Algebraic Geometry: Weyl Algebra A_1, Ore Failure & DGA
+;; ===========================================================================
+
+;; Canonical Weyl algebra element: sorted alist of ((i . j) . coeff) with coeff != 0
+;; representing sum coeff * x^i * d^j where d*x - x*d = 1.
+
+(define (gbey-weyl-key<? k1 k2)
+  (or (< (car k1) (car k2))
+      (and (= (car k1) (car k2))
+           (< (cdr k1) (cdr k2)))))
+
+(define (gbey-weyl-insert-term key coeff terms)
+  (if (= coeff 0)
+      terms
+      (cond
+        ((null? terms) (list (cons key coeff)))
+        ((equal? key (caar terms))
+         (let ((sum (+ coeff (cdar terms))))
+           (if (= sum 0)
+               (cdr terms)
+               (cons (cons key sum) (cdr terms)))))
+        ((gbey-weyl-key<? key (caar terms))
+         (cons (cons key coeff) terms))
+        (else
+         (cons (car terms) (gbey-weyl-insert-term key coeff (cdr terms)))))))
+
+(define (gbey-weyl-zero) '())
+(define (gbey-weyl-one) (list (cons (cons 0 0) 1)))
+(define (gbey-weyl-x) (list (cons (cons 1 0) 1)))
+(define (gbey-weyl-d) (list (cons (cons 0 1) 1)))
+
+(define (gbey-weyl-term i j c)
+  (if (= c 0) '() (list (cons (cons i j) c))))
+
+(define (gbey-weyl-zero? w) (null? w))
+
+(define (gbey-weyl-equal? w1 w2) (equal? w1 w2))
+
+(define (gbey-weyl-add w1 w2)
+  (let loop ((ts w2) (acc w1))
+    (if (null? ts)
+        acc
+        (loop (cdr ts) (gbey-weyl-insert-term (caar ts) (cdar ts) acc)))))
+
+(define (gbey-weyl-scale s w)
+  (if (= s 0)
+      '()
+      (let loop ((ts w) (acc '()))
+        (if (null? ts)
+            (reverse acc)
+            (loop (cdr ts) (cons (cons (caar ts) (* s (cdar ts))) acc))))))
+
+(define (gbey-weyl-sub w1 w2)
+  (gbey-weyl-add w1 (gbey-weyl-scale -1 w2)))
+
+;; Exact Leibniz normal-form product:
+;; (x^{i1} d^{j1}) * (x^{i2} d^{j2}) =
+;;   sum_{k=0}^{min(j1, i2)} k! * C(i2, k) * C(j1, k) * x^{i1+i2-k} d^{j1+j2-k}
+(define (gbey-weyl-mul-monomials i1 j1 c1 i2 j2 c2 acc)
+  (let ((kmax (gbey-min j1 i2))
+        (cprod (* c1 c2)))
+    (let loop ((k 0) (cur acc))
+      (if (> k kmax)
+          cur
+          (let ((factor (* cprod
+                           (gbey-factorial k)
+                           (gbey-binomial i2 k)
+                           (gbey-binomial j1 k))))
+            (loop (+ k 1)
+                  (gbey-weyl-insert-term
+                    (cons (- (+ i1 i2) k) (- (+ j1 j2) k))
+                    factor
+                    cur)))))))
+
+(define (gbey-weyl-mul w1 w2)
+  (let loop1 ((t1s w1) (acc '()))
+    (if (null? t1s)
+        acc
+        (let* ((t1 (car t1s))
+               (i1 (car (car t1)))
+               (j1 (cdr (car t1)))
+               (c1 (cdr t1)))
+          (let loop2 ((t2s w2) (cur acc))
+            (if (null? t2s)
+                (loop1 (cdr t1s) cur)
+                (let* ((t2 (car t2s))
+                       (i2 (car (car t2)))
+                       (j2 (cdr (car t2)))
+                       (c2 (cdr t2)))
+                  (loop2 (cdr t2s)
+                         (gbey-weyl-mul-monomials i1 j1 c1 i2 j2 c2 cur)))))))))
+
+(define (gbey-weyl-commutator a b)
+  (gbey-weyl-sub (gbey-weyl-mul a b) (gbey-weyl-mul b a)))
+
+;; Verify Left Ore witness u * s = v * r in A_1 with all four elements nonzero
+(define (gbey-weyl-verify-left-ore s r u v)
+  (cond
+    ((or (gbey-weyl-zero? s) (gbey-weyl-zero? r)
+         (gbey-weyl-zero? u) (gbey-weyl-zero? v))
+     (vector 'err-invalid-ore-witness 'zero-factor))
+    (else
+     (let ((lhs (gbey-weyl-mul u s))
+           (rhs (gbey-weyl-mul v r)))
+       (if (gbey-weyl-equal? lhs rhs)
+           (vector 'ok-left-ore-witness lhs)
+           (vector 'err-invalid-ore-witness 'product-mismatch lhs rhs))))))
+
+;; Free Associative Algebra Q<x, y> (Negative Control: Left Ore FAILS!)
+;; Canonical element: sorted alist of (word . coeff) with word a list of symbols.
+
+(define (gbey-word<? w1 w2)
+  (cond
+    ((and (null? w1) (null? w2)) #f)
+    ((null? w1) #t)
+    ((null? w2) #f)
+    ((eq? (car w1) (car w2)) (gbey-word<? (cdr w1) (cdr w2)))
+    (else (string<? (symbol->string (car w1)) (symbol->string (car w2))))))
+
+(define (gbey-free-insert word coeff terms)
+  (if (= coeff 0)
+      terms
+      (cond
+        ((null? terms) (list (cons word coeff)))
+        ((equal? word (caar terms))
+         (let ((sum (+ coeff (cdar terms))))
+           (if (= sum 0)
+               (cdr terms)
+               (cons (cons word sum) (cdr terms)))))
+        ((gbey-word<? word (caar terms))
+         (cons (cons word coeff) terms))
+        (else
+         (cons (car terms) (gbey-free-insert word coeff (cdr terms)))))))
+
+(define (gbey-free-term word coeff)
+  (gbey-free-insert word coeff '()))
+
+(define (gbey-free-zero? f) (null? f))
+(define (gbey-free-equal? f1 f2) (equal? f1 f2))
+
+(define (gbey-free-add f1 f2)
+  (let loop ((ts f2) (acc f1))
+    (if (null? ts)
+        acc
+        (loop (cdr ts) (gbey-free-insert (caar ts) (cdar ts) acc)))))
+
+(define (gbey-free-sub f1 f2)
+  (let loop ((ts f2) (acc f1))
+    (if (null? ts)
+        acc
+        (loop (cdr ts) (gbey-free-insert (caar ts) (- 0 (cdar ts)) acc)))))
+
+(define (gbey-free-mul f1 f2)
+  (let loop1 ((t1s f1) (acc '()))
+    (if (null? t1s)
+        acc
+        (let ((w1 (caar t1s)) (c1 (cdar t1s)))
+          (let loop2 ((t2s f2) (cur acc))
+            (if (null? t2s)
+                (loop1 (cdr t1s) cur)
+                (loop2 (cdr t2s)
+                       (gbey-free-insert (append w1 (caar t2s))
+                                         (* c1 (cdar t2s))
+                                         cur))))))))
+
+(define (gbey-free-right-terminals f)
+  (let loop ((ts f) (acc '()))
+    (if (null? ts)
+        acc
+        (let ((w (caar ts)))
+          (if (null? w)
+              (loop (cdr ts) (gbey-unique-insert 'empty-word acc))
+              (loop (cdr ts) (gbey-unique-insert (gbey-last w) acc)))))))
+
+(define (gbey-lists-disjoint? xs ys)
+  (gbey-all? (lambda (x) (not (gbey-member-eq? x ys))) xs))
+
+;; Check Left Ore condition for (s, r) in the free associative algebra Q<x, y>.
+;; If s and r are nonzero and their right-terminal letter supports are disjoint
+;; (e.g., s = x, r = y), then for ALL nonzero a, b in Q<x, y>, every word in a*s
+;; ends in a letter of right-terminals(s) while every word in b*r ends in a
+;; letter of right-terminals(r), so a*s != b*r unconditionally!
+(define (gbey-free-algebra-ore-check s r)
+  (cond
+    ((or (gbey-free-zero? s) (gbey-free-zero? r))
+     (vector 'err-ore-condition-fails 'zero-input))
+    (else
+     (let ((ts (gbey-free-right-terminals s))
+           (tr (gbey-free-right-terminals r)))
+       (if (and (not (gbey-member-eq? 'empty-word ts))
+                (not (gbey-member-eq? 'empty-word tr))
+                (gbey-lists-disjoint? ts tr))
+           (vector 'err-ore-condition-fails 'disjoint-right-terminal-support ts tr)
+           (vector 'ore-undetermined-nondisjoint ts tr))))))
+
+;; Exact Differential Graded Algebra: Polynomial de Rham complex Omega*(A^2)
+;; = Q[x, y] (x) Lambda(dx, dy).
+;; A homogeneous form of degree k in {0, 1, 2}:
+;;   deg 0: #(gbey-dga-form 0 f0)
+;;   deg 1: #(gbey-dga-form 1 f_dx f_dy)
+;;   deg 2: #(gbey-dga-form 2 f_dxdy)
+;; where each coefficient is a bivariate polynomial represented as a sorted
+;; alist of ((ix . iy) . coeff) (reusing Weyl key ordering!).
+
+(define (gbey-bipoly-add p q) (gbey-weyl-add p q))
+(define (gbey-bipoly-sub p q) (gbey-weyl-sub p q))
+(define (gbey-bipoly-equal? p q) (gbey-weyl-equal? p q))
+
+(define (gbey-bipoly-mul p q)
+  (let loop1 ((t1s p) (acc '()))
+    (if (null? t1s)
+        acc
+        (let ((i1 (car (caar t1s))) (j1 (cdr (caar t1s))) (c1 (cdar t1s)))
+          (let loop2 ((t2s q) (cur acc))
+            (if (null? t2s)
+                (loop1 (cdr t1s) cur)
+                (let ((i2 (car (caar t2s))) (j2 (cdr (caar t2s))) (c2 (cdar t2s)))
+                  (loop2 (cdr t2s)
+                         (gbey-weyl-insert-term (cons (+ i1 i2) (+ j1 j2))
+                                                (* c1 c2)
+                                                cur)))))))))
+
+(define (gbey-bipoly-dx p)
+  (let loop ((ts p) (acc '()))
+    (if (null? ts)
+        acc
+        (let ((ix (car (caar ts))) (iy (cdr (caar ts))) (c (cdar ts)))
+          (if (= ix 0)
+              (loop (cdr ts) acc)
+              (loop (cdr ts)
+                    (gbey-weyl-insert-term (cons (- ix 1) iy) (* ix c) acc)))))))
+
+(define (gbey-bipoly-dy p)
+  (let loop ((ts p) (acc '()))
+    (if (null? ts)
+        acc
+        (let ((ix (car (caar ts))) (iy (cdr (caar ts))) (c (cdar ts)))
+          (if (= iy 0)
+              (loop (cdr ts) acc)
+              (loop (cdr ts)
+                    (gbey-weyl-insert-term (cons ix (- iy 1)) (* iy c) acc)))))))
+
+(define (gbey-dga-make-form deg comps)
+  (vector 'gbey-dga-form deg comps))
+
+(define (gbey-dga-form-deg w) (vector-ref w 1))
+(define (gbey-dga-form-comps w) (vector-ref w 2))
+
+(define (gbey-dga-form-add a b)
+  (let ((da (gbey-dga-form-deg a))
+        (ca (gbey-dga-form-comps a))
+        (cb (gbey-dga-form-comps b)))
+    (cond
+      ((= da 0) (gbey-dga-make-form 0 (list (gbey-bipoly-add (car ca) (car cb)))))
+      ((= da 1) (gbey-dga-make-form 1 (list (gbey-bipoly-add (car ca) (car cb))
+                                            (gbey-bipoly-add (cadr ca) (cadr cb)))))
+      ((= da 2) (gbey-dga-make-form 2 (list (gbey-bipoly-add (car ca) (car cb)))))
+      (else (gbey-dga-make-form da '())))))
+
+(define (gbey-dga-form-scale s a)
+  (let ((da (gbey-dga-form-deg a))
+        (ca (gbey-dga-form-comps a)))
+    (gbey-dga-make-form da (map (lambda (p) (gbey-weyl-scale s p)) ca))))
+
+(define (gbey-dga-form-equal? a b)
+  (and (= (gbey-dga-form-deg a) (gbey-dga-form-deg b))
+       (equal? (gbey-dga-form-comps a) (gbey-dga-form-comps b))))
+
+(define (gbey-dga-form-zero? a)
+  (gbey-all? null? (gbey-dga-form-comps a)))
+
+;; Exact exterior wedge product on Omega*(A^2)
+(define (gbey-dga-wedge a b)
+  (let ((da (gbey-dga-form-deg a))
+        (db (gbey-dga-form-deg b))
+        (ca (gbey-dga-form-comps a))
+        (cb (gbey-dga-form-comps b)))
+    (cond
+      ((and (= da 0) (= db 0))
+       (gbey-dga-make-form 0 (list (gbey-bipoly-mul (car ca) (car cb)))))
+      ((and (= da 0) (= db 1))
+       (gbey-dga-make-form 1 (list (gbey-bipoly-mul (car ca) (car cb))
+                                   (gbey-bipoly-mul (car ca) (cadr cb)))))
+      ((and (= da 1) (= db 0))
+       (gbey-dga-make-form 1 (list (gbey-bipoly-mul (car ca) (car cb))
+                                   (gbey-bipoly-mul (cadr ca) (car cb)))))
+      ((and (= da 1) (= db 1))
+       ;; (a1 dx + a2 dy) ^ (b1 dx + b2 dy) = (a1 b2 - a2 b1) dx ^ dy
+       (gbey-dga-make-form 2 (list (gbey-bipoly-sub (gbey-bipoly-mul (car ca) (cadr cb))
+                                                    (gbey-bipoly-mul (cadr ca) (car cb))))))
+      ((and (= da 0) (= db 2))
+       (gbey-dga-make-form 2 (list (gbey-bipoly-mul (car ca) (car cb)))))
+      ((and (= da 2) (= db 0))
+       (gbey-dga-make-form 2 (list (gbey-bipoly-mul (car ca) (car cb)))))
+      (else
+       ;; Degree > 2 vanishes on A^2
+       (gbey-dga-make-form (+ da db) '())))))
+
+;; Exact exterior derivative d : Omega^k(A^2) -> Omega^{k+1}(A^2)
+(define (gbey-dga-diff a)
+  (let ((da (gbey-dga-form-deg a))
+        (ca (gbey-dga-form-comps a)))
+    (cond
+      ((= da 0)
+       (gbey-dga-make-form 1 (list (gbey-bipoly-dx (car ca))
+                                   (gbey-bipoly-dy (car ca)))))
+      ((= da 1)
+       ;; d(P dx + Q dy) = (dQ/dx - dP/dy) dx ^ dy
+       (gbey-dga-make-form 2 (list (gbey-bipoly-sub (gbey-bipoly-dx (cadr ca))
+                                                    (gbey-bipoly-dy (car ca))))))
+      (else
+       (gbey-dga-make-form (+ da 1) '())))))
+
+;; Verify DGA axioms (d^2 = 0 and graded Leibniz rule) for a candidate differential diff-fn.
+;; Fails closed with 'err-dga-not-nilpotent or 'err-dga-leibniz-fails.
+(define (gbey-dga-verify-axioms diff-fn alpha beta)
+  (let* ((d2-a (diff-fn (diff-fn alpha)))
+         (d2-b (diff-fn (diff-fn beta))))
+    (cond
+      ((or (not (gbey-dga-form-zero? d2-a))
+           (not (gbey-dga-form-zero? d2-b)))
+       (vector 'err-dga-not-nilpotent d2-a d2-b))
+      (else
+       (let* ((sign (if (= (remainder (gbey-dga-form-deg alpha) 2) 0) 1 -1))
+              (lhs (diff-fn (gbey-dga-wedge alpha beta)))
+              (t1 (gbey-dga-wedge (diff-fn alpha) beta))
+              (t2 (gbey-dga-form-scale sign (gbey-dga-wedge alpha (diff-fn beta))))
+              (rhs (gbey-dga-form-add t1 t2)))
+         (if (gbey-dga-form-equal? lhs rhs)
+             (vector 'ok-dga-axioms lhs)
+             (vector 'err-dga-leibniz-fails lhs rhs)))))))
+
+;; ===========================================================================
+;; 3. Arakelov Geometry at the Infinite Prime (infinity)
+;; ===========================================================================
+
+(define (gbey-factorize-int n)
+  (let ((m (gbey-abs n)))
+    (if (<= m 1)
+        '()
+        (let loop ((rem m) (d 2) (acc '()))
+          (cond
+            ((= rem 1) (reverse acc))
+            ((> (* d d) rem) (reverse (cons (cons rem 1) acc)))
+            ((= (remainder rem d) 0)
+             (let count ((r rem) (e 0))
+               (if (= (remainder r d) 0)
+                   (count (quotient r d) (+ e 1))
+                   (loop r (+ d 1) (cons (cons d e) acc)))))
+            (else (loop rem (if (= d 2) 3 (+ d 2)) acc)))))))
+
+(define (gbey-int-valuation n p)
+  (let loop ((r (gbey-abs n)) (e 0))
+    (if (and (> r 0) (= (remainder r p) 0))
+        (loop (quotient r p) (+ e 1))
+        e)))
+
+(define (gbey-padic-valuation num den p)
+  (- (gbey-int-valuation num p) (gbey-int-valuation den p)))
+
+(define (gbey-merge-sorted-primes ps1 ps2)
+  (cond
+    ((null? ps1) ps2)
+    ((null? ps2) ps1)
+    ((< (car ps1) (car ps2)) (cons (car ps1) (gbey-merge-sorted-primes (cdr ps1) ps2)))
+    ((> (car ps1) (car ps2)) (cons (car ps2) (gbey-merge-sorted-primes ps1 (cdr ps2))))
+    (else (cons (car ps1) (gbey-merge-sorted-primes (cdr ps1) (cdr ps2))))))
+
+;; Arakelov principal divisor div^(a/b) on Spec(Z) U {infinity}:
+;;   #(gbey-arakelov-divisor num-red den-red finite-vals archimedean-val)
+;; where finite-vals is ((p . v_p(a/b)) ...) and archimedean-val = -log(|a/b|).
+(define (gbey-arakelov-principal-divisor num den)
+  (cond
+    ((or (= num 0) (= den 0))
+     (vector 'err-invalid-rational num den))
+    (else
+     (let* ((g (gbey-gcd num den))
+            (a (quotient num g))
+            (b (quotient den g))
+            (a-norm (if (< b 0) (- 0 a) a))
+            (b-norm (if (< b 0) (- 0 b) b))
+            (fa (gbey-factorize-int a-norm))
+            (fb (gbey-factorize-int b-norm))
+            (primes (gbey-merge-sorted-primes (map car fa) (map car fb)))
+            (vals (let loop ((ps primes) (acc '()))
+                    (if (null? ps)
+                        (reverse acc)
+                        (let* ((p (car ps))
+                               (vp (gbey-padic-valuation a-norm b-norm p)))
+                          (if (= vp 0)
+                              (loop (cdr ps) acc)
+                              (loop (cdr ps) (cons (cons p vp) acc)))))))
+            (abs-a (gbey-abs a-norm))
+            (arch (- 0.0 (- (log (* 1.0 abs-a)) (log (* 1.0 b-norm))))))
+       (vector 'gbey-arakelov-divisor a-norm b-norm vals arch)))))
+
+;; Exact integer product formula check:
+;;   prod_{v_p > 0} p^{v_p} == |a_red|  AND  prod_{v_p < 0} p^{-v_p} == |b_red|
+(define (gbey-arakelov-product-formula? div)
+  (let ((a (gbey-abs (vector-ref div 1)))
+        (b (gbey-abs (vector-ref div 2)))
+        (vals (vector-ref div 3)))
+    (let loop ((vs vals) (num-prod 1) (den-prod 1))
+      (if (null? vs)
+          (and (= num-prod a) (= den-prod b))
+          (let ((p (caar vs)) (vp (cdar vs)))
+            (if (> vp 0)
+                (loop (cdr vs) (* num-prod (gbey-int-pow p vp)) den-prod)
+                (loop (cdr vs) num-prod (* den-prod (gbey-int-pow p (- 0 vp))))))))))
+
+;; Full Arakelov degree: sum_p v_p * log(p) + g_infinity
+(define (gbey-arakelov-finite-degree div)
+  (let loop ((vs (vector-ref div 3)) (acc 0.0))
+    (if (null? vs)
+        acc
+        (loop (cdr vs) (+ acc (* (cdar vs) (log (* 1.0 (caar vs)))))))))
+
+(define (gbey-arakelov-degree div)
+  (+ (gbey-arakelov-finite-degree div) (vector-ref div 4)))
+
+;; Negative control: omitting the infinite prime violates degree-zero conservation
+;; whenever |a/b| != 1. Fails closed with #(err-missing-archimedean-prime finite-deg).
+(define (gbey-arakelov-finite-only-degree-check div tol)
+  (let ((fdeg (gbey-arakelov-finite-degree div)))
+    (if (< (gbey-abs fdeg) tol)
+        (vector 'ok-unit-degree-zero fdeg)
+        (vector 'err-missing-archimedean-prime fdeg))))
+
+;; Naive multiplicative Weil height H([p : q]) = max(|p_red|, |q_red|)
+(define (gbey-weil-height p q)
+  (if (and (= p 0) (= q 0))
+      (vector 'err-invalid-projective-point p q)
+      (let* ((g (gbey-gcd p q))
+             (pr (quotient p g))
+             (qr (quotient q g)))
+        (gbey-max (gbey-abs pr) (gbey-abs qr)))))
+
+(define (gbey-arakelov-log-height p q)
+  (let ((h (gbey-weil-height p q)))
+    (if (number? h) (log (* 1.0 h)) h)))
+
+;; Exact Northcott finiteness enumeration of all [p : q] in P^1(Q) with H([p : q]) <= B.
+;; Points: [1 : 0] (infinity), [0 : 1] (zero), and [+/- a : b] for 1 <= a, b <= B, gcd(a, b) = 1.
+(define (gbey-northcott-p1-enumerate bound)
+  (if (< bound 1)
+      (vector 'err-invalid-height-bound bound)
+      (let loop-a ((a 1) (acc (list (cons 1 0) (cons 0 1))))
+        (if (> a bound)
+            (reverse acc)
+            (let loop-b ((b 1) (cur acc))
+              (if (> b bound)
+                  (loop-a (+ a 1) cur)
+                  (if (= (gbey-gcd a b) 1)
+                      (loop-b (+ b 1) (cons (cons (- 0 a) b) (cons (cons a b) cur)))
+                      (loop-b (+ b 1) cur))))))))
+
+;; ===========================================================================
+;; 4. Beyond (infinity, 1)-Categories: Directed Homotopy & (infinity, 2)-Categories
+;; ===========================================================================
+
+;; Concrete finite directed category D_3:
+;;   Objects: 0, 1, 2
+;;   Morphisms: #(gbey-d3-mor src tgt tag)
+;;     - If src = tgt: tag is +1 (identity) or -1 (involution automorphism) -> INVERTIBLE
+;;     - If src < tgt: tag is 'dir (unique irreversible directed arrow)     -> IRREVERSIBLE
+
+(define (gbey-d3-make-mor src tgt tag)
+  (vector 'gbey-d3-mor src tgt tag))
+
+(define (gbey-d3-id x)
+  (gbey-d3-make-mor x x 1))
+
+(define (gbey-d3-invertible? m)
+  (and (= (vector-ref m 1) (vector-ref m 2))
+       (or (= (vector-ref m 3) 1) (= (vector-ref m 3) -1))))
+
+(define (gbey-d3-invert m)
+  (if (gbey-d3-invertible? m)
+      (gbey-d3-make-mor (vector-ref m 1) (vector-ref m 2) (vector-ref m 3))
+      (vector 'err-irreversible-directed-morphism m)))
+
+;; Compose m2 o m1 where tgt(m1) = src(m2)
+(define (gbey-d3-compose m2 m1)
+  (let ((s1 (vector-ref m1 1)) (t1 (vector-ref m1 2)) (g1 (vector-ref m1 3))
+        (s2 (vector-ref m2 1)) (t2 (vector-ref m2 2)) (g2 (vector-ref m2 3)))
+    (if (not (= t1 s2))
+        (vector 'err-d3-composition-mismatch m2 m1)
+        (if (and (= s1 t1) (= s2 t2))
+            (gbey-d3-make-mor s1 t2 (* g1 g2))
+            (gbey-d3-make-mor s1 t2 'dir)))))
+
+(define gbey-d3-all-morphisms
+  (list (gbey-d3-make-mor 0 0 1)
+        (gbey-d3-make-mor 0 0 -1)
+        (gbey-d3-make-mor 1 1 1)
+        (gbey-d3-make-mor 1 1 -1)
+        (gbey-d3-make-mor 2 2 1)
+        (gbey-d3-make-mor 2 2 -1)
+        (gbey-d3-make-mor 0 1 'dir)
+        (gbey-d3-make-mor 1 2 'dir)
+        (gbey-d3-make-mor 0 2 'dir)))
+
+;; Functor F : D_3 -> D_3
+;;   obj-map: length-3 vector #(F(0) F(1) F(2)) with F(0) <= F(1) <= F(2)
+;;   aut-sign-preserve?: #t means F(x,x,-1) = (F(x),F(x),-1); #f maps it to +1
+(define (gbey-make-functor name obj-map aut-sign-preserve?)
+  (let ((f0 (vector-ref obj-map 0))
+        (f1 (vector-ref obj-map 1))
+        (f2 (vector-ref obj-map 2)))
+    (if (and (<= 0 f0) (<= f0 f1) (<= f1 f2) (<= f2 2))
+        (vector 'gbey-functor name obj-map aut-sign-preserve?)
+        (vector 'err-non-monotone-functor name obj-map))))
+
+(define (gbey-functor-apply-obj F x)
+  (vector-ref (vector-ref F 2) x))
+
+(define (gbey-functor-apply-mor F m)
+  (let* ((s (vector-ref m 1))
+         (t (vector-ref m 2))
+         (tag (vector-ref m 3))
+         (fs (gbey-functor-apply-obj F s))
+         (ft (gbey-functor-apply-obj F t)))
+    (cond
+      ((< fs ft) (gbey-d3-make-mor fs ft 'dir))
+      ((eq? tag 'dir) (gbey-d3-make-mor fs ft 1))
+      ((vector-ref F 3) (gbey-d3-make-mor fs ft tag))
+      (else (gbey-d3-make-mor fs ft 1)))))
+
+(define (gbey-functor-equal? F G)
+  (and (equal? (vector-ref F 2) (vector-ref G 2))
+       (eq? (vector-ref F 3) (vector-ref G 3))))
+
+;; Compose functors H o F
+(define (gbey-functor-compose H F)
+  (let ((m0 (gbey-functor-apply-obj H (gbey-functor-apply-obj F 0)))
+        (m1 (gbey-functor-apply-obj H (gbey-functor-apply-obj F 1)))
+        (m2 (gbey-functor-apply-obj H (gbey-functor-apply-obj F 2))))
+    (gbey-make-functor
+      (list 'comp (vector-ref H 1) (vector-ref F 1))
+      (vector m0 m1 m2)
+      (and (vector-ref H 3) (vector-ref F 3)))))
+
+;; Natural transformation (2-cell) alpha : F => G
+;;   #(gbey-2cell name F G comps kind)
+;;   kind is 'invertible iff all 3 components are invertible in D_3,
+;;   otherwise strictly 'irreversible-directed.
+(define (gbey-2cell-natural? cell)
+  (let ((F (vector-ref cell 2))
+        (G (vector-ref cell 3))
+        (comps (vector-ref cell 4)))
+    (and
+      ;; Endpoint typing at every object x in {0, 1, 2}
+      (gbey-all?
+        (lambda (x)
+          (let ((cx (vector-ref comps x)))
+            (and (= (vector-ref cx 1) (gbey-functor-apply-obj F x))
+                 (= (vector-ref cx 2) (gbey-functor-apply-obj G x)))))
+        (list 0 1 2))
+      ;; Naturality square: alpha_y o F(u) = G(u) o alpha_x for every u : x -> y
+      (gbey-all?
+        (lambda (u)
+          (let* ((x (vector-ref u 1))
+                 (y (vector-ref u 2))
+                 (lhs (gbey-d3-compose (vector-ref comps y) (gbey-functor-apply-mor F u)))
+                 (rhs (gbey-d3-compose (gbey-functor-apply-mor G u) (vector-ref comps x))))
+            (equal? lhs rhs)))
+        gbey-d3-all-morphisms))))
+
+(define (gbey-make-2cell name F G comps)
+  (let* ((all-inv (and (gbey-d3-invertible? (vector-ref comps 0))
+                       (gbey-d3-invertible? (vector-ref comps 1))
+                       (gbey-d3-invertible? (vector-ref comps 2))))
+         (kind (if all-inv 'invertible 'irreversible-directed))
+         (cell (vector 'gbey-2cell name F G comps kind)))
+    (if (gbey-2cell-natural? cell)
+        cell
+        (vector 'err-not-natural-transformation name))))
+
+(define (gbey-2cell-equal? a b)
+  (and (gbey-functor-equal? (vector-ref a 2) (vector-ref b 2))
+       (gbey-functor-equal? (vector-ref a 3) (vector-ref b 3))
+       (equal? (vector-ref a 4) (vector-ref b 4))
+       (eq? (vector-ref a 5) (vector-ref b 5))))
+
+;; Vertical composition: alpha' o_v alpha (where src(alpha') = tgt(alpha))
+(define (gbey-2cell-vcomp alpha-prime alpha)
+  (let ((F (vector-ref alpha 2))
+        (G (vector-ref alpha 3))
+        (G2 (vector-ref alpha-prime 2))
+        (Gp (vector-ref alpha-prime 3))
+        (ca (vector-ref alpha 4))
+        (cap (vector-ref alpha-prime 4)))
+    (if (not (gbey-functor-equal? G G2))
+        (vector 'err-2cell-domain-mismatch (vector-ref alpha-prime 1) (vector-ref alpha 1))
+        (gbey-make-2cell
+          (list 'vcomp (vector-ref alpha-prime 1) (vector-ref alpha 1))
+          F
+          Gp
+          (vector (gbey-d3-compose (vector-ref cap 0) (vector-ref ca 0))
+                  (gbey-d3-compose (vector-ref cap 1) (vector-ref ca 1))
+                  (gbey-d3-compose (vector-ref cap 2) (vector-ref ca 2)))))))
+
+;; Horizontal composition: beta o_h alpha for alpha : F => G and beta : H => K
+;; Component at x: (beta o_h alpha)_x = beta_{G(x)} o H(alpha_x)
+(define (gbey-2cell-hcomp beta alpha)
+  (let ((F (vector-ref alpha 2))
+        (G (vector-ref alpha 3))
+        (ca (vector-ref alpha 4))
+        (H (vector-ref beta 2))
+        (K (vector-ref beta 3))
+        (cb (vector-ref beta 4)))
+    (define (comp-at x)
+      (gbey-d3-compose (vector-ref cb (gbey-functor-apply-obj G x))
+                       (gbey-functor-apply-mor H (vector-ref ca x))))
+    (gbey-make-2cell
+      (list 'hcomp (vector-ref beta 1) (vector-ref alpha 1))
+      (gbey-functor-compose H F)
+      (gbey-functor-compose K G)
+      (vector (comp-at 0) (comp-at 1) (comp-at 2)))))
+
+;; Godement Interchange Law:
+;;   (beta' o_v beta) o_h (alpha' o_v alpha) = (beta' o_h alpha') o_v (beta o_h alpha)
+(define (gbey-verify-godement-interchange alpha alpha-prime beta beta-prime)
+  (let ((lhs (gbey-2cell-hcomp (gbey-2cell-vcomp beta-prime beta)
+                               (gbey-2cell-vcomp alpha-prime alpha)))
+        (rhs (gbey-2cell-vcomp (gbey-2cell-hcomp beta-prime alpha-prime)
+                               (gbey-2cell-hcomp beta alpha))))
+    (if (and (eq? (vector-ref lhs 0) 'gbey-2cell)
+             (eq? (vector-ref rhs 0) 'gbey-2cell)
+             (gbey-2cell-equal? lhs rhs))
+        (vector 'ok-godement-interchange lhs)
+        (vector 'err-godement-interchange-fails lhs rhs))))
+
+;; Coerce a 2-cell into a reversible (infinity, 1)-groupoid 2-morphism.
+;; Succeeds ONLY for 'invertible 2-cells (returning explicit vertical inverse);
+;; fails closed with #(err-irreversible-directed-morphism ...) for directed 2-cells!
+(define (gbey-coerce-infty1-groupoid cell)
+  (if (not (eq? (vector-ref cell 5) 'invertible))
+      (vector 'err-irreversible-directed-morphism
+              (vector-ref cell 1)
+              "irreversible 2-morphism cannot be coerced to an (infinity,1)-groupoid homotopy")
+      (let* ((F (vector-ref cell 2))
+             (G (vector-ref cell 3))
+             (cs (vector-ref cell 4))
+             (inv (gbey-make-2cell
+                    (list 'inv (vector-ref cell 1))
+                    G
+                    F
+                    (vector (gbey-d3-invert (vector-ref cs 0))
+                            (gbey-d3-invert (vector-ref cs 1))
+                            (gbey-d3-invert (vector-ref cs 2)))))
+             (left-id (gbey-2cell-vcomp inv cell))
+             (right-id (gbey-2cell-vcomp cell inv))
+             (id-F (gbey-make-2cell
+                     'id-F F F
+                     (vector (gbey-d3-id (gbey-functor-apply-obj F 0))
+                             (gbey-d3-id (gbey-functor-apply-obj F 1))
+                             (gbey-d3-id (gbey-functor-apply-obj F 2)))))
+             (id-G (gbey-make-2cell
+                     'id-G G G
+                     (vector (gbey-d3-id (gbey-functor-apply-obj G 0))
+                             (gbey-d3-id (gbey-functor-apply-obj G 1))
+                             (gbey-d3-id (gbey-functor-apply-obj G 2))))))
+        (if (and (gbey-2cell-equal? left-id id-F)
+                 (gbey-2cell-equal? right-id id-G))
+            (vector 'ok-infty1-groupoid-homotopy cell inv)
+            (vector 'err-inverse-verification-failed cell inv)))))
+
+;; ===========================================================================
+;; 5. Universal Teichmuller Taxonomy (Bers T(1) & Honest abc/IUT Boundary)
+;; ===========================================================================
+
+;; Quasisymmetric distortion ratio rho_h(x, t) = (h(x+t) - h(x)) / (h(x) - h(x-t))
+(define (gbey-bers-qs-ratio h x t)
+  (if (<= t 0.0)
+      (vector 'err-invalid-scale t)
+      (let* ((hx (h x))
+             (num (- (h (+ x t)) hx))
+             (den (- hx (h (- x t)))))
+        (if (or (<= num 0.0) (<= den 0.0))
+            (vector 'err-not-orientation-preserving x t num den)
+            (/ num den)))))
+
+;; Check M-quasisymmetry of boundary homeomorphism h : R -> R on probe grids xs, ts.
+;; Requires 1/M <= rho_h(x, t) <= M for all (x, t) (within tolerance 1e-12).
+;; Fails closed with #(err-not-quasisymmetric max-dist worst-x worst-t bound).
+(define (gbey-bers-qs-check h xs ts bound)
+  (let ((tol 1e-12))
+    (let loop-x ((rem-x xs) (max-d 1.0) (wx 0.0) (wt 0.0))
+      (if (null? rem-x)
+          (if (<= max-d (+ bound tol))
+              (vector 'bers-t1-admissible max-d bound)
+              (vector 'err-not-quasisymmetric max-d wx wt bound))
+          (let ((x (car rem-x)))
+            (let loop-t ((rem-t ts) (cur-d max-d) (cx wx) (ct wt))
+              (if (null? rem-t)
+                  (loop-x (cdr rem-x) cur-d cx ct)
+                  (let* ((t (car rem-t))
+                         (r (gbey-bers-qs-ratio h x t)))
+                    (if (not (number? r))
+                        r
+                        (let ((sym-d (if (>= r 1.0) r (/ 1.0 r))))
+                          (if (> sym-d cur-d)
+                              (loop-t (cdr rem-t) sym-d x t)
+                              (loop-t (cdr rem-t) cur-d cx ct))))))))))))
+
+;; Exact squarefree radical rad(a * b * c) computed by prime-factor union (no overflow)
+(define (gbey-radical-abc a b c)
+  (let* ((pa (map car (gbey-factorize-int a)))
+         (pb (map car (gbey-factorize-int b)))
+         (pc (map car (gbey-factorize-int c)))
+         (all-p (gbey-merge-sorted-primes pa (gbey-merge-sorted-primes pb pc))))
+    (let loop ((ps all-p) (acc 1))
+      (if (null? ps) acc (loop (cdr ps) (* acc (car ps)))))))
+
+;; Honest abc / IUT triple analyzer:
+;;   - Checks a, b, c > 0
+;;   - Checks a + b = c
+;;   - Checks gcd(a, b) = 1 (fails closed with 'err-not-coprime on non-coprime triples)
+;;   - Computes exact radical rad(abc) and quality q(a,b,c) = log(c) / log(rad(abc))
+;;   - Strictly tags IUT / abc conjecture status as 'disputed-open-unverified
+(define (gbey-abc-triple-analyze a b c)
+  (cond
+    ((or (<= a 0) (<= b 0) (<= c 0))
+     (vector 'err-not-positive-triple a b c))
+    ((not (= (+ a b) c))
+     (vector 'err-not-additive-triple a b c))
+    ((not (= (gbey-gcd a b) 1))
+     (vector 'err-not-coprime a b c (gbey-gcd a b)))
+    (else
+     (let* ((rad (gbey-radical-abc a b c))
+            (quality (/ (log (* 1.0 c)) (log (* 1.0 rad)))))
+       (vector 'gbey-abc-analysis
+               a b c rad quality
+               'disputed-open-unverified)))))

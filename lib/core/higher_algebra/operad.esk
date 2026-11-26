@@ -1,0 +1,549 @@
+;;; core.higher_algebra.operad -- Stasheff A_infinity-algebras, L_infinity-algebras,
+;;; and finite planar/symmetric Operads (Ass, Com, Lie) over exact Q.
+;;;
+;;; Usage: (require core.higher_algebra.operad)   or   (require core.higher_algebra)
+;;;
+;;; Cohomological grading convention for A_inf and L_inf:
+;;;   |m_k| = 2 - k, so |m_1| = +1, |m_2| = 0, |m_3| = -1.
+
+(require stdlib)
+(require core.higher_algebra.dg)
+
+(provide
+  ;; A_infinity algebras
+  make-ainf-algebra ainf-algebra? ainf-degrees ainf-dim
+  ainf-m1 ainf-m2 ainf-m3 ainf-verify dga->ainf
+  ;; L_infinity algebras
+  make-linf-algebra linf-algebra? linf-degrees linf-dim
+  linf-l1 linf-l2 linf-l3 linf-verify dgla->linf
+  ;; Operads (planar & symmetric; Set-operads and exact Q-linear operads)
+  make-operad operad? operad-name operad-max-arity operad-kind
+  operad-ops operad-unit operad-compose-i operad-sym-action operad-verify
+  associative-operad commutative-operad lie-operad
+  op-permutations op-perm-compose op-perm-id)
+
+;; ===========================================================================
+;; Private helpers (prefix op-)
+;; ===========================================================================
+
+(define (op-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (op-range-1 n) (let loop ((i n) (acc '())) (if (< i 1) acc (loop (- i 1) (cons i acc)))))
+(define (op-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (op-all? p (cdr xs))) (else #f)))
+
+;; ===========================================================================
+;; Stasheff A_infinity-algebras (up to n = 3)
+;; ===========================================================================
+;;
+;; #(ainf degrees dims m1 m2 m3)
+;;   m1: (p a) -> vec in A^{p+1}
+;;   m2: (p q a b) -> vec in A^{p+q}
+;;   m3: (p q r a b c) -> vec in A^{p+q+r-1}
+
+(define (make-ainf-algebra degrees dims m1 m2 m3)
+  (vector 'ainf degrees dims m1 m2 m3))
+(define (ainf-algebra? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'ainf)))
+(define (ainf-degrees A) (vector-ref A 1))
+(define (ainf-dim A k) (let ((p (assv k (vector-ref A 2)))) (if p (cdr p) 0)))
+
+(define (ainf-m1 A p a)
+  (let ((d (ainf-dim A (+ p 1))))
+    (if (= d 0) (dg-zero-vec 0) ((vector-ref A 3) p a))))
+
+(define (ainf-m2 A p q a b)
+  (let ((d (ainf-dim A (+ p q))))
+    (if (= d 0) (dg-zero-vec 0) ((vector-ref A 4) p q a b))))
+
+(define (ainf-m3 A p q r a b c)
+  (let ((d (ainf-dim A (+ p q r -1))))
+    (if (= d 0) (dg-zero-vec 0) ((vector-ref A 5) p q r a b c))))
+
+;; Verify Stasheff quadratic identities for n = 1, 2, 3 on all basis tuples:
+;;   n = 1: m1(m1(a)) = 0
+;;   n = 2: m1(m2(a, b)) = m2(m1(a), b) + (-1)^|a| m2(a, m1(b))
+;;   n = 3: m2(m2(a, b), c) - m2(a, m2(b, c))
+;;            = m1(m3(a, b, c)) + m3(m1(a), b, c)
+;;              + (-1)^|a| m3(a, m1(b), c) + (-1)^{|a|+|b|} m3(a, b, m1(c))
+;; Returns '() on pass or explicit counterexample witnesses.
+(define (ainf-verify A)
+  (let ((degs (ainf-degrees A)) (out '()))
+    ;; n = 1
+    (for-each
+     (lambda (p)
+       (let ((dp (ainf-dim A p)))
+         (for-each (lambda (i)
+                     (let* ((a (dg-basis-vec dp i))
+                            (res (ainf-m1 A (+ p 1) (ainf-m1 A p a))))
+                       (if (not (dg-vec-zero? res))
+                           (set! out (cons (list 'stasheff-n1 p i res) out)))))
+                   (op-range dp))))
+     degs)
+    ;; n = 2
+    (for-each
+     (lambda (p)
+       (let ((dp (ainf-dim A p)) (sp (dg-sign p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (ainf-dim A q)))
+              (for-each
+               (lambda (i)
+                 (let* ((a (dg-basis-vec dp i)) (m1a (ainf-m1 A p a)))
+                   (for-each
+                    (lambda (j)
+                      (let* ((b (dg-basis-vec dq j)) (m1b (ainf-m1 A q b))
+                             (lhs (ainf-m1 A (+ p q) (ainf-m2 A p q a b)))
+                             (rhs (dg-vec-add (ainf-m2 A (+ p 1) q m1a b)
+                                              (dg-vec-scale sp (ainf-m2 A p (+ q 1) a m1b)))))
+                        (if (not (dg-vec=? lhs rhs))
+                            (set! out (cons (list 'stasheff-n2 p i q j lhs rhs) out)))))
+                    (op-range dq))))
+               (op-range dp))))
+          degs)))
+     degs)
+    ;; n = 3
+    (for-each
+     (lambda (p)
+       (let ((dp (ainf-dim A p)) (sp (dg-sign p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (ainf-dim A q)) (spq (dg-sign (+ p q))))
+              (for-each
+               (lambda (r)
+                 (let ((dr (ainf-dim A r)))
+                   (for-each
+                    (lambda (i)
+                      (let* ((a (dg-basis-vec dp i)) (m1a (ainf-m1 A p a)))
+                        (for-each
+                         (lambda (j)
+                           (let* ((b (dg-basis-vec dq j)) (m1b (ainf-m1 A q b)))
+                             (for-each
+                              (lambda (l)
+                                (let* ((c (dg-basis-vec dr l)) (m1c (ainf-m1 A r c))
+                                       (assoc-diff
+                                        (dg-vec-sub (ainf-m2 A (+ p q) r (ainf-m2 A p q a b) c)
+                                                    (ainf-m2 A p (+ q r) a (ainf-m2 A q r b c))))
+                                       (homotopy
+                                        (dg-vec-add
+                                         (ainf-m1 A (+ p q r -1) (ainf-m3 A p q r a b c))
+                                         (dg-vec-add
+                                          (ainf-m3 A (+ p 1) q r m1a b c)
+                                          (dg-vec-add
+                                           (dg-vec-scale sp (ainf-m3 A p (+ q 1) r a m1b c))
+                                           (dg-vec-scale spq (ainf-m3 A p q (+ r 1) a b m1c)))))))
+                                  (if (not (dg-vec=? assoc-diff homotopy))
+                                      (set! out (cons (list 'stasheff-n3 p i q j r l assoc-diff homotopy) out)))))
+                              (op-range dr))))
+                         (op-range dq))))
+                    (op-range dp))))
+               degs)))
+          degs)))
+     degs)
+    (reverse out)))
+
+(define (dga->ainf A)
+  (make-ainf-algebra
+   (dga-degrees A)
+   (map (lambda (k) (cons k (dga-dim A k))) (dga-degrees A))
+   (lambda (p a) (dga-diff A p a))
+   (lambda (p q a b) (dga-mul A p q a b))
+   (lambda (p q r a b c) (dg-zero-vec (dga-dim A (+ p q r -1))))))
+
+;; ===========================================================================
+;; L_infinity-algebras (up to n = 3)
+;; ===========================================================================
+;;
+;; #(linf degrees dims l1 l2 l3)
+;;   l1: (p a) -> vec in L^{p+1}
+;;   l2: (p q a b) -> vec in L^{p+q}           (graded skew-symmetric)
+;;   l3: (p q r a b c) -> vec in L^{p+q+r-1}   (graded skew-symmetric)
+
+(define (make-linf-algebra degrees dims l1 l2 l3)
+  (vector 'linf degrees dims l1 l2 l3))
+(define (linf-algebra? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'linf)))
+(define (linf-degrees L) (vector-ref L 1))
+(define (linf-dim L k) (let ((p (assv k (vector-ref L 2)))) (if p (cdr p) 0)))
+(define (linf-l1 L p a) (let ((d (linf-dim L (+ p 1)))) (if (= d 0) (dg-zero-vec 0) ((vector-ref L 3) p a))))
+(define (linf-l2 L p q a b) (let ((d (linf-dim L (+ p q)))) (if (= d 0) (dg-zero-vec 0) ((vector-ref L 4) p q a b))))
+(define (linf-l3 L p q r a b c) (let ((d (linf-dim L (+ p q r -1)))) (if (= d 0) (dg-zero-vec 0) ((vector-ref L 5) p q r a b c))))
+
+;; Verify L_inf axioms up to n = 3:
+;;   - graded skew-symmetry of l2 and l3
+;;   - n = 1: l1^2 = 0
+;;   - n = 2: l1(l2(a, b)) = l2(l1(a), b) + (-1)^|a| l2(a, l1(b))
+;;   - n = 3: Jac_{l2}(a, b, c) + l1(l3(a, b, c)) + l3(l1(a), b, c)
+;;              + (-1)^|a| l3(a, l1(b), c) + (-1)^{|a|+|b|} l3(a, b, l1(c)) = 0
+;;     where Jac_{l2}(a, b, c) = l2(l2(a, b), c)
+;;                               + (-1)^{|a|(|b|+|c|)} l2(l2(b, c), a)
+;;                               + (-1)^{|c|(|a|+|b|)} l2(l2(c, a), b)
+(define (linf-verify L)
+  (let ((degs (linf-degrees L)) (out '()))
+    ;; n = 1
+    (for-each
+     (lambda (p)
+       (let ((dp (linf-dim L p)))
+         (for-each (lambda (i)
+                     (let ((res (linf-l1 L (+ p 1) (linf-l1 L p (dg-basis-vec dp i)))))
+                       (if (not (dg-vec-zero? res)) (set! out (cons (list 'linf-n1 p i res) out)))))
+                   (op-range dp))))
+     degs)
+    ;; skew-symmetry of l2 + n = 2
+    (for-each
+     (lambda (p)
+       (let ((dp (linf-dim L p)) (sp (dg-sign p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (linf-dim L q)) (ss (- (dg-sign (* p q)))))
+              (for-each
+               (lambda (i)
+                 (let* ((a (dg-basis-vec dp i)) (d1a (linf-l1 L p a)))
+                   (for-each
+                    (lambda (j)
+                      (let* ((b (dg-basis-vec dq j)) (d1b (linf-l1 L q b))
+                             (ab (linf-l2 L p q a b))
+                             (ba (linf-l2 L q p b a)))
+                        (if (not (dg-vec=? ab (dg-vec-scale ss ba)))
+                            (set! out (cons (list 'linf-l2-skew p i q j ab ba) out)))
+                        (let ((lhs (linf-l1 L (+ p q) ab))
+                              (rhs (dg-vec-add (linf-l2 L (+ p 1) q d1a b)
+                                               (dg-vec-scale sp (linf-l2 L p (+ q 1) a d1b)))))
+                          (if (not (dg-vec=? lhs rhs))
+                              (set! out (cons (list 'linf-n2 p i q j lhs rhs) out))))))
+                    (op-range dq))))
+               (op-range dp))))
+          degs)))
+     degs)
+    ;; skew-symmetry of l3 + n = 3 (homotopy Jacobi)
+    (for-each
+     (lambda (p)
+       (let ((dp (linf-dim L p)) (sp (dg-sign p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (linf-dim L q)) (spq (dg-sign (+ p q))) (s12 (- (dg-sign (* p q)))))
+              (for-each
+               (lambda (r)
+                 (let ((dr (linf-dim L r)) (s23 (- (dg-sign (* q r))))
+                       (sc1 (dg-sign (* p (+ q r)))) (sc2 (dg-sign (* r (+ p q)))))
+                   (for-each
+                    (lambda (i)
+                      (let* ((a (dg-basis-vec dp i)) (d1a (linf-l1 L p a)))
+                        (for-each
+                         (lambda (j)
+                           (let* ((b (dg-basis-vec dq j)) (d1b (linf-l1 L q b)))
+                             (for-each
+                              (lambda (l)
+                                (let* ((c (dg-basis-vec dr l)) (d1c (linf-l1 L r c))
+                                       (l3abc (linf-l3 L p q r a b c))
+                                       (l3bac (linf-l3 L q p r b a c))
+                                       (l3acb (linf-l3 L p r q a c b)))
+                                  (if (not (dg-vec=? l3abc (dg-vec-scale s12 l3bac)))
+                                      (set! out (cons (list 'linf-l3-skew12 p i q j r l l3abc l3bac) out)))
+                                  (if (not (dg-vec=? l3abc (dg-vec-scale s23 l3acb)))
+                                      (set! out (cons (list 'linf-l3-skew23 p i q j r l l3abc l3acb) out)))
+                                  (let* ((jac (dg-vec-add
+                                               (linf-l2 L (+ p q) r (linf-l2 L p q a b) c)
+                                               (dg-vec-add
+                                                (dg-vec-scale sc1 (linf-l2 L (+ q r) p (linf-l2 L q r b c) a))
+                                                (dg-vec-scale sc2 (linf-l2 L (+ r p) q (linf-l2 L r p c a) b)))))
+                                         (dl3 (dg-vec-add
+                                               (linf-l1 L (+ p q r -1) l3abc)
+                                               (dg-vec-add
+                                                (linf-l3 L (+ p 1) q r d1a b c)
+                                                (dg-vec-add
+                                                 (dg-vec-scale sp (linf-l3 L p (+ q 1) r a d1b c))
+                                                 (dg-vec-scale spq (linf-l3 L p q (+ r 1) a b d1c))))))
+                                         (tot (dg-vec-add jac dl3)))
+                                    (if (not (dg-vec-zero? tot))
+                                        (set! out (cons (list 'linf-n3 p i q j r l jac dl3) out))))))
+                              (op-range dr))))
+                         (op-range dq))))
+                    (op-range dp))))
+               degs)))
+          degs)))
+     degs)
+    (reverse out)))
+
+(define (dgla->linf L)
+  (make-linf-algebra
+   (dgla-degrees L)
+   (map (lambda (k) (cons k (dgla-dim L k))) (dgla-degrees L))
+   (lambda (p a) (dgla-diff L p a))
+   (lambda (p q a b) (dgla-bracket L p q a b))
+   (lambda (p q r a b c) (dg-zero-vec (dgla-dim L (+ p q r -1))))))
+
+;; ===========================================================================
+;; Finite Planar & Symmetric Operads
+;; ===========================================================================
+;;
+;; Permutations on {1..n} represented as 1-indexed lists (p_1 ... p_n) denoting
+;; the bijection k |-> p_k. Composition (sigma o tau)(k) = sigma(tau(k)).
+
+(define (op-perm-id n) (op-range-1 n))
+(define (op-perm-apply p k) (list-ref p (- k 1)))
+(define (op-perm-compose s t) (map (lambda (k) (op-perm-apply s (op-perm-apply t k))) (op-range-1 (length t))))
+(define (op-insert-at xs pos x)
+  (if (= pos 0) (cons x xs) (cons (car xs) (op-insert-at (cdr xs) (- pos 1) x))))
+(define (op-permutations n)
+  (if (= n 0) (list '())
+      (let ((rest (op-permutations (- n 1))))
+        (apply append
+               (map (lambda (p) (map (lambda (pos) (op-insert-at p pos n)) (op-range n)))
+                    rest)))))
+
+;; Operad descriptor: #(operad name max-arity kind ops unit compose-i sym-action eq-fn)
+;;   kind:       'set (ops(n) is a list of operations) or 'linear (ops(n) is a basis of vectors)
+;;   ops:        n -> list of test/basis elements in P(n) for 1 <= n <= max-arity
+;;   unit:       the identity operation in P(1)
+;;   compose-i:  (m n i x y) -> x o_i y in P(m + n - 1), 1 <= i <= m
+;;   sym-action: #f (planar) or (n sigma x) -> sigma . x in P(n)
+;;   eq-fn:      equality predicate on P(n)
+
+(define (make-operad name max-arity kind ops unit compose-i . rest)
+  (let ((sym (if (null? rest) #f (car rest)))
+        (eqf (if (or (null? rest) (null? (cdr rest))) equal? (cadr rest))))
+    (vector 'operad name max-arity kind ops unit compose-i sym eqf)))
+(define (operad? x) (and (vector? x) (= (vector-length x) 9) (eq? (vector-ref x 0) 'operad)))
+(define (operad-name P) (vector-ref P 1))
+(define (operad-max-arity P) (vector-ref P 2))
+(define (operad-kind P) (vector-ref P 3))
+(define (operad-ops P n) ((vector-ref P 4) n))
+(define (operad-unit P) (vector-ref P 5))
+(define (operad-compose-i P m n i x y) ((vector-ref P 6) m n i x y))
+(define (operad-sym-action P) (vector-ref P 7))
+(define (op-eq? P a b) ((vector-ref P 8) a b))
+
+;; Block-insert permutation for equivariance of partial composition:
+;; Given sigma in S_m, tau in S_n, and slot i (1 <= i <= m):
+;;   In (sigma . x) o_{sigma(i)} (tau . y) = (sigma o_i tau) . (x o_i y),
+;;   sigma o_i tau maps block {i..i+n-1} to {sigma(i)..sigma(i)+n-1} shifted via tau,
+;;   and maps other indices k != i via sigma shifted by n-1 when > sigma(i).
+(define (op-perm-partial-compose m n i sigma tau)
+  (let ((si (op-perm-apply sigma i))
+        (total (+ m n -1)))
+    (map (lambda (k)
+           (cond ((< k i)
+                  (let ((sk (op-perm-apply sigma k)))
+                    (if (< sk si) sk (+ sk (- n 1)))))
+                 ((< k (+ i n))
+                  (+ si (- (op-perm-apply tau (+ (- k i) 1)) 1)))
+                 (else
+                  (let ((sk (op-perm-apply sigma (- k (- n 1)))))
+                    (if (< sk si) sk (+ sk (- n 1)))))))
+         (op-range-1 total))))
+
+;; Verify all operad partial-composition axioms up to max-arity:
+;;   1. Unit laws: id o_1 x = x and x o_i id = x;
+;;   2. Sequential associativity: (x o_i y) o_{i+j-1} z = x o_i (y o_j z);
+;;   3. Parallel associativity: (x o_i y) o_{k+n-1} z = (x o_k z) o_i y for i < k;
+;;   4. Symmetric group action & equivariance (if sym-action is present).
+(define (operad-verify P)
+  (let ((N (operad-max-arity P)) (u (operad-unit P)) (sym (operad-sym-action P)) (out '()))
+    (define (note! v) (set! out (cons v out)))
+    ;; (1) Unit axioms
+    (for-each
+     (lambda (m)
+       (for-each
+        (lambda (x)
+          (let ((lu (operad-compose-i P 1 m 1 u x)))
+            (if (not (op-eq? P lu x)) (note! (list 'left-unit m x lu))))
+          (for-each
+           (lambda (i)
+             (let ((ru (operad-compose-i P m 1 i x u)))
+               (if (not (op-eq? P ru x)) (note! (list 'right-unit m i x ru)))))
+           (op-range-1 m)))
+        (operad-ops P m)))
+     (op-range-1 N))
+    ;; (2) Sequential associativity: m + n + p - 2 <= N
+    (for-each
+     (lambda (m)
+       (for-each
+        (lambda (n)
+          (for-each
+           (lambda (p)
+             (if (<= (+ m n p -2) N)
+                 (for-each
+                  (lambda (x)
+                    (for-each
+                     (lambda (y)
+                       (for-each
+                        (lambda (z)
+                          (for-each
+                           (lambda (i)
+                             (for-each
+                              (lambda (j)
+                                (let ((lhs (operad-compose-i P (+ m n -1) p (+ i j -1)
+                                             (operad-compose-i P m n i x y) z))
+                                      (rhs (operad-compose-i P m (+ n p -1) i
+                                             x (operad-compose-i P n p j y z))))
+                                  (if (not (op-eq? P lhs rhs))
+                                      (note! (list 'seq-assoc m n p i j x y z lhs rhs)))))
+                              (op-range-1 n)))
+                           (op-range-1 m)))
+                        (operad-ops P p)))
+                     (operad-ops P n)))
+                  (operad-ops P m))))
+           (op-range-1 N)))
+        (op-range-1 N)))
+     (op-range-1 N))
+    ;; (3) Parallel associativity: 1 <= i < k <= m, m + n + p - 2 <= N
+    (for-each
+     (lambda (m)
+       (for-each
+        (lambda (n)
+          (for-each
+           (lambda (p)
+             (if (<= (+ m n p -2) N)
+                 (for-each
+                  (lambda (x)
+                    (for-each
+                     (lambda (y)
+                       (for-each
+                        (lambda (z)
+                          (for-each
+                           (lambda (i)
+                             (for-each
+                              (lambda (k)
+                                (if (< i k)
+                                    (let ((lhs (operad-compose-i P (+ m n -1) p (+ k n -1)
+                                                 (operad-compose-i P m n i x y) z))
+                                          (rhs (operad-compose-i P (+ m p -1) n i
+                                                 (operad-compose-i P m p k x z) y)))
+                                      (if (not (op-eq? P lhs rhs))
+                                          (note! (list 'par-assoc m n p i k x y z lhs rhs))))))
+                              (op-range-1 m)))
+                           (op-range-1 m)))
+                        (operad-ops P p)))
+                     (operad-ops P n)))
+                  (operad-ops P m))))
+           (op-range-1 N)))
+        (op-range-1 N)))
+     (op-range-1 N))
+    ;; (4) Symmetric action and equivariance
+    (if sym
+        (begin
+          (for-each
+           (lambda (m)
+             (let ((perms (op-permutations m)) (id (op-perm-id m)))
+               (for-each
+                (lambda (x)
+                  (if (not (op-eq? P (sym m id x) x))
+                      (note! (list 'sym-identity m x)))
+                  (for-each
+                   (lambda (s)
+                     (for-each
+                      (lambda (t)
+                        (let ((lhs (sym m s (sym m t x)))
+                              (rhs (sym m (op-perm-compose s t) x)))
+                          (if (not (op-eq? P lhs rhs))
+                              (note! (list 'sym-action m s t x lhs rhs)))))
+                      perms))
+                   perms))
+                (operad-ops P m))))
+           (op-range-1 (min N 3)))
+          (for-each
+           (lambda (m)
+             (for-each
+              (lambda (n)
+                (if (<= (+ m n -1) (min N 3))
+                    (let ((pm (op-permutations m)) (pn (op-permutations n)))
+                      (for-each
+                       (lambda (x)
+                         (for-each
+                          (lambda (y)
+                            (for-each
+                             (lambda (i)
+                               (for-each
+                                (lambda (s)
+                                  (for-each
+                                   (lambda (t)
+                                     (let* ((lhs (operad-compose-i P m n (op-perm-apply s i) (sym m s x) (sym n t y)))
+                                            (st (op-perm-partial-compose m n i s t))
+                                            (rhs (sym (+ m n -1) st (operad-compose-i P m n i x y))))
+                                       (if (not (op-eq? P lhs rhs))
+                                           (note! (list 'sym-equivariance m n i s t x y lhs rhs)))))
+                                   pn))
+                                pm))
+                             (op-range-1 m)))
+                          (operad-ops P n)))
+                       (operad-ops P m)))))
+              (op-range-1 (min N 3))))
+           (op-range-1 (min N 3)))))
+    (reverse out)))
+
+;; ===========================================================================
+;; Standard Operads: Ass, Com, and Lie (up to arity 3)
+;; ===========================================================================
+
+;; Commutative operad Com: Com(n) = {*}, trivial S_n action.
+(define (commutative-operad . max-arity-opt)
+  (let ((N (if (null? max-arity-opt) 4 (car max-arity-opt))))
+    (make-operad "Com" N 'set
+                 (lambda (n) (list 'star))
+                 'star
+                 (lambda (m n i x y) 'star)
+                 (lambda (n s x) x)
+                 eq?)))
+
+;; Associative operad Ass: Ass(n) = S_n (all permutations of 1..n).
+;; A permutation p = (p_1 ... p_n) denotes the word x_{p_1} * ... * x_{p_n}.
+;; Partial composition p o_i q replaces the letter i in p by the word q shifted
+;; by (i - 1), shifting letters > i in p by (n - 1).
+;; Left S_n action: sigma . (p_1 ... p_n) = (sigma(p_1) ... sigma(p_n)).
+(define (associative-operad . max-arity-opt)
+  (let ((N (if (null? max-arity-opt) 3 (car max-arity-opt))))
+    (make-operad "Ass" N 'set
+                 (lambda (n) (op-permutations n))
+                 '(1)
+                 (lambda (m n i p q)
+                   (apply append
+                          (map (lambda (k)
+                                 (cond ((< k i) (list k))
+                                       ((= k i) (map (lambda (v) (+ v (- i 1))) q))
+                                       (else (list (+ k (- n 1))))))
+                               p)))
+                 (lambda (n s p) (map (lambda (k) (op-perm-apply s k)) p))
+                 equal?)))
+
+;; Lie operad Lie in arities 1, 2, 3 over exact Q:
+;;   Lie(1) = Q   with basis (x_1)
+;;   Lie(2) = Q   with basis ([x_1, x_2])
+;;   Lie(3) = Q^2 with Lyndon basis e_1 = [[x_1, x_2], x_3], e_2 = [[x_1, x_3], x_2]
+;;                (modulo Jacobi: [[x_2, x_3], x_1] = -e_1 + e_2).
+(define (op-lie3-bracket a b c)
+  ;; Exact vector for [[x_a, x_b], x_c] in basis (e_1, e_2).
+  (cond ((and (= a 1) (= b 2) (= c 3)) (vector 1 0))
+        ((and (= a 2) (= b 1) (= c 3)) (vector -1 0))
+        ((and (= a 1) (= b 3) (= c 2)) (vector 0 1))
+        ((and (= a 3) (= b 1) (= c 2)) (vector 0 -1))
+        ((and (= a 2) (= b 3) (= c 1)) (vector -1 1))
+        ((and (= a 3) (= b 2) (= c 1)) (vector 1 -1))
+        (else (error "op-lie3-bracket: invalid permutation indices" (list a b c)))))
+
+(define (lie-operad)
+  (make-operad
+   "Lie" 3 'linear
+   (lambda (n)
+     (cond ((= n 1) (list (vector 1)))
+           ((= n 2) (list (vector 1)))
+           ((= n 3) (list (vector 1 0) (vector 0 1)))
+           (else '())))
+   (vector 1)
+   (lambda (m n i x y)
+     (cond ((= m 1) (dg-vec-scale (vector-ref x 0) y))
+           ((= n 1) (dg-vec-scale (vector-ref y 0) x))
+           ((and (= m 2) (= n 2))
+            (let ((s (* (vector-ref x 0) (vector-ref y 0))))
+              (if (= i 1)
+                  ;; [[x_1, x_2], x_3] = e_1
+                  (dg-vec-scale s (vector 1 0))
+                  ;; [x_1, [x_2, x_3]] = -[[x_2, x_3], x_1] = e_1 - e_2
+                  (dg-vec-scale s (vector 1 -1)))))
+           (else (error "lie-operad: arity exceeds 3" (list m n i)))))
+   (lambda (n s x)
+     (cond ((= n 1) x)
+           ((= n 2)
+            (if (= (car s) 1) x (dg-vec-scale -1 x)))
+           ((= n 3)
+            (let ((s1 (list-ref s 0)) (s2 (list-ref s 1)) (s3 (list-ref s 2)))
+              (dg-vec-add (dg-vec-scale (vector-ref x 0) (op-lie3-bracket s1 s2 s3))
+                          (dg-vec-scale (vector-ref x 1) (op-lie3-bracket s1 s3 s2)))))
+           (else (error "lie-operad: arity exceeds 3" n))))
+   dg-vec=?))

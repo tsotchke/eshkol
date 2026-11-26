@@ -1,0 +1,205 @@
+;;; core.physics.em -- Covariant & Compiler-Differentiable Discrete Electromagnetism
+;;;
+;;; Usage: (require core.physics.em)
+;;;
+;;; Implements discrete covariant Maxwell equations on DEC simplicial complexes:
+;;;   - Faraday 2-form F = d_1 A from 1-cochain gauge potential A
+;;;   - Exact homogeneous Maxwell equation d_2 F = 0 (Faraday + div B = 0)
+;;;   - Inhomogeneous Maxwell equation delta_2 F = J (and dual d_1^T *_2 F = J_dual)
+;;;   - Exact discrete charge conservation delta_1 J = 0 (and d_0^T J_dual = 0)
+;;;   - Electromagnetic energy functional E(A, eps) = (1/2) <d_1 A, *_2(eps) d_1 A>
+;;;   - Exact gauge invariance E(A + d_0 chi) = E(A) for arbitrary 0-cochain chi
+;;;   - Compiler-differentiable adjoint sensitivities dE/dA and dE/deps via
+;;;     Eshkol's native `gradient` AD, verifying Maxwell stationarity and
+;;;     permittivity inverse-design gradients against analytical and FD oracles.
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.geometry.dec)
+
+(provide em-faraday-from-potential
+         em-verify-homogeneous-maxwell
+         em-dual-current em-current
+         em-verify-charge-conservation em-verify-dual-charge-conservation
+         em-energy em-energy-with-eps
+         em-gauge-shift em-verify-gauge-invariance
+         em-maxwell-action-f64
+         em-energy-f64-at em-energy-grad-A em-energy-grad-eps
+         em-action-grad-A em-solve-maxwell-gauge-pinned
+         em-inverse-design-loss em-inverse-design-grad-eps)
+
+;; ============================================================================
+;; Exact Discrete Covariant Maxwell Equations on DEC Complexes
+;; ============================================================================
+
+;; Faraday 2-form F = d_1 A from 1-cochain potential A
+(define (em-faraday-from-potential c A)
+  (dec-apply-d1 c A))
+
+;; Homogeneous Maxwell equation on a 3-complex: d_2 F = 0
+;; (holds identically for any F = d_1 A since d_2 d_1 = 0; fails for magnetic monopole)
+(define (em-verify-homogeneous-maxwell c F)
+  (if (= (dec-num-cells c) 0)
+      #t
+      (dec-vec-zero? (dec-apply-d2 c F))))
+
+;; Dual current 1-chain J_dual = d_1^T (*_2 F)
+(define (em-dual-current c F)
+  (let* ((d1t (exact-matrix-transpose (dec-d1 c)))
+         (s2 (dec-star2 c))
+         (nf (vector-length s2))
+         (s2F (make-vector nf 0)))
+    (let loop ((i 0))
+      (if (< i nf)
+          (begin (vector-set! s2F i (* (vector-ref s2 i) (vector-ref F i)))
+                 (loop (+ i 1)))))
+    (dec-mat-vec d1t s2F)))
+
+;; Primal current 1-cochain J = delta_2 F = (*_1)^{-1} d_1^T (*_2 F)
+(define (em-current c F)
+  (dec-apply-codiff2 c F))
+
+;; Exact discrete charge conservation: delta_1 J = 0
+(define (em-verify-charge-conservation c J)
+  (dec-vec-zero? (dec-apply-codiff1 c J)))
+
+;; Exact dual charge conservation: d_0^T J_dual = 0
+(define (em-verify-dual-charge-conservation c J-dual)
+  (dec-vec-zero? (dec-mat-vec (exact-matrix-transpose (dec-d0 c)) J-dual)))
+
+;; ============================================================================
+;; Electromagnetic Energy Functional & Gauge Invariance
+;; ============================================================================
+
+;; E(A) = (1/2) <d_1 A, *_2 d_1 A>
+(define (em-energy c A)
+  (let ((F (em-faraday-from-potential c A)))
+    (* (/ 1 2) (dec-inner-product c 2 F F))))
+
+;; E(A, eps) = (1/2) sum_f eps_f * (d_1 A)_f^2 (exact when inputs are exact)
+(define (em-energy-with-eps c A eps)
+  (let* ((F (em-faraday-from-potential c A))
+         (nf (vector-length F)))
+    (let loop ((i 0) (acc 0))
+      (if (< i nf)
+          (let ((fi (vector-ref F i)))
+            (loop (+ i 1) (+ acc (* (vector-ref eps i) fi fi))))
+          (* (/ 1 2) acc)))))
+
+;; Gauge transformation A -> A + d_0 chi
+(define (em-gauge-shift c A chi)
+  (dec-vec-add A (dec-apply-d0 c chi)))
+
+;; Verify exact gauge invariance of F = d_1 A and E(A) under A -> A + d_0 chi
+(define (em-verify-gauge-invariance c A chi)
+  (let* ((Ap (em-gauge-shift c A chi))
+         (F (em-faraday-from-potential c A))
+         (Fp (em-faraday-from-potential c Ap)))
+    (and (dec-vec-equal? F Fp)
+         (= (em-energy c A) (em-energy c Ap)))))
+
+;; ============================================================================
+;; Compiler-Differentiable Adjoint E&M (Native Eshkol Reverse/Forward AD)
+;; ============================================================================
+
+;; Differentiable scalar energy E(A, eps) = 0.5 * sum_f eps_f * ((d_1 A)_f)^2
+;; Uses vref on A and eps so Eshkol's `gradient` tracks every component cleanly.
+(define (em-energy-f64-at d1 eps A)
+  (let ((nf (vector-length d1))
+        (ne (vector-length (vector-ref d1 0))))
+    (let lf ((f 0) (acc 0.0))
+      (if (< f nf)
+          (let* ((row (vector-ref d1 f))
+                 (flux (let le ((e 0) (s 0.0))
+                         (if (< e ne)
+                             (let ((c (vector-ref row e)))
+                               (if (= c 0)
+                                   (le (+ e 1) s)
+                                   (le (+ e 1) (+ s (* (exact->inexact c) (vref A e))))))
+                             s))))
+            (lf (+ f 1) (+ acc (* 0.5 (vref eps f) (* flux flux)))))
+          acc))))
+
+;; Differentiable Maxwell action functional S(A) = E(A, eps) - <A, J_dual>
+(define (em-maxwell-action-f64 d1 eps J-dual A)
+  (let* ((energy (em-energy-f64-at d1 eps A))
+         (ne (vector-length (vector-ref d1 0)))
+         (src (let le ((e 0) (s 0.0))
+                (if (< e ne)
+                    (le (+ e 1) (+ s (* (exact->inexact (vector-ref J-dual e)) (vref A e))))
+                    s))))
+    (- energy src)))
+
+;; AD sensitivity dE/dA via Eshkol's native `gradient`
+(define (em-energy-grad-A c eps A)
+  (let ((d1 (dec-d1 c)))
+    (gradient (lambda (a-vec) (em-energy-f64-at d1 eps a-vec)) A)))
+
+;; AD sensitivity dS/dA = d_1^T diag(eps) d_1 A - J_dual
+(define (em-action-grad-A c eps J-dual A)
+  (let ((d1 (dec-d1 c)))
+    (gradient (lambda (a-vec) (em-maxwell-action-f64 d1 eps J-dual a-vec)) A)))
+
+;; AD sensitivity dE/deps via Eshkol's native `gradient`
+(define (em-energy-grad-eps c eps A)
+  (let ((d1 (dec-d1 c)))
+    (gradient (lambda (eps-vec) (em-energy-f64-at d1 eps-vec A)) eps)))
+
+;; Exact gauge-pinned Maxwell solver:
+;; Solves (d_1^T diag(eps) d_1 + gamma * d_0 d_0^T) A = J_dual over Q (or f64).
+;; For any conserved source J_dual (d_0^T J_dual = 0), the Coulomb-gauge
+;; term gamma d_0 d_0^T pins d_0^T A = 0 without altering d_1^T diag(eps) d_1 A = J_dual!
+(define (em-solve-maxwell-gauge-pinned c eps J-dual gamma)
+  (let* ((d0 (dec-d0 c))
+         (d1 (dec-d1 c))
+         (d0t (exact-matrix-transpose d0))
+         (d1t (exact-matrix-transpose d1))
+         (ne (dec-num-edges c))
+         (nf (dec-num-faces c))
+         (Emat (let ((m (make-vector nf #f)))
+                 (let loop ((i 0))
+                   (if (< i nf)
+                       (let ((r (make-vector nf 0)))
+                         (vector-set! r i (vector-ref eps i))
+                         (vector-set! m i r)
+                         (loop (+ i 1)))
+                       m))))
+         (curl-curl (exact-matrix-mul d1t (exact-matrix-mul Emat d1)))
+         (gauge-term (exact-matrix-mul d0 d0t))
+         (sys (make-vector ne #f)))
+    (let li ((i 0))
+      (if (< i ne)
+          (let ((row (make-vector ne 0))
+                (rc (vector-ref curl-curl i))
+                (rg (vector-ref gauge-term i)))
+            (let lj ((j 0))
+              (if (< j ne)
+                  (begin (vector-set! row j (+ (vector-ref rc j) (* gamma (vector-ref rg j))))
+                         (lj (+ j 1)))))
+            (vector-set! sys i row)
+            (li (+ i 1)))))
+    (exact-solve sys J-dual)))
+
+;; Inverse-design loss matching target flux energy density:
+;;   L(eps) = 0.5 * sum_f (eps_f * (d_1 A)_f - B_target_f)^2
+(define (em-inverse-design-loss d1 A B-target eps)
+  (let ((nf (vector-length d1))
+        (ne (vector-length (vector-ref d1 0))))
+    (let lf ((f 0) (acc 0.0))
+      (if (< f nf)
+          (let* ((row (vector-ref d1 f))
+                 (flux (let le ((e 0) (s 0.0))
+                         (if (< e ne)
+                             (let ((c (vector-ref row e)))
+                               (if (= c 0)
+                                   (le (+ e 1) s)
+                                   (le (+ e 1) (+ s (* (exact->inexact c) (vref A e))))))
+                             s)))
+                 (diff (- (* (vref eps f) flux) (vref B-target f))))
+            (lf (+ f 1) (+ acc (* 0.5 (* diff diff)))))
+          acc))))
+
+;; Native AD permittivity inverse-design gradient dL/deps
+(define (em-inverse-design-grad-eps c A B-target eps)
+  (let ((d1 (dec-d1 c)))
+    (gradient (lambda (eps-vec) (em-inverse-design-loss d1 A B-target eps-vec)) eps)))

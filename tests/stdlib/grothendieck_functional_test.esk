@@ -1,0 +1,270 @@
+;;; Grothendieck Era 1 Functional Analysis Verification Suite
+;;;   Nuclear Spaces, Topological Tensor Products & Grothendieck's Inequality
+;;;
+;;; Verifies:
+;;;   1. Schwartz rapid-decay space s(N) Frechet seminorm families &
+;;;      Grothendieck-Pietsch nuclearity criterion vs polynomial-decay divergence.
+;;;   2. Exact diagonal & general matrix Schatten p-norms and exact norm chain
+;;;      ||T||_inf <= ||T||_2 <= ||T||_1.
+;;;   3. Projective vs injective topological tensor product norms (pi vs eps):
+;;;      rank-1 cross-norm coincidence, Hadamard matrices, nuclear diagonal
+;;;      maps bounded below pi^2/6, and Dvoretzky-Rogers non-nuclearity of l^2
+;;;      via linear divergence ||I_n||_1 / ||I_n||_inf = n.
+;;;   4. Grothendieck's inequality (Resume, 1953/1956):
+;;;      - Exhaustive 16-assignment Bell-CHSH classical maximum M_cl = 2
+;;;      - Tsirelson quantum/Hilbert realization M_H = 2*sqrt(2), R = sqrt(2)
+;;;      - Strict containment 1 < sqrt(2) < Krivine bound pi / (2 ln(1+sqrt(2)))
+;;;      - Adversarial fail-closed rejection of non-unit vectors ('err-non-unit-vector)
+;;;      - 3x3 frustrated 6-cycle, 4x4 frustrated 8-cycle, and 4x4 block-CHSH witnesses
+
+(require stdlib)
+(require core.grothendieck.functional)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+(define (approx=? a b tol)
+  (< (abs (- a b)) tol))
+
+;; ===========================================================================
+;; 1. Nuclear Spaces & Rapid-Decay Sequence Space s(N)
+;; ===========================================================================
+
+;; Exact exponential rapid-decay sequence a_n = 2^{-n}:
+;; All Frechet seminorms ||a||_k stay uniformly bounded as truncation N grows:
+;;   ||a||_0 < 2, ||a||_1 < 4, ||a||_2 < 12, ||a||_3 < 52.
+(define seq-exp-12 (gfa-exp-decay-seq 12 2))
+(define seq-exp-20 (gfa-exp-decay-seq 20 2))
+(define prof-exp-20 (gfa-schwartz-seminorm-profile seq-exp-20 3))
+(expect "sN-exp-k0-exact-rational" (exact? (vector-ref prof-exp-20 0)))
+(expect "sN-exp-k0-below-2" (< (vector-ref prof-exp-20 0) 2))
+(expect "sN-exp-k1-below-4" (< (vector-ref prof-exp-20 1) 4))
+(expect "sN-exp-k2-below-12" (< (vector-ref prof-exp-20 2) 12))
+(expect "sN-exp-k3-below-52" (< (vector-ref prof-exp-20 3) 52))
+(expect "sN-exp-monotone-in-k"
+        (and (< (vector-ref prof-exp-20 0) (vector-ref prof-exp-20 1))
+             (< (vector-ref prof-exp-20 1) (vector-ref prof-exp-20 2))
+             (< (vector-ref prof-exp-20 2) (vector-ref prof-exp-20 3))))
+(expect "sN-exp-convergent-tail-k2"
+        (< (- (gfa-schwartz-seminorm seq-exp-20 2)
+              (gfa-schwartz-seminorm seq-exp-12 2))
+           1/10))
+
+;; Exact factorial rapid-decay sequence a_n = 1/(n+1)!:
+;; ||a||_0 = sum_{n=1}^{10} 1/n! < e - 1 < 2, ||a||_1 = sum_{n=1}^{10} n/n! = sum_{j=0}^9 1/j! < e < 3.
+(define seq-fac-10 (gfa-factorial-decay-seq 10))
+(expect "sN-fac-k0-below-2" (< (gfa-schwartz-seminorm seq-fac-10 0) 2))
+(expect "sN-fac-k1-below-3" (< (gfa-schwartz-seminorm seq-fac-10 1) 3))
+
+;; Negative separation: polynomial-decay sequence b_n = (n+1)^{-2} is NOT in s(N):
+;; ||b||_0 < pi^2/6, yet ||b||_2 = sum_{n=0}^{N-1} 1 = N diverges linearly!
+(define seq-poly-16 (gfa-poly-decay-seq 16 2))
+(define seq-poly-32 (gfa-poly-decay-seq 32 2))
+(expect "poly2-k0-below-basel" (< (gfa-schwartz-seminorm seq-poly-32 0) gfa-basel-limit))
+(expect "poly2-k2-exact-equals-16" (= (gfa-schwartz-seminorm seq-poly-16 2) 16))
+(expect "poly2-k2-exact-equals-32" (= (gfa-schwartz-seminorm seq-poly-32 2) 32))
+(expect "poly2-k1-harmonic-grows"
+        (> (gfa-schwartz-seminorm seq-poly-32 1)
+           (gfa-schwartz-seminorm seq-poly-16 1)))
+
+;; Grothendieck-Pietsch nuclearity criterion on s(N):
+;; With weight shift m = k + 2, sum_{n=1}^N n^{-2} < pi^2/6 for all N!
+(expect "pietsch-nuclear-shift2-N10" (gfa-pietsch-nuclear-witness? 10 3 5 gfa-basel-limit))
+(expect "pietsch-nuclear-shift2-N40" (gfa-pietsch-nuclear-witness? 40 3 5 gfa-basel-limit))
+(expect "pietsch-nuclear-shift3-N25" (gfa-pietsch-nuclear-witness? 25 2 5 5/4))
+;; Shift m = k + 1 gives harmonic series H_N, which exceeds pi^2/6 already at N=4 (H_4 = 25/12 > 2)!
+(expect "pietsch-shift1-harmonic-fails-basel"
+        (not (gfa-pietsch-nuclear-witness? 4 3 4 gfa-basel-limit)))
+
+;; ===========================================================================
+;; 2. Schatten p-Norms & Nuclearity vs Non-Nuclearity of l^2
+;; ===========================================================================
+
+;; Positive control: nuclear rapid-decay diagonal operator D_r = diag((n+1)^{-r}), r = 2, 3.
+(define D2-10 (gfa-nuclear-decay-diag 10 2))
+(define D2-30 (gfa-nuclear-decay-diag 30 2))
+(define D3-20 (gfa-nuclear-decay-diag 20 3))
+(expect "diag-D2-10-trace-below-basel" (< (gfa-diag-trace-norm D2-10) gfa-basel-limit))
+(expect "diag-D2-30-trace-below-basel" (< (gfa-diag-trace-norm D2-30) gfa-basel-limit))
+(expect "diag-D2-op-norm-exact-1" (= (gfa-diag-op-norm D2-30) 1))
+(expect "diag-D2-schatten-chain-exact" (gfa-diag-schatten-chain-valid? D2-30))
+(expect "diag-D3-schatten-chain-exact" (gfa-diag-schatten-chain-valid? D3-20))
+(expect "diag-D3-trace-below-5/4" (< (gfa-diag-trace-norm D3-20) 5/4))
+
+;; General matrix Schatten norms via symmetric Jacobi on exact Gram matrix:
+(define D-small (gfa-diagonal-matrix (vector 4 -2 1)))
+(expect "mat-diag-op-norm=4" (approx=? (gfa-mat-op-norm D-small) 4.0 1e-11))
+(expect "mat-diag-hs-norm=sqrt21" (approx=? (gfa-mat-hs-norm D-small) (sqrt 21.0) 1e-11))
+(expect "mat-diag-trace-norm=7" (approx=? (gfa-mat-trace-norm D-small) 7.0 1e-11))
+(expect "mat-diag-schatten-chain" (gfa-mat-schatten-chain-valid? D-small 1e-12))
+
+;; Asymmetric non-diagonal 2x3 matrix Schatten chain verification:
+(define A-rect (vector (vector 3 1 0) (vector 0 2 2)))
+(expect "mat-rect-hs-sq-exact=18" (= (gfa-mat-hs-norm-sq A-rect) 18))
+(expect "mat-rect-schatten-chain" (gfa-mat-schatten-chain-valid? A-rect 1e-11))
+(expect "mat-rect-op-lt-hs-lt-tr"
+        (let ((s (gfa-mat-schatten-norms A-rect)))
+          (and (< (vector-ref s 1) (vector-ref s 2))
+               (< (vector-ref s 2) (vector-ref s 3)))))
+
+;; Negative control (Dvoretzky-Rogers / Non-nuclearity of infinite-dimensional l^2):
+;; On identity I_n, ||I_n||_1 = n while ||I_n||_inf = 1 => ratio ||I_n||_1 / ||I_n||_inf = n -> inf!
+(define nn-2 (gfa-identity-non-nuclearity-ratio 2))
+(define nn-5 (gfa-identity-non-nuclearity-ratio 5))
+(define nn-12 (gfa-identity-non-nuclearity-ratio 12))
+(expect "non-nuclear-I2-exact" (and (= (vector-ref nn-2 2) 2) (= (vector-ref nn-2 3) 1) (= (vector-ref nn-2 4) 2)))
+(expect "non-nuclear-I5-exact" (and (= (vector-ref nn-5 2) 5) (= (vector-ref nn-5 3) 1) (= (vector-ref nn-5 4) 5)))
+(expect "non-nuclear-I12-exact" (and (= (vector-ref nn-12 2) 12) (= (vector-ref nn-12 3) 1) (= (vector-ref nn-12 4) 12)))
+(expect "non-nuclear-ratio-grows-linearly"
+        (and (< (vector-ref nn-2 4) (vector-ref nn-5 4))
+             (< (vector-ref nn-5 4) (vector-ref nn-12 4))))
+;; Cross-check general SVD on matrix I_4: ||I_4||_pi(l2) = 4, ||I_4||_eps(l2) = 1.
+(define I4 (gfa-identity-matrix 4))
+(expect "I4-hilbert-pi=4" (approx=? (gfa-hilbert-projective-norm I4) 4.0 1e-11))
+(expect "I4-hilbert-eps=1" (approx=? (gfa-hilbert-injective-norm I4) 1.0 1e-11))
+(expect "I4-hilbert-pi-ne-eps" (> (- (gfa-hilbert-projective-norm I4) (gfa-hilbert-injective-norm I4)) 2.99))
+
+;; ===========================================================================
+;; 3. Projective vs Injective Topological Tensor Norms (Rank-1 & Hadamard)
+;; ===========================================================================
+
+;; Positive control: Rank-1 tensor u (x) v satisfies ||u (x) v||_pi == ||u (x) v||_eps
+;; STRICTLY in BOTH (l_1, l_1) and (l_2, l_2) tensor products!
+(define u-r1 (vector 3 -4))
+(define v-r1 (vector 5 12 -1))
+(define R1 (gfa-outer-product u-r1 v-r1))
+(define rep-r1 (gfa-tensor-norm-report R1))
+;; In (l_1, l_1): ||u||_1 * ||v||_1 = 7 * 18 = 126 (exact integer equality!)
+(expect "rank1-l1-eps-exact=126" (= (vector-ref rep-r1 1) 126))
+(expect "rank1-l1-pi-exact=126" (= (vector-ref rep-r1 2) 126))
+(expect "rank1-l1-pi-equals-eps-exact" (= (vector-ref rep-r1 1) (vector-ref rep-r1 2)))
+;; In (l_2, l_2): ||u||_2 * ||v||_2 = 5 * sqrt(170) ~= 65.192024
+(define r1-l2-exact (* 5.0 (sqrt 170.0)))
+(expect "rank1-l2-eps-equals-u2v2" (approx=? (vector-ref rep-r1 3) r1-l2-exact 1e-10))
+(expect "rank1-l2-pi-equals-u2v2" (approx=? (vector-ref rep-r1 4) r1-l2-exact 1e-10))
+(expect "rank1-l2-pi-equals-eps" (approx=? (vector-ref rep-r1 3) (vector-ref rep-r1 4) 1e-10))
+
+;; Hadamard matrices H_2 and H_4 separate injective vs projective norms sharply:
+(define H2 (gfa-hadamard-matrix 2))
+(define rep-H2 (gfa-tensor-norm-report H2))
+;; H_2: ||H_2||_eps(linf)=2, ||H_2||_pi(l1)=4, ||H_2||_eps(l2)=sqrt(2), ||H_2||_pi(l2)=2*sqrt(2).
+(expect "H2-eps-linf-exact=2" (= (vector-ref rep-H2 1) 2))
+(expect "H2-pi-l1-exact=4" (= (vector-ref rep-H2 2) 4))
+(expect "H2-eps-l2=sqrt2" (approx=? (vector-ref rep-H2 3) (sqrt 2.0) 1e-11))
+(expect "H2-pi-l2=2sqrt2" (approx=? (vector-ref rep-H2 4) (* 2.0 (sqrt 2.0)) 1e-11))
+(expect "H2-strict-pi-gt-eps-both"
+        (and (< (vector-ref rep-H2 1) (vector-ref rep-H2 2))
+             (< (vector-ref rep-H2 3) (vector-ref rep-H2 4))))
+
+(define H4 (gfa-hadamard-matrix 4))
+(define rep-H4 (gfa-tensor-norm-report H4))
+;; H_4: ||H_4||_eps(linf)=8, ||H_4||_pi(l1)=16, ||H_4||_eps(l2)=2, ||H_4||_pi(l2)=8.
+(expect "H4-eps-linf-exact=8" (= (vector-ref rep-H4 1) 8))
+(expect "H4-pi-l1-exact=16" (= (vector-ref rep-H4 2) 16))
+(expect "H4-eps-l2=2" (approx=? (vector-ref rep-H4 3) 2.0 1e-11))
+(expect "H4-pi-l2=8" (approx=? (vector-ref rep-H4 4) 8.0 1e-11))
+(expect "H4-schatten-chain" (gfa-mat-schatten-chain-valid? H4 1e-11))
+
+;; ===========================================================================
+;; 4. Grothendieck's Inequality & Quantum Nonlocality (Bell-CHSH & 3x3 / 4x4)
+;; ===========================================================================
+
+;; Krivine's constant pi / (2 * ln(1 + sqrt(2))) ~= 1.782213978
+(define krivine (gfa-krivine-bound))
+(expect "krivine-bound-value" (approx=? krivine 1.7822139781913695 1e-10))
+
+;; Canonical 2x2 Bell-CHSH witness:
+(define A-chsh (gfa-chsh-matrix))
+(define chsh-opt (gfa-grothendieck-classical-opt A-chsh))
+(expect "chsh-exhaustive-16-configs" (= (vector-ref chsh-opt 4) 16))
+(expect "chsh-classical-max-exact=2" (= (vector-ref chsh-opt 1) 2))
+(expect "chsh-classical-max-fn=2" (= (gfa-grothendieck-classical-max A-chsh) 2))
+
+(define chsh-vecs (gfa-chsh-tsirelson-vectors))
+(define chsh-u (car chsh-vecs))
+(define chsh-v (cdr chsh-vecs))
+(define chsh-mh (gfa-grothendieck-hilbert-val A-chsh chsh-u chsh-v))
+(define chsh-ratio (gfa-grothendieck-ratio A-chsh chsh-u chsh-v))
+(define chsh-verdict (gfa-grothendieck-verify-bound A-chsh chsh-u chsh-v))
+
+(expect "chsh-hilbert-val=2sqrt2" (approx=? chsh-mh (* 2.0 (sqrt 2.0)) 1e-12))
+(expect "chsh-ratio=sqrt2" (approx=? chsh-ratio (sqrt 2.0) 1e-12))
+(expect "chsh-strictly-exceeds-classical" (> chsh-ratio 1.0))
+(expect "chsh-strictly-below-krivine" (< chsh-ratio krivine))
+(expect "chsh-verdict-complete"
+        (and (eq? (vector-ref chsh-verdict 0) 'gfa-grothendieck-verdict)
+             (= (vector-ref chsh-verdict 1) 2)
+             (eq? (vector-ref chsh-verdict 5) #t)
+             (eq? (vector-ref chsh-verdict 6) #t)))
+
+;; Adversarial Negative Control: Unnormalized vectors MUST fail closed!
+;; Attempt 1: norm > 1 (trying to push M_H past Krivine's bound!)
+(define bad-u-big (vector (vector 2.0 0.0) (vector 0.0 2.0)))
+(expect "neg-unnormalized-gt1-hilbert-rejected"
+        (eq? (gfa-grothendieck-hilbert-val A-chsh bad-u-big chsh-v) 'err-non-unit-vector))
+(expect "neg-unnormalized-gt1-ratio-rejected"
+        (eq? (gfa-grothendieck-ratio A-chsh bad-u-big chsh-v) 'err-non-unit-vector))
+(expect "neg-unnormalized-gt1-verdict-rejected"
+        (eq? (gfa-grothendieck-verify-bound A-chsh bad-u-big chsh-v) 'err-non-unit-vector))
+
+;; Attempt 2: subtle overshoot (||u_0|| = 1.01) also fails closed!
+(define bad-u-subtle (vector (vector 1.01 0.0) (vector 0.0 1.0)))
+(expect "neg-unnormalized-subtle-rejected"
+        (eq? (gfa-grothendieck-hilbert-val A-chsh bad-u-subtle chsh-v) 'err-non-unit-vector))
+
+;; Attempt 3: norm < 1 (||v_1|| = 0.5) also fails closed!
+(define bad-v-small (vector (vector-ref chsh-v 0) (vector 0.5 0.0)))
+(expect "neg-unnormalized-lt1-rejected"
+        (eq? (gfa-grothendieck-hilbert-val A-chsh chsh-u bad-v-small) 'err-non-unit-vector))
+
+;; Attempt 4: dimension mismatch fails closed!
+(define bad-u-dim (vector (vector 1.0 0.0 0.0) (vector 0.0 1.0 0.0)))
+(expect "neg-dimension-mismatch-rejected"
+        (eq? (gfa-grothendieck-hilbert-val A-chsh bad-u-dim chsh-v) 'err-dimension-mismatch))
+
+;; 3x3 Frustrated 6-Cycle Witness B_3:
+;; M_cl = 4 (exhaustive 64 sign configs), M_H = 3*sqrt(3) ~= 5.196152, R = 3*sqrt(3)/4 ~= 1.299038.
+(define B3 (gfa-frustrated-c6-matrix))
+(define b3-opt (gfa-grothendieck-classical-opt B3))
+(define b3-vecs (gfa-frustrated-c6-vectors))
+(define b3-verdict (gfa-grothendieck-verify-bound B3 (car b3-vecs) (cdr b3-vecs)))
+(expect "B3-exhaustive-64-configs" (= (vector-ref b3-opt 4) 64))
+(expect "B3-classical-max-exact=4" (= (vector-ref b3-opt 1) 4))
+(expect "B3-hilbert-val=3sqrt3" (approx=? (vector-ref b3-verdict 2) (* 3.0 (sqrt 3.0)) 1e-11))
+(expect "B3-ratio=3sqrt3/4" (approx=? (vector-ref b3-verdict 3) (/ (* 3.0 (sqrt 3.0)) 4.0) 1e-11))
+(expect "B3-beats-classical-and-within-krivine"
+        (and (eq? (vector-ref b3-verdict 5) #t)
+             (eq? (vector-ref b3-verdict 6) #t)))
+
+;; 4x4 Frustrated 8-Cycle Witness B_4:
+;; M_cl = 6 (exhaustive 256 sign configs), M_H = 8*cos(pi/8) ~= 7.391036, R ~= 1.231839.
+(define B4 (gfa-frustrated-c8-matrix))
+(define b4-opt (gfa-grothendieck-classical-opt B4))
+(define b4-vecs (gfa-frustrated-c8-vectors))
+(define b4-verdict (gfa-grothendieck-verify-bound B4 (car b4-vecs) (cdr b4-vecs)))
+(expect "B4-exhaustive-256-configs" (= (vector-ref b4-opt 4) 256))
+(expect "B4-classical-max-exact=6" (= (vector-ref b4-opt 1) 6))
+(expect "B4-hilbert-val=8cos(pi/8)"
+        (approx=? (vector-ref b4-verdict 2) (* 8.0 (cos (/ gfa-pi 8.0))) 1e-11))
+(expect "B4-beats-classical-and-within-krivine"
+        (and (eq? (vector-ref b4-verdict 5) #t)
+             (eq? (vector-ref b4-verdict 6) #t)))
+
+;; 4x4 Block-CHSH Witness:
+;; M_cl = 4 (exhaustive 256 sign configs), M_H = 4*sqrt(2), R = sqrt(2).
+(define C4 (gfa-block-chsh4-matrix))
+(define c4-vecs (gfa-block-chsh4-vectors))
+(define c4-verdict (gfa-grothendieck-verify-bound C4 (car c4-vecs) (cdr c4-vecs)))
+(expect "block-chsh4-classical-exact=4" (= (vector-ref c4-verdict 1) 4))
+(expect "block-chsh4-hilbert=4sqrt2"
+        (approx=? (vector-ref c4-verdict 2) (* 4.0 (sqrt 2.0)) 1e-11))
+(expect "block-chsh4-ratio=sqrt2"
+        (approx=? (vector-ref c4-verdict 3) (sqrt 2.0) 1e-11))
+(expect "block-chsh4-within-krivine" (eq? (vector-ref c4-verdict 5) #t))
+
+(display "PASS: grothendieck_functional_test (") (display checks) (display " checks)") (newline)

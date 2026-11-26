@@ -1,0 +1,706 @@
+;;; core.geometry.dec -- Discrete Exterior Calculus on simplicial complexes
+;;;
+;;; Usage: (require core.geometry.dec)
+;;;
+;;; Implements oriented 0/1/2-simplices (and optional 3-simplices), exact
+;;; boundary and coboundary incidence matrices d_0, d_1, d_2 over the exact
+;;; rational tower, diagonal circumcentric/metric Hodge star operators
+;;; *_0, *_1, *_2, discrete codifferentials delta_k, discrete Hodge
+;;; Laplacians Delta_k = d_{k-1} delta_k + delta_{k+1} d_k, Alexander-Whitney
+;;; cup and discrete wedge products of cochains, and exact harmonic cohomology
+;;; via core.exact_linalg.
+;;;
+;;; All exact matrices and vectors are built via `vector` / `make-vector`
+;;; (never numeric `#(...)` literals) to preserve exact integer/rational
+;;; arithmetic throughout.
+
+(require stdlib)
+(require core.exact_linalg)
+
+(provide make-dec-complex dec-complex?
+         dec-num-vertices dec-num-edges dec-num-faces dec-num-cells
+         dec-vertices dec-edges dec-faces dec-cells
+         dec-d0 dec-d1 dec-d2 dec-boundary1 dec-boundary2 dec-boundary3
+         dec-apply-d0 dec-apply-d1 dec-apply-d2
+         dec-d-squared-matrix dec-verify-d-squared
+         dec-d2-d1-matrix dec-verify-d2-d1
+         dec-star0 dec-star1 dec-star2
+         dec-star-matrix dec-inv-star-matrix
+         dec-inner-product
+         dec-codiff1 dec-codiff2 dec-apply-codiff1 dec-apply-codiff2
+         dec-verify-adjoint-0-1 dec-verify-adjoint-1-2
+         dec-laplacian0 dec-laplacian1 dec-laplacian2
+         dec-harmonic-forms dec-betti-number dec-harmonic?
+         dec-cup-0-0 dec-cup-0-1 dec-cup-1-0 dec-cup-0-2 dec-cup-2-0
+         dec-cup-1-1 dec-wedge-1-1 dec-verify-leibniz-0-1
+         dec-mat-vec dec-vec-add dec-vec-sub dec-vec-scale dec-vec-zero? dec-vec-equal?
+         make-dec-triangle make-dec-square-mesh make-dec-ring
+         make-dec-tetrahedron-surface make-dec-tetrahedron-solid
+         make-dec-torus-grid)
+
+;; ============================================================================
+;; Internal helpers (dec- internal naming; defined before first use)
+;; ============================================================================
+
+(define (dec-zero-matrix rows cols)
+  (let ((m (make-vector rows #f)))
+    (let loop ((i 0))
+      (if (< i rows)
+          (begin (vector-set! m i (make-vector cols 0))
+                 (loop (+ i 1)))
+          m))))
+
+(define (dec-diag-matrix diag)
+  (let* ((n (vector-length diag))
+         (m (dec-zero-matrix n n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! (vector-ref m i) i (vector-ref diag i))
+                 (loop (+ i 1)))
+          m))))
+
+(define (dec-inv-diag-matrix diag)
+  (let* ((n (vector-length diag))
+         (m (dec-zero-matrix n n)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((v (vector-ref diag i)))
+            (if (zero? v)
+                (error "core.geometry.dec: singular Hodge star diagonal entry" i))
+            (vector-set! (vector-ref m i) i (/ 1 v))
+            (loop (+ i 1)))
+          m))))
+
+(define (dec-mat-add a b)
+  (let* ((r (vector-length a))
+         (c (vector-length (vector-ref a 0)))
+         (out (dec-zero-matrix r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (let ((ra (vector-ref a i))
+                (rb (vector-ref b i))
+                (ro (vector-ref out i)))
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (vector-set! ro j (+ (vector-ref ra j) (vector-ref rb j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))
+          out))))
+
+(define (dec-mat-vec m v)
+  (let* ((r (vector-length m))
+         (out (make-vector r 0)))
+    (let li ((i 0))
+      (if (< i r)
+          (let* ((row (vector-ref m i))
+                 (c (vector-length row)))
+            (vector-set! out i
+              (let lj ((j 0) (acc 0))
+                (if (< j c)
+                    (lj (+ j 1) (+ acc (* (vector-ref row j) (vector-ref v j))))
+                    acc)))
+            (li (+ i 1)))
+          out))))
+
+(define (dec-vec-add a b)
+  (let* ((n (vector-length a))
+         (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (+ (vector-ref a i) (vector-ref b i)))
+                 (loop (+ i 1)))
+          out))))
+
+(define (dec-vec-sub a b)
+  (let* ((n (vector-length a))
+         (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (- (vector-ref a i) (vector-ref b i)))
+                 (loop (+ i 1)))
+          out))))
+
+(define (dec-vec-scale s a)
+  (let* ((n (vector-length a))
+         (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (* s (vector-ref a i)))
+                 (loop (+ i 1)))
+          out))))
+
+(define (dec-vec-zero? v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0))
+      (cond ((>= i n) #t)
+            ((zero? (vector-ref v i)) (loop (+ i 1)))
+            (else #f)))))
+
+(define (dec-vec-equal? a b)
+  (and (= (vector-length a) (vector-length b))
+       (let ((n (vector-length a)))
+         (let loop ((i 0))
+           (cond ((>= i n) #t)
+                 ((= (vector-ref a i) (vector-ref b i)) (loop (+ i 1)))
+                 (else #f))))))
+
+(define (dec-matrix-zero? m)
+  (let ((r (vector-length m)))
+    (let li ((i 0))
+      (cond ((>= i r) #t)
+            ((dec-vec-zero? (vector-ref m i)) (li (+ i 1)))
+            (else #f)))))
+
+;; Find oriented edge (u v) in edges vector; returns (cons idx sign) or #f.
+(define (dec-find-edge edges u v)
+  (let ((ne (vector-length edges)))
+    (let loop ((i 0))
+      (if (>= i ne)
+          #f
+          (let* ((e (vector-ref edges i))
+                 (a (car e))
+                 (b (cdr e)))
+            (cond ((and (= a u) (= b v)) (cons i 1))
+                  ((and (= a v) (= b u)) (cons i -1))
+                  (else (loop (+ i 1)))))))))
+
+;; Permutation parity of ordered triple (a b c) relative to (p q r).
+;; Returns 1 (even), -1 (odd), or 0 (different vertex set).
+(define (dec-triple-orientation a b c p q r)
+  (cond ((and (= a p) (= b q) (= c r)) 1)
+        ((and (= a q) (= b r) (= c p)) 1)
+        ((and (= a r) (= b p) (= c q)) 1)
+        ((and (= a p) (= b r) (= c q)) -1)
+        ((and (= a q) (= b p) (= c r)) -1)
+        ((and (= a r) (= b q) (= c p)) -1)
+        (else 0)))
+
+;; Find oriented face (a b c) in faces vector; returns (cons idx sign) or #f.
+(define (dec-find-face faces a b c)
+  (let ((nf (vector-length faces)))
+    (let loop ((i 0))
+      (if (>= i nf)
+          #f
+          (let* ((f (vector-ref faces i))
+                 (p (car f))
+                 (q (cadr f))
+                 (r (caddr f))
+                 (sgn (dec-triple-orientation a b c p q r)))
+            (if (not (= sgn 0))
+                (cons i sgn)
+                (loop (+ i 1))))))))
+
+;; Build exact d_0 : C^0 -> C^1 (|E| x |V|)
+(define (dec-build-d0 nv edges)
+  (let* ((ne (vector-length edges))
+         (m (dec-zero-matrix ne nv)))
+    (let loop ((i 0))
+      (if (< i ne)
+          (let* ((e (vector-ref edges i))
+                 (u (car e))
+                 (v (cdr e))
+                 (row (vector-ref m i)))
+            (vector-set! row u (- (vector-ref row u) 1))
+            (vector-set! row v (+ (vector-ref row v) 1))
+            (loop (+ i 1)))
+          m))))
+
+;; Build exact d_1 : C^1 -> C^2 (|F| x |E|)
+;; For oriented face (u v w), boundary is (v w) - (u w) + (u v).
+(define (dec-build-d1 edges faces)
+  (let* ((ne (vector-length edges))
+         (nf (vector-length faces))
+         (m (dec-zero-matrix nf ne)))
+    (let loop ((i 0))
+      (if (< i nf)
+          (let* ((f (vector-ref faces i))
+                 (u (car f))
+                 (v (cadr f))
+                 (w (caddr f))
+                 (row (vector-ref m i))
+                 (e-vw (dec-find-edge edges v w))
+                 (e-uw (dec-find-edge edges u w))
+                 (e-uv (dec-find-edge edges u v)))
+            (if (not (and e-vw e-uw e-uv))
+                (error "core.geometry.dec: face references missing edge" f))
+            (vector-set! row (car e-vw) (+ (vector-ref row (car e-vw)) (cdr e-vw)))
+            (vector-set! row (car e-uw) (- (vector-ref row (car e-uw)) (cdr e-uw)))
+            (vector-set! row (car e-uv) (+ (vector-ref row (car e-uv)) (cdr e-uv)))
+            (loop (+ i 1)))
+          m))))
+
+;; Build exact d_2 : C^2 -> C^3 (|T| x |F|)
+;; For oriented 3-simplex (v0 v1 v2 v3), boundary is
+;;   (v1 v2 v3) - (v0 v2 v3) + (v0 v1 v3) - (v0 v1 v2).
+(define (dec-build-d2 faces cells)
+  (let* ((nf (vector-length faces))
+         (nt (vector-length cells))
+         (m (dec-zero-matrix nt nf)))
+    (let loop ((i 0))
+      (if (< i nt)
+          (let* ((t (vector-ref cells i))
+                 (v0 (list-ref t 0))
+                 (v1 (list-ref t 1))
+                 (v2 (list-ref t 2))
+                 (v3 (list-ref t 3))
+                 (row (vector-ref m i))
+                 (f0 (dec-find-face faces v1 v2 v3))
+                 (f1 (dec-find-face faces v0 v2 v3))
+                 (f2 (dec-find-face faces v0 v1 v3))
+                 (f3 (dec-find-face faces v0 v1 v2)))
+            (if (not (and f0 f1 f2 f3))
+                (error "core.geometry.dec: 3-cell references missing face" t))
+            (vector-set! row (car f0) (+ (vector-ref row (car f0)) (cdr f0)))
+            (vector-set! row (car f1) (- (vector-ref row (car f1)) (cdr f1)))
+            (vector-set! row (car f2) (+ (vector-ref row (car f2)) (cdr f2)))
+            (vector-set! row (car f3) (- (vector-ref row (car f3)) (cdr f3)))
+            (loop (+ i 1)))
+          m))))
+
+;; ============================================================================
+;; Geometric Hodge stars (2D Euclidean circumcentric/cotan & barycentric)
+;; ============================================================================
+
+(define (dec-coord-dim coords)
+  (if (and (vector? coords) (> (vector-length coords) 0) (vector? (vector-ref coords 0)))
+      (vector-length (vector-ref coords 0))
+      0))
+
+(define (dec-pt-sub p q)
+  (let* ((d (vector-length p))
+         (out (make-vector d 0)))
+    (let loop ((k 0))
+      (if (< k d)
+          (begin (vector-set! out k (- (vector-ref p k) (vector-ref q k)))
+                 (loop (+ k 1)))
+          out))))
+
+(define (dec-pt-dot a b)
+  (let ((d (vector-length a)))
+    (let loop ((k 0) (acc 0))
+      (if (< k d)
+          (loop (+ k 1) (+ acc (* (vector-ref a k) (vector-ref b k))))
+          acc))))
+
+(define (dec-tri-area2 p q r)
+  ;; Twice the unsigned area of triangle (p, q, r) in 2D or 3D
+  (let* ((u (dec-pt-sub q p))
+         (v (dec-pt-sub r p))
+         (d (vector-length u)))
+    (if (= d 2)
+        (abs (- (* (vector-ref u 0) (vector-ref v 1))
+                (* (vector-ref u 1) (vector-ref v 0))))
+        (let* ((cx (- (* (vector-ref u 1) (vector-ref v 2)) (* (vector-ref u 2) (vector-ref v 1))))
+               (cy (- (* (vector-ref u 2) (vector-ref v 0)) (* (vector-ref u 0) (vector-ref v 2))))
+               (cz (- (* (vector-ref u 0) (vector-ref v 1)) (* (vector-ref u 1) (vector-ref v 0)))))
+          (sqrt (+ (* cx cx) (* cy cy) (* cz cz)))))))
+
+;; Cotangent of angle at vertex p in triangle (p, q, r):
+;; cot(theta_p) = ((q - p) . (r - p)) / (2 * Area(p, q, r)).
+;; Stays exact rational in 2D when coordinates are exact rationals!
+(define (dec-tri-cot p q r)
+  (let* ((u (dec-pt-sub q p))
+         (v (dec-pt-sub r p))
+         (dot-uv (dec-pt-dot u v))
+         (area2 (dec-tri-area2 p q r)))
+    (/ dot-uv area2)))
+
+;; Compute diagonal circumcentric/cotan Hodge stars (*_0, *_1, *_2) for a
+;; 2D simplicial complex with vertex coordinates.
+;;   *_0[v] = sum_{f ni v} (1/3) Area(f)   (barycentric positive dual cell)
+;;   *_1[e] = (1/2) sum_{f ni e} cot(opp angle)  (exact cotan dual/primal ratio)
+;;   *_2[f] = 1 / Area(f)
+;; If any cotan weight is non-positive (obtuse non-Delaunay edge), falls back
+;; on that edge to the positive metric dual ratio 1.
+(define (dec-compute-metric-stars coords edges faces)
+  (let* ((nv (vector-length coords))
+         (ne (vector-length edges))
+         (nf (vector-length faces))
+         (s0 (make-vector nv 0))
+         (s1 (make-vector ne 0))
+         (s2 (make-vector nf 1)))
+    (let loop-f ((fi 0))
+      (if (< fi nf)
+          (let* ((f (vector-ref faces fi))
+                 (u (car f))
+                 (v (cadr f))
+                 (w (caddr f))
+                 (pu (vector-ref coords u))
+                 (pv (vector-ref coords v))
+                 (pw (vector-ref coords w))
+                 (area (/ (dec-tri-area2 pu pv pw) 2)))
+            (if (zero? area)
+                (error "core.geometry.dec: degenerate zero-area face" f))
+            (vector-set! s2 fi (/ 1 area))
+            (let ((third-area (/ area 3)))
+              (vector-set! s0 u (+ (vector-ref s0 u) third-area))
+              (vector-set! s0 v (+ (vector-ref s0 v) third-area))
+              (vector-set! s0 w (+ (vector-ref s0 w) third-area)))
+            (let ((e-vw (car (dec-find-edge edges v w)))
+                  (e-uw (car (dec-find-edge edges u w)))
+                  (e-uv (car (dec-find-edge edges u v)))
+                  (cot-u (/ (dec-tri-cot pu pv pw) 2))
+                  (cot-v (/ (dec-tri-cot pv pw pu) 2))
+                  (cot-w (/ (dec-tri-cot pw pu pv) 2)))
+              (vector-set! s1 e-vw (+ (vector-ref s1 e-vw) cot-u))
+              (vector-set! s1 e-uw (+ (vector-ref s1 e-uw) cot-v))
+              (vector-set! s1 e-uv (+ (vector-ref s1 e-uv) cot-w)))
+            (loop-f (+ fi 1)))))
+    ;; Ensure isolated vertices or boundary/right-angle zero-cotan edges keep positive weight
+    (let loop-v ((vi 0))
+      (if (< vi nv)
+          (begin (if (<= (vector-ref s0 vi) 0) (vector-set! s0 vi 1))
+                 (loop-v (+ vi 1)))))
+    (let loop-e ((ei 0))
+      (if (< ei ne)
+          (begin (if (<= (vector-ref s1 ei) 0) (vector-set! s1 ei 1))
+                 (loop-e (+ ei 1)))))
+    (list s0 s1 s2)))
+
+;; ============================================================================
+;; Complex constructor and accessors
+;; ============================================================================
+;; Representation:
+;;   (vector 'dec-complex nv coords edges faces cells d0 d1 d2 star0 star1 star2)
+
+(define (dec-complex? x)
+  (and (vector? x) (= (vector-length x) 12) (eq? (vector-ref x 0) 'dec-complex)))
+
+(define (dec-check c who)
+  (if (not (dec-complex? c)) (error (string-append who ": expected a DEC complex") c)))
+
+;; (make-dec-complex vertices edges faces [cells] [stars])
+;;   vertices: positive integer count OR vector of coordinate vectors
+;;   edges:    vector of (u . v) pairs
+;;   faces:    vector of (list u v w) triples
+;;   cells:    optional vector of (list v0 v1 v2 v3) quadruples (default empty)
+;;   stars:    optional (list star0 star1 star2) diagonal vectors
+(define (make-dec-complex vertices edges faces . rest)
+  (let* ((has-coords (vector? vertices))
+         (nv (if has-coords (vector-length vertices) vertices))
+         (coords (if has-coords vertices #f))
+         (cells (if (and (pair? rest) (vector? (car rest))) (car rest) (make-vector 0 #f)))
+         (stars-arg (cond ((and (pair? rest) (pair? (cdr rest))) (cadr rest))
+                          ((and (pair? rest) (pair? (car rest))) (car rest))
+                          (else #f)))
+         (ne (vector-length edges))
+         (nf (vector-length faces))
+         (d0 (dec-build-d0 nv edges))
+         (d1 (dec-build-d1 edges faces))
+         (d2 (dec-build-d2 faces cells))
+         (stars (cond (stars-arg stars-arg)
+                      ((and has-coords (> nf 0)) (dec-compute-metric-stars coords edges faces))
+                      (else (list (make-vector nv 1) (make-vector ne 1) (make-vector nf 1))))))
+    (vector 'dec-complex nv coords edges faces cells d0 d1 d2
+            (car stars) (cadr stars) (caddr stars))))
+
+(define (dec-num-vertices c) (dec-check c "dec-num-vertices") (vector-ref c 1))
+(define (dec-vertices c) (dec-check c "dec-vertices") (vector-ref c 2))
+(define (dec-edges c) (dec-check c "dec-edges") (vector-ref c 3))
+(define (dec-faces c) (dec-check c "dec-faces") (vector-ref c 4))
+(define (dec-cells c) (dec-check c "dec-cells") (vector-ref c 5))
+(define (dec-num-edges c) (vector-length (dec-edges c)))
+(define (dec-num-faces c) (vector-length (dec-faces c)))
+(define (dec-num-cells c) (vector-length (dec-cells c)))
+
+(define (dec-d0 c) (dec-check c "dec-d0") (vector-ref c 6))
+(define (dec-d1 c) (dec-check c "dec-d1") (vector-ref c 7))
+(define (dec-d2 c) (dec-check c "dec-d2") (vector-ref c 8))
+
+(define (dec-boundary1 c) (exact-matrix-transpose (dec-d0 c)))
+(define (dec-boundary2 c) (exact-matrix-transpose (dec-d1 c)))
+(define (dec-boundary3 c) (exact-matrix-transpose (dec-d2 c)))
+
+(define (dec-apply-d0 c omega0) (dec-mat-vec (dec-d0 c) omega0))
+(define (dec-apply-d1 c omega1) (dec-mat-vec (dec-d1 c) omega1))
+(define (dec-apply-d2 c omega2) (dec-mat-vec (dec-d2 c) omega2))
+
+(define (dec-d-squared-matrix c)
+  (if (or (= (dec-num-faces c) 0) (= (dec-num-edges c) 0))
+      (dec-zero-matrix (max 1 (dec-num-faces c)) (max 1 (dec-num-vertices c)))
+      (exact-matrix-mul (dec-d1 c) (dec-d0 c))))
+
+(define (dec-verify-d-squared c)
+  (if (= (dec-num-faces c) 0)
+      #t
+      (dec-matrix-zero? (exact-matrix-mul (dec-d1 c) (dec-d0 c)))))
+
+(define (dec-d2-d1-matrix c)
+  (if (or (= (dec-num-cells c) 0) (= (dec-num-faces c) 0))
+      (dec-zero-matrix (max 1 (dec-num-cells c)) (max 1 (dec-num-edges c)))
+      (exact-matrix-mul (dec-d2 c) (dec-d1 c))))
+
+(define (dec-verify-d2-d1 c)
+  (if (= (dec-num-cells c) 0)
+      #t
+      (dec-matrix-zero? (exact-matrix-mul (dec-d2 c) (dec-d1 c)))))
+
+;; ============================================================================
+;; Hodge stars, inner products, codifferentials, Hodge Laplacians
+;; ============================================================================
+
+(define (dec-star0 c) (dec-check c "dec-star0") (vector-ref c 9))
+(define (dec-star1 c) (dec-check c "dec-star1") (vector-ref c 10))
+(define (dec-star2 c) (dec-check c "dec-star2") (vector-ref c 11))
+
+(define (dec-star-diag c k)
+  (cond ((= k 0) (dec-star0 c))
+        ((= k 1) (dec-star1 c))
+        ((= k 2) (dec-star2 c))
+        (else (error "core.geometry.dec: Hodge star degree must be 0, 1, or 2" k))))
+
+(define (dec-star-matrix c k) (dec-diag-matrix (dec-star-diag c k)))
+(define (dec-inv-star-matrix c k) (dec-inv-diag-matrix (dec-star-diag c k)))
+
+(define (dec-inner-product c k a b)
+  (let* ((s (dec-star-diag c k))
+         (n (vector-length s)))
+    (let loop ((i 0) (acc 0))
+      (if (< i n)
+          (loop (+ i 1) (+ acc (* (vector-ref a i) (vector-ref s i) (vector-ref b i))))
+          acc))))
+
+;; delta_1 = (*_0)^{-1} d_0^T *_1 : C^1 -> C^0
+(define (dec-codiff1 c)
+  (exact-matrix-mul (dec-inv-star-matrix c 0)
+                    (exact-matrix-mul (exact-matrix-transpose (dec-d0 c))
+                                      (dec-star-matrix c 1))))
+
+;; delta_2 = (*_1)^{-1} d_1^T *_2 : C^2 -> C^1
+(define (dec-codiff2 c)
+  (if (= (dec-num-faces c) 0)
+      (dec-zero-matrix (dec-num-edges c) 0)
+      (exact-matrix-mul (dec-inv-star-matrix c 1)
+                        (exact-matrix-mul (exact-matrix-transpose (dec-d1 c))
+                                          (dec-star-matrix c 2)))))
+
+(define (dec-apply-codiff1 c omega1) (dec-mat-vec (dec-codiff1 c) omega1))
+(define (dec-apply-codiff2 c omega2) (dec-mat-vec (dec-codiff2 c) omega2))
+
+(define (dec-verify-adjoint-0-1 c alpha0 beta1)
+  (= (dec-inner-product c 1 (dec-apply-d0 c alpha0) beta1)
+     (dec-inner-product c 0 alpha0 (dec-apply-codiff1 c beta1))))
+
+(define (dec-verify-adjoint-1-2 c alpha1 beta2)
+  (= (dec-inner-product c 2 (dec-apply-d1 c alpha1) beta2)
+     (dec-inner-product c 1 alpha1 (dec-apply-codiff2 c beta2))))
+
+;; Delta_0 = delta_1 d_0
+(define (dec-laplacian0 c)
+  (if (= (dec-num-edges c) 0)
+      (dec-zero-matrix (dec-num-vertices c) (dec-num-vertices c))
+      (exact-matrix-mul (dec-codiff1 c) (dec-d0 c))))
+
+;; Delta_1 = d_0 delta_1 + delta_2 d_1
+(define (dec-laplacian1 c)
+  (let ((down (exact-matrix-mul (dec-d0 c) (dec-codiff1 c))))
+    (if (= (dec-num-faces c) 0)
+        down
+        (dec-mat-add down (exact-matrix-mul (dec-codiff2 c) (dec-d1 c))))))
+
+;; Delta_2 = d_1 delta_2
+(define (dec-laplacian2 c)
+  (if (= (dec-num-faces c) 0)
+      (dec-zero-matrix 0 0)
+      (exact-matrix-mul (dec-d1 c) (dec-codiff2 c))))
+
+(define (dec-laplacian c k)
+  (cond ((= k 0) (dec-laplacian0 c))
+        ((= k 1) (dec-laplacian1 c))
+        ((= k 2) (dec-laplacian2 c))
+        (else (error "core.geometry.dec: Laplacian degree must be 0, 1, or 2" k))))
+
+;; Exact harmonic k-forms: basis of ker(Delta_k) over Q.
+(define (dec-harmonic-forms c k)
+  (let ((n (cond ((= k 0) (dec-num-vertices c))
+                 ((= k 1) (dec-num-edges c))
+                 ((= k 2) (dec-num-faces c))
+                 (else (error "core.geometry.dec: degree must be 0, 1, or 2" k)))))
+    (if (= n 0)
+        '()
+        (exact-nullspace (dec-laplacian c k)))))
+
+(define (dec-betti-number c k)
+  (length (dec-harmonic-forms c k)))
+
+(define (dec-harmonic? c k omega)
+  (dec-vec-zero? (dec-mat-vec (dec-laplacian c k) omega)))
+
+;; ============================================================================
+;; Discrete Alexander-Whitney cup product & antisymmetric wedge product
+;; ============================================================================
+
+;; (f cup g)(v) = f(v) * g(v)
+(define (dec-cup-0-0 c f g)
+  (let* ((nv (dec-num-vertices c))
+         (out (make-vector nv 0)))
+    (let loop ((i 0))
+      (if (< i nv)
+          (begin (vector-set! out i (* (vector-ref f i) (vector-ref g i)))
+                 (loop (+ i 1)))
+          out))))
+
+;; (f cup alpha)(u, v) = f(u) * alpha(u, v)
+(define (dec-cup-0-1 c f alpha)
+  (let* ((edges (dec-edges c))
+         (ne (vector-length edges))
+         (out (make-vector ne 0)))
+    (let loop ((i 0))
+      (if (< i ne)
+          (let ((u (car (vector-ref edges i))))
+            (vector-set! out i (* (vector-ref f u) (vector-ref alpha i)))
+            (loop (+ i 1)))
+          out))))
+
+;; (alpha cup f)(u, v) = alpha(u, v) * f(v)
+(define (dec-cup-1-0 c alpha f)
+  (let* ((edges (dec-edges c))
+         (ne (vector-length edges))
+         (out (make-vector ne 0)))
+    (let loop ((i 0))
+      (if (< i ne)
+          (let ((v (cdr (vector-ref edges i))))
+            (vector-set! out i (* (vector-ref alpha i) (vector-ref f v)))
+            (loop (+ i 1)))
+          out))))
+
+;; (f cup beta)(u, v, w) = f(u) * beta(u, v, w)
+(define (dec-cup-0-2 c f beta)
+  (let* ((faces (dec-faces c))
+         (nf (vector-length faces))
+         (out (make-vector nf 0)))
+    (let loop ((i 0))
+      (if (< i nf)
+          (let ((u (car (vector-ref faces i))))
+            (vector-set! out i (* (vector-ref f u) (vector-ref beta i)))
+            (loop (+ i 1)))
+          out))))
+
+;; (beta cup f)(u, v, w) = beta(u, v, w) * f(w)
+(define (dec-cup-2-0 c beta f)
+  (let* ((faces (dec-faces c))
+         (nf (vector-length faces))
+         (out (make-vector nf 0)))
+    (let loop ((i 0))
+      (if (< i nf)
+          (let ((w (caddr (vector-ref faces i))))
+            (vector-set! out i (* (vector-ref beta i) (vector-ref f w)))
+            (loop (+ i 1)))
+          out))))
+
+;; Alexander-Whitney cup product of two 1-cochains on ordered faces (u v w):
+;;   (alpha cup beta)(u, v, w) = alpha(u, v) * beta(v, w)
+(define (dec-cup-1-1 c alpha beta)
+  (let* ((edges (dec-edges c))
+         (faces (dec-faces c))
+         (nf (vector-length faces))
+         (out (make-vector nf 0)))
+    (let loop ((i 0))
+      (if (< i nf)
+          (let* ((f (vector-ref faces i))
+                 (u (car f))
+                 (v (cadr f))
+                 (w (caddr f))
+                 (e-uv (dec-find-edge edges u v))
+                 (e-vw (dec-find-edge edges v w))
+                 (a-uv (* (cdr e-uv) (vector-ref alpha (car e-uv))))
+                 (b-vw (* (cdr e-vw) (vector-ref beta (car e-vw)))))
+            (vector-set! out i (* a-uv b-vw))
+            (loop (+ i 1)))
+          out))))
+
+;; Antisymmetric discrete wedge product of 1-cochains:
+;;   (alpha wedge beta) = (1/2) (alpha cup beta - beta cup alpha)
+(define (dec-wedge-1-1 c alpha beta)
+  (dec-vec-scale (/ 1 2)
+                 (dec-vec-sub (dec-cup-1-1 c alpha beta)
+                              (dec-cup-1-1 c beta alpha))))
+
+;; Verify exact graded Leibniz rule on 0-cochain f and 1-cochain alpha:
+;;   d_1(f cup alpha) = (d_0 f) cup alpha + f cup (d_1 alpha)
+(define (dec-verify-leibniz-0-1 c f alpha)
+  (let ((lhs (dec-apply-d1 c (dec-cup-0-1 c f alpha)))
+        (rhs (dec-vec-add (dec-cup-1-1 c (dec-apply-d0 c f) alpha)
+                          (dec-cup-0-2 c f (dec-apply-d1 c alpha)))))
+    (dec-vec-equal? lhs rhs)))
+
+;; ============================================================================
+;; Standard Simplicial Complex Constructors
+;; ============================================================================
+
+;; Right triangle with vertices (0,0), (1,0), (0,1)
+(define (make-dec-triangle)
+  (make-dec-complex
+    (vector (vector 0 0) (vector 1 0) (vector 0 1))
+    (vector (cons 0 1) (cons 0 2) (cons 1 2))
+    (vector (list 0 1 2))))
+
+;; Unit square split along diagonal (0,2): 4 vertices, 5 edges, 2 triangles
+;; Vertices: 0=(0,0), 1=(1,0), 2=(1,1), 3=(0,1)
+(define (make-dec-square-mesh)
+  (make-dec-complex
+    (vector (vector 0 0) (vector 1 0) (vector 1 1) (vector 0 1))
+    (vector (cons 0 1) (cons 1 2) (cons 0 2) (cons 2 3) (cons 0 3))
+    (vector (list 0 1 2) (list 0 2 3))))
+
+;; Closed ring S^1 with n vertices and n edges (b_0 = 1, b_1 = 1)
+(define (make-dec-ring n)
+  (let ((edges (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! edges i (cons i (modulo (+ i 1) n)))
+                 (loop (+ i 1)))
+          (make-dec-complex n edges (make-vector 0 #f))))))
+
+;; Boundary of a tetrahedron (homeomorphic to S^2: V=4, E=6, F=4, b_0=1, b_1=0, b_2=1)
+(define (make-dec-tetrahedron-surface)
+  (make-dec-complex
+    4
+    (vector (cons 0 1) (cons 0 2) (cons 0 3) (cons 1 2) (cons 1 3) (cons 2 3))
+    (vector (list 0 1 2) (list 0 1 3) (list 0 2 3) (list 1 2 3))))
+
+;; Solid tetrahedron (3-simplex with V=4, E=6, F=4, T=1)
+(define (make-dec-tetrahedron-solid)
+  (make-dec-complex
+    4
+    (vector (cons 0 1) (cons 0 2) (cons 0 3) (cons 1 2) (cons 1 3) (cons 2 3))
+    (vector (list 0 1 2) (list 0 1 3) (list 0 2 3) (list 1 2 3))
+    (vector (list 0 1 2 3))))
+
+;; Triangulated 2-torus T^2 on an m x n periodic grid (m >= 3, n >= 3)
+;; V = m*n, E = 3*m*n, F = 2*m*n, chi = 0, b_0 = 1, b_1 = 2, b_2 = 1.
+(define (make-dec-torus-grid m n)
+  (if (or (< m 3) (< n 3))
+      (error "make-dec-torus-grid: requires m >= 3 and n >= 3" m n))
+  (let* ((nv (* m n))
+         (ne (* 3 nv))
+         (nf (* 2 nv))
+         (edges (make-vector ne #f))
+         (faces (make-vector nf #f))
+         (vid (lambda (x y) (+ (* (modulo y n) m) (modulo x m))))
+         (ord-edge (lambda (a b) (if (< a b) (cons a b) (cons b a))))
+         (ord-tri (lambda (a b c)
+                    (cond ((and (< a b) (< b c)) (list a b c))
+                          ((and (< a c) (< c b)) (list a c b))
+                          ((and (< b a) (< a c)) (list b a c))
+                          ((and (< b c) (< c a)) (list b c a))
+                          ((and (< c a) (< a b)) (list c a b))
+                          (else (list c b a))))))
+    (let ly ((y 0))
+      (if (< y n)
+          (begin
+            (let lx ((x 0))
+              (if (< x m)
+                  (let* ((idx (vid x y))
+                         (v00 (vid x y))
+                         (v10 (vid (+ x 1) y))
+                         (v01 (vid x (+ y 1)))
+                         (v11 (vid (+ x 1) (+ y 1))))
+                    (vector-set! edges (* 3 idx) (ord-edge v00 v10))
+                    (vector-set! edges (+ (* 3 idx) 1) (ord-edge v00 v01))
+                    (vector-set! edges (+ (* 3 idx) 2) (ord-edge v00 v11))
+                    (vector-set! faces (* 2 idx) (ord-tri v00 v10 v11))
+                    (vector-set! faces (+ (* 2 idx) 1) (ord-tri v00 v01 v11))
+                    (lx (+ x 1)))))
+            (ly (+ y 1)))))
+    (make-dec-complex nv edges faces)))

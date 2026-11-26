@@ -1,0 +1,293 @@
+;;; core.geometry.gauge -- Discrete principal U(1) and SU(2) lattice gauge bundles
+;;;
+;;; Usage: (require core.geometry.gauge)
+;;;
+;;; Provides exact-capable and f64 complex arithmetic via (re . im) pairs,
+;;; U(1) and 2x2 SU(2) group operations, strict unitarity and det=1 validation
+;;; (su2-valid?), link parallel transport, local gauge transformations
+;;; U_e -> g_u U_e g_v^{-1}, plaquette holonomy U_p = U_1 U_2 U_3^{-1} U_4^{-1},
+;;; discrete curvature F_p, gauge-covariance checks, and both Abelian and
+;;; non-Abelian 3D elementary-cube lattice Bianchi identities.
+
+(require stdlib)
+
+(provide cx cx-re cx-im cx+ cx- cx* cx-conj cx-norm2 cx-zero? cx= cx-close?
+         u1-from-angle u1-mul u1-inv u1-valid? u1-gauge-transform-link
+         u1-plaquette-holonomy u1-plaquette-curvature u1-verify-bianchi-cube
+         su2-identity su2-from-quat su2-from-axis-angle
+         su2-mul su2-dagger su2-det su2-trace su2-sub su2-scale
+         su2-equal? su2-close? su2-valid?
+         su2-gauge-transform-link su2-plaquette-holonomy su2-plaquette-curvature
+         su2-verify-plaquette-covariance su2-verify-curvature-covariance
+         su2-cube-bianchi-product su2-verify-bianchi-cube)
+
+;; ============================================================================
+;; Complex (re . im) arithmetic preserving exactness over Q[i] and f64
+;; ============================================================================
+
+(define (cx re im) (cons re im))
+(define (cx-re z) (car z))
+(define (cx-im z) (cdr z))
+
+(define (cx+ a b) (cons (+ (car a) (car b)) (+ (cdr a) (cdr b))))
+(define (cx- a b) (cons (- (car a) (car b)) (- (cdr a) (cdr b))))
+(define (cx* a b)
+  (cons (- (* (car a) (car b)) (* (cdr a) (cdr b)))
+        (+ (* (car a) (cdr b)) (* (cdr a) (car b)))))
+(define (cx-conj z) (cons (car z) (- (cdr z))))
+(define (cx-norm2 z) (+ (* (car z) (car z)) (* (cdr z) (cdr z))))
+(define (cx-zero? z) (and (zero? (car z)) (zero? (cdr z))))
+(define (cx= a b) (and (= (car a) (car b)) (= (cdr a) (cdr b))))
+(define (cx-close? a b tol)
+  (and (<= (abs (- (car a) (car b))) tol)
+       (<= (abs (- (cdr a) (cdr b))) tol)))
+
+;; ============================================================================
+;; U(1) Discrete Gauge Bundle
+;; ============================================================================
+
+(define (u1-from-angle theta) (cx (cos theta) (sin theta)))
+(define (u1-mul a b) (cx* a b))
+(define (u1-inv a) (cx-conj a))
+
+(define (u1-valid? z . opt-tol)
+  (if (not (and (pair? z) (real? (car z)) (real? (cdr z))))
+      #f
+      (let ((n2 (cx-norm2 z)))
+        (if (and (null? opt-tol) (exact? (car z)) (exact? (cdr z)))
+            (= n2 1)
+            (let ((tol (if (null? opt-tol) 1e-12 (car opt-tol))))
+              (<= (abs (- n2 1)) tol))))))
+
+(define (u1-gauge-transform-link gu u-uv gv)
+  (u1-mul (u1-mul gu u-uv) (u1-inv gv)))
+
+;; Plaquette holonomy around oriented square (e1, e2, e3^{-1}, e4^{-1})
+(define (u1-plaquette-holonomy u1 u2 u3 u4)
+  (u1-mul (u1-mul u1 u2) (u1-mul (u1-inv u3) (u1-inv u4))))
+
+;; Discrete U(1) plaquette curvature from link angles:
+;;   F_p = theta1 + theta2 - theta3 - theta4
+(define (u1-plaquette-curvature th1 th2 th3 th4)
+  (- (+ th1 th2) (+ th3 th4)))
+
+;; Abelian Bianchi identity on an elementary 3D cube with 12 oriented link angles.
+;; Cube vertices: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0),
+;;                4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1).
+;; Links vector (length 12, each oriented low->high):
+;;   0: (0->1)  1: (1->2)  2: (3->2)  3: (0->3)
+;;   4: (4->5)  5: (5->6)  6: (7->6)  7: (4->7)
+;;   8: (0->4)  9: (1->5) 10: (2->6) 11: (3->7)
+;; Sum of outward-oriented face curvatures is identically zero:
+;;   bottom(-z): -(0+1-2-3), top(+z): +(4+5-6-7),
+;;   front(-y): +(0+9-4-8),  back(+y): -(2+10-6-11),
+;;   right(+x): +(1+10-5-9), left(-x): -(3+11-7-8).
+(define (u1-verify-bianchi-cube links . opt-tol)
+  (let* ((l (lambda (i) (vector-ref links i)))
+         (f-bot (- (u1-plaquette-curvature (l 0) (l 1) (l 2) (l 3))))
+         (f-top (u1-plaquette-curvature (l 4) (l 5) (l 6) (l 7)))
+         (f-front (u1-plaquette-curvature (l 0) (l 9) (l 4) (l 8)))
+         (f-back (- (u1-plaquette-curvature (l 2) (l 10) (l 6) (l 11))))
+         (f-right (u1-plaquette-curvature (l 1) (l 10) (l 5) (l 9)))
+         (f-left (- (u1-plaquette-curvature (l 3) (l 11) (l 7) (l 8))))
+         (total (+ f-bot f-top f-front f-back f-right f-left)))
+    (if (and (null? opt-tol) (exact? total))
+        (zero? total)
+        (<= (abs total) (if (null? opt-tol) 1e-12 (car opt-tol))))))
+
+;; ============================================================================
+;; SU(2) 2x2 Complex Matrix Gauge Bundle
+;; ============================================================================
+;; Representation: (vector (vector a b) (vector c d)) of cx entries.
+
+(define (su2-mat a b c d)
+  (vector (vector a b) (vector c d)))
+
+(define (su2-ref m i j) (vector-ref (vector-ref m i) j))
+
+(define (su2-identity)
+  (su2-mat (cx 1 0) (cx 0 0)
+           (cx 0 0) (cx 1 0)))
+
+;; Build SU(2) matrix from quaternion components (u0, u1, u2, u3) with sum u_k^2 = 1:
+;;   U = u0 I + i (u1 sigma_x + u2 sigma_y + u3 sigma_z)
+;;     = [[ u0 + i u3,   u2 + i u1 ],
+;;        [-u2 + i u1,   u0 - i u3 ]]
+;; Stays exact over Q[i] when u0..u3 are exact rationals!
+(define (su2-from-quat u0 u1 u2 u3)
+  (su2-mat (cx u0 u3) (cx u2 u1)
+           (cx (- u2) u1) (cx u0 (- u3))))
+
+;; Build SU(2) matrix exp(-i (theta/2) (nx sigma_x + ny sigma_y + nz sigma_z))
+(define (su2-from-axis-angle nx ny nz theta)
+  (let* ((norm (sqrt (+ (* nx nx) (* ny ny) (* nz nz))))
+         (ux (/ nx norm))
+         (uy (/ ny norm))
+         (uz (/ nz norm))
+         (half (/ theta 2.0))
+         (c (cos half))
+         (s (- (sin half))))
+    (su2-from-quat c (* s ux) (* s uy) (* s uz))))
+
+(define (su2-mul A B)
+  (let ((a00 (su2-ref A 0 0)) (a01 (su2-ref A 0 1))
+        (a10 (su2-ref A 1 0)) (a11 (su2-ref A 1 1))
+        (b00 (su2-ref B 0 0)) (b01 (su2-ref B 0 1))
+        (b10 (su2-ref B 1 0)) (b11 (su2-ref B 1 1)))
+    (su2-mat (cx+ (cx* a00 b00) (cx* a01 b10))
+             (cx+ (cx* a00 b01) (cx* a01 b11))
+             (cx+ (cx* a10 b00) (cx* a11 b10))
+             (cx+ (cx* a10 b01) (cx* a11 b11)))))
+
+(define (su2-dagger A)
+  (su2-mat (cx-conj (su2-ref A 0 0)) (cx-conj (su2-ref A 1 0))
+           (cx-conj (su2-ref A 0 1)) (cx-conj (su2-ref A 1 1))))
+
+(define (su2-det A)
+  (cx- (cx* (su2-ref A 0 0) (su2-ref A 1 1))
+       (cx* (su2-ref A 0 1) (su2-ref A 1 0))))
+
+(define (su2-trace A)
+  (cx+ (su2-ref A 0 0) (su2-ref A 1 1)))
+
+(define (su2-sub A B)
+  (su2-mat (cx- (su2-ref A 0 0) (su2-ref B 0 0))
+           (cx- (su2-ref A 0 1) (su2-ref B 0 1))
+           (cx- (su2-ref A 1 0) (su2-ref B 1 0))
+           (cx- (su2-ref A 1 1) (su2-ref B 1 1))))
+
+(define (su2-scale z A)
+  (su2-mat (cx* z (su2-ref A 0 0)) (cx* z (su2-ref A 0 1))
+           (cx* z (su2-ref A 1 0)) (cx* z (su2-ref A 1 1))))
+
+(define (su2-all-exact? A)
+  (and (exact? (cx-re (su2-ref A 0 0))) (exact? (cx-im (su2-ref A 0 0)))
+       (exact? (cx-re (su2-ref A 0 1))) (exact? (cx-im (su2-ref A 0 1)))
+       (exact? (cx-re (su2-ref A 1 0))) (exact? (cx-im (su2-ref A 1 0)))
+       (exact? (cx-re (su2-ref A 1 1))) (exact? (cx-im (su2-ref A 1 1)))))
+
+(define (su2-equal? A B)
+  (and (cx= (su2-ref A 0 0) (su2-ref B 0 0))
+       (cx= (su2-ref A 0 1) (su2-ref B 0 1))
+       (cx= (su2-ref A 1 0) (su2-ref B 1 0))
+       (cx= (su2-ref A 1 1) (su2-ref B 1 1))))
+
+(define (su2-close? A B tol)
+  (and (cx-close? (su2-ref A 0 0) (su2-ref B 0 0) tol)
+       (cx-close? (su2-ref A 0 1) (su2-ref B 0 1) tol)
+       (cx-close? (su2-ref A 1 0) (su2-ref B 1 0) tol)
+       (cx-close? (su2-ref A 1 1) (su2-ref B 1 1) tol)))
+
+;; Strict SU(2) validator: verifies U^dagger U = I_2 AND det(U) = 1.
+(define (su2-valid? U . opt-tol)
+  (if (not (and (vector? U) (= (vector-length U) 2)
+                (vector? (vector-ref U 0)) (= (vector-length (vector-ref U 0)) 2)
+                (vector? (vector-ref U 1)) (= (vector-length (vector-ref U 1)) 2)))
+      #f
+      (let ((prod (su2-mul (su2-dagger U) U))
+            (d (su2-det U))
+            (id (su2-identity))
+            (one (cx 1 0)))
+        (if (and (null? opt-tol) (su2-all-exact? U))
+            (and (su2-equal? prod id) (cx= d one))
+            (let ((tol (if (null? opt-tol) 1e-12 (car opt-tol))))
+              (and (su2-close? prod id tol) (cx-close? d one tol)))))))
+
+;; Link parallel transport gauge transformation: U'_{uv} = g_u U_{uv} g_v^{-1}
+(define (su2-gauge-transform-link gu u-uv gv)
+  (su2-mul (su2-mul gu u-uv) (su2-dagger gv)))
+
+;; Plaquette holonomy around oriented square v0 -> v1 -> v2 -> v3 -> v0:
+;;   U_p = U_{01} U_{12} U_{32}^{-1} U_{03}^{-1}
+(define (su2-plaquette-holonomy u01 u12 u32 u03)
+  (su2-mul (su2-mul u01 u12)
+           (su2-mul (su2-dagger u32) (su2-dagger u03))))
+
+;; Discrete Lie-algebra curvature F_p = (1 / (2i)) (U_p - U_p^dagger)
+;; (traceless Hermitian matrix in i * su(2); transforms covariantly!)
+(define (su2-plaquette-curvature up)
+  (su2-scale (cx 0 (/ -1 2)) (su2-sub up (su2-dagger up))))
+
+;; Verify plaquette gauge covariance: U'_p = g_{v0} U_p g_{v0}^{-1}
+;; and gauge invariance of Tr(U_p).
+(define (su2-verify-plaquette-covariance u01 u12 u32 u03 g0 g1 g2 g3 . opt-tol)
+  (let* ((up (su2-plaquette-holonomy u01 u12 u32 u03))
+         (u01p (su2-gauge-transform-link g0 u01 g1))
+         (u12p (su2-gauge-transform-link g1 u12 g2))
+         (u32p (su2-gauge-transform-link g3 u32 g2))
+         (u03p (su2-gauge-transform-link g0 u03 g3))
+         (upp (su2-plaquette-holonomy u01p u12p u32p u03p))
+         (expected (su2-mul (su2-mul g0 up) (su2-dagger g0))))
+    (if (and (null? opt-tol) (su2-all-exact? upp) (su2-all-exact? expected))
+        (and (su2-equal? upp expected) (cx= (su2-trace upp) (su2-trace up)))
+        (let ((tol (if (null? opt-tol) 1e-12 (car opt-tol))))
+          (and (su2-close? upp expected tol)
+               (cx-close? (su2-trace upp) (su2-trace up) tol))))))
+
+;; Verify curvature gauge covariance: F'_p = g_{v0} F_p g_{v0}^{-1}
+(define (su2-verify-curvature-covariance u01 u12 u32 u03 g0 g1 g2 g3 . opt-tol)
+  (let* ((fp (su2-plaquette-curvature (su2-plaquette-holonomy u01 u12 u32 u03)))
+         (u01p (su2-gauge-transform-link g0 u01 g1))
+         (u12p (su2-gauge-transform-link g1 u12 g2))
+         (u32p (su2-gauge-transform-link g3 u32 g2))
+         (u03p (su2-gauge-transform-link g0 u03 g3))
+         (fpp (su2-plaquette-curvature (su2-plaquette-holonomy u01p u12p u32p u03p)))
+         (expected (su2-mul (su2-mul g0 fp) (su2-dagger g0))))
+    (if (and (null? opt-tol) (su2-all-exact? fpp) (su2-all-exact? expected))
+        (su2-equal? fpp expected)
+        (su2-close? fpp expected (if (null? opt-tol) 1e-12 (car opt-tol))))))
+
+;; Non-Abelian Lattice Bianchi Identity on a 3D elementary cube!
+;; Cube vertices: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0),
+;;                4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1).
+;; 12 link variables (vector of length 12, each an SU(2) matrix):
+;;   0: U_{01},  1: U_{12},  2: U_{32},  3: U_{03}
+;;   4: U_{45},  5: U_{56},  6: U_{76},  7: U_{47}
+;;   8: U_{04},  9: U_{15}, 10: U_{26}, 11: U_{37}
+;; Basepoint at vertex 0. Six plaquettes parallel-transported to vertex 0:
+;;   P_bot   = U01 U12 U32^d U03^d                      (0->1->2->3->0)
+;;   P_left  = U03 U37 U47^d U04^d                      (0->3->7->4->0)
+;;   P_top   = U04 (U47 U76 U56^d U45^d) U04^d          (0->4->7->6->5->4->0)
+;;   P_front = U04 U45 U15^d U01^d                      (0->4->5->1->0)
+;;   P_right = U01 (U15 U56 U26^d U12^d) U01^d          (0->1->5->6->2->1->0)
+;;   P_back  = U01 U12 (U26 U76^d U37^d U32) U12^d U01^d -- simplify via path 0->1->2:
+;; Check direct telescoping product (every interior link cancels exactly!):
+;;   Q1 = U01 U12 U32^d U03^d                           [bottom: 0->1->2->3->0]
+;;   Q2 = U03 U37 U47^d U04^d                           [left:   0->3->7->4->0]
+;;   Q3 = U04 U47 U76 U56^d U45^d U04^d                 [top:    0->4->7->6->5->4->0]
+;;   Q4 = U04 U45 U15^d U01^d                           [front:  0->4->5->1->0]
+;;   Wait: compute Q1 * Q2 * Q3 * Q4 step by step!
+;;   Q1*Q2 = U01 U12 U32^d U37 U47^d U04^d
+;;   (Q1*Q2)*Q3 = U01 U12 U32^d U37 U76 U56^d U45^d U04^d
+;;   ((Q1*Q2)*Q3)*Q4 = U01 U12 U32^d U37 U76 U56^d U15^d U01^d
+;;   Now multiply by Q5 = U01 (U15 U56 U26^d U12^d) U01^d [right: 0->1->5->6->2->1->0]:
+;;   -> U01 U12 U32^d U37 U76 U26^d U12^d U01^d
+;;   Now multiply by Q6 = U01 U12 (U26 U76^d U37^d U32) U12^d U01^d [back face at 2!]:
+;;   -> U01 U12 U12^d U01^d = I_2 IDENTICALLY!
+(define (su2-cube-bianchi-product links)
+  (let* ((u01 (vector-ref links 0))  (u12 (vector-ref links 1))
+         (u32 (vector-ref links 2))  (u03 (vector-ref links 3))
+         (u45 (vector-ref links 4))  (u56 (vector-ref links 5))
+         (u76 (vector-ref links 6))  (u47 (vector-ref links 7))
+         (u04 (vector-ref links 8))  (u15 (vector-ref links 9))
+         (u26 (vector-ref links 10)) (u37 (vector-ref links 11))
+         (q1 (su2-plaquette-holonomy u01 u12 u32 u03))
+         (q2 (su2-plaquette-holonomy u03 u37 u47 u04))
+         (p-top (su2-plaquette-holonomy u47 u76 u56 u45))
+         (q3 (su2-mul (su2-mul u04 p-top) (su2-dagger u04)))
+         (q4 (su2-plaquette-holonomy u04 u45 u15 u01))
+         (p-right (su2-plaquette-holonomy u15 u56 u26 u12))
+         (q5 (su2-mul (su2-mul u01 p-right) (su2-dagger u01)))
+         (p-back (su2-mul (su2-mul u26 (su2-dagger u76))
+                          (su2-mul (su2-dagger u37) u32)))
+         (w02 (su2-mul u01 u12))
+         (q6 (su2-mul (su2-mul w02 p-back) (su2-dagger w02))))
+    (su2-mul (su2-mul (su2-mul q1 q2) (su2-mul q3 q4))
+             (su2-mul q5 q6))))
+
+(define (su2-verify-bianchi-cube links . opt-tol)
+  (let ((prod (su2-cube-bianchi-product links))
+        (id (su2-identity)))
+    (if (and (null? opt-tol) (su2-all-exact? prod))
+        (su2-equal? prod id)
+        (su2-close? prod id (if (null? opt-tol) 1e-12 (car opt-tol))))))
