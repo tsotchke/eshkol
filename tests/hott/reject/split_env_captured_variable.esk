@@ -1,0 +1,20 @@
+;; expect-error: path does not end where its type says
+;; Two applications of one split term that capture different neutral variables
+;; (a, b) must not be definitionally equal. Before the repair, a neutral
+;; variable was compared by its printed name, which omits its identity, and
+;; this file derived a closed term of type Empty.
+(hott
+  (data Bool true false)
+  (data Empty)
+  (data Unit tt)
+  (define (c (g : Bool)) : (-> Bool Bool) (split (true g) (false g)))
+  (define f1 : (-> Bool Bool (-> Bool Bool)) (lambda (a b) (c a)))
+  (define f2 : (-> Bool Bool (-> Bool Bool)) (lambda (a b) (c b)))
+  (define p : (Path (-> Bool Bool (-> Bool Bool)) f1 f2) (lambda (i) f1))
+  (define (use (q : (Path (-> Bool Bool (-> Bool Bool)) f1 f2))) : (Path Bool true false)
+    (lambda (i) ((q i) true false true)))
+  (define true=false : (Path Bool true false) (use p))
+  (define Code : (-> Bool U) (split (true Unit) (false Empty)))
+  (define (absurd-from (e : (Path Bool true false))) : Empty
+    (transp (i) (Code (e i)) i0 tt))
+  (define absurd : Empty (absurd-from true=false)))
