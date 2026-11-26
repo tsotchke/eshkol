@@ -11,8 +11,9 @@
 # Seeded 2026-07-03 from the live extraction; regenerate a skeleton with
 #   scripts/vm_parity_audit.py --seed
 # name	status	justification
-arena_tape_release	native-only-justified	native operator tapes use an owning arena mark/release interval; the bytecode VM's operator tape is owned by VmRegionStack and is reclaimed by an enclosing VM region (docs/reference/ad/tape.md)
-__arena-used	native-only-justified	native arena introspection probe; bytecode VM has separate region accounting
+
+
+
 %	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise-force	gap	internal codegen helper name leaked into dispatch
@@ -26,6 +27,7 @@ __arena-used	native-only-justified	native arena introspection probe; bytecode VM
 =	vm-supported	
 >	vm-supported	
 >=	vm-supported	
+__arena-used	native-only-justified	native arena introspection probe; bytecode VM has separate region accounting
 _format-list	vm-supported	
 _region-close-list	vm-supported	
 _region-open	vm-supported	
@@ -61,6 +63,7 @@ adam	gap	ml faculty has no VM fid coverage
 adam-step	gap	ml faculty has no VM fid coverage
 adamw-step	gap	ml faculty has no VM fid coverage
 addr-of	native-only-justified	low-level memory/FFI primitive tied to native codegen
+alignof	native-only-justified	freestanding OS hardware-layout intrinsic (Phase U2) tied to native LLVM ABI codegen
 allow-sleep	vm-supported	
 and	vm-supported	
 angle	vm-supported	
@@ -70,14 +73,12 @@ append-file	gap	port/file IO surface missing in VM
 apply	vm-supported	
 apply-window	gap	signal faculty has no VM fid coverage
 arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step) via a VM-compiler special form; native handler pops (start,stop,step)
+arena_tape_release	native-only-justified	native operator tapes use an owning arena mark/release interval; the bytecode VM's operator tape is owned by VmRegionStack and is reclaimed by an enclosing VM region (docs/reference/ad/tape.md)
 arithmetic-shift	vm-supported	
 asin	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to asin(0) (corpus/54_complex_transcendentals.esk)
 asinh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 assq	gap	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
 assv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 atan	vm-supported	
 atan2	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 atanh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
@@ -100,6 +101,7 @@ begin	vm-supported
 binary-cross-entropy-loss	gap	ml faculty has no VM fid coverage
 binary-port?	gap	port/file IO surface missing in VM
 bit-count	vm-supported	native fid + VM BUILTINS 2202; alias of popcount (docs/API_REFERENCE.md spelling)
+bit-offset	native-only-justified	freestanding OS hardware-layout bitfield intrinsic (Phase U2) tied to native LLVM ABI codegen
 bit-shift-left	vm-supported	native fid + VM BUILTINS 2200; arithmetic-shift with a positive count
 bit-shift-right	vm-supported	native fid + VM BUILTINS 2201; arithmetic-shift with a negated count
 bitwise-and	vm-supported	
@@ -164,6 +166,25 @@ char=?	vm-supported
 char>=?	gap	extended char ops missing in VM (no char type)
 char>?	vm-supported	
 char?	vm-supported	
+chart->sphere	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-alpha	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-attention	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-attention-weights	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-conformal-factor	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-convention-id	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-default-temperature	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-distance	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-distance-jet	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-exp-map	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-log-map	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-mobius-add	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-mobius-scalar	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-project	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-riemannian-grad	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-sq-distance	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-sq-distance-gradient	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-sq-distance-jet	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-transport	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
 check-grad-health	gap	ml faculty has no VM fid coverage
 clip-grad-norm!	gap	ml faculty has no VM fid coverage
 close-input-port	gap	port/file IO surface missing in VM
@@ -213,6 +234,7 @@ dataloader-length	gap	ml faculty has no VM fid coverage
 dataloader-next	gap	ml faculty has no VM fid coverage
 dataloader-reset	gap	ml faculty has no VM fid coverage
 dataloader-reset!	gap	ml faculty has no VM fid coverage
+define-layout	native-only-justified	freestanding OS declarative hardware-layout form (Phase U2) lowered in native LLVM codegen
 delete-directory	gap	port/file IO surface missing in VM
 delete-file	vm-supported	
 denominator	vm-supported	
@@ -283,6 +305,9 @@ fg-entropy	vm-supported
 fg-infer!	vm-supported	
 fg-marginal	vm-supported	
 fg-update-cpt!	vm-supported	
+field-addr	native-only-justified	freestanding OS hardware-layout address intrinsic (Phase U2) tied to native LLVM ABI codegen
+field-ref	native-only-justified	freestanding OS hardware-layout field-load intrinsic (Phase U2) tied to native LLVM ABI codegen
+field-set!	native-only-justified	freestanding OS hardware-layout field-store intrinsic (Phase U2) tied to native LLVM ABI codegen
 file-atime	vm-supported	
 file-chmod	vm-supported	
 file-copy	vm-supported	
@@ -324,6 +349,7 @@ future-ready?	vm-supported
 fuzzy-match	vm-supported	
 gcd	vm-supported	
 gelu	gap	ml faculty has no VM fid coverage
+geometry-header-check	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
 get-environment-variable	vm-supported	
 get-output-string	vm-supported	
 getenv	vm-supported	
@@ -465,13 +491,14 @@ make-coroutine	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the
 make-dataloader	gap	ml faculty has no VM fid coverage
 make-directory	gap	port/file IO surface missing in VM
 make-dnc-memory	gap	core.dnc has no VM fids
+make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where the platform has no event loop, raise on an out-of-range max-events
 make-fact	vm-supported	task #100: both (make-fact 'p 'a 'b) and (make-fact '(p a b)) build the same fact on both substrates, and a fact displays as its (p a b) datum
 make-factor-graph	vm-supported	
+make-geometry-header	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
 make-hash-table	vm-supported	
 make-kb	vm-supported	
 make-line-reader	vm-supported	
 make-lru-cache	vm-supported	
-make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where the platform has no event loop, raise on an out-of-range max-events
 make-parameter	gap	no VM name binding
 make-pipe	vm-supported	
 make-polar	vm-supported	
@@ -492,6 +519,10 @@ matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
 max	vm-supported	
 max-pool2d	gap	ml faculty has no VM fid coverage
 memory-fence	native-only-justified	low-level memory/FFI primitive tied to native codegen
+memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+migrate-legacy-ball-point	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+migrate-legacy-ball-tangent	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+migrate-legacy-temperature	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
 min	vm-supported	
 mish	gap	ml faculty has no VM fid coverage
 mkdir-recursive	vm-supported	
@@ -516,6 +547,7 @@ number->string	vm-supported
 number?	vm-supported	
 numerator	vm-supported	
 odd?	vm-supported	
+offsetof	native-only-justified	freestanding OS hardware-layout offset intrinsic (Phase U2) tied to native LLVM ABI codegen
 ones	vm-supported	
 onnx-export-tensor	gap	port/file IO surface missing in VM
 op:ADD	vm-supported	OP_ADD bytecode
@@ -534,7 +566,6 @@ op:DEFINE	vm-supported	vm_compiler special-form dispatch
 op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
 op:DEFINE_SYNTAX	vm-supported	corpus/93_macro_hygiene_matrix.esk: one syntax-rules engine and one renaming rule on both engines (ADR-0026); hygiene in both directions, full pattern language, forward references
 op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
-
 op:DERIVATIVE	vm-supported	forward-mode derivative of a scalar function, direct `(derivative f x)` and curried `((derivative f) x)`; exact integer/bignum/rational points keep exact results (SW-85). A pass nested inside another live pass, or at a point that is already a carrier, runs as a level carrier (ADR-0027) at any depth and order, matching native (tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk on the VM and the browser VM).
 op:DERIVATIVE_N	vm-supported	Arbitrary-order Taylor AD on the VM: un-nested `(derivative-n f x k)` seeds the classic K+1 tower (exact rational/bignum coefficients for exact points); nested inside another pass it runs as a level carrier whose coefficients are the enclosing passes' carriers (ADR-0027), so every nesting shape and order matches native.
 op:DIFF	gap	AD surface diverges in VM
@@ -562,7 +593,6 @@ op:FG_OBSERVE	vm-supported	BUILTINS fid 527
 op:FG_UPDATE_CPT	vm-supported	BUILTINS fid 524
 op:FORALL	native-only-justified	static type syntax, erased before codegen
 op:FREE_ENERGY	vm-supported	BUILTINS fid 525
-
 op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-arg spread / arity-1 whole-vector) plus curried form; scalar exact integer/bignum/rational points now return exact gradients through the SW-85 hybrid carrier and inexact/transcendental paths retain their prior behavior. Exact vector points remain inexact because neither substrate has an exact vector carrier.
 op:GUARD	vm-supported	guard/raise verified 2026-07
 op:HESSIAN	vm-supported	scalar points are the order-2 tower pass; vector points use hyper-duals un-nested and two nested levels per entry inside a live pass (ADR-0027; resolved/ad_gradient_wrong.esk)
@@ -616,7 +646,6 @@ op:SET	vm-supported	vm_compiler special-form dispatch; set! of an enclosing vari
 op:SHARED	native-only-justified	OALR ownership — native-arena construct
 op:SUB	vm-supported	OP_SUB bytecode
 op:SUBSTITUTION_PRED	vm-supported	BUILTINS fid 506
-
 op:SYNTAX_ERROR	native-only-justified	parse-time form handled by the native front-end
 op:TAYLOR	vm-supported	Arbitrary-order Taylor-series AD on the VM: `(taylor f x0 k)` returns c[n] = f^(n)(x0)/n!, from the classic tower un-nested and from a level carrier (ADR-0027) when nested; a coefficient that depends on an enclosing pass is returned as that pass's carrier.
 op:TENSOR	vm-supported	tensor/make-tensor fids 410+
@@ -656,6 +685,7 @@ parallel-fold	vm-supported
 parallel-for-each	vm-supported	
 parallel-map	vm-supported	
 parse-iso8601	vm-supported	
+partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 path-basename	vm-supported	
 path-dirname	vm-supported	
 path-extname	vm-supported	
@@ -761,6 +791,7 @@ sigmoid	vm-supported
 silu	gap	ml faculty has no VM fid coverage
 sin	vm-supported	a complex operand routes to the shared complex core rather than collapsing to sin(0) (corpus/54_complex_transcendentals.esk)
 sinh	vm-supported	a complex operand routes to the shared complex core rather than collapsing to sinh(0) (corpus/54_complex_transcendentals.esk)
+sizeof	native-only-justified	freestanding OS hardware-layout size intrinsic (Phase U2) tied to native LLVM ABI codegen
 sleep	native-only-justified	OS/process interface — native runtime only
 sleep-ms	vm-supported	
 slice	gap	tensor linalg/manipulation fid missing in VM
@@ -770,12 +801,14 @@ socket-recv	vm-supported
 socket-send	vm-supported	
 softmax	vm-supported	
 softplus	gap	ml faculty has no VM fid coverage
+sphere->chart	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
 split	gap	tensor linalg/manipulation fid missing in VM
 split-at	gap	no VM name binding
 sqrt	vm-supported	a complex operand takes the principal complex square root from the shared core <eshkol/core/complex_math.h> that the native back end also calls, and a NEGATIVE EXACT real promotes into the complex domain per docs/reference/language/numeric-tower.md ((sqrt -1) is +i on both engines); an inexact negative keeps IEEE NaN. as_number() used to answer 0 for a complex, so the VM silently computed sqrt(0) (corpus/54_complex_transcendentals.esk)
 square	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 squeeze	gap	tensor linalg/manipulation fid missing in VM
 stack	gap	tensor linalg/manipulation fid missing in VM
+static-assert	native-only-justified	freestanding OS compile-time layout assertion form (Phase U2) verified in native LLVM codegen
 step-decay-lr	gap	ml faculty has no VM fid coverage
 string	gap	extended string surface missing in VM
 string->list	vm-supported	
@@ -788,6 +821,7 @@ string-ci<?	gap	extended string surface missing in VM
 string-ci=?	vm-supported	
 string-ci>=?	gap	extended string surface missing in VM
 string-ci>?	gap	extended string surface missing in VM
+string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 string-contains?	gap	extended string surface missing in VM
 string-copy	vm-supported	
 string-copy!	gap	extended string surface missing in VM
@@ -932,6 +966,7 @@ u8-ready?	gap	port/file IO surface missing in VM
 unify	vm-supported	task #100: takes (t1 t2 subst) as documented (the VM read (subst a b)), accepts ?-symbols and logic variables, unifies facts and cons cells structurally, and fails the occurs check. Pinned by corpus/54_logic_var_kb_query.esk
 unix-socket-connect	vm-supported	
 unless	vm-supported	
+unsafe-asm	native-only-justified	freestanding OS inline-assembly intrinsic (Phase U1) restricted to native kernel/bare-metal LLVM targets
 unsetenv	vm-supported	
 unsqueeze	gap	tensor linalg/manipulation fid missing in VM
 url-decode	vm-supported	
@@ -955,6 +990,8 @@ vector-ref	vm-supported
 vector-set!	vm-supported	
 vector-to-string	gap	tensor linalg/manipulation fid missing in VM
 vector?	vm-supported	
+volatile-field-ref	native-only-justified	freestanding OS volatile MMIO field-load intrinsic (Phase U2) tied to native LLVM codegen
+volatile-field-set!	native-only-justified	freestanding OS volatile MMIO field-store intrinsic (Phase U2) tied to native LLVM codegen
 volatile-load	native-only-justified	low-level memory/FFI primitive tied to native codegen
 volatile-store!	native-only-justified	low-level memory/FFI primitive tied to native codegen
 vqe-energy-primitive	native-only-justified	LLVM-only AD_NODE_CUSTOM intrinsic; the VM tape has no custom-VJP node, and pretending plain-energy support would silently break gradient semantics
@@ -986,28 +1023,3 @@ xavier-uniform!	gap	ml faculty has no VM fid coverage
 zero-grad!	gap	ml faculty has no VM fid coverage
 zero?	vm-supported	
 zeros	vm-supported	
-chart-convention-id	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-alpha	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-make-geometry-header	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-geometry-header-check	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-distance	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-sq-distance	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-conformal-factor	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-distance-jet	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-sq-distance-jet	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-sq-distance-gradient	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-exp-map	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-log-map	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-transport	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-mobius-add	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-mobius-scalar	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-project	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-riemannian-grad	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-default-temperature	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-attention	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-attention-weights	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-sphere->chart	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart->sphere	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-migrate-legacy-ball-point	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-migrate-legacy-ball-tangent	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-migrate-legacy-temperature	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
