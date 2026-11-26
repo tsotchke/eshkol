@@ -9,7 +9,8 @@
    "witness": "theorem witness_alloc_unaccounted : \u00ac type_of% @pool_step_preserves_accounted := by\n  intro h\n  have h0 := h ({ totalFrames := 1, freeCount := 1, allocatedCount := 0, owners := fun _ => .free, generations := fun _ => 1 } : FramePool) (.allocUser 0) (by unfold FramePool.Accounted; decide)\n  revert h0\n  unfold FramePool.Accounted\n  decide",
    "witness_name": "witness_alloc_unaccounted",
    "refutes": "pool_step_preserves_accounted",
-   "expect": "REFUTED"
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
   },
   {
    "id": "remap-allows-wx",
@@ -19,7 +20,8 @@
    "witness": "def wxP0 : Pte := \u27e85, true, false, false, true, false\u27e9\ndef wxA : UserAspace :=\n  { asid := 0, isKernelFrame := fun _ => false,\n    entries := fun v => if v = 0 then some wxP0 else Option.none }\ntheorem witness_remap_wx : \u00ac type_of% @aspace_step_preserves_wx := by\n  intro h\n  have hwx : wxA.WxSafe := by\n    intro va pte he\n    by_cases hv : va = 0\n    \u00b7 subst hv\n      simp [wxA] at he\n      subst he\n      unfold Pte.WxAndPrivSafe\n      decide\n    \u00b7 simp [wxA, hv] at he\n  have h1 := h wxA (.remap 0 true true true false) hwx 0 \u27e85, true, true, true, true, false\u27e9 (by decide)\n  revert h1\n  unfold Pte.WxAndPrivSafe\n  decide",
    "witness_name": "witness_remap_wx",
    "refutes": "aspace_step_preserves_wx",
-   "expect": "REFUTED"
+   "expect": "REFUTED",
+   "differential": "NOT_APPLICABLE"
   },
   {
    "id": "free-forgets-owner",
@@ -29,7 +31,8 @@
    "witness": "theorem witness_free_unaccounted : \u00ac type_of% @pool_step_preserves_accounted := by\n  intro h\n  have h0 := h ({ totalFrames := 1, freeCount := 0, allocatedCount := 1, owners := fun _ => .user, generations := fun _ => 2 } : FramePool) (.freeUser 0 2) (by unfold FramePool.Accounted; decide)\n  revert h0\n  unfold FramePool.Accounted\n  decide",
    "witness_name": "witness_free_unaccounted",
    "refutes": "pool_step_preserves_accounted",
-   "expect": "REFUTED"
+   "expect": "REFUTED",
+   "differential": "DIVERGES"
   },
   {
    "id": "alloc-skips-free-check",
@@ -39,7 +42,8 @@
    "witness": "theorem witness_double_alloc : \u00ac type_of% @pool_step_preserves_accounted := by\n  intro h\n  have h0 := h ({ totalFrames := 2, freeCount := 1, allocatedCount := 1, owners := fun i => if i = 0 then .user else .free, generations := fun _ => 1 } : FramePool) (.allocUser 0) (by unfold FramePool.Accounted; decide)\n  revert h0\n  unfold FramePool.Accounted\n  decide",
    "witness_name": "witness_double_alloc",
    "refutes": "pool_step_preserves_accounted",
-   "expect": "REFUTED"
+   "expect": "REFUTED",
+   "differential": "AGREES"
   }
  ]
 }
