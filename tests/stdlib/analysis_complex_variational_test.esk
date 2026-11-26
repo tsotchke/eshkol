@@ -1,0 +1,280 @@
+;;; tests/stdlib/analysis_complex_variational_test.esk
+;;;
+;;; Acceptance suite for core.analysis.complex and core.analysis.variational:
+;;;   - Cauchy-Riemann verification (holomorphic functions pass, non-holomorphic
+;;;     functions fail loudly) and exact complex derivatives via native AD
+;;;   - Cauchy integral theorem, Cauchy integral formula (values & derivatives),
+;;;     winding numbers on circles and polygons
+;;;   - Exact simple-pole residues for rational functions P(z)/Q(z) and Residue
+;;;     Theorem verification
+;;;   - Mobius transformations: composition, inverse, and cross-ratio invariance
+;;;   - Euler-Lagrange residual operator (< 1e-10) on harmonic oscillator, free
+;;;     particle, exact nonlinear pendulum separatrix, damped/driven oscillator,
+;;;     and 2D Kepler circular orbit, plus negative control on non-solutions
+;;;   - Noether conserved-charge evaluator (dQ/dt == 0) for time translation
+;;;     (energy), space translation (momentum), and 2D rotation (angular momentum)
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+(require core.analysis)
+
+(define passes 0)
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (set! passes (+ passes 1))
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(define (cpx-close? a b tol)
+  (< (magnitude (- a b)) tol))
+
+(define (real-close? a b tol)
+  (< (abs (- a b)) tol))
+
+;; ============================================================================
+;; 1. Complex derivatives & Cauchy-Riemann equations
+;; ============================================================================
+
+(define z-test (make-rectangular 1.25 -0.75))
+(define (f-cube z) (* z z z))
+(define (f-exp z) (exp z))
+(define (f-sin z) (sin z))
+(define (f-conj z) (complex-conj z))
+(define (f-norm2 z) (make-rectangular (complex-norm2 z) 0.0))
+
+(check "Cauchy-Riemann passes on holomorphic z^3 and derivative equals 3*z^2"
+       (let ((df (complex-derivative f-cube z-test))
+             (expected (* 3.0 (* z-test z-test))))
+         (and (holomorphic-at? f-cube z-test 1e-12)
+              (cpx-close? df expected 1e-12)
+              (< (magnitude (wirtinger-dzbar f-cube z-test)) 1e-12))))
+
+(check "Cauchy-Riemann passes on holomorphic exp(z) and sin(z)"
+       (and (holomorphic-at? f-exp z-test 1e-12)
+            (cpx-close? (complex-derivative f-exp z-test) (exp z-test) 1e-12)
+            (holomorphic-at? f-sin z-test 1e-12)
+            (cpx-close? (complex-derivative f-sin z-test) (cos z-test) 1e-12)))
+
+(check "negative control: non-holomorphic conj(z) and |z|^2 fail Cauchy-Riemann loudly"
+       (and (not (holomorphic-at? f-conj z-test 1e-6))
+            (> (cauchy-riemann-residual-norm f-conj z-test) 1.9)
+            (cpx-close? (wirtinger-dzbar f-conj z-test) (make-rectangular 1.0 0.0) 1e-12)
+            (not (holomorphic-at? f-norm2 z-test 1e-6))
+            (> (cauchy-riemann-residual-norm f-norm2 z-test) 1.0)))
+
+;; ============================================================================
+;; 2. Contour integration, Cauchy integral theorem/formula, winding numbers
+;; ============================================================================
+
+(define two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi)))
+(define zero-c (make-rectangular 0.0 0.0))
+(define center-a (make-rectangular 0.5 -0.3))
+
+(check "Cauchy integral theorem: oint z^2 dz = 0 around circle and polygon"
+       (let ((i-circ (contour-integral-circle (lambda (z) (* z z)) center-a 1.5 16))
+             (i-poly (contour-integral-polygon
+                      (lambda (z) (* z z))
+                      (list (make-rectangular -1.0 -1.0)
+                            (make-rectangular  2.0 -1.0)
+                            (make-rectangular  2.0  2.0)
+                            (make-rectangular -1.0  2.0))
+                      4)))
+         (and (cpx-close? i-circ zero-c 1e-12)
+              (cpx-close? i-poly zero-c 1e-12))))
+
+(check "fundamental pole integral: oint dz / (z - a) = 2*pi*i (circle and square)"
+       (let* ((a (make-rectangular 0.4 0.3))
+              (f (lambda (z) (/ 1.0 (- z a))))
+              (i-circ (contour-integral-circle f (make-rectangular 0.0 0.0) 1.5 32))
+              (square (list (make-rectangular -1.0 -1.0)
+                            (make-rectangular  1.0 -1.0)
+                            (make-rectangular  1.0  1.0)
+                            (make-rectangular -1.0  1.0)))
+              (i-sq (contour-integral-polygon f square 8)))
+         (and (cpx-close? i-circ two-pi-i 1e-11)
+              (cpx-close? i-sq two-pi-i 1e-11))))
+
+(check "winding number computes +1 inside, 0 outside, +2 for double-wound circle, -1 clockwise"
+       (let ((square (list (make-rectangular -1.0 -1.0)
+                           (make-rectangular  1.0 -1.0)
+                           (make-rectangular  1.0  1.0)
+                           (make-rectangular -1.0  1.0)))
+             (double-circle (lambda (t) (make-rectangular (cos (* 2.0 t))
+                                                          (sin (* 2.0 t)))))
+             (cw-circle (lambda (t) (make-rectangular (cos (- t))
+                                                      (sin (- t))))))
+         (and (= (winding-number-circle zero-c 1.0 (make-rectangular 0.2 0.3) 24) 1)
+              (= (winding-number-circle zero-c 1.0 (make-rectangular 2.5 0.0) 24) 0)
+              (= (winding-number-polygon square (make-rectangular 0.1 -0.2) 8) 1)
+              (= (winding-number-polygon square (make-rectangular 3.0 0.0) 8) 0)
+              (= (winding-number double-circle (make-rectangular 0.2 0.1) 0.0 (* 2.0 complex-pi) 32) 2)
+              (= (winding-number cw-circle (make-rectangular 0.2 0.1) 0.0 (* 2.0 complex-pi) 24) -1))))
+
+(check "Cauchy integral formula recovers f(z0), f'(z0), and f''(z0) for exp(z)"
+       (let ((z0 (make-rectangular 0.3 -0.4)))
+         (and (cpx-close? (cauchy-integral-value f-exp z0 1.0 24) (exp z0) 1e-12)
+              (cpx-close? (cauchy-integral-derivative f-exp z0 1 1.0 24) (exp z0) 1e-11)
+              (cpx-close? (cauchy-integral-derivative f-exp z0 2 1.0 24) (exp z0) 1e-10))))
+
+;; ============================================================================
+;; 3. Exact simple-pole residues & Residue Theorem
+;; ============================================================================
+
+(define P1 (list 2 1))
+(define Q1 (list -3 2 1))
+
+(define P2 (list 1.0))
+(define Q2 (list 1.0 0.0 1.0))
+
+(check "exact simple-pole residue matches algebraic formula P(z0)/Q'(z0)"
+       (let ((r-at-1 (rational-residue-simple-pole P1 Q1 1))
+             (r-at-m3 (rational-residue-simple-pole P1 Q1 -3))
+             (r-at-i (rational-residue-simple-pole P2 Q2 complex-i))
+             (r-at-mi (rational-residue-simple-pole P2 Q2 (- complex-i))))
+         (and (= r-at-1 3/4)
+              (= r-at-m3 1/4)
+              (cpx-close? r-at-i (make-rectangular 0.0 -0.5) 1e-13)
+              (cpx-close? r-at-mi (make-rectangular 0.0 0.5) 1e-13))))
+
+(check "Residue Theorem holds for single enclosed pole, both enclosed poles, and no enclosed poles"
+       (let ((poles1 (list (make-rectangular 1.0 0.0) (make-rectangular -3.0 0.0)))
+             (poles2 (list complex-i (- complex-i))))
+         (and (verify-residue-theorem P1 Q1 poles1 (make-rectangular 1.0 0.0) 1.5 32 1e-10)
+              (verify-residue-theorem P1 Q1 poles1 zero-c 5.0 48 1e-10)
+              (verify-residue-theorem P1 Q1 poles1 (make-rectangular 5.0 0.0) 1.0 24 1e-11)
+              (verify-residue-theorem P2 Q2 poles2 complex-i 1.0 32 1e-11))))
+
+;; ============================================================================
+;; 4. Mobius transformations & cross-ratio invariance
+;; ============================================================================
+
+(define M1 (make-mobius (make-rectangular 2.0 1.0)
+                        (make-rectangular -1.0 3.0)
+                        (make-rectangular 0.5 -0.5)
+                        (make-rectangular 1.0 2.0)))
+(define M2 (make-mobius (make-rectangular 0.0 1.0)
+                        (make-rectangular 2.0 0.0)
+                        (make-rectangular 1.0 1.0)
+                        (make-rectangular -1.0 0.5)))
+
+(define zA (make-rectangular 0.5 1.0))
+(define zB (make-rectangular -1.2 0.4))
+(define zC (make-rectangular 2.0 -0.7))
+(define zD (make-rectangular -0.3 -1.5))
+
+(check "Mobius composition, inverse, and cross-ratio invariance hold to machine precision"
+       (let ((M12 (mobius-compose M1 M2))
+             (M1-inv (mobius-inverse M1)))
+         (and (cpx-close? (mobius-apply M12 zA)
+                          (mobius-apply M1 (mobius-apply M2 zA)) 1e-12)
+              (cpx-close? (mobius-apply M1-inv (mobius-apply M1 zB)) zB 1e-12)
+              (cpx-close? (mobius-apply M1 (mobius-apply M1-inv zC)) zC 1e-12)
+              (mobius-cross-ratio-invariant? M1 zA zB zC zD 1e-11)
+              (mobius-cross-ratio-invariant? M2 zA zB zC zD 1e-11)
+              (mobius-cross-ratio-invariant? M12 zA zB zC zD 1e-11))))
+
+;; ============================================================================
+;; 5. Variational Calculus: Euler-Lagrange residuals via native AD
+;; ============================================================================
+
+(define sample-ts (list 0.0 0.3 0.7 1.1 1.7 2.3))
+
+(define m-ho 2.0)
+(define k-ho 8.0)
+(define (L-ho t q qd) (- (* 0.5 m-ho qd qd) (* 0.5 k-ho q q)))
+(define (q-ho t) (+ (* 1.5 (cos (* 2.0 t))) (* -0.7 (sin (* 2.0 t)))))
+(define (q-ho-wrong t) (* 1.5 (cos (* 3.0 t))))
+
+(check "Euler-Lagrange residual < 1e-10 on harmonic oscillator solution and > 1.0 on wrong frequency"
+       (and (euler-lagrange-verified? L-ho q-ho sample-ts 1e-10)
+            (> (euler-lagrange-max-residual L-ho q-ho-wrong sample-ts) 5.0)))
+
+(define (L-free t q qd) (* 0.5 3.0 qd qd))
+(define (q-free t) (+ 1.2 (* 2.5 t)))
+(define (q-accel t) (+ 1.2 (* 0.5 t t)))
+
+(check "Euler-Lagrange residual < 1e-12 on free particle and non-zero on accelerating trajectory"
+       (and (euler-lagrange-verified? L-free q-free sample-ts 1e-12)
+            (real-close? (euler-lagrange-residual L-free q-accel 0.5) 3.0 1e-12)))
+
+(define (L-pend t q qd) (+ (* 0.5 qd qd) (cos q)))
+(define (q-pend-sep t) (- (* 4.0 (atan (exp t))) complex-pi))
+
+(check "Euler-Lagrange residual < 1e-10 on exact nonlinear pendulum separatrix solution"
+       (euler-lagrange-verified? L-pend q-pend-sep sample-ts 1e-10))
+
+(define (L-damped-driven t q qd)
+  (* (exp t)
+     (+ (- (* 0.5 qd qd) (* 2.0 q q))
+        (* 3.0 (cos t) q))))
+(define (q-damped-driven t)
+  (+ (* 0.9 (cos t)) (* 0.3 (sin t))))
+
+(check "Euler-Lagrange residual < 1e-10 on time-dependent damped driven oscillator (Caldirola-Kanai)"
+       (euler-lagrange-verified? L-damped-driven q-damped-driven (list 0.0 0.4 0.8 1.2) 1e-10))
+
+(define mu-kepler 8.0)
+(define R-kepler 2.0)
+(define (L-kepler t qs qds)
+  (let ((x (car qs)) (y (cadr qs))
+        (vx (car qds)) (vy (cadr qds)))
+    (+ (* 0.5 (+ (* vx vx) (* vy vy)))
+       (/ mu-kepler (sqrt (+ (* x x) (* y y)))))))
+(define q-kepler
+  (list (lambda (t) (* R-kepler (cos t)))
+        (lambda (t) (* R-kepler (sin t)))))
+
+(check "Euler-Lagrange residual < 1e-10 on 2D Kepler central-force orbit"
+       (euler-lagrange-verified? L-kepler q-kepler sample-ts 1e-10))
+
+;; ============================================================================
+;; 6. Noether conserved charges: energy, linear momentum, angular momentum
+;; ============================================================================
+
+(check "Noether time-translation charge (energy) is conserved on harmonic oscillator and nonlinear pendulum"
+       (let ((zero-eta-1d (lambda (t q) 0.0))
+             (tau-1 (lambda (t q) 1.0)))
+         (and (noether-conserved? L-ho q-ho tau-1 zero-eta-1d sample-ts 1e-10)
+              (real-close? (noether-energy L-ho q-ho 0.0)
+                           (noether-energy L-ho q-ho 1.7) 1e-12)
+              (noether-conserved? L-pend q-pend-sep tau-1 zero-eta-1d sample-ts 1e-10)
+              (real-close? (noether-energy L-pend q-pend-sep 0.7) 1.0 1e-11))))
+
+(check "Noether space-translation charge (linear momentum) is conserved on free particle and NOT on harmonic oscillator"
+       (and (noether-conserved? L-free q-free
+                                (lambda (t q) 0.0)
+                                (lambda (t q) 1.0)
+                                sample-ts 1e-12)
+            (real-close? (noether-momentum L-free q-free 1.0 0.7) 7.5 1e-12)
+            (not (noether-conserved? L-ho q-ho
+                                     (lambda (t q) 0.0)
+                                     (lambda (t q) 1.0)
+                                     sample-ts 1e-6))))
+
+(check "Noether energy and 2D rotational angular momentum L_z are conserved on Kepler orbit"
+       (let ((tau-0 (lambda (t qs) 0.0))
+             (tau-1 (lambda (t qs) 1.0))
+             (eta-zero (lambda (t qs) (list 0.0 0.0)))
+             (eta-rot (lambda (t qs) (list (- (cadr qs)) (car qs)))))
+         (and (noether-conserved? L-kepler q-kepler tau-1 eta-zero sample-ts 1e-10)
+              (noether-conserved? L-kepler q-kepler tau-0 eta-rot sample-ts 1e-10)
+              (real-close? (noether-energy L-kepler q-kepler 1.1) -2.0 1e-11)
+              (real-close? (noether-angular-momentum-2d L-kepler q-kepler 1.1) 4.0 1e-11)
+              (not (noether-conserved? L-damped-driven q-damped-driven
+                                       (lambda (t q) 1.0)
+                                       (lambda (t q) 0.0)
+                                       (list 0.0 0.4 0.8) 1e-4)))))
+
+(display "analysis_complex_variational_test: ")
+(display passes) (display " passed, ")
+(display failures) (display " failed") (newline)
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

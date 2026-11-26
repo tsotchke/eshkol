@@ -71,9 +71,33 @@ if [ ! -f "$ESHKOL_RUN" ]; then
 fi
 
 echo "Testing all files in tests/stdlib/ directory..."
+
+detect_jobs() {
+    if [ -n "${ESHKOL_SUITE_JOBS:-}" ]; then
+        echo "$ESHKOL_SUITE_JOBS"
+        return
+    fi
+    local cpus=1
+    if command -v nproc >/dev/null 2>&1; then
+        cpus=$(nproc 2>/dev/null || echo 1)
+    elif command -v sysctl >/dev/null 2>&1; then
+        cpus=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
+    fi
+    if [ "$cpus" -gt 3 ]; then
+        cpus=3
+    elif [ "$cpus" -lt 1 ]; then
+        cpus=1
+    fi
+    echo "$cpus"
+}
+
+MAX_JOBS=$(detect_jobs)
+echo "Parallel workers: $MAX_JOBS"
 echo ""
 
-# Run each test
+declare -a TEST_FILES
+declare -a TEST_NAMES
+TEST_COUNT=0
 for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
     test_name=$(basename "$test_file")
     # Three long-run effective-homology checks require 29-33 GB RAM and are owned
@@ -87,57 +111,127 @@ for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
                 ;;
         esac
     fi
-    test_bin="$RUN_DIR/${test_name%.esk}"
-    test_output="$RUN_DIR/${test_name%.esk}.out"
-    compile_output="$RUN_DIR/${test_name%.esk}.compile.out"
-    printf "Testing %-50s " "$test_name"
+    TEST_FILES+=("$test_file")
+    TEST_NAMES+=("$test_name")
+    ((TEST_COUNT++)) || true
+done
 
-    # Clean up stale temp files before each test
-    rm -f "$test_bin" "$test_bin.tmp.o" "$test_output" "$compile_output"
+run_one_stdlib_test() {
+    local idx="$1"
+    local test_file="$2"
+    local test_name="$3"
+    local test_bin="$RUN_DIR/${test_name%.esk}"
+    local test_output="$RUN_DIR/${test_name%.esk}.out"
+    local compile_output="$RUN_DIR/${test_name%.esk}.compile.out"
+    local status_file="$RUN_DIR/${idx}.status"
+    local worker_tmp="$RUN_DIR/tmp_${idx}"
+    mkdir -p "$worker_tmp"
 
-    # Try to compile
-    if "$ESHKOL_RUN" -I "$ROOT_DIR/tests" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
-        # Compilation succeeded, try to run
-        if "$test_bin" > "$test_output" 2>&1; then
-            # test_condition_counts.esk intentionally registers 2 failing
-            # core.testing checks to assert pass/fail counts, then exits 0
-            # only when it prints "PASS: condition counts".
+    rm -f "$test_bin" "$test_bin.tmp.o" "$test_output" "$compile_output" "$status_file"
+
+    if TMPDIR="$worker_tmp" "$ESHKOL_RUN" -I "$ROOT_DIR/tests" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
+        if TMPDIR="$worker_tmp" "$test_bin" > "$test_output" 2>&1; then
             if [ "$test_name" = "test_condition_counts.esk" ]; then
                 if grep -Fxq "PASS: condition counts" "$test_output"; then
-                    echo -e "${GREEN}✅ PASS${NC}"
-                    ((PASS++)) || true
+                    echo "PASS" > "$status_file"
+                    printf "Testing %-50s ${GREEN}✅ PASS${NC}\n" "$test_name"
                 else
-                    echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
-                    head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
-                    RUNTIME_ERRORS+=("$test_name")
-                    ((FAIL++)) || true
+                    echo "RUNTIME_ERROR" > "$status_file"
+                    printf "Testing %-50s ${YELLOW}⚠ RUNTIME ERROR${NC}\n" "$test_name"
                 fi
-            # Check if there were any errors in output
-            # `error:` alone is a compiler diagnostic, not a verdict: these
-            # programs print their own FAIL lines and exit 0, so scan for
-            # failure markers too — anywhere on the line, not just column 0.
             elif eshkol_test_output_has_failure "$test_output" 'error:'; then
-                echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
-                head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
-                RUNTIME_ERRORS+=("$test_name")
-                ((FAIL++)) || true
+                echo "RUNTIME_ERROR" > "$status_file"
+                printf "Testing %-50s ${YELLOW}⚠ RUNTIME ERROR${NC}\n" "$test_name"
             else
-                echo -e "${GREEN}✅ PASS${NC}"
-                ((PASS++)) || true
+                echo "PASS" > "$status_file"
+                printf "Testing %-50s ${GREEN}✅ PASS${NC}\n" "$test_name"
             fi
         else
-            echo -e "${RED}❌ RUNTIME FAIL${NC}"
-            head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
-            FAILED_TESTS+=("$test_name")
-            ((FAIL++)) || true
+            echo "RUNTIME_FAIL" > "$status_file"
+            printf "Testing %-50s ${RED}❌ RUNTIME FAIL${NC}\n" "$test_name"
         fi
     else
-        echo -e "${RED}❌ COMPILE FAIL${NC}"
-        head -n "$FAILURE_LINES" "$compile_output" | sed 's/^/    /'
-        FAILED_TESTS+=("$test_name")
-        ((COMPILE_FAIL++)) || true
-        ((FAIL++)) || true
+        echo "COMPILE_FAIL" > "$status_file"
+        printf "Testing %-50s ${RED}❌ COMPILE FAIL${NC}\n" "$test_name"
     fi
+    rm -f "$test_bin" "$test_bin.tmp.o"
+    rm -rf "$worker_tmp"
+}
+
+declare -a ACTIVE_PIDS
+ACTIVE_PIDS=()
+
+wait_for_stdlib_slot() {
+    while [ "${#ACTIVE_PIDS[@]}" -ge "$MAX_JOBS" ]; do
+        local next_pids=()
+        local p
+        for p in "${ACTIVE_PIDS[@]}"; do
+            if kill -0 "$p" 2>/dev/null; then
+                next_pids+=("$p")
+            else
+                wait "$p" || true
+            fi
+        done
+        if [ "${#next_pids[@]}" -gt 0 ]; then
+            ACTIVE_PIDS=("${next_pids[@]}")
+        else
+            ACTIVE_PIDS=()
+        fi
+        if [ "${#ACTIVE_PIDS[@]}" -ge "$MAX_JOBS" ]; then
+            sleep 0.2
+        fi
+    done
+}
+
+for (( idx=0; idx<TEST_COUNT; idx++ )); do
+    if [ "$MAX_JOBS" -le 1 ]; then
+        run_one_stdlib_test "$idx" "${TEST_FILES[$idx]}" "${TEST_NAMES[$idx]}"
+    else
+        wait_for_stdlib_slot
+        ( run_one_stdlib_test "$idx" "${TEST_FILES[$idx]}" "${TEST_NAMES[$idx]}" ) &
+        ACTIVE_PIDS+=("$!")
+    fi
+done
+
+if [ "${#ACTIVE_PIDS[@]}" -gt 0 ]; then
+    for p in "${ACTIVE_PIDS[@]}"; do
+        wait "$p" || true
+    done
+fi
+
+for (( idx=0; idx<TEST_COUNT; idx++ )); do
+    test_name="${TEST_NAMES[$idx]}"
+    status_file="$RUN_DIR/${idx}.status"
+    test_output="$RUN_DIR/${test_name%.esk}.out"
+    compile_output="$RUN_DIR/${test_name%.esk}.compile.out"
+    verdict="RUNTIME_FAIL"
+    if [ -r "$status_file" ]; then
+        verdict=$(cat "$status_file")
+    fi
+    case "$verdict" in
+        PASS)
+            ((PASS++)) || true
+            ;;
+        RUNTIME_ERROR)
+            echo "  [detail] $test_name (RUNTIME ERROR):"
+            head -n "$FAILURE_LINES" "$test_output" 2>/dev/null | sed 's/^/    /'
+            RUNTIME_ERRORS+=("$test_name")
+            ((FAIL++)) || true
+            ;;
+        RUNTIME_FAIL)
+            echo "  [detail] $test_name (RUNTIME FAIL):"
+            head -n "$FAILURE_LINES" "$test_output" 2>/dev/null | sed 's/^/    /'
+            FAILED_TESTS+=("$test_name")
+            ((FAIL++)) || true
+            ;;
+        COMPILE_FAIL)
+            echo "  [detail] $test_name (COMPILE FAIL):"
+            head -n "$FAILURE_LINES" "$compile_output" 2>/dev/null | sed 's/^/    /'
+            FAILED_TESTS+=("$test_name")
+            ((COMPILE_FAIL++)) || true
+            ((FAIL++)) || true
+            ;;
+    esac
 done
 
 echo ""

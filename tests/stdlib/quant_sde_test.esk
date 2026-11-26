@@ -1,0 +1,266 @@
+;;; quant_sde_test.esk -- Executable verification suite for Pillar M9
+;;; Covers:
+;;;   - core.quant.sde       (deterministic seeded PRNG, Ito/Stratonovich SDE
+;;;                           solvers, exact Ito <-> Stratonovich conversion,
+;;;                           GBM/OU/CIR analytical mean & variance oracles,
+;;;                           1D conservative Fokker-Planck solver, discrete
+;;;                           LQR / Algebraic Riccati Equation solver)
+;;;   - core.quant.malliavin (smooth AD-differentiable normal CDF/PDF, exact
+;;;                           Black-Scholes pricing & Put-Call parity, native
+;;;                           AD Black-Scholes Greeks, antithetic pathwise
+;;;                           tangent-AD & Malliavin likelihood-ratio MC Greeks)
+
+(require stdlib)
+(require core.quant)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  [PASS] ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  [FAIL] ") (display name) (newline))))
+
+(define (approx= a b tol)
+  (<= (abs (- a b)) tol))
+
+(define (rel-close? got want rel-tol abs-tol)
+  (<= (abs (- got want)) (+ abs-tol (* rel-tol (abs want)))))
+
+(display "=== Pillar M9: Deterministic PRNG & Ito/Stratonovich SDEs ===") (newline)
+
+;; 100% deterministic PRNG reproducibility
+(let* ((r1 (make-rng 20261125))
+       (r2 (make-rng 20261125))
+       (r3 (make-rng 99999999))
+       (v1 (rng-normal-vector r1 8))
+       (v2 (rng-normal-vector r2 8))
+       (v3 (rng-normal-vector r3 8)))
+  (check "PRNG identical seed produces bit-identical normal sequence"
+         (let loop ((i 0))
+           (cond ((>= i 8) #t)
+                 ((= (vector-ref v1 i) (vector-ref v2 i)) (loop (+ i 1)))
+                 (else #f))))
+  (check "PRNG distinct seed produces distinct normal sequence"
+         (not (= (vector-ref v1 0) (vector-ref v3 0)))))
+
+;; Exact Ito <-> Stratonovich drift conversion (analytic AND native AD sigma')
+(let* ((mu-gbm    (lambda (x t) (* 0.12 x)))
+       (sig-gbm   (lambda (x t) (* 0.40 x)))
+       (sigp-gbm  (lambda (x t) 0.40))
+       (mu-s-ad   (ito->stratonovich-drift mu-gbm sig-gbm))
+       (mu-s-ana  (ito->stratonovich-drift mu-gbm sig-gbm sigp-gbm))
+       (mu-back   (stratonovich->ito-drift mu-s-ad sig-gbm)))
+  ;; For GBM: mu_Strat = (mu - 0.5 sigma^2) x = (0.12 - 0.08) x = 0.04 x
+  (check "Ito->Stratonovich conversion via native AD matches analytic 0.04*x"
+         (and (approx= (mu-s-ad 2.5 0.0) (* 0.04 2.5) 1e-12)
+              (approx= (mu-s-ad 2.5 0.0) (mu-s-ana 2.5 0.0) 1e-12)))
+  (check "Stratonovich->Ito roundtrip recovers original Ito drift"
+         (approx= (mu-back 2.5 0.0) (mu-gbm 2.5 0.0) 1e-12))
+
+  ;; Pathwise agreement on SAME fine Brownian trajectory:
+  ;; Milstein (Ito) with mu_Ito == Heun (Stratonovich) with mu_Strat == exact GBM path!
+  (let* ((rng (make-rng 424242))
+         (steps 400)
+         (T 1.0)
+         (x0 10.0)
+         (zs (rng-normal-vector rng steps))
+         (dt (/ T (exact->inexact steps)))
+         (wt (let loop ((i 0) (s 0.0))
+               (if (< i steps) (loop (+ i 1) (+ s (* (sqrt dt) (vector-ref zs i)))) s)))
+         (x-exact (* x0 (exp (+ (* (- 0.12 (* 0.5 0.40 0.40)) T) (* 0.40 wt)))))
+         (x-mil   (sde-milstein-path mu-gbm sig-gbm x0 0.0 T zs sigp-gbm))
+         (x-heun  (sde-heun-path mu-s-ana sig-gbm x0 0.0 T zs))
+         ;; Negative counterexample: Heun with UNCONVERTED Ito drift diverges!
+         (x-heun-unconv (sde-heun-path mu-gbm sig-gbm x0 0.0 T zs)))
+    (check "Milstein (Ito) matches exact GBM trajectory pathwise"
+           (rel-close? x-mil x-exact 0.005 1e-4))
+    (check "Heun (Stratonovich with converted drift) matches exact GBM pathwise"
+           (rel-close? x-heun x-exact 0.005 1e-4))
+    (check "Counterexample: Heun without Ito->Stratonovich drift shift diverges"
+           (> (abs (- x-heun-unconv x-exact)) 0.3))))
+
+;; GBM, OU, CIR Monte Carlo vs Analytical Mean & Variance Oracles
+(let* ((gbm-stats (sde-monte-carlo-stats
+                    (lambda (r)
+                      (sde-milstein (lambda (x t) (* 0.08 x))
+                                    (lambda (x t) (* 0.25 x))
+                                    100.0 0.0 1.0 25 r (lambda (x t) 0.25)))
+                    1200 1001))
+       (gbm-m (gbm-analytic-mean 100.0 0.08 1.0))
+       (gbm-v (gbm-analytic-var 100.0 0.08 0.25 1.0)))
+  (check "GBM Monte Carlo mean matches analytical S_0 exp(mu T)"
+         (rel-close? (car gbm-stats) gbm-m 0.03 0.5))
+  (check "GBM Monte Carlo variance matches analytical oracle"
+         (rel-close? (cdr gbm-stats) gbm-v 0.12 5.0)))
+
+(let* ((ou-stats (sde-monte-carlo-stats
+                   (lambda (r)
+                     (sde-euler-maruyama (lambda (x t) (* 1.5 (- 2.0 x)))
+                                         (lambda (x t) 0.6)
+                                         0.5 0.0 1.0 40 r))
+                   1200 2002))
+       (ou-m (ou-analytic-mean 0.5 1.5 2.0 1.0))
+       (ou-v (ou-analytic-var 1.5 0.6 1.0)))
+  (check "OU Monte Carlo mean matches analytical oracle"
+         (rel-close? (car ou-stats) ou-m 0.03 0.05))
+  (check "OU Monte Carlo variance matches analytical oracle"
+         (rel-close? (cdr ou-stats) ou-v 0.12 0.02)))
+
+(let* ((cir-stats (sde-monte-carlo-stats
+                    (lambda (r)
+                      (sde-euler-maruyama (lambda (x t) (* 2.0 (- 0.08 x)))
+                                          (lambda (x t) (* 0.2 (sqrt (max x 0.0))))
+                                          0.04 0.0 1.0 60 r))
+                    1200 3003))
+       (cir-m (cir-analytic-mean 0.04 2.0 0.08 1.0))
+       (cir-v (cir-analytic-var 0.04 2.0 0.08 0.2 1.0)))
+  (check "CIR Feller condition 2*kappa*theta >= sigma^2 positive & negative"
+         (and (cir-feller-satisfied? 2.0 0.08 0.2)
+              (not (cir-feller-satisfied? 0.5 0.02 0.5))))
+  (check "CIR Monte Carlo mean matches analytical oracle"
+         (rel-close? (car cir-stats) cir-m 0.04 0.003))
+  (check "CIR Monte Carlo variance matches analytical oracle"
+         (rel-close? (cdr cir-stats) cir-v 0.15 0.0005)))
+
+(display "=== Pillar M9: 1D Conservative Fokker-Planck Solver ===") (newline)
+
+;; Evolve an initial point mass under OU drift theta*(mu - x) and diffusion sigma
+(let* ((n 41)
+       (x-min -4.0)
+       (dx 0.2)
+       (dt 0.005)
+       (p0 (make-vector n 0.0)))
+  (vector-set! p0 15 1.0) ;; centered at x = -4.0 + 15.5 * 0.2 = -0.9
+  (let* ((p-end (fokker-planck-evolve p0 x-min dx dt 80
+                                      (lambda (x) (* 1.0 (- 0.5 x)))
+                                      (lambda (x) 0.8)))
+         (mass (fokker-planck-total-mass p-end))
+         (fp-mean (let loop ((i 0) (acc 0.0))
+                    (if (< i n)
+                        (loop (+ i 1) (+ acc (* (+ x-min (* (+ i 0.5) dx)) (vector-ref p-end i))))
+                        acc)))
+         (ana-mean (ou-analytic-mean -0.9 1.0 0.5 (* 80 dt))))
+    (check "Fokker-Planck exact probability mass conservation sum p_i = 1"
+           (approx= mass 1.0 1e-13))
+    (check "Fokker-Planck preserves non-negativity p_i >= 0 everywhere"
+           (fokker-planck-nonnegative? p-end))
+    (check "Fokker-Planck mean matches analytical OU mean evolution"
+           (approx= fp-mean ana-mean 0.04))
+    ;; Negative counterexample: excessive CFL time step breaks positivity
+    (let ((p-unstable (fokker-planck-step p0 x-min dx 0.5
+                                          (lambda (x) (* 1.0 (- 0.5 x)))
+                                          (lambda (x) 0.8))))
+      (check "Fokker-Planck counterexample: CFL violation yields negative density"
+             (not (fokker-planck-nonnegative? p-unstable))))))
+
+(display "=== Pillar M9: Discrete-Time LQR / Riccati Optimal Control ===") (newline)
+
+;; 1D exact algebraic check: A=1, B=1, Q=1, R=1 => P = (1 + sqrt(5))/2 (golden ratio!)
+(let* ((A1 (vector (vector 1.0)))
+       (B1 (vector (vector 1.0)))
+       (Q1 (vector (vector 1.0)))
+       (R1 (vector (vector 1.0)))
+       (sol1 (lqr-solve-dare A1 B1 Q1 R1 200 1e-13))
+       (P1 (car sol1))
+       (K1 (cadr sol1))
+       (res1 (cadddr sol1))
+       (phi (/ (+ 1.0 (sqrt 5.0)) 2.0)))
+  (check "1D LQR DARE solution equals golden ratio (1+sqrt(5))/2"
+         (approx= (vector-ref (vector-ref P1 0) 0) phi 1e-11))
+  (check "1D LQR DARE residual < 1e-12" (< res1 1e-12))
+  (check "1D LQR closed-loop gain stabilizes |A - B K| < 1"
+         (< (abs (- 1.0 (vector-ref (vector-ref K1 0) 0))) 1.0))
+  (check "1D LQR counterexample: wrong P has large DARE residual"
+         (> (lqr-dare-residual A1 B1 Q1 R1 (vector (vector 0.5))) 0.5)))
+
+;; 2D discrete double-integrator system
+(let* ((A2 (vector (vector 1.0 0.1) (vector 0.0 1.0)))
+       (B2 (vector (vector 0.005) (vector 0.1)))
+       (Q2 (vector (vector 1.0 0.0) (vector 0.0 0.1)))
+       (R2 (vector (vector 0.05)))
+       (sol2 (lqr-solve-dare A2 B2 Q2 R2 500 1e-11))
+       (P2 (car sol2))
+       (res2 (cadddr sol2)))
+  (check "2D double-integrator LQR DARE residual < 1e-10" (< res2 1e-10))
+  (check "2D double-integrator LQR P is symmetric"
+         (approx= (vector-ref (vector-ref P2 0) 1)
+                  (vector-ref (vector-ref P2 1) 0)
+                  1e-11)))
+
+(display "=== Pillar M9: Black-Scholes & Pathwise-AD / Malliavin Greeks ===") (newline)
+
+;; Smooth Gauss-Legendre normal CDF & native AD derivative == PDF
+(check "Normal CDF accuracy at 0, 1.96, and symmetry Phi(-x) = 1 - Phi(x)"
+       (and (approx= (bs-normal-cdf 0.0) 0.5 1e-14)
+            (approx= (bs-normal-cdf 1.959963984540054) 0.975 1e-12)
+            (approx= (+ (bs-normal-cdf 1.37) (bs-normal-cdf -1.37)) 1.0 1e-14)))
+(check "Native AD d/dx bs-normal-cdf(x) == bs-normal-pdf(x) at x = 0.75 & -1.2"
+       (and (approx= (derivative bs-normal-cdf 0.75) (bs-normal-pdf 0.75) 1e-12)
+            (approx= (derivative bs-normal-cdf -1.2) (bs-normal-pdf -1.2) 1e-12)))
+
+(let* ((S0 100.0) (K 105.0) (r 0.05) (sigma 0.25) (T 1.0)
+       (c-price (bs-call-price S0 K r sigma T))
+       (p-price (bs-put-price S0 K r sigma T))
+       (parity-rhs (- S0 (* K (exp (- (* r T))))))
+       ;; Analytical closed-form Greeks
+       (c-delta (bs-call-delta S0 K r sigma T))
+       (c-vega  (bs-call-vega  S0 K r sigma T))
+       (c-rho   (bs-call-rho   S0 K r sigma T))
+       (p-delta (bs-put-delta  S0 K r sigma T))
+       (p-vega  (bs-put-vega   S0 K r sigma T))
+       (p-rho   (bs-put-rho    S0 K r sigma T))
+       ;; Native AD on closed-form Black-Scholes
+       (ad-cd   (bs-ad-call-delta S0 K r sigma T))
+       (ad-cv   (bs-ad-call-vega  S0 K r sigma T))
+       (ad-cr   (bs-ad-call-rho   S0 K r sigma T))
+       (ad-cvec (bs-ad-call-greeks S0 K r sigma T))
+       (ad-pd   (bs-ad-put-delta S0 K r sigma T))
+       (ad-pv   (bs-ad-put-vega  S0 K r sigma T))
+       (ad-pr   (bs-ad-put-rho   S0 K r sigma T))
+       ;; Deterministic antithetic Monte Carlo Pathwise Tangent-AD (3000 pairs = 6000 paths)
+       (mc-call (mc-pathwise-ad-call-greeks S0 K r sigma T 3000 77777))
+       (mc-put  (mc-pathwise-ad-put-greeks  S0 K r sigma T 3000 77777))
+       ;; Malliavin Likelihood-Ratio estimators
+       (lr-cd   (mc-malliavin-call-delta S0 K r sigma T 4000 88888))
+       (lr-cv   (mc-malliavin-call-vega  S0 K r sigma T 4000 88888))
+       (dig-ana (bs-digital-call-delta   S0 K r sigma T))
+       (dig-lr  (mc-malliavin-digital-delta S0 K r sigma T 5000 99999)))
+  (check "Black-Scholes Put-Call parity C - P = S_0 - K exp(-rT)"
+         (approx= (- c-price p-price) parity-rhs 1e-11))
+  (check "Black-Scholes native-AD Call Delta/Vega/Rho match closed form (< 1e-10)"
+         (and (approx= ad-cd c-delta 1e-10)
+              (approx= ad-cv c-vega  1e-10)
+              (approx= ad-cr c-rho   1e-10)))
+  (check "Black-Scholes native-AD vector gradient matches (Delta, Vega, Rho)"
+         (and (approx= (vref ad-cvec 0) c-delta 1e-10)
+              (approx= (vref ad-cvec 1) c-vega  1e-10)
+              (approx= (vref ad-cvec 2) c-rho   1e-10)))
+  (check "Black-Scholes native-AD Put Delta/Vega/Rho match closed form (< 1e-10)"
+         (and (approx= ad-pd p-delta 1e-10)
+              (approx= ad-pv p-vega  1e-10)
+              (approx= ad-pr p-rho   1e-10)))
+  (check "MC Pathwise Tangent-AD Call price & Delta/Vega/Rho match Black-Scholes"
+         (and (rel-close? (list-ref mc-call 0) c-price 0.02 0.25)
+              (rel-close? (list-ref mc-call 1) c-delta 0.02 0.02)
+              (rel-close? (list-ref mc-call 2) c-vega  0.03 1.0)
+              (rel-close? (list-ref mc-call 3) c-rho   0.03 1.2)))
+  (check "MC Pathwise Tangent-AD Put price & Delta/Vega/Rho match Black-Scholes"
+         (and (rel-close? (list-ref mc-put 0) p-price 0.02 0.25)
+              (rel-close? (list-ref mc-put 1) p-delta 0.02 0.02)
+              (rel-close? (list-ref mc-put 2) p-vega  0.03 1.0)
+              (rel-close? (list-ref mc-put 3) p-rho   0.03 1.2)))
+  (check "Malliavin Likelihood-Ratio Call Delta & Vega match Black-Scholes"
+         (and (rel-close? lr-cd c-delta 0.05 0.03)
+              (rel-close? lr-cv c-vega  0.06 2.0)))
+  (check "Malliavin Likelihood-Ratio Digital Call Delta matches closed form"
+         (rel-close? dig-lr dig-ana 0.08 0.002)))
+
+(newline)
+(display "quant_sde_test: ") (display pass-count) (display " passed, ")
+(display fail-count) (display " failed") (newline)
+(if (= fail-count 0)
+    (begin (display "PASS: quant_sde_test") (newline) (exit 0))
+    (begin (display "FAIL: quant_sde_test") (newline) (exit 1)))

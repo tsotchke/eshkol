@@ -1,0 +1,224 @@
+;;; core.physics.lattice_qft -- 2D U(1) & SU(2) Lattice Gauge Theory & AD HMC Force
+;;;
+;;; Usage: (require core.physics.lattice_qft)
+;;;
+;;; Implements:
+;;;   - 2D periodic Lx x Ly lattice indexing for sites and directed links
+;;;   - 2D U(1) Wilson plaquette action S_W[theta] = beta sum_p (1 - cos theta_p)
+;;;   - Exact local U(1) gauge transformations and action gauge invariance check
+;;;   - Compiler-differentiable HMC force F = -grad_theta S_W[theta] via
+;;;     Eshkol's native `gradient`, verified against exact analytical sin(theta_p)
+;;;     force and central finite-difference oracle
+;;;   - Exact 2D U(1) strong-coupling plaquette expectation <cos theta_p> =
+;;;     I_1(beta)/I_0(beta) cross-checked against direct numerical quadrature
+;;;   - 2D SU(2) Wilson plaquette action S_W[U] = beta sum_p (1 - (1/2) Re Tr U_p)
+;;;     and exact local SU(2) gauge invariance verifier
+
+(require stdlib)
+(require core.geometry.gauge)
+
+(provide lattice-site-idx lattice-link-idx
+         u1-plaquette-angle u1-wilson-action
+         u1-lattice-gauge-transform u1-verify-action-gauge-invariance
+         u1-hmc-force-ad u1-hmc-force-analytic
+         bessel-i0 bessel-i1 u1-strong-coupling-plaquette
+         u1-single-plaquette-quadrature
+         su2-lattice-plaquette su2-wilson-action
+         su2-lattice-gauge-transform su2-verify-action-gauge-invariance)
+
+;; ============================================================================
+;; 2D Periodic Lattice Indexing
+;; ============================================================================
+;; Site (x, y) in Z_{Lx} x Z_{Ly} -> x + Lx * y
+;; Directed link from (x, y) in direction mu in {0 (+x), 1 (+y)}:
+;;   link-idx = 2 * site-idx(x, y) + mu
+
+(define (lattice-site-idx lx ly x y)
+  (+ (modulo x lx) (* lx (modulo y ly))))
+
+(define (lattice-link-idx lx ly x y mu)
+  (+ (* 2 (lattice-site-idx lx ly x y)) mu))
+
+;; ============================================================================
+;; 2D U(1) Lattice Gauge Theory
+;; ============================================================================
+
+;; Oriented plaquette angle at lower-left corner (x, y):
+;;   theta_p(x, y) = theta(x,y,0) + theta(x+1,y,1) - theta(x,y+1,0) - theta(x,y,1)
+;; Uses vref so Eshkol's `gradient` tracks every link variable natively.
+(define (u1-plaquette-angle lx ly theta x y)
+  (let ((i0 (lattice-link-idx lx ly x y 0))
+        (i1 (lattice-link-idx lx ly (+ x 1) y 1))
+        (i2 (lattice-link-idx lx ly x (+ y 1) 0))
+        (i3 (lattice-link-idx lx ly x y 1)))
+    (- (+ (vref theta i0) (vref theta i1))
+       (+ (vref theta i2) (vref theta i3)))))
+
+;; Wilson plaquette action S_W[theta] = beta * sum_{x,y} (1 - cos(theta_p(x,y)))
+(define (u1-wilson-action lx ly beta theta)
+  (let ly-loop ((y 0) (acc 0.0))
+    (if (< y ly)
+        (ly-loop (+ y 1)
+                 (let lx-loop ((x 0) (a2 acc))
+                   (if (< x lx)
+                       (let ((tp (u1-plaquette-angle lx ly theta x y)))
+                         (lx-loop (+ x 1) (+ a2 (* beta (- 1.0 (cos tp))))))
+                       a2)))
+        acc)))
+
+;; Local U(1) gauge transformation:
+;;   theta'_{x,y,0} = theta_{x,y,0} + alpha(x,y) - alpha(x+1,y)
+;;   theta'_{x,y,1} = theta_{x,y,1} + alpha(x,y) - alpha(x,y+1)
+(define (u1-lattice-gauge-transform lx ly theta alpha)
+  (let* ((nlinks (* 2 lx ly))
+         (out (make-vector nlinks 0.0)))
+    (let ly-loop ((y 0))
+      (if (< y ly)
+          (begin
+            (let lx-loop ((x 0))
+              (if (< x lx)
+                  (let* ((a0 (vector-ref alpha (lattice-site-idx lx ly x y)))
+                         (ax (vector-ref alpha (lattice-site-idx lx ly (+ x 1) y)))
+                         (ay (vector-ref alpha (lattice-site-idx lx ly x (+ y 1))))
+                         (ix (lattice-link-idx lx ly x y 0))
+                         (iy (lattice-link-idx lx ly x y 1)))
+                    (vector-set! out ix (+ (vector-ref theta ix) (- a0 ax)))
+                    (vector-set! out iy (+ (vector-ref theta iy) (- a0 ay)))
+                    (lx-loop (+ x 1)))))
+            (ly-loop (+ y 1)))))
+    out))
+
+(define (u1-verify-action-gauge-invariance lx ly beta theta alpha . opt-tol)
+  (let* ((tol (if (null? opt-tol) 1e-12 (car opt-tol)))
+         (s0 (u1-wilson-action lx ly beta theta))
+         (tp (u1-lattice-gauge-transform lx ly theta alpha))
+         (s1 (u1-wilson-action lx ly beta tp)))
+    (<= (abs (- s0 s1)) tol)))
+
+;; Compiler-differentiable HMC force F = -grad_theta S_W[theta] via native `gradient`
+(define (u1-hmc-force-ad lx ly beta theta)
+  (let* ((g (gradient (lambda (th) (u1-wilson-action lx ly beta th)) theta))
+         (n (vector-length g))
+         (f (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! f i (- (vref g i)))
+                 (loop (+ i 1)))
+          f))))
+
+;; Exact analytical HMC force F_e = -dS_W / dtheta_e:
+;;   For horizontal link (x,y,0): enters p(x,y) with +1 and p(x,y-1) with -1
+;;     => dS/dtheta = beta * (sin(theta_p(x,y)) - sin(theta_p(x,y-1)))
+;;     => F = -beta * (sin(theta_p(x,y)) - sin(theta_p(x,y-1)))
+;;   For vertical link (x,y,1): enters p(x-1,y) with +1 and p(x,y) with -1
+;;     => dS/dtheta = beta * (sin(theta_p(x-1,y)) - sin(theta_p(x,y)))
+;;     => F = -beta * (sin(theta_p(x-1,y)) - sin(theta_p(x,y)))
+(define (u1-hmc-force-analytic lx ly beta theta)
+  (let* ((nlinks (* 2 lx ly))
+         (f (make-vector nlinks 0.0)))
+    (let ly-loop ((y 0))
+      (if (< y ly)
+          (begin
+            (let lx-loop ((x 0))
+              (if (< x lx)
+                  (let* ((tp-cur (u1-plaquette-angle lx ly theta x y))
+                         (tp-down (u1-plaquette-angle lx ly theta x (- y 1)))
+                         (tp-left (u1-plaquette-angle lx ly theta (- x 1) y))
+                         (ix (lattice-link-idx lx ly x y 0))
+                         (iy (lattice-link-idx lx ly x y 1)))
+                    (vector-set! f ix (- (* beta (- (sin tp-cur) (sin tp-down)))))
+                    (vector-set! f iy (- (* beta (- (sin tp-left) (sin tp-cur)))))
+                    (lx-loop (+ x 1)))))
+            (ly-loop (+ y 1)))))
+    f))
+
+;; ============================================================================
+;; Strong-Coupling Plaquette Expectation <cos theta_p> = I_1(beta) / I_0(beta)
+;; ============================================================================
+
+;; Modified Bessel function I_0(x) = sum_{k=0}^K (x/2)^{2k} / (k!)^2
+(define (bessel-i0 x)
+  (let ((q (* 0.25 x x)))
+    (let loop ((k 1) (term 1.0) (acc 1.0))
+      (if (or (> k 30) (< (abs term) 1e-16))
+          acc
+          (let ((next (* term (/ q (exact->inexact (* k k))))))
+            (loop (+ k 1) next (+ acc next)))))))
+
+;; Modified Bessel function I_1(x) = (x/2) sum_{k=0}^K (x/2)^{2k} / (k! (k+1)!)
+(define (bessel-i1 x)
+  (let ((q (* 0.25 x x)))
+    (let loop ((k 1) (term (* 0.5 x)) (acc (* 0.5 x)))
+      (if (or (> k 30) (< (abs term) 1e-16))
+          acc
+          (let ((next (* term (/ q (exact->inexact (* k (+ k 1)))))))
+            (loop (+ k 1) next (+ acc next)))))))
+
+(define (u1-strong-coupling-plaquette beta)
+  (/ (bessel-i1 beta) (bessel-i0 beta)))
+
+;; Independent numerical oracle via periodic trapezoidal rule on [0, 2*pi]
+;; (exponentially convergent for analytic periodic integrands!)
+(define (u1-single-plaquette-quadrature beta n-pts)
+  (let ((two-pi 6.283185307179586))
+    (let loop ((k 0) (num 0.0) (den 0.0))
+      (if (< k n-pts)
+          (let* ((th (/ (* two-pi (exact->inexact k)) (exact->inexact n-pts)))
+                 (c (cos th))
+                 (w (exp (* beta c))))
+            (loop (+ k 1) (+ num (* c w)) (+ den w)))
+          (/ num den)))))
+
+;; ============================================================================
+;; 2D SU(2) Lattice Gauge Theory
+;; ============================================================================
+
+;; Plaquette holonomy U_p(x, y) = U_{x,y,0} U_{x+1,y,1} U_{x,y+1,0}^d U_{x,y,1}^d
+(define (su2-lattice-plaquette lx ly links x y)
+  (let ((u0 (vector-ref links (lattice-link-idx lx ly x y 0)))
+        (u1 (vector-ref links (lattice-link-idx lx ly (+ x 1) y 1)))
+        (u2 (vector-ref links (lattice-link-idx lx ly x (+ y 1) 0)))
+        (u3 (vector-ref links (lattice-link-idx lx ly x y 1))))
+    (su2-plaquette-holonomy u0 u1 u2 u3)))
+
+;; SU(2) Wilson action: S_W[U] = beta * sum_{x,y} (1 - (1/2) Re Tr U_p(x,y))
+;; Stays exact over Q when beta and all link entries are exact rationals!
+(define (su2-wilson-action lx ly beta links)
+  (let ly-loop ((y 0) (acc 0))
+    (if (< y ly)
+        (ly-loop (+ y 1)
+                 (let lx-loop ((x 0) (a2 acc))
+                   (if (< x lx)
+                       (let* ((up (su2-lattice-plaquette lx ly links x y))
+                              (re-tr (cx-re (su2-trace up))))
+                         (lx-loop (+ x 1) (+ a2 (* beta (- 1 (* (/ 1 2) re-tr))))))
+                       a2)))
+        acc)))
+
+;; Local SU(2) gauge transformation: U'_{x,y,mu} = g_{x,y} U_{x,y,mu} g_{x+mu,y}^dagger
+(define (su2-lattice-gauge-transform lx ly links g-field)
+  (let* ((nlinks (* 2 lx ly))
+         (out (make-vector nlinks #f)))
+    (let ly-loop ((y 0))
+      (if (< y ly)
+          (begin
+            (let lx-loop ((x 0))
+              (if (< x lx)
+                  (let* ((g0 (vector-ref g-field (lattice-site-idx lx ly x y)))
+                         (gx (vector-ref g-field (lattice-site-idx lx ly (+ x 1) y)))
+                         (gy (vector-ref g-field (lattice-site-idx lx ly x (+ y 1))))
+                         (ix (lattice-link-idx lx ly x y 0))
+                         (iy (lattice-link-idx lx ly x y 1)))
+                    (vector-set! out ix (su2-gauge-transform-link g0 (vector-ref links ix) gx))
+                    (vector-set! out iy (su2-gauge-transform-link g0 (vector-ref links iy) gy))
+                    (lx-loop (+ x 1)))))
+            (ly-loop (+ y 1)))))
+    out))
+
+(define (su2-verify-action-gauge-invariance lx ly beta links g-field . opt-tol)
+  (let* ((s0 (su2-wilson-action lx ly beta links))
+         (lp (su2-lattice-gauge-transform lx ly links g-field))
+         (s1 (su2-wilson-action lx ly beta lp)))
+    (if (and (null? opt-tol) (exact? s0) (exact? s1))
+        (= s0 s1)
+        (<= (abs (- s0 s1)) (if (null? opt-tol) 1e-12 (car opt-tol))))))

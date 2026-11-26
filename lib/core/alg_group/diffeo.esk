@@ -1,0 +1,255 @@
+;;; core.alg_group.diffeo -- Strict separation of smooth diffeomorphism vs
+;;;   algebraic group isomorphism, discrete pi_1 covering obstructions,
+;;;   exact rational Cayley transform, BCH order-4 series, exact rational
+;;;   Hilbert-Mumford GIT & Kempf-Ness moment maps, and truncated SDiff(T^2)
+;;;   volume-preserving diffeomorphism Lie algebra (ADR-0063).
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.hodge.structure)
+
+(provide
+  alg-group-equivalence-classify
+  sl2r-to-su11-cayley-iso su2-to-so3-adjoint-cover
+  cayley-transform-exact cayley-inverse-exact
+  bch-order4-exact
+  git-hilbert-mumford-weight kempf-ness-moment-map-exact
+  sdiff-t2-bracket sdiff-t2-verify-jacobi)
+
+;; ---------------------------------------------------------------------------
+;; 1. Strict Separation: Algebraic Isomorphism vs Real-Lie vs Local/Global Diffeo
+;; ---------------------------------------------------------------------------
+;; Returns structured record:
+;;   #(group-equivalence pair-name algebraic-iso? real-lie-iso?
+;;                       locally-diffeo? globally-diffeo? pi1-obstruction witness)
+
+(define (alg-group-equivalence-classify pair-sym)
+  (cond
+    ((eq? pair-sym 'SL2R-vs-SU11)
+     (vector 'group-equivalence 'SL2R-vs-SU11
+             #t #t #t #t 'none
+             'cayley-conjugation-C))
+    ((eq? pair-sym 'SU2-vs-SO3)
+     (vector 'group-equivalence 'SU2-vs-SO3
+             #f #f #t #f 'pi1-SU2=1-vs-pi1-SO3=Z/2
+             'adjoint-double-cover-kernel-pm-I))
+    ((eq? pair-sym 'Ga-R-vs-Gm-pos-R)
+     ;; (R, +) and (R_{>0}, *) are globally smoothly diffeomorphic via exp/ln,
+     ;; yet NOT algebraically isomorphic (no nonconstant polynomial p satisfies p(x+y)=p(x)p(y)).
+     (vector 'group-equivalence 'Ga-R-vs-Gm-pos-R
+             #f #t #t #t 'none
+             'algebraic-obstruction-no-nonconstant-polynomial-homomorphism))
+    ((eq? pair-sym 'SU2-vs-SL2R)
+     ;; Same complexification SL_2(C), distinct real forms: Killing signature (0,3) vs (2,1).
+     (vector 'group-equivalence 'SU2-vs-SL2R
+             #f #f #f #f 'distinct-real-forms-compact-S3-vs-noncompact-S1xR2
+             'killing-signature-obstruction))
+    (else
+     (error "alg-group-equivalence-classify: unknown benchmark pair" pair-sym))))
+
+;; Explicit real-algebraic isomorphism SL_2(R) -> SU(1,1): g |-> C * g * C^{-1}
+;; with C = [[1 -i] [1 i]], C^{-1} = (1/2) [[1 1] [i -i]].
+(define (sl2r-to-su11-cayley-iso g-hq)
+  (let ((C (vector (vector (hq 1 0) (hq 0 -1))
+                   (vector (hq 1 0) (hq 0 1))))
+        (Cinv (vector (vector (hq 1/2 0) (hq 1/2 0))
+                      (vector (hq 0 1/2) (hq 0 -1/2)))))
+    (hq-mat-mul (hq-mat-mul C g-hq) Cinv)))
+
+;; Explicit 2-to-1 adjoint covering homomorphism Ad: SU(2) -> SO(3) over Q[i].
+;; For u = [[a b] [-conj(b) conj(a)]] in SU(2) with |a|^2 + |b|^2 = 1,
+;; acts by conjugation on traceless skew-Hermitian basis (i*sigma_x, i*sigma_y, i*sigma_z),
+;; mapping BOTH +u and -u to the exact same R in SO(3)!
+(define (su2-to-so3-adjoint-cover u)
+  (let* ((i-sx (vector (vector (hq 0 0) (hq 0 1)) (vector (hq 0 1) (hq 0 0))))
+         (i-sy (vector (vector (hq 0 0) (hq 1 0)) (vector (hq -1 0) (hq 0 0))))
+         (i-sz (vector (vector (hq 0 1) (hq 0 0)) (vector (hq 0 0) (hq 0 -1))))
+         (basis (vector i-sx i-sy i-sz))
+         (udag (hq-mat-dagger u))
+         (R (exact-matrix-zero 3 3)))
+    ;; Inner product <X, Y> = -(1/2) Tr(X Y) is orthonormal on (i-sx, i-sy, i-sz)
+    (let lj ((j 0))
+      (if (< j 3)
+          (let ((conj-bj (hq-mat-mul (hq-mat-mul u (vector-ref basis j)) udag)))
+            (let li ((i 0))
+              (if (< i 3)
+                  (let* ((P (hq-mat-mul (vector-ref basis i) conj-bj))
+                         (tr (hq+ (hq-mat-ref P 0 0) (hq-mat-ref P 1 1)))
+                         (val (hq* (hq -1/2 0) tr)))
+                    (if (not (= (hq-im val) 0))
+                        (error "su2-to-so3-adjoint-cover: non-real entry (input not in SU(2))"))
+                    (exact-matrix-set! R i j (hq-re val))
+                    (li (+ i 1)))))
+            (lj (+ j 1)))))
+    R))
+
+;; ---------------------------------------------------------------------------
+;; 2. Exact Rational Cayley Transform: X |-> (I - X)(I + X)^{-1}
+;;    Birational algebraic diffeomorphism so(n) --> SO(n) and sp(2n) --> Sp(2n)!
+;; ---------------------------------------------------------------------------
+
+(define (rat-mat-id n)
+  (let ((I (exact-matrix-zero n n)))
+    (let loop ((i 0)) (if (< i n) (begin (exact-matrix-set! I i i 1) (loop (+ i 1)))))
+    I))
+
+(define (rat-mat-add2 A B)
+  (let* ((n (exact-matrix-rows A)) (R (exact-matrix-zero n n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (exact-matrix-set! R i j (+ (exact-matrix-ref A i j)
+                                                     (exact-matrix-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-mat-sub2 A B)
+  (let* ((n (exact-matrix-rows A)) (R (exact-matrix-zero n n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (exact-matrix-set! R i j (- (exact-matrix-ref A i j)
+                                                     (exact-matrix-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (cayley-transform-exact X)
+  (let* ((n (exact-matrix-rows X))
+         (I (rat-mat-id n))
+         (I-minus-X (rat-mat-sub2 I X))
+         (I-plus-X  (rat-mat-add2 I X))
+         (inv (exact-inverse I-plus-X)))
+    (if (not inv) (error "cayley-transform-exact: -1 is an eigenvalue of X"))
+    (exact-matrix-mul I-minus-X inv)))
+
+(define (cayley-inverse-exact g)
+  ;; Inverse of g = (I-X)(I+X)^{-1} is X = (I-g)(I+g)^{-1} (Cayley is an involution!)
+  (cayley-transform-exact g))
+
+;; ---------------------------------------------------------------------------
+;; 3. Exact Baker-Campbell-Hausdorff (BCH) Series through Order 4 over Q
+;;    Z = X + Y + 1/2 [X,Y] + 1/12 ([X,[X,Y]] - [Y,[X,Y]]) - 1/24 [Y,[X,[X,Y]]]
+;; ---------------------------------------------------------------------------
+
+(define (rat-scale s M)
+  (let* ((n (exact-matrix-rows M)) (R (exact-matrix-zero n n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (exact-matrix-set! R i j (* s (exact-matrix-ref M i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-bracket A B)
+  (rat-mat-sub2 (exact-matrix-mul A B) (exact-matrix-mul B A)))
+
+(define (bch-order4-exact X Y)
+  (let* ((xy (rat-bracket X Y))
+         (xxy (rat-bracket X xy))
+         (yxy (rat-bracket Y xy))
+         (yxxy (rat-bracket Y xxy)))
+    (rat-mat-add2
+      (rat-mat-add2 X Y)
+      (rat-mat-add2
+        (rat-scale 1/2 xy)
+        (rat-mat-add2
+          (rat-scale 1/12 (rat-mat-sub2 xxy yxy))
+          (rat-scale -1/24 yxxy))))))
+
+;; ---------------------------------------------------------------------------
+;; 4. Exact Rational GIT Stability (Hilbert-Mumford) & Kempf-Ness Moment Map
+;; ---------------------------------------------------------------------------
+;; For a 1-parameter subgroup lambda with exact integer weights (w_1 ... w_n)
+;; acting diagonally on projective vector x = (x_1 ... x_n) over exact Q:
+;;   Hilbert-Mumford numerical weight mu(x, lambda) = min { w_i : x_i != 0 }
+;;   (under standard convention: semistable iff mu(x, lambda) <= 0 for all lambda,
+;;    i.e., 0 lies in the convex hull of active weights; stable iff < 0 strictly!).
+;; Exact rational Kempf-Ness moment map for U(1)-torus action with weights w:
+;;   mu_K(x) = (sum_i w_i * |x_i|^2) / (sum_i |x_i|^2) in exact Q!
+;; Exact theorem: mu_K(x) = 0 ==> x is GIT polystable (strictly in convex hull).
+
+(define (git-hilbert-mumford-weight x-vec weights-vec)
+  (let ((n (vector-length x-vec)))
+    (let loop ((i 0) (mn #f) (mx #f))
+      (if (= i n)
+          (if (not mn)
+              (error "git-hilbert-mumford-weight: zero vector not in projective space")
+              (vector 'hm-weight mn mx
+                      (cond ((and (< mn 0) (> mx 0)) 'stable)
+                            ((and (<= mn 0) (>= mx 0)) 'semistable)
+                            (else 'unstable))))
+          (if (= (vector-ref x-vec i) 0)
+              (loop (+ i 1) mn mx)
+              (let ((w (vector-ref weights-vec i)))
+                (loop (+ i 1)
+                      (if (or (not mn) (< w mn)) w mn)
+                      (if (or (not mx) (> w mx)) w mx))))))))
+
+(define (kempf-ness-moment-map-exact x-vec weights-vec)
+  (let ((n (vector-length x-vec)))
+    (let loop ((i 0) (num 0) (den 0))
+      (if (= i n)
+          (if (= den 0)
+              (error "kempf-ness-moment-map-exact: zero vector")
+              (/ num den))
+          (let* ((xi (vector-ref x-vec i))
+                 (sq (* xi xi))
+                 (wi (vector-ref weights-vec i)))
+            (loop (+ i 1) (+ num (* wi sq)) (+ den sq)))))))
+
+;; ---------------------------------------------------------------------------
+;; 5. Truncated Volume-Preserving / Symplectic Diffeomorphism Algebra SDiff(T^2)
+;;    Stream-function Fourier modes e_k (k = (k1 . k2) in Z^2 \ {0}):
+;;      {e_k, e_m} = (k1*m2 - k2*m1) * e_{k+m}
+;;    Exact sparse linear combinations represented as alists ((k1 . k2) . coeff-Q).
+;; ---------------------------------------------------------------------------
+
+(define (sdiff-clean terms)
+  ;; Merge duplicate modes and drop zero coefficients
+  (let ((acc '()))
+    (for-each
+     (lambda (t)
+       (let* ((k (car t)) (c (cdr t))
+              (existing (assoc k acc)))
+         (if existing
+             (set! acc (map (lambda (e)
+                              (if (equal? (car e) k) (cons k (+ (cdr e) c)) e))
+                            acc))
+             (set! acc (cons (cons k c) acc)))))
+     terms)
+    (filter (lambda (e) (not (= (cdr e) 0))) acc)))
+
+(define (sdiff-t2-add a b) (sdiff-clean (append a b)))
+
+(define (sdiff-t2-bracket a b)
+  (let ((out '()))
+    (for-each
+     (lambda (ta)
+       (for-each
+        (lambda (tb)
+          (let* ((ka (car ta)) (ca (cdr ta))
+                 (kb (car tb)) (cb (cdr tb))
+                 (cross (- (* (car ka) (cdr kb)) (* (cdr ka) (car kb)))))
+            (if (not (= cross 0))
+                (let ((ksum (cons (+ (car ka) (car kb)) (+ (cdr ka) (cdr kb)))))
+                  (if (not (and (= (car ksum) 0) (= (cdr ksum) 0)))
+                      (set! out (cons (cons ksum (* cross ca cb)) out)))))))
+        b))
+     a)
+    (sdiff-clean out)))
+
+(define (sdiff-t2-verify-jacobi a b c)
+  (let ((j (sdiff-t2-add
+             (sdiff-t2-add (sdiff-t2-bracket a (sdiff-t2-bracket b c))
+                           (sdiff-t2-bracket b (sdiff-t2-bracket c a)))
+             (sdiff-t2-bracket c (sdiff-t2-bracket a b)))))
+    (if (null? j) #t (vector 'jacobi-violation j))))

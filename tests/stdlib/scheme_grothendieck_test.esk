@@ -1,0 +1,276 @@
+;;; scheme_grothendieck_test.esk -- Executable verification suite for Pillar M8
+;;; (Grothendieckian Algebraic Geometry) closing all 6 open computable claims
+;;; in tests/nlab/claims.tsv:
+;;;   1. [prime spectrum#2]     localization carrier R[1/f] in core.ring
+;;;   2. [structure sheaf#1]    Zariski site & structure sheaf library constructors
+;;;   3. [local ring#7]         internal locality of O_X in the Zariski topos
+;;;   4. [functor of points#3]  glued schemes & non-affine projective line P^1
+;;;   5. [Sierpinski topos#2]   geometric morphisms & (Pi -| Disc -| Gamma -| coDisc)
+;;;   6. [FinSet#2]             exponentials B^A & subobject classifier Omega in FinSet
+;;; Includes explicit negative / counterexample tests for every construction.
+
+(require stdlib)
+(require core.ring)
+(require core.ring.localization)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.topos)
+(require core.topos.morphism)
+(require core.geometry)
+(require core.category.standard)
+(require core.category.finset_topos)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display label) (newline))
+
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; ===========================================================================
+;; 1. [prime spectrum#2] Exact Localization Carrier R[1/f] in core.ring
+;; ===========================================================================
+;; "given by the basis of open sets D_f = Spec R[f^{-1}] subset Spec R"
+
+(define Z6 (make-zmod 6))
+(define Z12 (make-zmod 12))
+(define Z4 (make-zmod 4))
+(define Z12-2 (make-localization Z12 2))   ;; (Z/12)[1/2] = F_3
+(define Z12-3 (make-localization Z12 3))   ;; (Z/12)[1/3] = Z/4
+(define Z6-2 (make-localization Z6 2))     ;; (Z/6)[1/2] = F_3
+(define Z4-2 (make-localization Z4 2))     ;; (Z/4)[1/2] = 0 (2 is nilpotent!)
+(define Z-6 (make-localization integers 6)) ;; Z[1/6]
+(define Q-3 (make-localization rationals 3)) ;; Q[1/3] = Q
+
+(let* ((v12-2 (ring-law-violations Z12-2 (localization-finite-elements Z12-2)))
+       (v12-3 (ring-law-violations Z12-3 (localization-finite-elements Z12-3)))
+       (v6-2 (ring-law-violations Z6-2 (localization-finite-elements Z6-2)))
+       (v4-2 (ring-law-violations Z4-2 (localization-finite-elements Z4-2)))
+       (z6-samples (list (localization-frac Z-6 0 0) (localization-frac Z-6 1 0)
+                         (localization-frac Z-6 5 1) (localization-frac Z-6 -7 2)
+                         (localization-frac Z-6 2 0) (localization-frac Z-6 3 1)))
+       (vz-6 (ring-law-violations Z-6 z6-samples))
+       (q3-samples (list (localization-frac Q-3 0 0) (localization-frac Q-3 1 0)
+                         (localization-frac Q-3 2/5 1) (localization-frac Q-3 -3/7 2)))
+       (vq-3 (ring-law-violations Q-3 q3-samples))
+       ;; Universal property: phi : Z/12 -> Z/3 sends 2 to unit 2; lift factors phi = lift o loc!
+       (Z3 (make-zmod 3))
+       (phi (zmod-reduction Z12 Z3))
+       (loc12-2 (localization-map Z12-2))
+       (lift (localization-universal-lift Z12-2 phi))
+       (univ-ok (all? (lambda (a) (r= Z3 (ring-map-apply phi a)
+                                      (ring-map-apply lift (ring-map-apply loc12-2 a))))
+                      (range 12)))
+       ;; Fraction arithmetic in Z[1/6]: (1/2) + (1/3) = 5/6 and 2 is a unit with inverse 3/6 = 1/2
+       (half (localization-frac Z-6 3 1))
+       (third (localization-frac Z-6 2 1))
+       (five-sixth (localization-frac Z-6 5 1))
+       (frac-ok (and (r= Z-6 (r+ Z-6 half third) five-sixth)
+                     (r-unit? Z-6 (localization-frac Z-6 2 0))
+                     (r-unit? Z-6 (localization-frac Z-6 3 0))
+                     (not (r-unit? Z-6 (localization-frac Z-6 5 0)))
+                     (r= Z-6 (r* Z-6 (localization-frac Z-6 2 0) (r-inv Z-6 (localization-frac Z-6 2 0))) (r1 Z-6)))))
+  (claim "prime spectrum" 2
+         "R[1/f] satisfies all ring laws, universal property, and exact localization characteristics"
+         (list (list 'Z12-2 (ring-ref Z12-2 'characteristic) (ring-ref Z12-2 'field?))
+               (list 'Z12-3 (ring-ref Z12-3 'characteristic) (ring-ref Z12-3 'field?))
+               (list 'Z4-2 (ring-ref Z4-2 'characteristic))
+               (list 'Z-6-char (ring-ref Z-6 'characteristic)))
+         (and (null? v12-2) (null? v12-3) (null? v6-2) (null? v4-2) (null? vz-6) (null? vq-3)
+              (= (ring-ref Z12-2 'characteristic) 3) (ring-ref Z12-2 'field?)
+              (= (ring-ref Z12-3 'characteristic) 4) (not (ring-ref Z12-3 'field?))
+              (= (ring-ref Z4-2 'characteristic) 1)
+              (= (ring-ref Z-6 'characteristic) 0)
+              univ-ok frac-ok)))
+
+(check "M8.1 NEGATIVE: universal lift refuses ring map sending f to a non-unit (Z/12 -> Z/6 at f=2)"
+       (let ((phi-bad (zmod-reduction Z12 Z6)))
+         (guard (e ((eq? (ring-refusal-kind e) 'ring-not-a-unit) #t) (else #f))
+           (localization-universal-lift Z12-2 phi-bad)
+           #f)))
+
+;; ===========================================================================
+;; 2. [structure sheaf#1] & 3. [local ring#7] Zariski Site & Locally Ringed Topos
+;; ===========================================================================
+;; [structure sheaf#1] "For a ringed topos (X, O) the ring object O in X is called the structure sheaf."
+;; [local ring#7] "whenever a + b = 1, a or b is invertible", read in the Zariski topos
+
+(define zar-6 (zariski-site Z6))
+(define zar-12 (zariski-site Z12))
+(define zar-4 (zariski-site Z4))
+(define rep-6 (verify-structure-sheaf-local zar-6))
+(define rep-12 (verify-structure-sheaf-local zar-12))
+(define rep-4 (verify-structure-sheaf-local zar-4))
+
+(claim "structure sheaf" 1
+       "Zariski site & structure sheaf O_X(D(f))=R[1/f] for Z/6, Z/12, Z/4 satisfy Grothendieck topology and sheaf axioms"
+       (list (list 'Z/6 (cdr (assq 'grothendieck-topology? rep-6)) (cdr (assq 'sheaf? rep-6)))
+             (list 'Z/12 (cdr (assq 'grothendieck-topology? rep-12)) (cdr (assq 'sheaf? rep-12)))
+             (list 'Z/4 (cdr (assq 'grothendieck-topology? rep-4)) (cdr (assq 'sheaf? rep-4))))
+       (and (cdr (assq 'grothendieck-topology? rep-6)) (cdr (assq 'sheaf? rep-6))
+            (cdr (assq 'grothendieck-topology? rep-12)) (cdr (assq 'sheaf? rep-12))
+            (cdr (assq 'grothendieck-topology? rep-4)) (cdr (assq 'sheaf? rep-4))))
+
+(claim "local ring" 7
+       "O_X is internally a local ring in the Zariski topos (and agrees with Omega-truth) while presheaf topology refutes Z/6, Z/12"
+       (list (list 'Z/6 'zar (cdr (assq 'internally-local? rep-6)) 'psh (cdr (assq 'presheaf-local? rep-6)))
+             (list 'Z/12 'zar (cdr (assq 'internally-local? rep-12)) 'psh (cdr (assq 'presheaf-local? rep-12)))
+             (list 'Z/4 'zar (cdr (assq 'internally-local? rep-4)) 'psh (cdr (assq 'presheaf-local? rep-4))))
+       (and (cdr (assq 'valid? rep-6)) (not (cdr (assq 'presheaf-local? rep-6)))
+            (pair? (cdr (assq 'presheaf-counter-witness rep-6)))
+            (cdr (assq 'valid? rep-12)) (not (cdr (assq 'presheaf-local? rep-12)))
+            (pair? (cdr (assq 'presheaf-counter-witness rep-12)))
+            ;; Z/4 is already a local ring globally!
+            (cdr (assq 'valid? rep-4)) (cdr (assq 'presheaf-local? rep-4))))
+
+;; ===========================================================================
+;; 4. [functor of points#3] Affine Schemes, Glued Schemes & Non-Affine P^1
+;; ===========================================================================
+;; "The functor which sends R to the R-points of the projective space P^n corresponds to a non-affine scheme."
+
+(define P1 (projective-line))
+(define F2 (make-zmod 2))
+(define F3 (make-zmod 3))
+(define F5 (make-zmod 5))
+(define F7 (make-zmod 7))
+(define F5-dual (make-jets F5 2))
+
+(let* ((cc-2 (glued-scheme-cocycle-violations P1 F2))
+       (cc-5 (glued-scheme-cocycle-violations P1 F5))
+       (cc-Q (glued-scheme-cocycle-violations P1 rationals
+               (vector (list '(0) '(1) '(2/3) '(-5/7))
+                       (list '(0) '(1) '(3/2) '(-7/5)))))
+       (n2 (length (glued-scheme-points P1 F2)))
+       (n3 (length (glued-scheme-points P1 F3)))
+       (n5 (length (glued-scheme-points P1 F5)))
+       (n7 (length (glued-scheme-points P1 F7)))
+       (n5-dual (length (glued-scheme-points P1 F5-dual)))
+       ;; Q-points equality across charts: [1 : 2/3] in U_0 equals [3/2 : 1] in U_1!
+       (q-glue-ok (and (glued-scheme-point=? P1 rationals '(0 2/3) '(1 3/2))
+                       (not (glued-scheme-point=? P1 rationals '(0 0) '(1 0)))))
+       ;; Functoriality along jet primal F_5[e]/e^2 -> F_5
+       (primal (jet-primal F5-dual))
+       (pt-dual (cons 0 (list (make-jet F5-dual (list 2 3)))))
+       (pt-base (glued-scheme-map-point P1 primal pt-dual))
+       (func-ok (and (glued-scheme-point? P1 F5 pt-base)
+                     (glued-scheme-point=? P1 F5 pt-base '(0 2))
+                     (glued-scheme-point=? P1 F5 pt-base '(1 3)))) ;; 2^{-1} = 3 mod 5
+       ;; Global regular functions O(P^1) = Q (dim 1 for all degree bounds) => non-affine!
+       (gdim3 (projective-line-global-sections-dim 3))
+       (gdim5 (projective-line-global-sections-dim 5)))
+  (claim "functor of points" 3
+         "P^1 glued from A^1 U_{G_m} A^1: cocycle valid, |P^1(F_p)|=p+1, |P^1(F_5[e])|=30, dim O(P^1)=1 (non-affine)"
+         (list (list 'Fp-counts n2 n3 n5 n7) (list 'F5-dual n5-dual) (list 'global-sec-dims gdim3 gdim5))
+         (and (null? cc-2) (null? cc-5) (null? cc-Q)
+              (= n2 3) (= n3 4) (= n5 6) (= n7 8) (= n5-dual 30)
+              q-glue-ok func-ok (= gdim3 1) (= gdim5 1))))
+
+(check "M8.4 NEGATIVE: glued scheme with inconsistent transition fails cocycle verification with witness"
+       (let* ((U0 (affine-line)) (U1 (affine-line))
+              ;; phi_{10}(t) = t^{-1} + 1 fails inverse condition phi_{01}(phi_{10}(t)) = t!
+              (bad-scheme (make-glued-scheme "BadGluing" (vector U0 U1)
+                            (lambda (i j R pt) (if (= i j) #t (r-unit? R (car pt))))
+                            (lambda (i j R pt)
+                              (cond ((= i j) pt)
+                                    ((= i 0) (list (r+ R (r-inv R (car pt)) (r1 R))))
+                                    (else (list (r-inv R (car pt))))))))
+              (viols (glued-scheme-cocycle-violations bad-scheme F5)))
+         (pair? viols)))
+
+;; ===========================================================================
+;; 5. [Sierpinski topos#2] Geometric Morphisms & (Pi -| Disc -| Gamma -| coDisc)
+;; ===========================================================================
+;; "(Pi -| Disc -| Gamma -| coDisc) : H^I <-> H"
+
+(define sierp-quad (sierpinski-topos-quadruple))
+(define TSierp (cdr (assq 'sierpinski-topos sierp-quad)))
+(define TSet (cdr (assq 'set-topos sierp-quad)))
+(define I-cat (cdr (assq 'arrow-category sierp-quad)))
+(define pt-cat (cdr (assq 'point-category sierp-quad)))
+
+;; Test objects in Set (sizes 0, 1, 2) and in Sierpinski topos (terminal, Omega, non-trivial presheaf)
+(define set-0 (topos-object TSet (make-set-presheaf pt-cat (list '()) (lambda (a x) x))))
+(define set-1 (topos-terminal TSet))
+(define set-2 (topos-object TSet (make-set-presheaf pt-cat (list '(a b)) (lambda (a x) x))))
+(define set-objs (list set-0 set-1 set-2))
+
+(define sierp-1 (topos-terminal TSierp))
+(define sierp-om (topos-omega TSierp)) ;; 0 -> 1 has 2 sieves at 0, 3 sieves at 1
+(define sierp-mix (topos-object TSierp
+                    (make-set-presheaf I-cat (list '(u v) '(p q))
+                      (lambda (a x) (if (eq? x 'p) 'u 'u))))) ;; constant map {p,q} -> {u} subset {u,v}
+(define sierp-objs (list sierp-1 sierp-om sierp-mix))
+
+(let* ((gm-pi (cdr (assq 'gm-Pi-Disc sierp-quad)))
+       (gm-disc (cdr (assq 'gm-Disc-Gamma sierp-quad)))
+       (gm-gamma (cdr (assq 'gm-Gamma-coDisc sierp-quad)))
+       (v-pi (geometric-morphism-violations gm-pi set-objs sierp-objs))
+       (v-disc (geometric-morphism-violations gm-disc sierp-objs set-objs))
+       (v-gamma (geometric-morphism-violations gm-gamma set-objs sierp-objs)))
+  (claim "Sierpinski topos" 2
+         "Adjoint quadruple (Pi -| Disc -| Gamma -| coDisc) between Set^{[1]} and Set: exact Hom bijections & finite-limit preservation"
+         (list (list 'Pi-Disc (null? v-pi))
+               (list 'Disc-Gamma (null? v-disc))
+               (list 'Gamma-coDisc (null? v-gamma)))
+         (and (null? v-pi) (null? v-disc) (null? v-gamma))))
+
+(check "M8.5 NEGATIVE: Gamma is NOT left adjoint to Disc (refuted with Hom-count mismatch witness)"
+       (let* ((Gamma (cdr (assq 'Gamma sierp-quad)))
+              (Disc (cdr (assq 'Disc sierp-quad)))
+              (fake-adj (make-topos-adjunction Gamma Disc
+                          (lambda (X S phi) phi) (lambda (X S psi) psi)))
+              (viols (topos-adjunction-violations fake-adj sierp-objs set-objs)))
+         (pair? viols)))
+
+;; ===========================================================================
+;; 6. [FinSet#2] Elementary Topos Structure of FinSet Skeleton
+;; ===========================================================================
+;; "The category FinSet is an elementary topos"
+
+(let* ((exp-v1 (finset-exponential-universal-violations 2 2 2))
+       (exp-v2 (finset-exponential-universal-violations 2 3 1))
+       (exp-v3 (finset-exponential-universal-violations 0 3 2))
+       (exp-v4 (finset-exponential-universal-violations 3 2 1))
+       ;; Subobject classifier Omega = {0, 1} checked on all monos into 3 = {0, 1, 2}
+       (m0 (list 0 3 '()))
+       (m1 (list 1 3 '(2)))
+       (m2 (list 2 3 '(0 2)))
+       (m3 (list 3 3 '(0 1 2)))
+       (sc-v0 (finset-subobject-classifier-violations m0))
+       (sc-v1 (finset-subobject-classifier-violations m1))
+       (sc-v2 (finset-subobject-classifier-violations m2))
+       (sc-v3 (finset-subobject-classifier-violations m3))
+       (chi-m2 (finset-characteristic m2)))
+  (claim "FinSet" 2
+         "FinSet skeleton has finite limits, exponentials B^A (universal currying), and subobject classifier Omega={0,1}"
+         (list (list 'exp-2-3 (car (finset-exponential 2 3)))
+               (list 'Omega (car (finset-subobject-classifier)))
+               (list 'chi-02 (caddr chi-m2)))
+         (and (null? exp-v1) (null? exp-v2) (null? exp-v3) (null? exp-v4)
+              (null? sc-v0) (null? sc-v1) (null? sc-v2) (null? sc-v3)
+              (= (car (finset-exponential 2 3)) 9)
+              (= (car (finset-subobject-classifier)) 2)
+              (equal? (caddr chi-m2) '(1 0 1)))))
+
+(check "M8.6 NEGATIVE: finset-characteristic refuses non-monomorphism with category refusal and violation witness"
+       (let ((non-mono (list 2 2 '(0 0))))
+         (and (not (finset-monomorphism? non-mono))
+              (pair? (finset-subobject-classifier-violations non-mono))
+              (guard (e ((eq? (category-refusal-kind e) 'limit-does-not-exist) #t) (else #f))
+                (finset-characteristic non-mono)
+                #f))))
+
+(if (= failed 0)
+    (begin (display "PASS: scheme_grothendieck_test (") (display passed) (display " checks)") (newline))
+    (begin (display "FAIL: scheme_grothendieck_test (") (display failed) (display " failed)") (newline)))

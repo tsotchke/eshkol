@@ -1,0 +1,123 @@
+;;; core.hodge.weil_fourfold -- Explicit Weil Abelian 4-fold Hodge structure
+;;;   with CM by Q(i) of signature (2,2), constructing the exact 2-dimensional
+;;;   extraordinary Weil subspace W_{Q(i)} subseteq Hdg^2(A) outside the
+;;;   algebraic Lefschetz divisor-intersection span Sym^2 Hdg^1(A), plus
+;;;   bounded integer-relation hypothesis search (strictly tagged 'hypothesis-only).
+;;;   Design: ADR-0063.
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.certificate)
+(require core.hodge.structure)
+(require core.hodge.cycles)
+
+(provide
+  make-weil-fourfold-hodge-benchmark
+  weil-fourfold-verify-gap
+  hodge-period-relation-hypothesis)
+
+;; ---------------------------------------------------------------------------
+;; 1. Weil Abelian 4-Fold Extraordinary (2,2) Hodge Structure Benchmark
+;;    Consider an abelian 4-fold A with CM by K = Q(i) of Weil signature (2,2):
+;;      H^1(A, C) = V_+ (+) V_- where K acts as +i on V_+ (dim 4) and -i on V_- (dim 4),
+;;      with V_+^{1,0} dim 2, V_+^{0,1} dim 2 (and conjugate V_-^{1,0} dim 2, V_-^{0,1} dim 2).
+;;    Inside the middle cohomology H^4(A, Q) = \Lambda^4 H^1(A, Q), consider the
+;;    invariant 6-dimensional exact Q-sub-Hodge-structure of weight 4:
+;;      M = L_div (dim 2, spanned by divisor-square intersections H^2, D^2 in H^{2,2})
+;;          (+) W_K (dim 2, the extraordinary Weil classes Re(det_K) & Im(det_K) in H^{2,2})
+;;          (+) T_trans (dim 2, transcendental (4,0)+(0,4) complement: Re(omega), Im(omega)).
+;;    Exact polarization Q_M on M (even weight w=4 => symmetric, Q_M^T = +Q_M):
+;;      - On H^{2,2} (p-q = 0, i^0 = +1): +I_4 on primitive/Weil + divisor classes
+;;      - On H^{4,0} (+) H^{0,4} (p-q = +/-4, i^{+/-4} = +1): +I_2 (with H^{4,0}=<(0,0,0,0,1,i)>).
+;;    Notice:
+;;      - dim Hdg^2(M) = 4  (2 divisor intersections + 2 extraordinary Weil classes!)
+;;      - Supplying the 2 divisor-intersection Chow cycles cl(H^2), cl(D^2) yields
+;;        status = 'unaccounted-hodge-gap with EXACT gap-dim = 2 (spanned by the
+;;        two Weil classes!), BOTH strictly classified as 'hypothesis-only!
+;;      - The Hodge group Lie algebra su(2,2) preserves BOTH the divisor classes
+;;        AND the Weil classes (det_K is SU(2,2)-invariant!), while a general
+;;        GL(2,2) / U(2,2) element with nonzero trace fails to preserve W_K!
+;; ---------------------------------------------------------------------------
+
+(define (make-weil-fourfold-hodge-benchmark)
+  (let* (;; 6 basis vectors in Q[i]^6:
+         ;;   e0, e1: divisor-intersection classes (H^2, D^2) in H^{2,2}
+         ;;   e2, e3: extraordinary Weil classes (Re det_K, Im det_K) in H^{2,2}
+         ;;   e4 + i*e5 in H^{4,0},  e4 - i*e5 in H^{0,4}
+         (e0 (vector (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0)))
+         (e1 (vector (hq 0 0) (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0)))
+         (e2 (vector (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 0) (hq 0 0) (hq 0 0)))
+         (e3 (vector (hq 0 0) (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 0) (hq 0 0)))
+         (v40 (vector (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 1)))
+         (v04 (vector (hq 0 0) (hq 0 0) (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 -1)))
+         ;; Exact symmetric polarization Q_M = I_6 (weight 4 is even, i^{p-q}=+1 on all 3 pieces!)
+         (Q6 (exact-matrix-zero 6 6)))
+    (let loop ((i 0))
+      (if (< i 6) (begin (exact-matrix-set! Q6 i i 1) (loop (+ i 1)))))
+    (let* ((H4 (make-hodge-structure 4 6
+                 (list (cons (cons 4 0) (list v40))
+                       (cons (cons 2 2) (list e0 e1 e2 e3))
+                       (cons (cons 0 4) (list v04)))
+                 Q6))
+           ;; Only the 2 Lefschetz divisor-intersection classes are known algebraic cycles!
+           (div-cycles (list (cons 'lefschetz-H2 (vector 1 0 0 0 0 0))
+                             (cons 'divisor-D2   (vector 0 1 0 0 0 0))))
+           (cmap (make-chow-cycle-map H4 div-cycles))
+           ;; Weil basis classes (extraordinary Hodge classes)
+           (weil-re (vector 0 0 1 0 0 0))
+           (weil-im (vector 0 0 0 1 0 0)))
+      (vector 'weil-fourfold-benchmark H4 cmap weil-re weil-im))))
+
+;; Execute complete exact audit on the Weil 4-fold:
+;;   - Hodge decomposition valid
+;;   - HR1 & HR2 certified via core.exact_psd + core.certificate
+;;   - Hdg^2 dim == 4, divisor-cycle im(cl) dim == 2, unaccounted Weil gap dim == 2
+;;   - Both Weil classes classified strictly as 'hypothesis-only (NEVER 'certified-algebraic)
+;;   - Divisor classes classified as 'certified-algebraic
+(define (weil-fourfold-verify-gap wf)
+  (let* ((H4 (vector-ref wf 1))
+         (cmap (vector-ref wf 2))
+         (weil-re (vector-ref wf 3))
+         (weil-im (vector-ref wf 4))
+         (decomp-ok (hodge-decomposition-valid? H4))
+         (hr1 (hodge-riemann-bilinear-1-check H4))
+         (hr2 (hodge-riemann-bilinear-2-certify H4))
+         (report (hodge-cycle-class-certify cmap))
+         (cls-div (hodge-classify-candidate cmap (vector 2 -3 0 0 0 0)))
+         (cls-wre (hodge-classify-candidate cmap weil-re))
+         (cls-wim (hodge-classify-candidate cmap weil-im)))
+    (vector 'weil-gap-audit
+            decomp-ok hr1 hr2 report cls-div cls-wre cls-wim)))
+
+;; ---------------------------------------------------------------------------
+;; 2. Bounded Integer-Relation Discovery (PSLQ/Lattice-Style Candidate Search)
+;;    Given real period vector p = #(p_0 ... p_{m-1}), searches bounded nonzero
+;;    integer vectors n with |n_i| <= bound minimizing |sum n_i p_i| < tol.
+;;    RIGOR LEDGER ENFORCEMENT: Always tags any discovered integer relation as
+;;    'hypothesis-only (NEVER 'certified-algebraic without an explicit Chow cycle!).
+;; ---------------------------------------------------------------------------
+
+(define (hodge-period-relation-hypothesis periods bound tol)
+  (let ((m (vector-length periods))
+        (best #f)
+        (best-err tol))
+    (define (search idx cur sum)
+      (if (= idx m)
+          (if (and (not (let all0 ((xs cur))
+                          (cond ((null? xs) #t)
+                                ((= (car xs) 0) (all0 (cdr xs)))
+                                (else #f))))
+                   (< (abs sum) best-err))
+              (begin
+                (set! best-err (abs sum))
+                (set! best (list->vector (reverse cur)))))
+          (let ((pi (vector-ref periods idx)))
+            (let loop ((c (- 0 bound)))
+              (if (<= c bound)
+                  (begin
+                    (search (+ idx 1) (cons c cur) (+ sum (* c pi)))
+                    (loop (+ c 1))))))))
+    (search 0 '() 0.0)
+    (if best
+        (vector 'hypothesis-only 'numerical-period-relation best best-err)
+        (vector 'no-relation-found bound tol))))

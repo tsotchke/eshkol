@@ -1,0 +1,266 @@
+;;; Executable verification suite for Pillar M13: core.hodge (ADR-0063)
+;;; Covers: exact Q[i] pure & mixed polarized Hodge structures, Riemann-Hodge
+;;; bilinear relations 1 & 2 certified via core.exact_psd + core.certificate,
+;;; Hard Lefschetz sl_2 triples, exact Hodge classes H^{2p}(X,Q) \cap H^{p,p},
+;;; Chow cycle class map & unaccounted Hodge-class gap basis (incl. Weil-type
+;;; extraordinary gap), Schubert calculus on Gr(2,4), Mumford-Tate Lie algebra
+;;; invariants, Siegel upper half-space periods, Hurwitz CM endomorphisms,
+;;; Griffiths transversality, and exact Legendre Picard-Fuchs ODE.
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.certificate)
+(require core.hodge)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Weight-1 Polarized Hodge Structure: CM Elliptic Curve E_i (tau = i)
+;;    H^1(E_i, Q) = Q^2 with standard symplectic polarization Q = [[0 1] [-1 0]]
+;;    H^{1,0} = C * (1, i),  H^{0,1} = C * (1, -i)
+;;    Check HR2: i^{1-0} Q(v, conj(v)) = i * ((1)(-i) - (i)(1)) = i*(-2i) = +2 > 0!
+;; ---------------------------------------------------------------------------
+(define Q-symp2 (vector (vector 0 1) (vector -1 0)))
+(define v10 (vector (hq 1 0) (hq 0 1)))
+(define v01 (vector (hq 1 0) (hq 0 -1)))
+(define H1-Ei
+  (make-hodge-structure 1 2
+    (list (cons (cons 1 0) (list v10))
+          (cons (cons 0 1) (list v01)))
+    Q-symp2))
+
+(expect "H1-Ei-decomposition-valid" (hodge-decomposition-valid? H1-Ei))
+(expect "H1-Ei-hodge-numbers"
+        (equal? (hodge-numbers H1-Ei) '(((1 . 0) . 1) ((0 . 1) . 1))))
+(expect "H1-Ei-bilinear-1-valid" (eq? (hodge-riemann-bilinear-1-check H1-Ei) #t))
+
+(define hr2-Ei (hodge-riemann-bilinear-2-certify H1-Ei))
+(expect "H1-Ei-bilinear-2-certified" (eq? (vector-ref hr2-Ei 0) 'certified-hr2))
+(expect "H1-Ei-bilinear-2-has-2-psd-certs" (= (length (vector-ref hr2-Ei 1)) 2))
+(expect "H1-Ei-bilinear-2-cert-is-certificate"
+        (certificate? (cdr (car (vector-ref hr2-Ei 1)))))
+
+;; Negative control: flipped polarization -Q fails HR2 with exact negative witness!
+(define Q-symp2-bad (vector (vector 0 -1) (vector 1 0)))
+(define H1-Ei-bad-pol
+  (make-hodge-structure 1 2
+    (list (cons (cons 1 0) (list v10))
+          (cons (cons 0 1) (list v01)))
+    Q-symp2-bad))
+(define hr2-bad (hodge-riemann-bilinear-2-certify H1-Ei-bad-pol))
+(expect "H1-Ei-wrong-sign-pol-rejected-by-HR2" (eq? (vector-ref hr2-bad 0) 'hr2-violation))
+
+;; Negative control: broken conjugate symmetry fails decomposition check
+(define H1-broken-conj
+  (make-hodge-structure 1 2
+    (list (cons (cons 1 0) (list v10))
+          (cons (cons 0 1) (list (vector (hq 1 0) (hq 0 2)))))
+    Q-symp2))
+(expect "broken-conjugate-symmetry-rejected" (not (hodge-decomposition-valid? H1-broken-conj)))
+
+;; ---------------------------------------------------------------------------
+;; 2. Weight-2 Hodge Structure: H^1(E_i) (x) H^1(E_i) inside H^2(E_i x E_i)
+;;    H^{2,0} dim 1, H^{1,1} dim 2, H^{0,2} dim 1; total dim 4.
+;;    Because E_i has CM by Q(i), Hdg^1 = H^2_Q \cap H^{1,1} has exact dim 2!
+;;    (Spanned by standard correspondence + CM graph!)
+;; ---------------------------------------------------------------------------
+(define H2-Ei-sq (hodge-tensor-product H1-Ei H1-Ei))
+(expect "H2-Ei-sq-valid" (hodge-decomposition-valid? H2-Ei-sq))
+(expect "H2-Ei-sq-bilinear-1-valid" (eq? (hodge-riemann-bilinear-1-check H2-Ei-sq) #t))
+
+(define hdg1-basis (hodge-classes H2-Ei-sq))
+(expect "H2-Ei-sq-CM-Hdg1-dim-2" (= (length hdg1-basis) 2))
+
+;; Rigor Ledger test: supplying only 1 cycle leaves exact unaccounted-hodge-gap dim 1!
+(define c1 (car hdg1-basis))
+(define c2 (cadr hdg1-basis))
+(define cmap-partial (make-chow-cycle-map H2-Ei-sq (list (cons 'diagonal-cycle c1))))
+(define rep-partial (hodge-cycle-class-certify cmap-partial))
+(expect "partial-cycles-report-gap-status" (eq? (vector-ref rep-partial 1) 'unaccounted-hodge-gap))
+(expect "partial-cycles-hdg-dim=2" (= (vector-ref rep-partial 2) 2))
+(expect "partial-cycles-alg-dim=1" (= (vector-ref rep-partial 3) 1))
+(expect "partial-cycles-gap-dim=1" (= (vector-ref rep-partial 4) 1))
+
+;; Candidate classification: c1 is 'certified-algebraic, c2 is 'hypothesis-only!
+(define cls-c1 (hodge-classify-candidate cmap-partial c1))
+(define cls-c2 (hodge-classify-candidate cmap-partial c2))
+(expect "c1-certified-algebraic" (eq? (vector-ref cls-c1 0) 'certified-algebraic))
+(expect "c2-hypothesis-only-without-cycle" (eq? (vector-ref cls-c2 0) 'hypothesis-only))
+
+;; Supplying both cycles closes the gap on this CM surface (Lefschetz (1,1) witness)
+(define cmap-full
+  (make-chow-cycle-map H2-Ei-sq (list (cons 'diagonal-cycle c1)
+                                      (cons 'cm-graph-cycle c2))))
+(define rep-full (hodge-cycle-class-certify cmap-full))
+(expect "full-CM-surface-cycles-surjective" (eq? (vector-ref rep-full 1) 'surjective-on-given-cycles))
+(expect "full-CM-surface-gap-dim=0" (= (vector-ref rep-full 4) 0))
+(expect "full-CM-surface-rank-cert" (certificate? (vector-ref rep-full 6)))
+
+;; Negative control: non-Hodge rational vector (1,0,0,0) rejected as invalid cycle!
+(define non-hdg (vector 1 0 0 0))
+(define cmap-fake (make-chow-cycle-map H2-Ei-sq (list (cons 'fake-cycle non-hdg))))
+(expect "non-hodge-cycle-refused"
+        (eq? (vector-ref (hodge-cycle-class-certify cmap-fake) 0) 'cycle-not-hodge))
+(expect "non-hodge-candidate-classified-not-hodge"
+        (eq? (vector-ref (hodge-classify-candidate cmap-full non-hdg) 0) 'not-a-hodge-class))
+
+;; ---------------------------------------------------------------------------
+;; 3. Weil-Type Extraordinary Hodge Gap (Weight-2 Exterior Square of CM 2-fold
+;;    H^1(E_i) (+) H^1(E_i) => dim 4, \Lambda^2 has dim 6 with dim Hdg^1 = 4)
+;;    Supplying only 2 divisor classes leaves exact 2-dimensional gap basis!
+;; ---------------------------------------------------------------------------
+(define v10-a (vector (hq 1 0) (hq 0 1) (hq 0 0) (hq 0 0)))
+(define v01-a (vector (hq 1 0) (hq 0 -1) (hq 0 0) (hq 0 0)))
+(define v10-b (vector (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 1)))
+(define v01-b (vector (hq 0 0) (hq 0 0) (hq 1 0) (hq 0 -1)))
+(define H1-A2
+  (make-hodge-structure 1 4
+    (list (cons (cons 1 0) (list v10-a v10-b))
+          (cons (cons 0 1) (list v01-a v01-b)))
+    #f))
+(define H2-A2 (hodge-exterior-square H1-A2))
+(expect "H2-A2-exterior-square-valid" (hodge-decomposition-valid? H2-A2))
+(define hdg-A2 (hodge-classes H2-A2))
+(expect "H2-A2-has-4-Hodge-classes" (= (length hdg-A2) 4))
+
+(define cmap-A2-sub
+  (make-chow-cycle-map H2-A2 (list (cons 'div-1 (car hdg-A2))
+                                   (cons 'div-2 (cadr hdg-A2)))))
+(define rep-A2 (hodge-cycle-class-certify cmap-A2-sub))
+(expect "A2-sub-cycles-expose-gap-dim=2"
+        (and (eq? (vector-ref rep-A2 1) 'unaccounted-hodge-gap)
+             (= (vector-ref rep-A2 4) 2)))
+
+;; ---------------------------------------------------------------------------
+;; 4. Hard Lefschetz sl_2-Triple on P^2 Cohomology (H^0 (+) H^2 (+) H^4)
+;;    L sends e0 -> e1 -> e2; Lambda sends e2 -> 2*e1, e1 -> 2*e0; H = diag(-2, 0, 2)
+;; ---------------------------------------------------------------------------
+(define L-P2   (vector (vector 0 0 0) (vector 1 0 0) (vector 0 1 0)))
+(define Lam-P2 (vector (vector 0 2 0) (vector 0 0 2) (vector 0 0 0)))
+(define H-P2   (vector (vector -2 0 0) (vector 0 0 0) (vector 0 0 2)))
+(expect "hard-lefschetz-P2-sl2-exact" (eq? (hodge-hard-lefschetz-check L-P2 Lam-P2 H-P2) #t))
+
+;; Negative control: wrong normalization fails [L, Lambda] = H
+(define Lam-bad (vector (vector 0 1 0) (vector 0 0 1) (vector 0 0 0)))
+(expect "hard-lefschetz-wrong-Lambda-rejected"
+        (eq? (vector-ref (hodge-hard-lefschetz-check L-P2 Lam-bad H-P2) 0) 'lefschetz-violation))
+
+;; Tate twist Q(1) shifts weight by -2
+(define H2-twisted (hodge-tate-twist H2-Ei-sq 1))
+(expect "tate-twist-weight-0" (= (hodge-weight H2-twisted) 0))
+(expect "tate-twist-valid" (hodge-decomposition-valid? H2-twisted))
+
+;; Mixed Hodge Structure
+(define MHS-ok (make-mixed-hodge-structure (list (cons 1 H1-Ei) (cons 2 H2-Ei-sq))))
+(expect "mixed-hodge-structure-valid" (mixed-hodge-valid? MHS-ok))
+
+;; ---------------------------------------------------------------------------
+;; 5. Exact Schubert Calculus in A^*(Gr(2,4)): 2 lines meet 4 lines in P^3!
+;; ---------------------------------------------------------------------------
+(define s1 (vector 0 1 0 0 0 0))
+(define s1-2 (schubert-gr24-mul s1 s1))
+(define s1-4 (schubert-gr24-mul s1-2 s1-2))
+(expect "schubert-s1^2=s2+s11" (and (= (vector-ref s1-2 2) 1) (= (vector-ref s1-2 3) 1)))
+(expect "schubert-s1^4=2*s22" (= (schubert-gr24-degree s1-4) 2))
+
+;; ---------------------------------------------------------------------------
+;; 6. Mumford-Tate Lie Algebra Check & Invariant Tensors
+;;    For E_i with CM J = [[0 -1] [1 0]], the special Mumford-Tate (Hodge) group
+;;    Lie algebra is spanned by J itself (so(2) = u(1)), which preserves Q-symp2
+;;    with similitude 0 and commutes with CM endomorphism J!
+;; ---------------------------------------------------------------------------
+(define J-cm (vector (vector 0 -1) (vector 1 0)))
+(expect "mt-J-in-Hodge-group-of-Ei"
+        (eq? (mumford-tate-lie-algebra-check J-cm Q-symp2 0 (list J-cm)) #t))
+(expect "mt-I-in-MT-similitude-2"
+        (eq? (mumford-tate-lie-algebra-check (vector (vector 1 0) (vector 0 1))
+                                             Q-symp2 2 (list J-cm)) #t))
+;; Non-commuting sl_2 generator [[1 0] [0 -1]] is NOT in MT(E_i) (breaks CM)!
+(define H-sl2 (vector (vector 1 0) (vector 0 -1)))
+(expect "mt-non-CM-generator-rejected"
+        (eq? (vector-ref (mumford-tate-lie-algebra-check H-sl2 Q-symp2 0 (list J-cm)) 0)
+             'mt-violation))
+;; Polarization Q-symp2 IS invariant under Hg(E_i) = <J-cm>
+(expect "mt-polarization-invariant"
+        (eq? (mumford-tate-invariant-tensor? (list J-cm) Q-symp2) #t))
+
+;; ---------------------------------------------------------------------------
+;; 7. Siegel Upper Half-Space Periods, Hurwitz CM, Griffiths & Picard-Fuchs
+;; ---------------------------------------------------------------------------
+(define sp-Ei (make-siegel-period 1 (vector (vector (hq 0 1)))))
+(define sp-Ei-cert (siegel-period-certify sp-Ei))
+(expect "siegel-H1-tau=i-certified" (eq? (vector-ref sp-Ei-cert 0) 'certified-siegel-period))
+
+;; Genus-2 Siegel period matrix tau = [[2i, i/2], [i/2, 3i]] (symmetric, Im > 0!)
+(define sp-g2
+  (make-siegel-period 2
+    (vector (vector (hq 0 2)   (hq 0 1/2))
+            (vector (hq 0 1/2) (hq 0 3)))))
+(expect "siegel-H2-certified"
+        (eq? (vector-ref (siegel-period-certify sp-g2) 0) 'certified-siegel-period))
+
+;; Negative control: non-symmetric or negative-definite tau rejected!
+(define sp-bad-asym
+  (make-siegel-period 2
+    (vector (vector (hq 0 2) (hq 0 1))
+            (vector (hq 0 0) (hq 0 3)))))
+(expect "siegel-asymmetric-rejected"
+        (eq? (vector-ref (siegel-period-certify sp-bad-asym) 0) 'siegel-violation))
+(define sp-bad-indef
+  (make-siegel-period 2
+    (vector (vector (hq 0 1) (hq 0 2))
+            (vector (hq 0 2) (hq 0 1)))))
+(expect "siegel-indefinite-rejected"
+        (eq? (vector-ref (siegel-period-certify sp-bad-indef) 0) 'siegel-violation))
+
+;; Hurwitz CM endomorphism for E_i: M = [i], Omega = [1 | i], R = [[0 -1] [1 0]]
+;; Check: [i][1, i] = [i, -1] = [1, i] * [[0 -1] [1 0]]!
+(expect "hurwitz-CM-i-on-Ei-exact"
+        (eq? (abelian-endomorphism-check sp-Ei
+                                         (vector (vector (hq 0 1)))
+                                         (vector (vector 0 -1) (vector 1 0)))
+             #t))
+;; Negative control: generic tau = 2i does NOT have endomorphism R = [[0 -1] [1 0]]!
+(define sp-E2i (make-siegel-period 1 (vector (vector (hq 0 2)))))
+(expect "hurwitz-CM-i-fails-on-tau=2i"
+        (eq? (vector-ref (abelian-endomorphism-check sp-E2i
+                                                     (vector (vector (hq 0 1)))
+                                                     (vector (vector 0 -1) (vector 1 0)))
+                         0)
+             'endomorphism-violation))
+
+;; Griffiths transversality on a weight-2 VHS flag F^2 <= F^1 <= F^0 in C^3:
+;; F^2 = <e0>, F^1 = <e0, e1>, F^0 = <e0, e1, e2>.
+;; Subdiagonal shift nabla(e0)=e1, nabla(e1)=e2 satisfies nabla(F^p) <= F^{p-1}!
+(define e0-3 (vector (hq 1 0) (hq 0 0) (hq 0 0)))
+(define e1-3 (vector (hq 0 0) (hq 1 0) (hq 0 0)))
+(define e2-3 (vector (hq 0 0) (hq 0 0) (hq 1 0)))
+(define filt-3 (vector (list e0-3 e1-3 e2-3) (list e0-3 e1-3) (list e0-3)))
+(define nabla-ok (vector (vector (hq 0 0) (hq 0 0) (hq 0 0))
+                         (vector (hq 1 0) (hq 0 0) (hq 0 0))
+                         (vector (hq 0 0) (hq 1 0) (hq 0 0))))
+(define nabla-jump2 (vector (vector (hq 0 0) (hq 0 0) (hq 0 0))
+                            (vector (hq 0 0) (hq 0 0) (hq 0 0))
+                            (vector (hq 1 0) (hq 0 0) (hq 0 0))))
+(expect "griffiths-transversality-holds"
+        (eq? (griffiths-transversality-check 3 filt-3 nabla-ok) #t))
+(expect "griffiths-transversality-jump2-rejected"
+        (eq? (vector-ref (griffiths-transversality-check 3 filt-3 nabla-jump2) 0)
+             'griffiths-transversality-violation))
+
+;; Exact Legendre Elliptic Picard-Fuchs ODE verified through degree 5:
+;; c_0=1, c_1=1/4, c_2=9/64, c_3=25/256, c_4=1225/16384, c_5=3969/65536
+(define pf-coeffs (vector 1 1/4 9/64 25/256 1225/16384 3969/65536))
+(expect "picard-fuchs-legendre-exact"
+        (eq? (picard-fuchs-legendre-verify pf-coeffs) #t))
+(define pf-bad (vector 1 1/4 1/8 25/256))
+(expect "picard-fuchs-perturbed-rejected"
+        (eq? (vector-ref (picard-fuchs-legendre-verify pf-bad) 0) 'picard-fuchs-violation))
+
+(display "PASS: hodge_cycles_periods_test (") (display checks) (display " checks)") (newline)

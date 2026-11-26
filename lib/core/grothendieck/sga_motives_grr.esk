@@ -1,0 +1,844 @@
+;;; core.grothendieck.sga_motives_grr -- Grothendieck Era 2 (1955-1970):
+;;;   1. SGA Etale Cohomology & Weil Conjectures over Finite Fields F_q
+;;;      (SGA 4, 4 1/2, 5, 7): smooth elliptic curve point counting over F_p
+;;;      and quadratic extensions F_{p^2} = F_p[sqrt(d)], Frobenius trace and
+;;;      recurrence, exact rational Weil Zeta function Z(X/F_q, T), exact
+;;;      power-series log-derivative verification, functional equations for
+;;;      elliptic curves and P^n, and Hasse-Weil Riemann Hypothesis check.
+;;;   2. Grothendieck Ring of Varieties K_0(Var_k) & Pure Chow Motives:
+;;;      exact polynomial ring Z[L] in the Lefschetz motive L = [A^1],
+;;;      projective spaces [P^n], general linear groups [GL_n], Grassmannians
+;;;      [Gr(k,n)] via Gaussian L-binomial recurrence, blowup formula
+;;;      [Bl_Z(X)] = [X] - [Z] + [Z]*[P^{c-1}], and universal motivic
+;;;      realization functors (F_q point count, Euler characteristic,
+;;;      Hodge-Poincare specialization).
+;;;   3. Grothendieck-Riemann-Roch (GRR) & Hirzebruch-Riemann-Roch (HRR):
+;;;      exact truncated rational power series over Q[h]/(h^{d+1}), Chern
+;;;      character of line bundles and vector bundles, exact Todd class
+;;;      Td(T_{P^n}) derived by exact series inversion of (1 - e^{-h})/h,
+;;;      HRR on P^n for all integer twists m (including negative twists and
+;;;      Serre duality), GRR for branched covers f: C -> P^1 (matching
+;;;      Riemann-Roch and Riemann-Hurwitz identically), and GRR for X -> pt.
+;;;
+;;; All internal and exported bindings carry the `gsga-` prefix.
+
+(require stdlib)
+
+(provide
+  ;; 0. Exact truncated rational power series Q[t]/(t^{d+1})
+  gsga-fps-zero
+  gsga-fps-one
+  gsga-fps-pad
+  gsga-fps-add
+  gsga-fps-sub
+  gsga-fps-scale
+  gsga-fps-mul
+  gsga-fps-pow
+  gsga-fps-inv
+  gsga-fps-div
+  gsga-fps-deriv
+  gsga-fps-shift-t
+  gsga-fps-t-log-deriv
+  gsga-fps-eval
+  gsga-fps-equal?
+  gsga-fps-all-exact?
+
+  ;; 1. SGA Etale Cohomology & Weil Conjectures
+  gsga-mod
+  gsga-prime?
+  gsga-pow-mod
+  gsga-legendre
+  gsga-find-nonresidue
+  gsga-elliptic-discriminant
+  gsga-elliptic-smooth-fp?
+  gsga-elliptic-count-fp
+  gsga-elliptic-count-fp-bruteforce
+  gsga-elliptic-frobenius-trace
+  gsga-elliptic-frobenius-power-sums
+  gsga-elliptic-extension-counts
+  gsga-elliptic-count-fp2-bruteforce
+  gsga-weil-zeta-elliptic-ratfun
+  gsga-weil-zeta-elliptic-series
+  gsga-weil-zeta-elliptic-log-deriv
+  gsga-verify-weil-zeta-elliptic-series?
+  gsga-verify-weil-functional-eq-elliptic?
+  gsga-verify-weil-rh?
+  gsga-verify-weil-conjectures-elliptic
+  gsga-weil-zeta-pn-denom
+  gsga-pn-extension-counts
+  gsga-verify-weil-zeta-pn-series?
+  gsga-verify-weil-functional-eq-pn?
+
+  ;; 2. Grothendieck Ring of Varieties K_0(Var_k) & Pure Chow Motives
+  gsga-motive-normalize
+  gsga-motive-const
+  gsga-motive-lefschetz
+  gsga-motive-pow-L
+  gsga-motive-equal?
+  gsga-motive-add
+  gsga-motive-sub
+  gsga-motive-mul
+  gsga-motive-pn
+  gsga-motive-gln
+  gsga-motive-grassmannian
+  gsga-motive-blowup
+  gsga-motive-realize-point-count
+  gsga-motive-realize-euler
+  gsga-motive-realize-hodge-poincare
+  gsga-motive-hodge-numbers
+
+  ;; 3. Grothendieck-Riemann-Roch (GRR) & Hirzebruch-Riemann-Roch (HRR)
+  gsga-factorial
+  gsga-binom-signed
+  gsga-ch-line-bundle
+  gsga-ch-direct-sum
+  gsga-ch-tensor-product
+  gsga-ch-dual
+  gsga-ch-tangent-pn
+  gsga-todd-line-bundle-series
+  gsga-todd-pn
+  gsga-hrr-with-todd
+  gsga-hrr-pn-line-bundle
+  gsga-grr-to-point
+  gsga-grr-branched-cover-pushforward
+  gsga-grr-branched-cover-verify)
+
+;; ===========================================================================
+;; 0. Exact Helpers & Truncated Rational Power Series Q[t]/(t^{d+1})
+;; ===========================================================================
+
+(define (gsga-exact-int? x)
+  (and (integer? x) (exact? x)))
+
+(define (gsga-exact-num? x)
+  (and (number? x) (exact? x)))
+
+(define (gsga-factorial n)
+  (let loop ((k 2) (acc 1))
+    (if (> k n) acc (loop (+ k 1) (* acc k)))))
+
+(define (gsga-int-pow base exp)
+  (let loop ((e exp) (b base) (acc 1))
+    (cond ((<= e 0) acc)
+          ((= (remainder e 2) 1) (loop (quotient e 2) (* b b) (* acc b)))
+          (else (loop (quotient e 2) (* b b) acc)))))
+
+;; Signed binomial coefficient C(m + n, n) = (m+n)(m+n-1)...(m+1) / n!
+;; Exact for all integers m (positive, zero, or negative) and n >= 0.
+(define (gsga-binom-signed m n)
+  (let loop ((k 1) (num 1) (den 1))
+    (if (> k n)
+        (/ num den)
+        (loop (+ k 1) (* num (+ m k)) (* den k)))))
+
+(define (gsga-list-ref-default xs idx default)
+  (let loop ((rest xs) (i 0))
+    (cond ((null? rest) default)
+          ((= i idx) (car rest))
+          (else (loop (cdr rest) (+ i 1))))))
+
+(define (gsga-fps-zero deg)
+  (let loop ((k 0) (acc '()))
+    (if (> k deg) acc (loop (+ k 1) (cons 0 acc)))))
+
+(define (gsga-fps-one deg)
+  (if (<= deg 0)
+      (list 1)
+      (cons 1 (gsga-fps-zero (- deg 1)))))
+
+(define (gsga-fps-pad s deg)
+  (let loop ((k 0) (acc '()))
+    (if (> k deg)
+        (reverse acc)
+        (loop (+ k 1) (cons (gsga-list-ref-default s k 0) acc)))))
+
+(define (gsga-fps-all-exact? s)
+  (let loop ((rest s))
+    (cond ((null? rest) #t)
+          ((not (gsga-exact-num? (car rest))) #f)
+          (else (loop (cdr rest))))))
+
+(define (gsga-fps-equal? a b)
+  (and (= (length a) (length b))
+       (let loop ((ra a) (rb b))
+         (cond ((null? ra) #t)
+               ((not (and (gsga-exact-num? (car ra))
+                          (gsga-exact-num? (car rb))
+                          (= (car ra) (car rb))))
+                #f)
+               (else (loop (cdr ra) (cdr rb)))))))
+
+(define (gsga-fps-add a b deg)
+  (let loop ((k 0) (acc '()))
+    (if (> k deg)
+        (reverse acc)
+        (loop (+ k 1)
+              (cons (+ (gsga-list-ref-default a k 0)
+                       (gsga-list-ref-default b k 0))
+                    acc)))))
+
+(define (gsga-fps-sub a b deg)
+  (let loop ((k 0) (acc '()))
+    (if (> k deg)
+        (reverse acc)
+        (loop (+ k 1)
+              (cons (- (gsga-list-ref-default a k 0)
+                       (gsga-list-ref-default b k 0))
+                    acc)))))
+
+(define (gsga-fps-scale c s deg)
+  (let loop ((k 0) (acc '()))
+    (if (> k deg)
+        (reverse acc)
+        (loop (+ k 1) (cons (* c (gsga-list-ref-default s k 0)) acc)))))
+
+(define (gsga-fps-mul a b deg)
+  (let ((va (list->vector (gsga-fps-pad a deg)))
+        (vb (list->vector (gsga-fps-pad b deg))))
+    (let loop ((k 0) (acc '()))
+      (if (> k deg)
+          (reverse acc)
+          (let inner ((j 0) (sum 0))
+            (if (> j k)
+                (loop (+ k 1) (cons sum acc))
+                (inner (+ j 1)
+                       (+ sum (* (vector-ref va j)
+                                 (vector-ref vb (- k j)))))))))))
+
+(define (gsga-fps-pow s exp deg)
+  (cond ((= exp 0) (gsga-fps-one deg))
+        ((= exp 1) (gsga-fps-pad s deg))
+        (else
+          (let loop ((e exp) (base (gsga-fps-pad s deg)) (acc (gsga-fps-one deg)))
+            (cond ((<= e 0) acc)
+                  ((= (remainder e 2) 1)
+                   (loop (quotient e 2)
+                         (gsga-fps-mul base base deg)
+                         (gsga-fps-mul acc base deg)))
+                  (else
+                   (loop (quotient e 2)
+                         (gsga-fps-mul base base deg)
+                         acc)))))))
+
+;; Exact inversion of a formal power series f with f_0 != 0 modulo t^{deg+1}.
+;; g_0 = 1 / f_0, g_k = -(1 / f_0) * sum_{j=1}^k f_j * g_{k-j}.
+(define (gsga-fps-inv f deg)
+  (let* ((vf (list->vector (gsga-fps-pad f deg)))
+         (f0 (vector-ref vf 0)))
+    (if (= f0 0)
+        'err-noninvertible-series
+        (let ((vg (make-vector (+ deg 1) 0)))
+          (vector-set! vg 0 (/ 1 f0))
+          (let loop ((k 1))
+            (if (> k deg)
+                (vector->list vg)
+                (let inner ((j 1) (sum 0))
+                  (if (> j k)
+                      (begin
+                        (vector-set! vg k (/ (- 0 sum) f0))
+                        (loop (+ k 1)))
+                      (inner (+ j 1)
+                             (+ sum (* (vector-ref vf j)
+                                       (vector-ref vg (- k j)))))))))))))
+
+(define (gsga-fps-div a b deg)
+  (let ((inv-b (gsga-fps-inv b deg)))
+    (if (symbol? inv-b)
+        inv-b
+        (gsga-fps-mul a inv-b deg))))
+
+;; Formal derivative d/dt of f(t) truncated to degree deg.
+(define (gsga-fps-deriv f deg)
+  (let ((vf (list->vector f))
+        (len (length f)))
+    (let loop ((k 0) (acc '()))
+      (if (> k deg)
+          (reverse acc)
+          (let ((idx (+ k 1)))
+            (loop (+ k 1)
+                  (cons (if (< idx len) (* idx (vector-ref vf idx)) 0)
+                        acc)))))))
+
+;; Multiply series f(t) by t, truncated to degree deg.
+(define (gsga-fps-shift-t f deg)
+  (let loop ((k 0) (acc '()))
+    (if (> k deg)
+        (reverse acc)
+        (loop (+ k 1)
+              (cons (if (= k 0) 0 (gsga-list-ref-default f (- k 1) 0))
+                    acc)))))
+
+;; Compute t * (d/dt log f(t)) = t * f'(t) / f(t) truncated to degree deg.
+;; Requires f(t) to be exact to at least degree deg.
+(define (gsga-fps-t-log-deriv f deg)
+  (let* ((df (gsga-fps-deriv f deg))
+         (q (gsga-fps-div df f deg)))
+    (if (symbol? q)
+        q
+        (gsga-fps-shift-t q deg))))
+
+;; Exact Horner evaluation of polynomial/series s at exact rational x.
+(define (gsga-fps-eval s x)
+  (let ((v (list->vector s)))
+    (let loop ((i (- (vector-length v) 1)) (acc 0))
+      (if (< i 0)
+          acc
+          (loop (- i 1) (+ (* acc x) (vector-ref v i)))))))
+
+;; ===========================================================================
+;; 1. SGA Etale Cohomology & Weil Conjectures over Finite Fields F_q
+;; ===========================================================================
+
+(define (gsga-mod x p)
+  (let ((r (remainder x p)))
+    (if (< r 0) (+ r p) r)))
+
+(define (gsga-prime? n)
+  (cond ((not (gsga-exact-int? n)) #f)
+        ((< n 2) #f)
+        ((= n 2) #t)
+        ((= (remainder n 2) 0) #f)
+        (else
+          (let loop ((d 3))
+            (cond ((> (* d d) n) #t)
+                  ((= (remainder n d) 0) #f)
+                  (else (loop (+ d 2))))))))
+
+(define (gsga-pow-mod base exp m)
+  (let loop ((b (gsga-mod base m)) (e exp) (acc 1))
+    (cond ((<= e 0) acc)
+          ((= (remainder e 2) 1)
+           (loop (gsga-mod (* b b) m)
+                 (quotient e 2)
+                 (gsga-mod (* acc b) m)))
+          (else
+           (loop (gsga-mod (* b b) m)
+                 (quotient e 2)
+                 acc)))))
+
+;; Legendre symbol (a / p) for odd prime p: returns 0, 1, or -1.
+(define (gsga-legendre a p)
+  (let ((r (gsga-mod a p)))
+    (if (= r 0)
+        0
+        (let ((v (gsga-pow-mod r (quotient (- p 1) 2) p)))
+          (if (= v 1) 1 -1)))))
+
+;; Smallest quadratic non-residue d in {2, ..., p-1} for odd prime p.
+(define (gsga-find-nonresidue p)
+  (let loop ((d 2))
+    (cond ((>= d p) 'err-no-nonresidue)
+          ((= (gsga-legendre d p) -1) d)
+          (else (loop (+ d 1))))))
+
+;; Weierstrass discriminant Delta = -16 * (4a^3 + 27b^2) for y^2 = x^3 + ax + b.
+(define (gsga-elliptic-discriminant a b)
+  (* -16 (+ (* 4 a a a) (* 27 b b))))
+
+;; Smoothness over F_p (odd prime p >= 3): Delta != 0 (mod p).
+(define (gsga-elliptic-smooth-fp? a b p)
+  (and (gsga-prime? p)
+       (>= p 3)
+       (not (= (gsga-mod (gsga-elliptic-discriminant a b) p) 0))))
+
+;; Exact point count #E(F_p) for smooth E: y^2 = x^3 + ax + b over F_p.
+;; Rejects singular curves with 'err-singular-curve and invalid primes with 'err-invalid-prime.
+(define (gsga-elliptic-count-fp a b p)
+  (cond ((or (not (gsga-prime? p)) (< p 3)) 'err-invalid-prime)
+        ((= (gsga-mod (gsga-elliptic-discriminant a b) p) 0) 'err-singular-curve)
+        (else
+          (let loop ((x 0) (cnt 1)) ; start at 1 for point at infinity O
+            (if (>= x p)
+                cnt
+                (let* ((rhs (gsga-mod (+ (* x x x) (* a x) b) p))
+                       (leg (gsga-legendre rhs p))
+                       (pts (+ 1 leg))) ; 1 if rhs=0, 2 if QR, 0 if QNR
+                  (loop (+ x 1) (+ cnt pts))))))))
+
+;; Independent direct brute-force enumeration of (x, y) in F_p x F_p.
+(define (gsga-elliptic-count-fp-bruteforce a b p)
+  (cond ((or (not (gsga-prime? p)) (< p 3)) 'err-invalid-prime)
+        ((= (gsga-mod (gsga-elliptic-discriminant a b) p) 0) 'err-singular-curve)
+        (else
+          (let loop-x ((x 0) (cnt 1))
+            (if (>= x p)
+                cnt
+                (let ((rhs (gsga-mod (+ (* x x x) (* a x) b) p)))
+                  (let loop-y ((y 0) (c cnt))
+                    (if (>= y p)
+                        (loop-x (+ x 1) c)
+                        (loop-y (+ y 1)
+                                (if (= (gsga-mod (* y y) p) rhs)
+                                    (+ c 1)
+                                    c))))))))))
+
+;; Frobenius trace a_p = p + 1 - #E(F_p).
+(define (gsga-elliptic-frobenius-trace a b p)
+  (let ((n (gsga-elliptic-count-fp a b p)))
+    (if (symbol? n)
+        n
+        (- (+ p 1) n))))
+
+;; Frobenius power sums s_r = alpha^r + beta^r for r = 1..R using:
+;;   s_1 = a_p, s_2 = a_p^2 - 2p, s_r = a_p * s_{r-1} - p * s_{r-2}.
+(define (gsga-elliptic-frobenius-power-sums a_p p max-r)
+  (cond ((<= max-r 0) '())
+        ((= max-r 1) (list a_p))
+        (else
+          (let ((s1 a_p)
+                (s2 (- (* a_p a_p) (* 2 p))))
+            (let loop ((r 3) (prev2 s1) (prev1 s2) (acc (list s2 s1)))
+              (if (> r max-r)
+                  (reverse acc)
+                  (let ((sr (- (* a_p prev1) (* p prev2))))
+                    (loop (+ r 1) prev1 sr (cons sr acc)))))))))
+
+;; Exact extension counts #E(F_{p^r}) = p^r + 1 - s_r for r = 1..max-r.
+(define (gsga-elliptic-extension-counts a b p max-r)
+  (let ((ap (gsga-elliptic-frobenius-trace a b p)))
+    (if (symbol? ap)
+        ap
+        (let ((sums (gsga-elliptic-frobenius-power-sums ap p max-r)))
+          (let loop ((r 1) (pr p) (rest sums) (acc '()))
+            (if (null? rest)
+                (reverse acc)
+                (loop (+ r 1)
+                      (* pr p)
+                      (cdr rest)
+                      (cons (- (+ pr 1) (car rest)) acc))))))))
+
+;; Arithmetic in quadratic extension F_{p^2} = F_p[sqrt(d)], elements (u . v).
+(define (gsga-fp2-add x y p)
+  (cons (gsga-mod (+ (car x) (car y)) p)
+        (gsga-mod (+ (cdr x) (cdr y)) p)))
+
+(define (gsga-fp2-mul x y d p)
+  (let ((u1 (car x)) (v1 (cdr x))
+        (u2 (car y)) (v2 (cdr y)))
+    (cons (gsga-mod (+ (* u1 u2) (* d v1 v2)) p)
+          (gsga-mod (+ (* u1 v2) (* v1 u2)) p))))
+
+(define (gsga-fp2-scale c x p)
+  (cons (gsga-mod (* c (car x)) p)
+        (gsga-mod (* c (cdr x)) p)))
+
+;; Independent brute-force point count #E(F_{p^2}) over explicit F_p[sqrt(d)].
+(define (gsga-elliptic-count-fp2-bruteforce a b p)
+  (cond ((or (not (gsga-prime? p)) (< p 3)) 'err-invalid-prime)
+        ((= (gsga-mod (gsga-elliptic-discriminant a b) p) 0) 'err-singular-curve)
+        (else
+          (let* ((d (gsga-find-nonresidue p))
+                 (sq-table (make-vector (* p p) 0))
+                 (b-elem (cons (gsga-mod b p) 0)))
+            ;; Tabulate square-root multiplicities for all y in F_{p^2}.
+            (let ly0 ((y0 0))
+              (if (< y0 p)
+                  (begin
+                    (let ly1 ((y1 0))
+                      (if (< y1 p)
+                          (let* ((y (cons y0 y1))
+                                 (y2 (gsga-fp2-mul y y d p))
+                                 (idx (+ (* (car y2) p) (cdr y2))))
+                            (vector-set! sq-table idx (+ (vector-ref sq-table idx) 1))
+                            (ly1 (+ y1 1)))))
+                    (ly0 (+ y0 1)))))
+            ;; Sum solution counts over all x in F_{p^2}, plus O.
+            (let lx0 ((x0 0) (cnt 1))
+              (if (>= x0 p)
+                  cnt
+                  (let lx1 ((x1 0) (c cnt))
+                    (if (>= x1 p)
+                        (lx0 (+ x0 1) c)
+                        (let* ((x (cons x0 x1))
+                               (x2 (gsga-fp2-mul x x d p))
+                               (x3 (gsga-fp2-mul x2 x d p))
+                               (ax (gsga-fp2-scale a x p))
+                               (rhs (gsga-fp2-add (gsga-fp2-add x3 ax p) b-elem p))
+                               (idx (+ (* (car rhs) p) (cdr rhs))))
+                          (lx1 (+ x1 1) (+ c (vector-ref sq-table idx))))))))))))
+
+;; Exact rational Weil Zeta function Z(E/F_p, T) = (1 - a_p T + p T^2) / ((1 - T)(1 - pT))
+;; Returns (cons numerator-coeffs denominator-coeffs).
+(define (gsga-weil-zeta-elliptic-ratfun a_p p)
+  (cons (list 1 (- 0 a_p) p)
+        (list 1 (- 0 (+ p 1)) p)))
+
+;; Expand Z(E/F_p, T) as exact rational power series to degree deg.
+(define (gsga-weil-zeta-elliptic-series a_p p deg)
+  (let ((rf (gsga-weil-zeta-elliptic-ratfun a_p p)))
+    (gsga-fps-div (car rf) (cdr rf) deg)))
+
+;; Compute T * d/dT log Z(E/F_p, T) = T * Z'(T) / Z(T) to degree max-r.
+(define (gsga-weil-zeta-elliptic-log-deriv a_p p max-r)
+  (let ((z-series (gsga-weil-zeta-elliptic-series a_p p (+ max-r 1))))
+    (gsga-fps-t-log-deriv z-series max-r)))
+
+;; Verify T * d/dT log Z(E/F_p, T) == sum_{r=1}^{max-r} #E(F_{p^r}) T^r exactly.
+(define (gsga-verify-weil-zeta-elliptic-series? a b p max-r)
+  (let ((ap (gsga-elliptic-frobenius-trace a b p)))
+    (if (symbol? ap)
+        #f
+        (let* ((counts (gsga-elliptic-extension-counts a b p max-r))
+               (expected (cons 0 counts))
+               (actual (gsga-weil-zeta-elliptic-log-deriv ap p max-r)))
+          (gsga-fps-equal? actual expected)))))
+
+;; Verify Weil functional equation for genus-1 curve (chi = 0):
+;;   Z(E, 1/(pT)) == Z(E, T)
+;; Checked both algebraically on reciprocal polynomials and at exact rational T values.
+(define (gsga-verify-weil-functional-eq-elliptic? a_p p)
+  (let* ((rf (gsga-weil-zeta-elliptic-ratfun a_p p))
+         (num (car rf))
+         (den (cdr rf))
+         ;; Substitute T -> 1/(pT) in N(T) = 1 - a_p T + p T^2 and multiply by p T^2:
+         ;;   p T^2 * N(1/(pT)) = p T^2 - a_p T + 1 = N(T)!
+         ;; Similarly p T^2 * D(1/(pT)) = p T^2 - (p+1) T + 1 = D(T)!
+         (n0 (car num)) (n1 (cadr num)) (n2 (caddr num))
+         (d0 (car den)) (d1 (cadr den)) (d2 (caddr den))
+         (num-rec (list (/ n2 p) n1 (* n0 p)))
+         (den-rec (list (/ d2 p) d1 (* d0 p)))
+         (alg-ok (and (gsga-fps-equal? num-rec num)
+                      (gsga-fps-equal? den-rec den)))
+         ;; Independent exact rational point evaluations strictly away from poles T=1, 1/p:
+         ;; t = m / (m*p + 1) satisfies 0 < t < 1/p and t-inv = (m*p + 1)/(m*p) > 1.
+         (test-ts (list (/ 1 (+ p 1))
+                        (/ 2 (+ (* 2 p) 1))
+                        (/ 3 (+ (* 3 p) 1))))
+         (eval-ok
+           (let loop ((ts test-ts))
+             (if (null? ts)
+                 #t
+                 (let* ((t (car ts))
+                        (t-inv (/ 1 (* p t)))
+                        (zt (/ (gsga-fps-eval num t) (gsga-fps-eval den t)))
+                        (zt-inv (/ (gsga-fps-eval num t-inv) (gsga-fps-eval den t-inv))))
+                   (if (and (gsga-exact-num? zt) (gsga-exact-num? zt-inv) (= zt zt-inv))
+                       (loop (cdr ts))
+                       #f))))))
+    (and alg-ok eval-ok)))
+
+;; Weil Riemann Hypothesis (Hasse-Weil bound) for genus-1 curve over F_p:
+;;   |a_p|^2 <= 4*p  <=>  discriminant a_p^2 - 4*p <= 0 (so |alpha| = |conj(alpha)| = sqrt(p)).
+(define (gsga-verify-weil-rh? a_p p)
+  (and (gsga-exact-int? a_p)
+       (gsga-exact-int? p)
+       (> p 0)
+       (<= (* a_p a_p) (* 4 p))))
+
+;; Full Weil Conjectures verification certificate for smooth E: y^2 = x^3 + ax + b over F_p.
+(define (gsga-verify-weil-conjectures-elliptic a b p max-r)
+  (let ((n1 (gsga-elliptic-count-fp a b p)))
+    (if (symbol? n1)
+        n1
+        (let* ((ap (- (+ p 1) n1))
+               (counts (gsga-elliptic-extension-counts a b p max-r))
+               (rat-ok (gsga-verify-weil-zeta-elliptic-series? a b p max-r))
+               (feq-ok (gsga-verify-weil-functional-eq-elliptic? ap p))
+               (rh-ok (gsga-verify-weil-rh? ap p)))
+          (vector 'weil-elliptic-verified
+                  p ap n1 counts rat-ok feq-ok rh-ok)))))
+
+;; Projective space P^n over F_q:
+;;   Z(P^n/F_q, T) = prod_{k=0}^n (1 - q^k T)^{-1}
+;;   Betti numbers b_{2k} = 1 (0 <= k <= n), chi(P^n) = n + 1.
+(define (gsga-weil-zeta-pn-denom n q)
+  (let loop ((k 0) (qk 1) (poly (list 1)))
+    (if (> k n)
+        poly
+        (let ((factor (list 1 (- 0 qk))))
+          (loop (+ k 1)
+                (* qk q)
+                (gsga-fps-mul poly factor (+ k 1)))))))
+
+(define (gsga-pn-extension-counts n q max-r)
+  (let loop ((r 1) (qr q) (acc '()))
+    (if (> r max-r)
+        (reverse acc)
+        (let inner ((k 0) (term 1) (sum 0))
+          (if (> k n)
+              (loop (+ r 1) (* qr q) (cons sum acc))
+              (inner (+ k 1) (* term qr) (+ sum term)))))))
+
+(define (gsga-verify-weil-zeta-pn-series? n q max-r)
+  (let* ((den (gsga-weil-zeta-pn-denom n q))
+         (z-series (gsga-fps-inv den (+ max-r 1)))
+         (actual (gsga-fps-t-log-deriv z-series max-r))
+         (expected (cons 0 (gsga-pn-extension-counts n q max-r))))
+    (gsga-fps-equal? actual expected)))
+
+;; Functional equation for P^n over F_q (dim = n, chi = n + 1):
+;;   Z(P^n, 1/(q^n T)) = (-1)^{n+1} * q^{n(n+1)/2} * T^{n+1} * Z(P^n, T).
+(define (gsga-verify-weil-functional-eq-pn? n q)
+  (let* ((den (gsga-weil-zeta-pn-denom n q))
+         (chi (+ n 1))
+         (qn (gsga-int-pow q n))
+         (q-half-nchi (gsga-int-pow q (quotient (* n chi) 2)))
+         (sign (if (= (remainder chi 2) 0) 1 -1))
+         ;; Pole-free exact rational test points: t = m / (m*q^n + 1) satisfies
+         ;; q^k * t < 1 and q^k * (1/(q^n * t)) > 1 for all 0 <= k <= n.
+         (test-ts (list (/ 1 (+ qn 1))
+                        (/ 2 (+ (* 2 qn) 1))
+                        (/ 3 (+ (* 3 qn) 1)))))
+    (let loop ((ts test-ts))
+      (if (null? ts)
+          #t
+          (let* ((t (car ts))
+                 (t-inv (/ 1 (* qn t)))
+                 (lhs (/ 1 (gsga-fps-eval den t-inv)))
+                 (zt (/ 1 (gsga-fps-eval den t)))
+                 (t-chi (gsga-int-pow t chi))
+                 (rhs (* sign q-half-nchi t-chi zt)))
+            (if (and (gsga-exact-num? lhs) (gsga-exact-num? rhs) (= lhs rhs))
+                (loop (cdr ts))
+                #f))))))
+
+;; ===========================================================================
+;; 2. Grothendieck Ring of Varieties K_0(Var_k) & Pure Chow Motives (Z[L])
+;; ===========================================================================
+
+;; Canonical polynomial representation in L = [A^1]:
+;; trimmed list of exact integers (c_0 c_1 ... c_d), with zero = '(0).
+(define (gsga-motive-normalize coeffs)
+  (let loop ((rev (reverse coeffs)))
+    (cond ((null? rev) (list 0))
+          ((and (= (car rev) 0) (not (null? (cdr rev))))
+           (loop (cdr rev)))
+          (else (reverse rev)))))
+
+(define (gsga-motive-const c)
+  (list c))
+
+(define (gsga-motive-lefschetz)
+  (list 0 1))
+
+(define (gsga-motive-pow-L k)
+  (if (< k 0)
+      'err-invalid-dimension
+      (let loop ((i 0) (acc (list 1)))
+        (if (>= i k) acc (loop (+ i 1) (cons 0 acc))))))
+
+(define (gsga-motive-equal? m1 m2)
+  (let ((n1 (gsga-motive-normalize m1))
+        (n2 (gsga-motive-normalize m2)))
+    (gsga-fps-equal? n1 n2)))
+
+(define (gsga-motive-add m1 m2)
+  (let ((deg (max (- (length m1) 1) (- (length m2) 1))))
+    (gsga-motive-normalize (gsga-fps-add m1 m2 deg))))
+
+(define (gsga-motive-sub m1 m2)
+  (let ((deg (max (- (length m1) 1) (- (length m2) 1))))
+    (gsga-motive-normalize (gsga-fps-sub m1 m2 deg))))
+
+(define (gsga-motive-mul m1 m2)
+  (let ((deg (+ (- (length m1) 1) (- (length m2) 1))))
+    (gsga-motive-normalize (gsga-fps-mul m1 m2 deg))))
+
+;; [P^n] = 1 + L + L^2 + ... + L^n
+(define (gsga-motive-pn n)
+  (if (or (not (gsga-exact-int? n)) (< n 0))
+      'err-invalid-dimension
+      (let loop ((k 0) (acc '()))
+        (if (> k n) acc (loop (+ k 1) (cons 1 acc))))))
+
+;; [GL_n] = prod_{k=0}^{n-1} (L^n - L^k)
+(define (gsga-motive-gln n)
+  (if (or (not (gsga-exact-int? n)) (< n 1))
+      'err-invalid-dimension
+      (let ((Ln (gsga-motive-pow-L n)))
+        (let loop ((k 0) (acc (list 1)))
+          (if (>= k n)
+              acc
+              (let ((factor (gsga-motive-sub Ln (gsga-motive-pow-L k))))
+                (loop (+ k 1) (gsga-motive-mul acc factor))))))))
+
+;; [Gr(k, n)] = Gaussian L-binomial coefficient C_L(n, k) in Z[L]
+;; Computed via Pascal recurrence:
+;;   C_L(n, 0) = 1, C_L(n, n) = 1,
+;;   C_L(n, k) = C_L(n-1, k) + L^{n-k} * C_L(n-1, k-1).
+(define (gsga-motive-grassmannian k n)
+  (cond ((or (not (gsga-exact-int? k))
+             (not (gsga-exact-int? n))
+             (< n 0) (< k 0) (> k n))
+         'err-invalid-grassmannian)
+        ((or (= k 0) (= k n)) (list 1))
+        (else
+          ;; Dynamic programming table row-by-row up to row n
+          (let ((row (make-vector (+ n 1) (list 0))))
+            (vector-set! row 0 (list 1))
+            (let loop-m ((m 1))
+              (if (> m n)
+                  (vector-ref row k)
+                  (begin
+                    (vector-set! row m (list 1))
+                    (let loop-j ((j (- m 1)))
+                      (if (>= j 1)
+                          (let ((shifted (gsga-motive-mul
+                                           (gsga-motive-pow-L (- m j))
+                                           (vector-ref row (- j 1)))))
+                            (vector-set! row j (gsga-motive-add (vector-ref row j) shifted))
+                            (loop-j (- j 1)))))
+                    (loop-m (+ m 1)))))))))
+
+;; Blowup formula in K_0(Var_k):
+;;   [Bl_Z(X)] = [X] - [Z] + [Z] * [P^{codim - 1}]
+;; Rejects codim <= 0 fail-closed with 'err-invalid-codimension.
+(define (gsga-motive-blowup x-motive z-motive codim)
+  (if (or (not (gsga-exact-int? codim)) (<= codim 0))
+      'err-invalid-codimension
+      (gsga-motive-add
+        (gsga-motive-sub x-motive z-motive)
+        (gsga-motive-mul z-motive (gsga-motive-pn (- codim 1))))))
+
+;; Universal motivic realization 1: F_q point count (L |-> q).
+(define (gsga-motive-realize-point-count motive q)
+  (gsga-fps-eval (gsga-motive-normalize motive) q))
+
+;; Universal motivic realization 2: topological Euler characteristic (L |-> 1).
+(define (gsga-motive-realize-euler motive)
+  (gsga-fps-eval (gsga-motive-normalize motive) 1))
+
+;; Universal motivic realization 3: Hodge-Poincare polynomial (L |-> u * v).
+(define (gsga-motive-realize-hodge-poincare motive u v)
+  (gsga-fps-eval (gsga-motive-normalize motive) (* u v)))
+
+;; Symbolic Hodge-Deligne decomposition of a pure Tate motive:
+;; returns list of (list p q coeff) for nonzero terms c_k * L^k (so p = q = k).
+(define (gsga-motive-hodge-numbers motive)
+  (let loop ((rest (gsga-motive-normalize motive)) (k 0) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((= (car rest) 0) (loop (cdr rest) (+ k 1) acc))
+          (else (loop (cdr rest) (+ k 1) (cons (list k k (car rest)) acc))))))
+
+;; ===========================================================================
+;; 3. Grothendieck-Riemann-Roch (GRR) & Hirzebruch-Riemann-Roch (HRR)
+;; ===========================================================================
+
+;; Chern character ch(O(m)) = exp(m * h) = sum_{k=0}^{deg} (m^k / k!) h^k
+;; in Q[h]/(h^{deg+1}).
+(define (gsga-ch-line-bundle m deg)
+  (let loop ((k 0) (mk 1) (fact 1) (acc '()))
+    (if (> k deg)
+        (reverse acc)
+        (loop (+ k 1)
+              (* mk m)
+              (* fact (+ k 1))
+              (cons (/ mk fact) acc)))))
+
+;; Additivity: ch(E (+) F) = ch(E) + ch(F).
+(define (gsga-ch-direct-sum ch-e ch-f)
+  (let ((deg (max (- (length ch-e) 1) (- (length ch-f) 1))))
+    (gsga-fps-add ch-e ch-f deg)))
+
+;; Multiplicativity: ch(E (x) F) = ch(E) * ch(F).
+(define (gsga-ch-tensor-product ch-e ch-f)
+  (let ((deg (min (- (length ch-e) 1) (- (length ch-f) 1))))
+    (gsga-fps-mul ch-e ch-f deg)))
+
+;; Dual bundle: ch(E^v) has (-1)^k * ch_k(E).
+(define (gsga-ch-dual ch-e)
+  (let loop ((rest ch-e) (k 0) (acc '()))
+    (if (null? rest)
+        (reverse acc)
+        (loop (cdr rest)
+              (+ k 1)
+              (cons (if (= (remainder k 2) 0) (car rest) (- 0 (car rest)))
+                    acc)))))
+
+;; Chern character of T_{P^n} via Euler exact sequence
+;;   0 -> O -> O(1)^{+(n+1)} -> T_{P^n} -> 0
+;; so ch(T_{P^n}) = (n + 1) * ch(O(1)) - ch(O).
+(define (gsga-ch-tangent-pn n)
+  (gsga-fps-sub (gsga-fps-scale (+ n 1) (gsga-ch-line-bundle 1 n) n)
+                (gsga-ch-line-bundle 0 n)
+                n))
+
+;; Todd series of a line bundle with c_1 = h:
+;;   Td(O(1)) = h / (1 - e^{-h}) = ((1 - e^{-h}) / h)^{-1}
+;; where (1 - e^{-h}) / h = sum_{k=0}^{deg} (-1)^k / (k+1)! * h^k.
+;; Derived directly by exact rational power series inversion.
+(define (gsga-todd-line-bundle-series deg)
+  (let ((q-series
+          (let loop ((k 0) (sign 1) (fact 1) (acc '()))
+            (if (> k deg)
+                (reverse acc)
+                (loop (+ k 1)
+                      (- 0 sign)
+                      (* fact (+ k 2))
+                      (cons (/ sign fact) acc))))))
+    (gsga-fps-inv q-series deg)))
+
+;; Exact Todd class Td(T_{P^n}) = (h / (1 - e^{-h}))^{n+1} mod h^{n+1}.
+(define (gsga-todd-pn n)
+  (if (or (not (gsga-exact-int? n)) (< n 0))
+      'err-invalid-dimension
+      (gsga-fps-pow (gsga-todd-line-bundle-series n) (+ n 1) n)))
+
+;; Evaluate integral_{P^n} ch(E) * todd (coefficient of h^n) using supplied Todd class.
+(define (gsga-hrr-with-todd ch-e todd-series n)
+  (let ((prod (gsga-fps-mul ch-e todd-series n)))
+    (gsga-list-ref-default prod n 0)))
+
+;; Hirzebruch-Riemann-Roch on P^n for O(m):
+;;   chi(P^n, O(m)) = integral_{P^n} ch(O(m)) * Td(T_{P^n}).
+(define (gsga-hrr-pn-line-bundle n m)
+  (gsga-hrr-with-todd (gsga-ch-line-bundle m n) (gsga-todd-pn n) n))
+
+;; GRR pushforward along f: P^n -> pt for an arbitrary vector bundle (given by ch(E)):
+;;   ch(f_! E) = f_*(ch(E) * Td(T_{P^n})) = chi(P^n, E).
+(define (gsga-grr-to-point ch-e n)
+  (gsga-hrr-with-todd ch-e (gsga-todd-pn n) n))
+
+;; GRR for a finite degree-d branched cover f: C -> P^1 of a smooth projective
+;; curve C of genus g, with a line bundle L of degree ell on C.
+;;   On C:  ch(L) = 1 + ell*[pt_C],  Td(T_C) = 1 + (1 - g)*[pt_C]
+;;   Pushforward f_*: A*(C)_Q -> A*(P^1)_Q maps 1_C |-> d, [pt_C] |-> h.
+;;   Hence f_*(ch(L)*Td(T_C)) = d + (ell + 1 - g)*h.
+;;   GRR gives ch(f_! L) = f_*(ch(L)*Td(T_C)) / Td(T_{P^1}) in Q[h]/(h^2).
+;; Returns vector:
+;;   #(grr-branched-cover ch-f-shriek rhs-pushforward chi-via-p1 chi-via-c deg-R)
+(define (gsga-grr-branched-cover-pushforward d g ell)
+  (if (or (not (gsga-exact-int? d)) (<= d 0)
+          (not (gsga-exact-int? g)) (< g 0)
+          (not (gsga-exact-int? ell)))
+      'err-invalid-cover
+      (let* ((ch-L (list 1 ell))
+             (td-C (list 1 (- 1 g)))
+             (prod-C (gsga-fps-mul ch-L td-C 1))
+             ;; Pushforward f_*: degree-0 scales by d, degree-1 scales by 1.
+             (rhs (list (* d (car prod-C)) (cadr prod-C)))
+             (td-P1 (gsga-todd-pn 1))
+             ;; Solve ch(f_! L) * Td(T_{P^1}) = rhs by exact series division.
+             (ch-f-shriek (gsga-fps-div rhs td-P1 1))
+             ;; Recompute LHS = ch(f_! L) * Td(T_{P^1}) and push to point.
+             (lhs (gsga-fps-mul ch-f-shriek td-P1 1))
+             (chi-via-p1 (cadr lhs))
+             (chi-via-c (+ ell (- 1 g)))
+             ;; Riemann-Hurwitz ramification degree: deg(R) = 2g - 2 + 2d.
+             (deg-R (+ (- (* 2 g) 2) (* 2 d))))
+        (vector 'grr-branched-cover ch-f-shriek rhs chi-via-p1 chi-via-c deg-R))))
+
+;; Full verification of GRR + Riemann-Roch + Riemann-Hurwitz for f: C -> P^1
+;; with an explicit claimed ramification degree deg-R-claimed.
+;; Rejects invalid covers or mismatched ramification degrees fail-closed.
+(define (gsga-grr-branched-cover-verify d g ell deg-R-claimed)
+  (let ((res (gsga-grr-branched-cover-pushforward d g ell)))
+    (if (symbol? res)
+        res
+        (let* ((ch-f (vector-ref res 1))
+               (rhs (vector-ref res 2))
+               (chi-p1 (vector-ref res 3))
+               (chi-c (vector-ref res 4))
+               (deg-R (vector-ref res 5))
+               (td-P1 (gsga-todd-pn 1))
+               (lhs (gsga-fps-mul ch-f td-P1 1))
+               (rh-eq (= (- (* 2 g) 2) (+ (* d -2) deg-R-claimed)))
+               (c1-matches-rh (= (cadr ch-f) (- ell (/ deg-R-claimed 2)))))
+          (cond ((not rh-eq) 'err-riemann-hurwitz-mismatch)
+                ((not (and (gsga-fps-equal? lhs rhs)
+                           (= chi-p1 chi-c)
+                           (= (car ch-f) d)
+                           (= deg-R deg-R-claimed)
+                           c1-matches-rh))
+                 'err-grr-mismatch)
+                (else #t))))))

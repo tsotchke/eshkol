@@ -1,0 +1,346 @@
+;;; core.analysis.complex -- complex differentiation, Cauchy-Riemann residual
+;;; verification, numerical contour integration, winding numbers, Cauchy
+;;; integral formula, exact simple-pole residues for rational functions, and
+;;; Mobius transformations.
+;;;
+;;; Partial derivatives of u(x, y) = Re(f(x + iy)) and v(x, y) = Im(f(x + iy))
+;;; are computed via Eshkol's native forward automatic differentiation
+;;; (`derivative`). Contour integration uses composite 8-point Gauss-Legendre
+;;; quadrature (order 16 per panel).
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+
+(provide complex-pi complex-i complex-conj complex-norm2
+         complex-partial-derivatives
+         cauchy-riemann-residuals cauchy-riemann-residual-norm
+         holomorphic-at? complex-derivative wirtinger-dz wirtinger-dzbar
+         contour-integral contour-integral-circle contour-integral-polygon
+         winding-number-raw winding-number
+         winding-number-circle winding-number-polygon
+         cauchy-integral-value cauchy-integral-derivative
+         cpoly-eval cpoly-deriv
+         rational-residue-simple-pole numerical-residue
+         verify-residue-theorem
+         make-mobius mobius? mobius-a mobius-b mobius-c mobius-d
+         mobius-det mobius-identity
+         mobius-apply mobius-compose mobius-inverse
+         cross-ratio mobius-cross-ratio-invariant?)
+
+;; ---------------------------------------------------------------------------
+;; Constants and elementary complex helpers
+;; ---------------------------------------------------------------------------
+
+(define complex-pi (acos -1.0))
+(define complex-i (make-rectangular 0.0 1.0))
+
+(define (complex-conj z)
+  (make-rectangular (real-part z) (- (imag-part z))))
+
+(define (complex-norm2 z)
+  (let ((x (real-part z))
+        (y (imag-part z)))
+    (+ (* x x) (* y y))))
+
+(define (cpx-factorial k)
+  (let loop ((i 1) (acc 1.0))
+    (if (> i k) acc (loop (+ i 1) (* acc i)))))
+
+(define (cpx-pow-int z k)
+  (let loop ((n k) (acc (make-rectangular 1.0 0.0)))
+    (if (<= n 0) acc (loop (- n 1) (* acc z)))))
+
+;; ---------------------------------------------------------------------------
+;; Complex derivative & Cauchy-Riemann residual checker (via native AD)
+;; ---------------------------------------------------------------------------
+
+;; Returns (list du/dx du/dy dv/dx dv/dy) at z0 = x0 + i*y0.
+(define (complex-partial-derivatives f z0)
+  (let ((x0 (real-part z0))
+        (y0 (imag-part z0)))
+    (let ((du-dx (derivative (lambda (x) (real-part (f (make-rectangular x y0)))) x0))
+          (du-dy (derivative (lambda (y) (real-part (f (make-rectangular x0 y)))) y0))
+          (dv-dx (derivative (lambda (x) (imag-part (f (make-rectangular x y0)))) x0))
+          (dv-dy (derivative (lambda (y) (imag-part (f (make-rectangular x0 y)))) y0)))
+      (list du-dx du-dy dv-dx dv-dy))))
+
+;; Cauchy-Riemann equations: du/dx - dv/dy = 0 and du/dy + dv/dx = 0.
+(define (cauchy-riemann-residuals f z0)
+  (let* ((ps (complex-partial-derivatives f z0))
+         (du-dx (car ps))
+         (du-dy (cadr ps))
+         (dv-dx (caddr ps))
+         (dv-dy (cadddr ps)))
+    (list (- du-dx dv-dy) (+ du-dy dv-dx))))
+
+(define (cauchy-riemann-residual-norm f z0)
+  (let* ((rs (cauchy-riemann-residuals f z0))
+         (r1 (car rs))
+         (r2 (cadr rs)))
+    (sqrt (+ (* r1 r1) (* r2 r2)))))
+
+(define (holomorphic-at? f z0 tol)
+  (< (cauchy-riemann-residual-norm f z0) tol))
+
+;; Wirtinger derivatives:
+;;   df/dz     = 1/2 * ((du/dx + dv/dy) + i*(dv/dx - du/dy))
+;;   df/dzbar  = 1/2 * ((du/dx - dv/dy) + i*(dv/dx + du/dy))
+;; For holomorphic f, df/dzbar = 0 and df/dz = f'(z) = du/dx + i*dv/dx.
+(define (wirtinger-dz f z0)
+  (let* ((ps (complex-partial-derivatives f z0))
+         (du-dx (car ps))
+         (du-dy (cadr ps))
+         (dv-dx (caddr ps))
+         (dv-dy (cadddr ps)))
+    (make-rectangular (* 0.5 (+ du-dx dv-dy))
+                      (* 0.5 (- dv-dx du-dy)))))
+
+(define (wirtinger-dzbar f z0)
+  (let* ((ps (complex-partial-derivatives f z0))
+         (du-dx (car ps))
+         (du-dy (cadr ps))
+         (dv-dx (caddr ps))
+         (dv-dy (cadddr ps)))
+    (make-rectangular (* 0.5 (- du-dx dv-dy))
+                      (* 0.5 (+ dv-dx du-dy)))))
+
+(define (complex-derivative f z0)
+  (wirtinger-dz f z0))
+
+;; ---------------------------------------------------------------------------
+;; Composite 8-point Gauss-Legendre contour integration
+;; ---------------------------------------------------------------------------
+
+(define gl8-nodes
+  (vector -0.96028985649753623
+          -0.79666647741362674
+          -0.52553240991632899
+          -0.18343464249564980
+           0.18343464249564980
+           0.52553240991632899
+           0.79666647741362674
+           0.96028985649753623))
+
+(define gl8-weights
+  (vector 0.10122853629037626
+          0.22238103445337447
+          0.31370664587788729
+          0.36268378337836198
+          0.36268378337836198
+          0.31370664587788729
+          0.22238103445337447
+          0.10122853629037626))
+
+(define (cpx-curve-deriv gamma t)
+  (make-rectangular
+   (derivative (lambda (s) (real-part (gamma s))) t)
+   (derivative (lambda (s) (imag-part (gamma s))) t)))
+
+;; Integrate f(z) dz along gamma : [t0, t1] -> C using n panels of 8-point
+;; Gauss-Legendre quadrature. Optional 6th argument supplies an explicit
+;; tangent gamma'(t); otherwise exact native AD differentiates gamma.
+(define (contour-integral f gamma t0 t1 n . opt-dgamma)
+  (let* ((dgamma (if (null? opt-dgamma)
+                     (lambda (t) (cpx-curve-deriv gamma t))
+                     (car opt-dgamma)))
+         (h (/ (- t1 t0) n))
+         (half-h (* 0.5 h)))
+    (let panel-loop ((p 0) (acc (make-rectangular 0.0 0.0)))
+      (if (>= p n)
+          acc
+          (let ((mid (+ t0 (* (+ p 0.5) h))))
+            (let node-loop ((k 0) (sub (make-rectangular 0.0 0.0)))
+              (if (>= k 8)
+                  (panel-loop (+ p 1) (+ acc (* half-h sub)))
+                  (let* ((tk (+ mid (* half-h (vector-ref gl8-nodes k))))
+                         (wk (vector-ref gl8-weights k))
+                         (z (gamma tk))
+                         (dz (dgamma tk)))
+                    (node-loop (+ k 1) (+ sub (* wk (* (f z) dz))))))))))))
+
+;; Counterclockwise circle |z - center| = radius.
+(define (contour-integral-circle f center radius n)
+  (let ((two-pi (* 2.0 complex-pi)))
+    (contour-integral
+     f
+     (lambda (t) (+ center (make-rectangular (* radius (cos t))
+                                             (* radius (sin t)))))
+     0.0 two-pi n
+     (lambda (t) (make-rectangular (* (- radius) (sin t))
+                                   (* radius (cos t)))))))
+
+;; Closed polygonal contour v_0 -> v_1 -> ... -> v_{k-1} -> v_0.
+(define (contour-integral-polygon f vertices n-per-edge)
+  (let ((k (length vertices)))
+    (if (< k 2)
+        (make-rectangular 0.0 0.0)
+        (let loop ((i 0) (acc (make-rectangular 0.0 0.0)))
+          (if (>= i k)
+              acc
+              (let* ((v0 (list-ref vertices i))
+                     (v1 (list-ref vertices (remainder (+ i 1) k)))
+                     (diff (- v1 v0))
+                     (seg (contour-integral
+                           f
+                           (lambda (t) (+ v0 (* t diff)))
+                           0.0 1.0 n-per-edge
+                           (lambda (t) diff))))
+                (loop (+ i 1) (+ acc seg))))))))
+
+;; ---------------------------------------------------------------------------
+;; Winding numbers
+;; ---------------------------------------------------------------------------
+
+(define (winding-number-raw gamma z0 t0 t1 n . opt-dgamma)
+  (let* ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi)))
+         (integrand (lambda (z) (/ 1.0 (- z z0))))
+         (val (if (null? opt-dgamma)
+                  (contour-integral integrand gamma t0 t1 n)
+                  (contour-integral integrand gamma t0 t1 n (car opt-dgamma)))))
+    (/ val two-pi-i)))
+
+(define (winding-number gamma z0 t0 t1 n . opt-dgamma)
+  (let ((raw (if (null? opt-dgamma)
+                 (winding-number-raw gamma z0 t0 t1 n)
+                 (winding-number-raw gamma z0 t0 t1 n (car opt-dgamma)))))
+    (inexact->exact (round (real-part raw)))))
+
+(define (winding-number-circle center radius z0 n)
+  (let* ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi)))
+         (val (contour-integral-circle (lambda (z) (/ 1.0 (- z z0)))
+                                       center radius n)))
+    (inexact->exact (round (real-part (/ val two-pi-i))))))
+
+(define (winding-number-polygon vertices z0 n-per-edge)
+  (let* ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi)))
+         (val (contour-integral-polygon (lambda (z) (/ 1.0 (- z z0)))
+                                        vertices n-per-edge)))
+    (inexact->exact (round (real-part (/ val two-pi-i))))))
+
+;; ---------------------------------------------------------------------------
+;; Cauchy integral formula
+;; ---------------------------------------------------------------------------
+
+(define (cauchy-integral-value f z0 radius n)
+  (let ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi))))
+    (/ (contour-integral-circle (lambda (z) (/ (f z) (- z z0))) z0 radius n)
+       two-pi-i)))
+
+(define (cauchy-integral-derivative f z0 k radius n)
+  (let ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi)))
+        (fact (cpx-factorial k)))
+    (* (/ fact two-pi-i)
+       (contour-integral-circle
+        (lambda (z) (/ (f z) (cpx-pow-int (- z z0) (+ k 1))))
+        z0 radius n))))
+
+;; ---------------------------------------------------------------------------
+;; Complex polynomials, exact simple-pole residues, and Residue Theorem
+;; ---------------------------------------------------------------------------
+;;
+;; Polynomials are coefficient lists in ascending power order:
+;;   (list c0 c1 ... cd) represents c0 + c1*z + ... + cd*z^d.
+
+(define (cpoly-eval coeffs z)
+  (let loop ((cs (reverse coeffs)) (acc 0))
+    (if (null? cs)
+        acc
+        (loop (cdr cs) (+ (* acc z) (car cs))))))
+
+(define (cpoly-deriv coeffs)
+  (if (or (null? coeffs) (null? (cdr coeffs)))
+      (list 0)
+      (let loop ((cs (cdr coeffs)) (k 1) (acc '()))
+        (if (null? cs)
+            (reverse acc)
+            (loop (cdr cs) (+ k 1) (cons (* k (car cs)) acc))))))
+
+;; Exact residue of P(z)/Q(z) at a simple pole z0:
+;;   Res(P/Q, z0) = P(z0) / Q'(z0), provided Q(z0) = 0 and Q'(z0) != 0.
+(define (rational-residue-simple-pole P Q z0)
+  (let* ((qval (cpoly-eval Q z0))
+         (qpval (cpoly-eval (cpoly-deriv Q) z0)))
+    (cond
+      ((> (magnitude qval) 1e-9)
+       (error "rational-residue-simple-pole: point is not a pole of Q" z0))
+      ((<= (magnitude qpval) 1e-12)
+       (error "rational-residue-simple-pole: pole is not simple (Q'(z0) = 0)" z0))
+      (else (/ (cpoly-eval P z0) qpval)))))
+
+(define (numerical-residue f z0 radius n)
+  (let ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi))))
+    (/ (contour-integral-circle f z0 radius n) two-pi-i)))
+
+;; Verify Residue Theorem on circle |z - center| = radius:
+;;   oint P(z)/Q(z) dz == 2*pi*i * sum_{p inside circle} Res(P/Q, p).
+(define (verify-residue-theorem P Q poles center radius n tol)
+  (let* ((two-pi-i (make-rectangular 0.0 (* 2.0 complex-pi)))
+         (f (lambda (z) (/ (cpoly-eval P z) (cpoly-eval Q z))))
+         (integral (contour-integral-circle f center radius n))
+         (inside (filter (lambda (p) (< (magnitude (- p center)) radius)) poles))
+         (res-sum
+          (let loop ((ps inside) (acc (make-rectangular 0.0 0.0)))
+            (if (null? ps)
+                acc
+                (loop (cdr ps)
+                      (+ acc (rational-residue-simple-pole P Q (car ps)))))))
+         (expected (* two-pi-i res-sum)))
+    (< (magnitude (- integral expected)) tol)))
+
+;; ---------------------------------------------------------------------------
+;; Mobius transformations: T(z) = (a*z + b) / (c*z + d), ad - bc != 0
+;; ---------------------------------------------------------------------------
+
+(define (make-mobius a b c d)
+  (let ((det (- (* a d) (* b c))))
+    (if (= (magnitude det) 0.0)
+        (error "make-mobius: singular transformation (ad - bc = 0)")
+        (list 'mobius a b c d))))
+
+(define (mobius? t)
+  (and (pair? t) (eq? (car t) 'mobius)))
+
+(define (mobius-a t) (list-ref t 1))
+(define (mobius-b t) (list-ref t 2))
+(define (mobius-c t) (list-ref t 3))
+(define (mobius-d t) (list-ref t 4))
+
+(define (mobius-det t)
+  (- (* (mobius-a t) (mobius-d t))
+     (* (mobius-b t) (mobius-c t))))
+
+(define mobius-identity (make-mobius 1.0 0.0 0.0 1.0))
+
+(define (mobius-apply t z)
+  (/ (+ (* (mobius-a t) z) (mobius-b t))
+     (+ (* (mobius-c t) z) (mobius-d t))))
+
+(define (mobius-compose t1 t2)
+  (let ((a1 (mobius-a t1)) (b1 (mobius-b t1))
+        (c1 (mobius-c t1)) (d1 (mobius-d t1))
+        (a2 (mobius-a t2)) (b2 (mobius-b t2))
+        (c2 (mobius-c t2)) (d2 (mobius-d t2)))
+    (make-mobius (+ (* a1 a2) (* b1 c2))
+                 (+ (* a1 b2) (* b1 d2))
+                 (+ (* c1 a2) (* d1 c2))
+                 (+ (* c1 b2) (* d1 d2)))))
+
+(define (mobius-inverse t)
+  (make-mobius (mobius-d t)
+               (- (mobius-b t))
+               (- (mobius-c t))
+               (mobius-a t)))
+
+(define (cross-ratio z1 z2 z3 z4)
+  (/ (* (- z1 z3) (- z2 z4))
+     (* (- z1 z4) (- z2 z3))))
+
+(define (mobius-cross-ratio-invariant? t z1 z2 z3 z4 tol)
+  (let ((cr0 (cross-ratio z1 z2 z3 z4))
+        (cr1 (cross-ratio (mobius-apply t z1)
+                          (mobius-apply t z2)
+                          (mobius-apply t z3)
+                          (mobius-apply t z4))))
+    (< (magnitude (- cr0 cr1)) tol)))

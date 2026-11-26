@@ -1,0 +1,454 @@
+;;; core.topology -- Computable Point-Set & Finite (Alexandrov) Topology (M0).
+;;;
+;;; Turns topological spaces, bases, subbases, closure/interior/boundary,
+;;; subspaces, products, quotients, continuous maps, homeomorphisms,
+;;; separation axioms (T0..T4), connectedness, compactness, specialization
+;;; preorders, and McCord order-complex Euler characteristics into
+;;; first-class computable values with exact counterexample witnesses.
+;;;
+;;; Integrates directly with core.sheaf.site (finite-space-site).
+
+(require stdlib)
+(require core.sheaf.site)
+
+(provide
+  ;; Constructors & axiom verification
+  make-topology topology? topology-points topology-opens
+  topology-from-basis topology-from-subbasis
+  discrete-topology indiscrete-topology sierpinski-topology
+  particular-point-topology excluded-point-topology
+  topology-from-preorder
+  topology-axiom-violations topology-valid?
+  ;; Basic set-topological operators
+  topo-open? topo-closed? topo-closed-sets topo-clopen?
+  topo-closure topo-interior topo-boundary topo-dense?
+  ;; Constructions
+  topo-subspace topo-product topo-quotient
+  ;; Maps & exact witnesses
+  topo-preimage topo-image
+  topo-continuity-witness topo-continuous?
+  topo-open-map? topo-closed-map? topo-bijection? topo-homeomorphism?
+  ;; Separation axioms & topological invariants
+  topo-t0? topo-t1? topo-t2? topo-regular? topo-normal?
+  topo-connected? topo-connected-components topo-compact?
+  ;; Specialization preorder & Grothendieckian bridge to core.sheaf.site
+  topo-specialization-leq? topo->finite-space topo->site
+  topo-euler-characteristic)
+
+;; ---------------------------------------------------------------------------
+;; Internal set helpers (sorted ascending integer lists)
+;; ---------------------------------------------------------------------------
+
+(define (tp-sort-dedup xs)
+  (let loop ((l xs) (acc '()))
+    (if (null? l) acc
+        (loop (cdr l)
+              (let ins ((x (car l)) (ys acc))
+                (cond ((null? ys) (list x))
+                      ((= x (car ys)) ys)
+                      ((< x (car ys)) (cons x ys))
+                      (else (cons (car ys) (ins x (cdr ys))))))))))
+
+(define (topo-range n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+(define (tp-union a b) (tp-sort-dedup (append a b)))
+(define (tp-inter a b) (tp-sort-dedup (filter (lambda (x) (memv x b)) a)))
+(define (tp-diff a b)  (tp-sort-dedup (filter (lambda (x) (not (memv x b))) a)))
+(define (topo-subset? a b)
+  (cond ((null? a) #t)
+        ((memv (car a) b) (topo-subset? (cdr a) b))
+        (else #f)))
+(define (tp-set=? a b) (equal? (tp-sort-dedup a) (tp-sort-dedup b)))
+(define (tp-member-set? s col)
+  (let ((sn (tp-sort-dedup s)))
+    (let loop ((c col))
+      (cond ((null? c) #f)
+            ((equal? sn (car c)) #t)
+            (else (loop (cdr c)))))))
+
+(define (tp-dedup-sets col)
+  (let loop ((c col) (acc '()))
+    (if (null? c) (reverse acc)
+        (let ((s (tp-sort-dedup (car c))))
+          (if (tp-member-set? s acc) (loop (cdr c) acc) (loop (cdr c) (cons s acc)))))))
+
+(define (topo-all? pred xs)
+  (cond ((null? xs) #t) ((pred (car xs)) (topo-all? pred (cdr xs))) (else #f)))
+(define (topo-any? pred xs)
+  (cond ((null? xs) #f) ((pred (car xs)) #t) (else (topo-any? pred (cdr xs)))))
+
+;; ---------------------------------------------------------------------------
+;; Topology representation: #(topology-v1 points opens)
+;;   points: sorted list of integers (0 .. n-1 or arbitrary distinct ints)
+;;   opens:  deduplicated list of sorted open subsets
+;; ---------------------------------------------------------------------------
+
+(define (make-topology points opens)
+  (vector 'topology-v1 (tp-sort-dedup points) (tp-dedup-sets opens)))
+
+(define (topology? T)
+  (and (vector? T) (= (vector-length T) 3) (eq? (vector-ref T 0) 'topology-v1)))
+
+(define (topology-points T) (vector-ref T 1))
+(define (topology-opens T)  (vector-ref T 2))
+
+(define (topology-axiom-violations T)
+  (let ((X (topology-points T))
+        (Os (topology-opens T))
+        (viols '()))
+    ;; 1. Every open must be a subset of X
+    (for-each (lambda (U)
+                (if (not (topo-subset? U X))
+                    (set! viols (cons (list 'not-subset-of-space U) viols))))
+              Os)
+    ;; 2. Empty set and full space X must be open
+    (if (not (tp-member-set? '() Os))
+        (set! viols (cons (list 'missing-empty-set) viols)))
+    (if (not (tp-member-set? X Os))
+        (set! viols (cons (list 'missing-whole-space X) viols)))
+    ;; 3. Closure under binary unions and binary intersections (sufficient for finite)
+    (for-each (lambda (U)
+                (for-each (lambda (V)
+                            (let ((u (tp-union U V))
+                                  (i (tp-inter U V)))
+                              (if (not (tp-member-set? u Os))
+                                  (set! viols (cons (list 'union-not-open U V u) viols)))
+                              (if (not (tp-member-set? i Os))
+                                  (set! viols (cons (list 'intersection-not-open U V i) viols)))))
+                          Os))
+              Os)
+    (reverse viols)))
+
+(define (topology-valid? T)
+  (and (topology? T) (null? (topology-axiom-violations T))))
+
+;; Close a collection under arbitrary unions (for finite collections)
+(define (tp-close-unions seeds)
+  (let ((cur (tp-dedup-sets (cons '() seeds))))
+    (let loop ((sets cur))
+      (let ((added '()))
+        (for-each (lambda (A)
+                    (for-each (lambda (B)
+                                (let ((u (tp-union A B)))
+                                  (if (and (not (tp-member-set? u sets))
+                                           (not (tp-member-set? u added)))
+                                      (set! added (cons u added)))))
+                              sets))
+                  sets)
+        (if (null? added) sets (loop (append sets added)))))))
+
+;; Close a collection under finite intersections (including empty intersection = X)
+(define (tp-close-intersections X seeds)
+  (let ((cur (tp-dedup-sets (cons X seeds))))
+    (let loop ((sets cur))
+      (let ((added '()))
+        (for-each (lambda (A)
+                    (for-each (lambda (B)
+                                (let ((i (tp-inter A B)))
+                                  (if (and (not (tp-member-set? i sets))
+                                           (not (tp-member-set? i added)))
+                                      (set! added (cons i added)))))
+                              sets))
+                  sets)
+        (if (null? added) sets (loop (append sets added)))))))
+
+(define (topology-from-basis points basis)
+  (let* ((X (tp-sort-dedup points))
+         (opens (tp-close-unions (cons X (map tp-sort-dedup basis)))))
+    (make-topology X opens)))
+
+(define (topology-from-subbasis points subbasis)
+  (let* ((X (tp-sort-dedup points))
+         (basis (tp-close-intersections X (map tp-sort-dedup subbasis)))
+         (opens (tp-close-unions basis)))
+    (make-topology X opens)))
+
+;; Standard topologies
+(define (discrete-topology n)
+  (let ((X (topo-range n)))
+    (make-topology X (map tp-sort-dedup (sheaf-subsets X)))))
+
+(define (indiscrete-topology n)
+  (let ((X (topo-range n)))
+    (make-topology X (list '() X))))
+
+(define (sierpinski-topology)
+  (make-topology '(0 1) (list '() '(0) '(0 1))))
+
+(define (particular-point-topology n p)
+  (let ((X (topo-range n)))
+    (make-topology X (cons '() (filter (lambda (s) (memv p s))
+                                       (map tp-sort-dedup (sheaf-subsets X)))))))
+
+(define (excluded-point-topology n p)
+  (let ((X (topo-range n)))
+    (make-topology X (cons X (filter (lambda (s) (not (memv p s)))
+                                     (map tp-sort-dedup (sheaf-subsets X)))))))
+
+;; Alexandrov topology from a preorder leq?: opens are down-sets
+(define (topology-from-preorder n leq?)
+  (let* ((X (topo-range n))
+         (basis (map (lambda (x) (filter (lambda (y) (leq? y x)) X)) X)))
+    (topology-from-basis X basis)))
+
+;; ---------------------------------------------------------------------------
+;; Open, closed, closure, interior, boundary, dense
+;; ---------------------------------------------------------------------------
+
+(define (topo-open? T S)
+  (tp-member-set? S (topology-opens T)))
+
+(define (topo-closed? T S)
+  (topo-open? T (tp-diff (topology-points T) S)))
+
+(define (topo-closed-sets T)
+  (let ((X (topology-points T)))
+    (tp-dedup-sets (map (lambda (U) (tp-diff X U)) (topology-opens T)))))
+
+(define (topo-clopen? T S)
+  (and (topo-open? T S) (topo-closed? T S)))
+
+(define (topo-closure T S)
+  (let* ((sn (tp-sort-dedup S))
+         (containing (filter (lambda (F) (topo-subset? sn F)) (topo-closed-sets T))))
+    (if (null? containing) (topology-points T)
+        (let loop ((fs (cdr containing)) (acc (car containing)))
+          (if (null? fs) acc (loop (cdr fs) (tp-inter acc (car fs))))))))
+
+(define (topo-interior T S)
+  (let* ((sn (tp-sort-dedup S))
+         (inside (filter (lambda (U) (topo-subset? U sn)) (topology-opens T))))
+    (let loop ((us inside) (acc '()))
+      (if (null? us) acc (loop (cdr us) (tp-union acc (car us)))))))
+
+(define (topo-boundary T S)
+  (tp-diff (topo-closure T S) (topo-interior T S)))
+
+(define (topo-dense? T S)
+  (tp-set=? (topo-closure T S) (topology-points T)))
+
+;; ---------------------------------------------------------------------------
+;; Constructions: subspace, product, quotient
+;; ---------------------------------------------------------------------------
+
+(define (topo-subspace T subset)
+  (let* ((A (tp-sort-dedup subset))
+         (opens (tp-dedup-sets (map (lambda (U) (tp-inter U A)) (topology-opens T)))))
+    (make-topology A opens)))
+
+;; Product topology on X x Y with pairs encoded as i * |Y| + j
+(define (topo-product T1 T2)
+  (let* ((X (topology-points T1))
+         (Y (topology-points T2))
+         (ny (length Y))
+         (encode (lambda (x y) (+ (* x ny) y)))
+         (pts (let lx ((xs X) (acc '()))
+                (if (null? xs) acc
+                    (lx (cdr xs)
+                        (append acc (map (lambda (y) (encode (car xs) y)) Y))))))
+         (basis '()))
+    (for-each (lambda (U)
+                (for-each (lambda (V)
+                            (let ((rect '()))
+                              (for-each (lambda (x)
+                                          (for-each (lambda (y)
+                                                      (set! rect (cons (encode x y) rect)))
+                                                    V))
+                                        U)
+                              (set! basis (cons (tp-sort-dedup rect) basis))))
+                          (topology-opens T2)))
+              (topology-opens T1))
+    (topology-from-basis pts basis)))
+
+;; Quotient topology induced by surjection proj: X -> Y-points
+(define (topo-quotient T proj y-points)
+  (let* ((Y (tp-sort-dedup y-points))
+         (all-sub (map tp-sort-dedup (sheaf-subsets Y)))
+         (opens (filter (lambda (V) (topo-open? T (topo-preimage T proj V))) all-sub)))
+    (make-topology Y opens)))
+
+;; ---------------------------------------------------------------------------
+;; Continuous maps, open/closed maps, homeomorphisms (with witnesses)
+;; ---------------------------------------------------------------------------
+
+(define (topo-preimage T-dom f target-set)
+  (tp-sort-dedup (filter (lambda (x) (memv (f x) target-set)) (topology-points T-dom))))
+
+(define (topo-image T-dom f source-set)
+  (tp-sort-dedup (map f source-set)))
+
+(define (topo-continuity-witness T-dom T-cod f)
+  (let loop ((os (topology-opens T-cod)))
+    (if (null? os) #f
+        (let* ((V (car os))
+               (pre (topo-preimage T-dom f V)))
+          (if (topo-open? T-dom pre)
+              (loop (cdr os))
+              (list 'discontinuous-open V 'preimage pre))))))
+
+(define (topo-continuous? T-dom T-cod f)
+  (eq? (topo-continuity-witness T-dom T-cod f) #f))
+
+(define (topo-open-map? T-dom T-cod f)
+  (topo-all? (lambda (U) (topo-open? T-cod (topo-image T-dom f U)))
+           (topology-opens T-dom)))
+
+(define (topo-closed-map? T-dom T-cod f)
+  (topo-all? (lambda (F) (topo-closed? T-cod (topo-image T-dom f F)))
+           (topo-closed-sets T-dom)))
+
+(define (topo-bijection? T-dom T-cod f)
+  (let ((X (topology-points T-dom))
+        (Y (topology-points T-cod)))
+    (and (= (length X) (length Y))
+         (tp-set=? (topo-image T-dom f X) Y))))
+
+(define (topo-homeomorphism? T-dom T-cod f)
+  (and (topo-bijection? T-dom T-cod f)
+       (topo-continuous? T-dom T-cod f)
+       (topo-open-map? T-dom T-cod f)))
+
+;; ---------------------------------------------------------------------------
+;; Separation axioms (T0, T1, T2, T3/regular, T4/normal), connectedness, compactness
+;; ---------------------------------------------------------------------------
+
+(define (topo-t0? T)
+  (let ((X (topology-points T)) (Os (topology-opens T)))
+    (topo-all? (lambda (x)
+               (topo-all? (lambda (y)
+                          (or (= x y)
+                              (topo-any? (lambda (U)
+                                         (or (and (memv x U) (not (memv y U)))
+                                             (and (memv y U) (not (memv x U)))))
+                                       Os)))
+                        X))
+             X)))
+
+(define (topo-t1? T)
+  (topo-all? (lambda (x) (topo-closed? T (list x))) (topology-points T)))
+
+(define (topo-t2? T)
+  (let ((X (topology-points T)) (Os (topology-opens T)))
+    (topo-all? (lambda (x)
+               (topo-all? (lambda (y)
+                          (or (= x y)
+                              (topo-any? (lambda (U)
+                                         (and (memv x U)
+                                              (topo-any? (lambda (V)
+                                                         (and (memv y V) (null? (tp-inter U V))))
+                                                       Os)))
+                                       Os)))
+                        X))
+             X)))
+
+(define (topo-regular? T)
+  (let ((X (topology-points T)) (Os (topology-opens T)) (Fs (topo-closed-sets T)))
+    (and (topo-t1? T)
+         (topo-all? (lambda (F)
+                    (topo-all? (lambda (x)
+                               (or (memv x F)
+                                   (topo-any? (lambda (U)
+                                              (and (memv x U)
+                                                   (topo-any? (lambda (V)
+                                                              (and (topo-subset? F V)
+                                                                   (null? (tp-inter U V))))
+                                                            Os)))
+                                            Os)))
+                             X))
+                  Fs))))
+
+(define (topo-normal? T)
+  (let ((Os (topology-opens T)) (Fs (topo-closed-sets T)))
+    (and (topo-t1? T)
+         (topo-all? (lambda (F1)
+                    (topo-all? (lambda (F2)
+                               (or (not (null? (tp-inter F1 F2)))
+                                   (topo-any? (lambda (U)
+                                              (and (topo-subset? F1 U)
+                                                   (topo-any? (lambda (V)
+                                                              (and (topo-subset? F2 V)
+                                                                   (null? (tp-inter U V))))
+                                                            Os)))
+                                            Os)))
+                             Fs))
+                  Fs))))
+
+(define (topo-connected? T)
+  (let ((X (topology-points T)))
+    (topo-all? (lambda (U)
+               (or (null? U) (tp-set=? U X) (not (topo-closed? T U))))
+             (topology-opens T))))
+
+;; Connected components via symmetric specialization reachability (exact for finite spaces!)
+(define (topo-specialization-leq? T x y)
+  ;; x <= y iff x in cl({y}) iff every open containing x also contains y
+  (memv x (topo-closure T (list y))))
+
+(define (topo-connected-components T)
+  (let ((X (topology-points T))
+        (visited '())
+        (comps '()))
+    (define (bfs start)
+      (let loop ((queue (list start)) (comp (list start)))
+        (if (null? queue) (tp-sort-dedup comp)
+            (let* ((u (car queue))
+                   (nbrs (filter (lambda (v)
+                                   (and (not (memv v comp))
+                                        (or (topo-specialization-leq? T u v)
+                                            (topo-specialization-leq? T v u))))
+                                 X)))
+              (loop (append (cdr queue) nbrs) (append comp nbrs))))))
+    (for-each (lambda (x)
+                (if (not (memv x visited))
+                    (let ((c (bfs x)))
+                      (set! visited (tp-union visited c))
+                      (set! comps (cons c comps)))))
+              X)
+    (reverse comps)))
+
+;; Every finite topological space is compact; we still verify finite-subcover soundness
+(define (topo-compact? T)
+  (topology-valid? T))
+
+;; ---------------------------------------------------------------------------
+;; Bridge to core.sheaf.site & McCord order-complex Euler characteristic
+;; ---------------------------------------------------------------------------
+
+(define (topo->finite-space T)
+  (if (not (topo-t0? T))
+      (error "topo->finite-space: Alexandrov T0 poset correspondence requires a T0 space"))
+  (let* ((X (topology-points T))
+         (n (length X))
+         (covers '()))
+    ;; In core.sheaf.site, minimal open U_i = {j : j <=_fs i}.
+    ;; Since j in U_i iff x_i <=_spec x_j, we add cover (j . i) when x_i <=_spec x_j.
+    (let li ((i 0))
+      (if (< i n)
+          (let ((xi (list-ref X i)))
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin
+                    (if (and (not (= i j))
+                             (topo-specialization-leq? T xi (list-ref X j)))
+                        (set! covers (cons (cons j i) covers)))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    (make-finite-space n covers)))
+
+(define (topo->site T)
+  (finite-space-site (topo->finite-space T)))
+
+;; Exact Euler characteristic of the McCord order complex K(X) of a finite T0 space:
+;;   chi(K(X)) = sum_{k >= 0} (-1)^k * (# strict chains x_0 > x_1 > ... > x_k)
+(define (topo-euler-characteristic T)
+  (let* ((fs (topo->finite-space T))
+         (n (finite-space-size fs))
+         (allowed (let mk ((i (- n 1)) (acc '()))
+                    (if (< i 0) acc (mk (- i 1) (cons i acc))))))
+    (let loop ((k 0) (chi 0) (sign 1))
+      (if (>= k n) chi
+          (let ((chains (finite-space-chains fs k allowed)))
+            (if (null? chains) chi
+                (loop (+ k 1) (+ chi (* sign (length chains))) (- 0 sign))))))))

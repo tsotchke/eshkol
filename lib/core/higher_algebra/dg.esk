@@ -1,0 +1,583 @@
+;;; core.higher_algebra.dg -- Differential Graded Algebras (DGAs), exact
+;;; rational cohomology algebras H^*(A, d), Differential Graded Lie Algebras
+;;; (DGLAs), Maurer-Cartan equation, and nilpotent gauge action over exact Q.
+;;;
+;;; Usage: (require core.higher_algebra.dg)   or   (require core.higher_algebra)
+;;;
+;;; Exactness contract: all vectors and matrices are built with (vector ...) /
+;;; (make-vector ...) / (list->vector ...) over exact rationals Q. Linear
+;;; algebra (kernels, ranks, affine membership) delegates to core.exact_linalg.
+
+(require stdlib)
+(require core.exact_linalg)
+
+(provide
+  ;; Exact rational vector utilities
+  dg-zero-vec dg-basis-vec dg-vec-add dg-vec-sub dg-vec-scale dg-vec=? dg-vec-zero?
+  dg-mat-vec-mul dg-sign
+  ;; Differential Graded Algebras (DGAs)
+  make-dga dga? dga-degrees dga-dim dga-diff-matrix dga-diff dga-mul dga-unit
+  dga-verify-differential dga-verify-leibniz dga-verify-associativity dga-verify-all
+  dga-cohomology cohomology-dim cohomology-basis cohomology-cocycles cohomology-coboundaries
+  cohomology-mul cohomology-mul-well-defined?
+  exterior-dga
+  ;; Differential Graded Lie Algebras (DGLAs) & Maurer-Cartan
+  make-dgla dgla? dgla-degrees dgla-dim dgla-diff dgla-bracket
+  dgla-verify-differential dgla-verify-skew-symmetry dgla-verify-jacobi
+  dgla-verify-leibniz dgla-verify-all
+  maurer-cartan-residual maurer-cartan?
+  dgla-gauge-action dgla-gauge-preserves-mc?)
+
+;; ===========================================================================
+;; Exact Q vector and matrix helpers (prefix dg-)
+;; ===========================================================================
+
+(define (dga-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (dg-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (dg-all? p (cdr xs))) (else #f)))
+(define (dg-sign k) (if (even? k) 1 -1))
+
+(define (dg-zero-vec n) (make-vector n 0))
+
+(define (dg-basis-vec n i)
+  (let ((v (make-vector n 0)))
+    (vector-set! v i 1)
+    v))
+
+(define (dg-vec-add u v)
+  (let* ((n (vector-length u)) (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (+ (vector-ref u i) (vector-ref v i))) (loop (+ i 1))) r))))
+
+(define (dg-vec-sub u v)
+  (let* ((n (vector-length u)) (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (- (vector-ref u i) (vector-ref v i))) (loop (+ i 1))) r))))
+
+(define (dg-vec-scale s v)
+  (let* ((n (vector-length v)) (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (* s (vector-ref v i))) (loop (+ i 1))) r))))
+
+(define (dg-vec=? u v)
+  (and (= (vector-length u) (vector-length v))
+       (let loop ((i 0))
+         (cond ((= i (vector-length u)) #t)
+               ((= (vector-ref u i) (vector-ref v i)) (loop (+ i 1)))
+               (else #f)))))
+
+(define (dg-vec-zero? v)
+  (let loop ((i 0))
+    (cond ((= i (vector-length v)) #t)
+          ((= (vector-ref v i) 0) (loop (+ i 1)))
+          (else #f))))
+
+(define (dg-mat-vec-mul M v)
+  (let* ((rows (vector-length M)) (cols (vector-length v)) (out (make-vector rows 0)))
+    (let loop ((i 0))
+      (if (< i rows)
+          (let ((row (vector-ref M i)))
+            (vector-set! out i
+                         (let inner ((j 0) (acc 0))
+                           (if (< j cols)
+                               (inner (+ j 1) (+ acc (* (vector-ref row j) (vector-ref v j))))
+                               acc)))
+            (loop (+ i 1)))
+          out))))
+
+;; ===========================================================================
+;; Differential Graded Algebras (DGAs) over exact Q
+;; ===========================================================================
+;;
+;; #(dga degrees dims diffs mul unit)
+;;   degrees: sorted list of integer degrees
+;;   dims:    alist ((k . dim_k) ...)
+;;   diffs:   alist ((k . mat_k) ...), mat_k a dim_{k+1} x dim_k exact matrix
+;;            (or #f / absent when dim_k = 0 or dim_{k+1} = 0)
+;;   mul:     (p q a b) -> exact rational vector of length (dga-dim A (+ p q))
+;;   unit:    #f or exact rational vector in A^0
+
+(define (make-dga degrees dims diffs mul . unit-opt)
+  (vector 'dga degrees dims diffs mul (if (null? unit-opt) #f (car unit-opt))))
+(define (dga? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'dga)))
+(define (dga-degrees A) (vector-ref A 1))
+(define (dga-dim A k) (let ((p (assv k (vector-ref A 2)))) (if p (cdr p) 0)))
+(define (dga-diff-matrix A k) (let ((p (assv k (vector-ref A 3)))) (if p (cdr p) #f)))
+(define (dga-unit A) (vector-ref A 5))
+
+(define (dga-diff A k v)
+  (let ((dp (dga-dim A (+ k 1))) (dk (dga-dim A k)) (M (dga-diff-matrix A k)))
+    (cond ((= dp 0) (dg-zero-vec 0))
+          ((or (= dk 0) (not M)) (dg-zero-vec dp))
+          (else (dg-mat-vec-mul M v)))))
+
+(define (dga-mul A p q a b)
+  (let ((dpq (dga-dim A (+ p q))))
+    (if (= dpq 0)
+        (dg-zero-vec 0)
+        ((vector-ref A 4) p q a b))))
+
+;; Check d^{k+1}(d^k(e_i)) = 0 on every basis vector; returns list of
+;; counterexample witnesses (deg basis-index nonzero-vec).
+(define (dga-verify-differential A)
+  (let ((out '()))
+    (for-each
+     (lambda (k)
+       (let ((dk (dga-dim A k)))
+         (for-each
+          (lambda (i)
+            (let* ((e (dg-basis-vec dk i))
+                   (dd (dga-diff A (+ k 1) (dga-diff A k e))))
+              (if (not (dg-vec-zero? dd))
+                  (set! out (cons (list 'd-squared-nonzero k i dd) out)))))
+          (dga-range dk))))
+     (dga-degrees A))
+    (reverse out)))
+
+;; Check graded Leibniz rule d(a*b) = (da)*b + (-1)^|a| a*(db) on all basis pairs.
+(define (dga-verify-leibniz A)
+  (let ((out '()) (degs (dga-degrees A)))
+    (for-each
+     (lambda (p)
+       (let ((dp (dga-dim A p)) (sp (dg-sign p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (dga-dim A q)))
+              (for-each
+               (lambda (i)
+                 (let* ((a (dg-basis-vec dp i))
+                        (da (dga-diff A p a)))
+                   (for-each
+                    (lambda (j)
+                      (let* ((b (dg-basis-vec dq j))
+                             (db (dga-diff A q b))
+                             (lhs (dga-diff A (+ p q) (dga-mul A p q a b)))
+                             (t1 (dga-mul A (+ p 1) q da b))
+                             (t2 (dg-vec-scale sp (dga-mul A p (+ q 1) a db)))
+                             (rhs (dg-vec-add t1 t2)))
+                        (if (not (dg-vec=? lhs rhs))
+                            (set! out (cons (list 'leibniz-violation p i q j lhs rhs) out)))))
+                    (dga-range dq))))
+               (dga-range dp))))
+          degs)))
+     degs)
+    (reverse out)))
+
+;; Check associativity (a*b)*c = a*(b*c) on all basis triples.
+(define (dga-verify-associativity A)
+  (let ((out '()) (degs (dga-degrees A)))
+    (for-each
+     (lambda (p)
+       (let ((dp (dga-dim A p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (dga-dim A q)))
+              (for-each
+               (lambda (r)
+                 (let ((dr (dga-dim A r)))
+                   (for-each
+                    (lambda (i)
+                      (let ((a (dg-basis-vec dp i)))
+                        (for-each
+                         (lambda (j)
+                           (let ((b (dg-basis-vec dq j)))
+                             (for-each
+                              (lambda (l)
+                                (let* ((c (dg-basis-vec dr l))
+                                       (lhs (dga-mul A (+ p q) r (dga-mul A p q a b) c))
+                                       (rhs (dga-mul A p (+ q r) a (dga-mul A q r b c))))
+                                  (if (not (dg-vec=? lhs rhs))
+                                      (set! out (cons (list 'assoc-violation p i q j r l lhs rhs) out)))))
+                              (dga-range dr))))
+                         (dga-range dq))))
+                    (dga-range dp))))
+               degs)))
+          degs)))
+     degs)
+    (reverse out)))
+
+(define (dga-verify-all A)
+  (append (dga-verify-differential A)
+          (dga-verify-leibniz A)
+          (dga-verify-associativity A)))
+
+;; ===========================================================================
+;; Exact Cohomology Algebra H^*(A, d) via core.exact_linalg
+;; ===========================================================================
+
+;; Build a matrix whose columns are the vectors in cols (length n each).
+(define (dg-cols->matrix n cols)
+  (let ((k (length cols)))
+    (list->vector
+     (map (lambda (i)
+            (list->vector (map (lambda (v) (vector-ref v i)) cols)))
+          (dga-range n)))))
+
+;; Check whether vector v lies in span(basis) (each vector length n).
+(define (dg-in-span? n basis v)
+  (cond ((dg-vec-zero? v) #t)
+        ((null? basis) #f)
+        (else
+         (guard (e (else #f))
+           (exact-affine-solve (dg-cols->matrix n basis) v (length basis))
+           #t))))
+
+;; Solve sum_j c_j * basis_j = v, returning vector of coefficients c, or #f.
+(define (dg-coords-in-basis n basis v)
+  (cond ((null? basis) (if (dg-vec-zero? v) (dg-zero-vec 0) #f))
+        (else
+         (guard (e (else #f))
+           (car (exact-affine-solve (dg-cols->matrix n basis) v (length basis)))))))
+
+;; Extract an independent basis from a list of vectors of length n.
+(define (dg-independent-basis n vecs)
+  (let loop ((vs vecs) (acc '()))
+    (if (null? vs)
+        (reverse acc)
+        (if (dg-in-span? n acc (car vs))
+            (loop (cdr vs) acc)
+            (loop (cdr vs) (cons (car vs) acc))))))
+
+;; Extend independent basis B to span B + Z; return the added complement vectors.
+(define (dg-quotient-complement n B Z)
+  (let loop ((zs Z) (cur B) (reps '()))
+    (if (null? zs)
+        (reverse reps)
+        (if (dg-in-span? n cur (car zs))
+            (loop (cdr zs) cur reps)
+            (loop (cdr zs) (cons (car zs) cur) (cons (car zs) reps))))))
+
+;; Compute exact cohomology H^*(A, d) of a DGA A.
+;; Requires d^2 = 0 (refuses with counterexample if violated).
+(define (dga-cohomology A)
+  (let ((dv (dga-verify-differential A)))
+    (if (not (null? dv)) (error "dga-cohomology: differential does not satisfy d^2 = 0" dv)))
+  (let* ((degs (dga-degrees A))
+         (table
+          (map (lambda (k)
+                 (let* ((dk (dga-dim A k))
+                        (dp (dga-dim A (+ k 1)))
+                        (dm (dga-dim A (- k 1)))
+                        (Mk (dga-diff-matrix A k))
+                        ;; ker(d^k)
+                        (cocycles
+                         (cond ((= dk 0) '())
+                               ((or (= dp 0) (not Mk)) (map (lambda (i) (dg-basis-vec dk i)) (dga-range dk)))
+                               (else (exact-nullspace Mk))))
+                        ;; im(d^{k-1})
+                        (coboundaries
+                         (if (or (= dk 0) (= dm 0))
+                             '()
+                             (dg-independent-basis
+                              dk (map (lambda (i) (dga-diff A (- k 1) (dg-basis-vec dm i))) (dga-range dm)))))
+                        ;; H^k representatives (complement of B^k in Z^k)
+                        (reps (dg-quotient-complement dk coboundaries cocycles)))
+                   (list k (length reps) reps cocycles coboundaries)))
+               degs)))
+    (vector 'dga-cohomology A table)))
+
+(define (dg-coh-entry H k) (assv k (vector-ref H 2)))
+(define (cohomology-dim H k) (let ((e (dg-coh-entry H k))) (if e (cadr e) 0)))
+(define (cohomology-basis H k) (let ((e (dg-coh-entry H k))) (if e (caddr e) '())))
+(define (cohomology-cocycles H k) (let ((e (dg-coh-entry H k))) (if e (cadddr e) '())))
+(define (cohomology-coboundaries H k) (let ((e (dg-coh-entry H k))) (if e (list-ref e 4) '())))
+
+;; Project a cocycle z in A^k to its exact coordinate vector in the H^k basis.
+(define (dg-project-cohomology H k z)
+  (let* ((A (vector-ref H 1))
+         (dk (dga-dim A k))
+         (reps (cohomology-basis H k))
+         (bnds (cohomology-coboundaries H k))
+         (r (length reps)))
+    (if (= r 0)
+        (dg-zero-vec 0)
+        (let ((coords (dg-coords-in-basis dk (append reps bnds) z)))
+          (if (not coords)
+              (error "cohomology-mul: product is not a cocycle" (list k z))
+              (let ((out (make-vector r 0)))
+                (let loop ((i 0))
+                  (if (< i r) (begin (vector-set! out i (vector-ref coords i)) (loop (+ i 1))) out))))))))
+
+;; Multiply two cohomology classes u in H^p and v in H^q (given as coordinate
+;; vectors in the cohomology bases of H^p and H^q), returning coordinate vector in H^{p+q}.
+(define (cohomology-mul H p q u v)
+  (let* ((A (vector-ref H 1))
+         (dp (dga-dim A p)) (dq (dga-dim A q))
+         (rp (cohomology-basis H p)) (rq (cohomology-basis H q))
+         (lift (lambda (dim reps coords)
+                 (let loop ((rs reps) (i 0) (acc (dg-zero-vec dim)))
+                   (if (null? rs) acc
+                       (loop (cdr rs) (+ i 1) (dg-vec-add acc (dg-vec-scale (vector-ref coords i) (car rs))))))))
+         (a (lift dp rp u))
+         (b (lift dq rq v))
+         (prod (dga-mul A p q a b)))
+    (dg-project-cohomology H (+ p q) prod)))
+
+;; Verify that cup product on H^*(A, d) is independent of coboundary perturbations.
+(define (cohomology-mul-well-defined? H)
+  (let ((A (vector-ref H 1)) (degs (dga-degrees (vector-ref H 1))))
+    (dg-all?
+     (lambda (p)
+       (let ((rp (cohomology-basis H p)) (bp (cohomology-coboundaries H p)))
+         (dg-all?
+          (lambda (q)
+            (let ((rq (cohomology-basis H q)) (bq (cohomology-coboundaries H q)))
+              (and (dg-all? (lambda (a)
+                              (dg-all? (lambda (b)
+                                         (dg-vec-zero? (dg-project-cohomology H (+ p q) (dga-mul A p q a b))))
+                                       bq))
+                            rp)
+                   (dg-all? (lambda (a)
+                              (dg-all? (lambda (b)
+                                         (dg-vec-zero? (dg-project-cohomology H (+ p q) (dga-mul A p q a b))))
+                                       rq))
+                            bp))))
+          degs)))
+     degs)))
+
+;; Standard exterior algebra Lambda(x_1, ..., x_n) with |x_i| = 1 and supplied
+;; differential on degree 1 generators (list of length n, each a vector in Lambda^2
+;; of dimension n*(n-1)/2, or #f for zero differential).
+(define (dg-subsets-k items k)
+  (cond ((= k 0) (list '()))
+        ((null? items) '())
+        (else (append (map (lambda (s) (cons (car items) s)) (dg-subsets-k (cdr items) (- k 1)))
+                      (dg-subsets-k (cdr items) k)))))
+
+(define (dg-wedge-merge s1 s2)
+  ;; Merge two strictly sorted integer lists; returns (sign . merged) or #f if overlap.
+  (let loop ((a s1) (b s2) (inv 0) (acc '()))
+    (cond ((null? a) (cons (dg-sign inv) (append (reverse acc) b)))
+          ((null? b) (cons (dg-sign inv) (append (reverse acc) a)))
+          ((= (car a) (car b)) #f)
+          ((< (car a) (car b)) (loop (cdr a) b inv (cons (car a) acc)))
+          (else (loop a (cdr b) (+ inv (length a)) (cons (car b) acc))))))
+
+(define (dg-pos item xs)
+  (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+(define (exterior-dga n . diff1-opt)
+  ;; diff1-opt: optional list of n exact vectors in Lambda^2 (length n*(n-1)/2) for d(x_i)
+  (let* ((degs (dga-range (+ n 1)))
+         (bases (list->vector (map (lambda (k) (dg-subsets-k (dga-range n) k)) degs)))
+         (dims (map (lambda (k) (cons k (length (vector-ref bases k)))) degs))
+         (mul (lambda (p q u v)
+                (let ((k (+ p q)))
+                  (if (> k n)
+                      (dg-zero-vec 0)
+                      (let* ((bp (vector-ref bases p)) (bq (vector-ref bases q)) (bk (vector-ref bases k))
+                             (out (dg-zero-vec (length bk))))
+                        (let lp ((ps bp) (i 0))
+                          (if (not (null? ps))
+                              (let ((ui (vector-ref u i)))
+                                (if (not (= ui 0))
+                                    (let lq ((qs bq) (j 0))
+                                      (if (not (null? qs))
+                                          (let ((vj (vector-ref v j)))
+                                            (if (not (= vj 0))
+                                                (let ((m (dg-wedge-merge (car ps) (car qs))))
+                                                  (if m
+                                                      (let ((idx (dg-pos (cdr m) bk)))
+                                                        (vector-set! out idx (+ (vector-ref out idx) (* (car m) ui vj)))))))
+                                            (lq (cdr qs) (+ j 1))))))
+                                (lp (cdr ps) (+ i 1)))))
+                        out)))))
+         (diff1 (if (null? diff1-opt) #f (car diff1-opt)))
+         ;; Extend d from generators x_i by graded Leibniz rule to all degrees!
+         (diffs
+          (if (not diff1)
+              '()
+              (map (lambda (k)
+                     (let* ((bk (vector-ref bases k))
+                            (dk (length bk))
+                            (dp (if (< k n) (length (vector-ref bases (+ k 1))) 0)))
+                       (if (or (= k 0) (= k n) (= dk 0) (= dp 0))
+                           (cons k #f)
+                           (let ((cols
+                                  (map (lambda (mon)
+                                         ;; d(x_{i1} ^ ... ^ x_{ik}) = sum_r (-1)^r x_{i1}^...^d(x_{ir})^...^x_{ik}
+                                         (let loop ((r 0) (acc (dg-zero-vec dp)))
+                                           (if (= r k)
+                                               acc
+                                               (let* ((idx (list-ref mon r))
+                                                      (dx (list-ref diff1 idx))
+                                                      (left-sub (let lf ((l mon) (c 0)) (if (= c r) '() (cons (car l) (lf (cdr l) (+ c 1))))))
+                                                      (right-sub (let rf ((l mon) (c 0)) (if (= c (+ r 1)) l (rf (cdr l) (+ c 1)))))
+                                                      (lv (let ((v (dg-zero-vec (length (vector-ref bases r)))))
+                                                            (vector-set! v (dg-pos left-sub (vector-ref bases r)) 1) v))
+                                                      (rv (let ((v (dg-zero-vec (length (vector-ref bases (- k r 1))))))
+                                                            (vector-set! v (dg-pos right-sub (vector-ref bases (- k r 1))) 1) v))
+                                                      (term (mul (+ r 2) (- k r 1) (mul r 2 lv dx) rv)))
+                                                 (loop (+ r 1) (dg-vec-add acc (dg-vec-scale (dg-sign r) term)))))))
+                                       bk)))
+                             (cons k (dg-cols->matrix dp cols))))))
+                   degs))))
+    (make-dga degs dims diffs mul (dg-basis-vec 1 0))))
+
+;; ===========================================================================
+;; Differential Graded Lie Algebras (DGLAs) & Maurer-Cartan Equation
+;; ===========================================================================
+;;
+;; #(dgla degrees dims diffs bracket)
+;;   bracket: (p q a b) -> exact rational vector in L^{p+q}
+
+(define (make-dgla degrees dims diffs bracket)
+  (vector 'dgla degrees dims diffs bracket))
+(define (dgla? x) (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'dgla)))
+(define (dgla-degrees L) (vector-ref L 1))
+(define (dgla-dim L k) (let ((p (assv k (vector-ref L 2)))) (if p (cdr p) 0)))
+(define (dgla-diff-matrix L k) (let ((p (assv k (vector-ref L 3)))) (if p (cdr p) #f)))
+
+(define (dgla-diff L k v)
+  (let ((dp (dgla-dim L (+ k 1))) (dk (dgla-dim L k)) (M (dgla-diff-matrix L k)))
+    (cond ((= dp 0) (dg-zero-vec 0))
+          ((or (= dk 0) (not M)) (dg-zero-vec dp))
+          (else (dg-mat-vec-mul M v)))))
+
+(define (dgla-bracket L p q a b)
+  (let ((dpq (dgla-dim L (+ p q))))
+    (if (= dpq 0) (dg-zero-vec 0) ((vector-ref L 4) p q a b))))
+
+(define (dgla-verify-differential L)
+  (let ((out '()))
+    (for-each
+     (lambda (k)
+       (let ((dk (dgla-dim L k)))
+         (for-each (lambda (i)
+                     (let ((dd (dgla-diff L (+ k 1) (dgla-diff L k (dg-basis-vec dk i)))))
+                       (if (not (dg-vec-zero? dd))
+                           (set! out (cons (list 'd-squared-nonzero k i dd) out)))))
+                   (dga-range dk))))
+     (dgla-degrees L))
+    (reverse out)))
+
+;; [a, b] = -(-1)^{|a||b|} [b, a]
+(define (dgla-verify-skew-symmetry L)
+  (let ((out '()) (degs (dgla-degrees L)))
+    (for-each
+     (lambda (p)
+       (let ((dp (dgla-dim L p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (dgla-dim L q)) (s (- (dg-sign (* p q)))))
+              (for-each
+               (lambda (i)
+                 (let ((a (dg-basis-vec dp i)))
+                   (for-each
+                    (lambda (j)
+                      (let* ((b (dg-basis-vec dq j))
+                             (lhs (dgla-bracket L p q a b))
+                             (rhs (dg-vec-scale s (dgla-bracket L q p b a))))
+                        (if (not (dg-vec=? lhs rhs))
+                            (set! out (cons (list 'skew-symmetry-violation p i q j lhs rhs) out)))))
+                    (dga-range dq))))
+               (dga-range dp))))
+          degs)))
+     degs)
+    (reverse out)))
+
+;; Graded Jacobi: (-1)^{|a||c|}[a,[b,c]] + (-1)^{|b||a|}[b,[c,a]] + (-1)^{|c||b|}[c,[a,b]] = 0
+(define (dgla-verify-jacobi L)
+  (let ((out '()) (degs (dgla-degrees L)))
+    (for-each
+     (lambda (p)
+       (let ((dp (dgla-dim L p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (dgla-dim L q)))
+              (for-each
+               (lambda (r)
+                 (let ((dr (dgla-dim L r))
+                       (s1 (dg-sign (* p r)))
+                       (s2 (dg-sign (* q p)))
+                       (s3 (dg-sign (* r q))))
+                   (for-each
+                    (lambda (i)
+                      (let ((a (dg-basis-vec dp i)))
+                        (for-each
+                         (lambda (j)
+                           (let ((b (dg-basis-vec dq j)))
+                             (for-each
+                              (lambda (l)
+                                (let* ((c (dg-basis-vec dr l))
+                                       (t1 (dg-vec-scale s1 (dgla-bracket L p (+ q r) a (dgla-bracket L q r b c))))
+                                       (t2 (dg-vec-scale s2 (dgla-bracket L q (+ r p) b (dgla-bracket L r p c a))))
+                                       (t3 (dg-vec-scale s3 (dgla-bracket L r (+ p q) c (dgla-bracket L p q a b))))
+                                       (tot (dg-vec-add t1 (dg-vec-add t2 t3))))
+                                  (if (not (dg-vec-zero? tot))
+                                      (set! out (cons (list 'jacobi-violation p i q j r l tot) out)))))
+                              (dga-range dr))))
+                         (dga-range dq))))
+                    (dga-range dp))))
+               degs)))
+          degs)))
+     degs)
+    (reverse out)))
+
+;; Graded Leibniz: d[a, b] = [da, b] + (-1)^|a| [a, db]
+(define (dgla-verify-leibniz L)
+  (let ((out '()) (degs (dgla-degrees L)))
+    (for-each
+     (lambda (p)
+       (let ((dp (dgla-dim L p)) (sp (dg-sign p)))
+         (for-each
+          (lambda (q)
+            (let ((dq (dgla-dim L q)))
+              (for-each
+               (lambda (i)
+                 (let* ((a (dg-basis-vec dp i)) (da (dgla-diff L p a)))
+                   (for-each
+                    (lambda (j)
+                      (let* ((b (dg-basis-vec dq j)) (db (dgla-diff L q b))
+                             (lhs (dgla-diff L (+ p q) (dgla-bracket L p q a b)))
+                             (rhs (dg-vec-add (dgla-bracket L (+ p 1) q da b)
+                                              (dg-vec-scale sp (dgla-bracket L p (+ q 1) a db)))))
+                        (if (not (dg-vec=? lhs rhs))
+                            (set! out (cons (list 'dgla-leibniz-violation p i q j lhs rhs) out)))))
+                    (dga-range dq))))
+               (dga-range dp))))
+          degs)))
+     degs)
+    (reverse out)))
+
+(define (dgla-verify-all L)
+  (append (dgla-verify-differential L)
+          (dgla-verify-skew-symmetry L)
+          (dgla-verify-jacobi L)
+          (dgla-verify-leibniz L)))
+
+;; Maurer-Cartan residual in L^2 for alpha in L^1: d(alpha) + (1/2)[alpha, alpha].
+(define (maurer-cartan-residual L alpha)
+  (let ((da (dgla-diff L 1 alpha))
+        (aa (dgla-bracket L 1 1 alpha alpha)))
+    (dg-vec-add da (dg-vec-scale 1/2 aa))))
+
+(define (maurer-cartan? L alpha)
+  (dg-vec-zero? (maurer-cartan-residual L alpha)))
+
+;; Gauge action of lambda in L^0 on alpha in L^1 for nilpotent ad_lambda:
+;;   e^{ad_lambda} . alpha = alpha + sum_{k=0}^{N} (ad_lambda)^k([lambda, alpha] - d(lambda)) / (k+1)!
+;; Refuses with an error if ad_lambda does not vanish within max-order steps.
+(define (dgla-gauge-action L lam alpha . max-order-opt)
+  (let* ((max-order (if (null? max-order-opt) 12 (car max-order-opt)))
+         (term0 (dg-vec-sub (dgla-bracket L 0 1 lam alpha) (dgla-diff L 0 lam))))
+    (let loop ((k 0) (fact 1) (cur term0) (acc alpha))
+      (cond ((dg-vec-zero? cur) acc)
+            ((>= k max-order)
+             (error "dgla-gauge-action: ad_lambda did not terminate within nilpotency bound" max-order))
+            (else
+             (let* ((next-fact (* fact (+ k 1)))
+                    (acc2 (dg-vec-add acc (dg-vec-scale (/ 1 next-fact) cur)))
+                    (next-cur (dgla-bracket L 0 1 lam cur)))
+               (loop (+ k 1) next-fact next-cur acc2)))))))
+
+;; Verify gauge action preserves Maurer-Cartan solutions and is invertible via -lambda.
+(define (dgla-gauge-preserves-mc? L lam alpha)
+  (let* ((mc0 (maurer-cartan? L alpha))
+         (beta (dgla-gauge-action L lam alpha))
+         (mc1 (maurer-cartan? L beta))
+         (back (dgla-gauge-action L (dg-vec-scale -1 lam) beta)))
+    (list (cons 'initial-mc? mc0)
+          (cons 'transformed-mc? mc1)
+          (cons 'transformed beta)
+          (cons 'inverse-roundtrip? (dg-vec=? back alpha))
+          (cons 'valid? (and mc0 mc1 (dg-vec=? back alpha))))))

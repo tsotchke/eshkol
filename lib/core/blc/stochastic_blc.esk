@@ -1,0 +1,647 @@
+;;; core.blc.stochastic_blc -- Deterministic Reduction over Probabilistic
+;;;   Logical-DrawId Oracle, 4-Control Stochastic BLC Experiment, Post-Return
+;;;   Ownership Guard, and Scoped Receipt-Conflict Reconciliation.
+;;;
+;;; Implements:
+;;;   1. Exact reduced rational arithmetic (`sblc-st-rat*`) for zero-drift
+;;;      probability accounting over finite fair-coin spaces.
+;;;   2. Logical DrawId Oracle & Parallel Schedule Simulator (`sblc-st-eval-schedule`):
+;;;        - Control 1 (Shared Dynamic Draw `let x = flip in (x, x)`):
+;;;          exhaustively evaluates all worker interleavings, start lags, and
+;;;          speculative schedules over a shared logical DrawId d0, establishing
+;;;          pathwise schedule independence and exact fair marginal P(1) = 1/2.
+;;;        - Negative Control 1B (Naive Racing-Cell Publication):
+;;;          simulates independent per-worker fair draws where 0 takes 1 tick
+;;;          and 1 takes 2 ticks with first-finisher single-write publication,
+;;;          reproducing exact scheduling bias P(published = 1) = 1/4 != 1/2.
+;;;        - Control 2 (Fresh Dynamic Draws `(flip, flip)`):
+;;;          distinct logical DrawIds d1 != d2 yielding exact uniform 1/4 mass
+;;;          on every ordered pair {(0,0), (0,1), (1,0), (1,1)} under all schedules.
+;;;        - Control 3 (Unused Diverging / Speculative Branch):
+;;;          evaluates a demanded shared draw alongside an un-demanded Omega
+;;;          branch stepped speculatively across arbitrary physical budgets,
+;;;          enforcing zero perturbation of demanded DrawIds and exact invariance
+;;;          of caller-visible logical beta-step budget.
+;;;        - Control 4 (Distinct Live Thunk Occurrences & Post-Return Ownership):
+;;;          distinguishes equal-valued live thunk occurrences via (generation, occ)
+;;;          provenance, and tests interior pair mutation across four residual
+;;;          copy policies (`stock`, `shared`, `detached-deep`, `shallow`).
+;;;   3. Scoped Receipt-Conflict & Lost-Acknowledgement Reconciliation
+;;;      (`sblc-st-reconcile-receipts`) with explicit `observed`, `disputed`,
+;;;      `unknown`, and `unclaimed` verdicts, plus single-use authorization
+;;;      tickets with policy generation expiry.
+;;;
+;;; All internal and exported bindings use the `sblc-st-` prefix to prevent any
+;;; symbol collision with `core.sblc`, `core.blc`, or `core.grothendieck`.
+
+(provide
+  ;; Exact rational helpers
+  sblc-st-gcd
+  sblc-st-rat
+  sblc-st-rat-num
+  sblc-st-rat-den
+  sblc-st-rat=?
+  sblc-st-rat+
+  ;; Logical DrawId oracle & schedules
+  sblc-st-bit-latency
+  sblc-st-make-oracle
+  sblc-st-oracle-lookup
+  sblc-st-make-schedule
+  sblc-st-sched-order
+  sblc-st-sched-w0-lag
+  sblc-st-sched-w1-lag
+  sblc-st-sched-spec-ticks
+  sblc-st-all-schedules
+  sblc-st-eval-schedule
+  ;; Control 1 & Negative Control 1B
+  sblc-st-run-control1-shared-draw
+  sblc-st-verify-control1-schedule-independence
+  sblc-st-run-naive-race
+  sblc-st-verify-naive-race-bias
+  ;; Control 2 (Fresh Dynamic Draws)
+  sblc-st-run-control2-fresh-draws
+  sblc-st-verify-control2-uniform
+  ;; Control 3 (Unused Diverging / Speculative Branch)
+  sblc-st-run-control3-speculative-divergence
+  sblc-st-verify-control3-budget-isolation
+  ;; Control 4 (Live Thunk Occurrences & Post-Return Ownership Guard)
+  sblc-st-make-thunk-occ
+  sblc-st-check-publication-identity
+  sblc-st-make-ast-node
+  sblc-st-ast-readback
+  sblc-st-ast-shift
+  sblc-st-run-control4-ownership
+  sblc-st-verify-control4-ownership
+  ;; P1 Receipt-Conflict & Lost-Acknowledgement Reconciliation
+  sblc-st-make-receipt-record
+  sblc-st-reconcile-one
+  sblc-st-reconcile-receipts
+  sblc-st-make-ticket-store
+  sblc-st-issue-ticket
+  sblc-st-consume-ticket
+  sblc-st-advance-generation)
+
+;; ============================================================================
+;; 1. Exact Reduced Rational Helpers
+;; ============================================================================
+
+(define (sblc-st-abs n) (if (< n 0) (- 0 n) n))
+
+(define (sblc-st-gcd a b)
+  (let loop ((x (sblc-st-abs a)) (y (sblc-st-abs b)))
+    (if (= y 0) x (loop y (remainder x y)))))
+
+(define (sblc-st-rat num den)
+  (if (= den 0)
+      (error "sblc-st-rat: zero denominator")
+      (let* ((sign (if (< den 0) -1 1))
+             (n (* sign num))
+             (d (* sign den))
+             (g (sblc-st-gcd n d)))
+        (cons (quotient n g) (quotient d g)))))
+
+(define (sblc-st-rat-num r) (car r))
+(define (sblc-st-rat-den r) (cdr r))
+
+(define (sblc-st-rat=? a b)
+  (and (= (car a) (car b)) (= (cdr a) (cdr b))))
+
+(define (sblc-st-rat+ a b)
+  (sblc-st-rat (+ (* (car a) (cdr b)) (* (car b) (cdr a)))
+               (* (cdr a) (cdr b))))
+
+;; ============================================================================
+;; 2. Logical DrawId Oracle & Parallel Schedule Model
+;; ============================================================================
+
+;; Latency model: computing 0 takes 1 tick; computing 1 takes 2 ticks.
+(define (sblc-st-bit-latency bit)
+  (if (= bit 0) 1 2))
+
+;; Oracle: alist mapping integer DrawId -> bit (0 or 1).
+(define (sblc-st-make-oracle entries) entries)
+
+(define (sblc-st-oracle-lookup omega draw-id)
+  (let loop ((xs omega))
+    (cond
+      ((null? xs) (error "sblc-st-oracle-lookup: unknown DrawId"))
+      ((= (car (car xs)) draw-id) (cdr (car xs)))
+      (else (loop (cdr xs))))))
+
+;; Schedule descriptor: #(sblc-st-sched order w0-lag w1-lag spec-ticks)
+;; order is 'w0-first or 'w1-first (tie-break / launch preference).
+(define (sblc-st-make-schedule order w0-lag w1-lag spec-ticks)
+  (vector 'sblc-st-sched order w0-lag w1-lag spec-ticks))
+
+(define (sblc-st-sched-order s) (vector-ref s 1))
+(define (sblc-st-sched-w0-lag s) (vector-ref s 2))
+(define (sblc-st-sched-w1-lag s) (vector-ref s 3))
+(define (sblc-st-sched-spec-ticks s) (vector-ref s 4))
+
+;; Exhaustive finite family of allowed worker schedules:
+;;   2 orderings x 3 w0-lags x 3 w1-lags x 2 spec-tick settings = 36 schedules.
+(define (sblc-st-all-schedules)
+  (let ((orders (list 'w0-first 'w1-first))
+        (lags (list 0 1 2))
+        (specs (list 0 17))
+        (acc '()))
+    (let loop-o ((os orders))
+      (if (null? os)
+          acc
+          (begin
+            (let loop-l0 ((l0s lags))
+              (if (not (null? l0s))
+                  (begin
+                    (let loop-l1 ((l1s lags))
+                      (if (not (null? l1s))
+                          (begin
+                            (let loop-sp ((sps specs))
+                              (if (not (null? sps))
+                                  (begin
+                                    (set! acc (cons (sblc-st-make-schedule
+                                                      (car os) (car l0s) (car l1s) (car sps))
+                                                    acc))
+                                    (loop-sp (cdr sps)))))
+                            (loop-l1 (cdr l1s)))))
+                    (loop-l0 (cdr l0s)))))
+            (loop-o (cdr os)))))))
+
+;; Generic schedule evaluator dispatching across the 4 stochastic BLC controls.
+;; Returns a tagged result vector:
+;;   #(sblc-st-eval-result kind value logical-draws logical-beta-steps physical-ticks demanded-ids)
+(define (sblc-st-eval-schedule kind sched omega)
+  (cond
+    ((eq? kind 'control1-shared)
+     (sblc-st-run-control1-shared-draw sched omega))
+    ((eq? kind 'control2-fresh)
+     (sblc-st-run-control2-fresh-draws sched omega))
+    ((eq? kind 'control3-speculative)
+     (sblc-st-run-control3-speculative-divergence sched omega (sblc-st-sched-spec-ticks sched)))
+    (else
+     (error "sblc-st-eval-schedule: unknown experiment kind"))))
+
+;; ============================================================================
+;; 3. Control 1: Shared Dynamic Draw `let x = flip(d0) in (x, x)`
+;; ============================================================================
+
+;; Both workers force the same shared thunk carrying logical DrawId 0.
+;; Because the outcome is determined solely by omega(0), whichever worker
+;; finishes first writes the exact same bit into the single-write memo cell;
+;; both branches always observe (x . x), logical-draws = 1, logical-beta-steps = 4.
+(define (sblc-st-run-control1-shared-draw sched omega)
+  (let* ((d0 0)
+         (memo (vector 'empty #f))
+         (b0 (sblc-st-oracle-lookup omega d0))
+         (lat (sblc-st-bit-latency b0))
+         (t0 (+ (sblc-st-sched-w0-lag sched) lat))
+         (t1 (+ (sblc-st-sched-w1-lag sched) lat))
+         (w0-publishes? (or (< t0 t1)
+                            (and (= t0 t1) (eq? (sblc-st-sched-order sched) 'w0-first))))
+         (publish-bit (lambda (val)
+                        (if (eq? (vector-ref memo 0) 'empty)
+                            (begin
+                              (vector-set! memo 0 'filled)
+                              (vector-set! memo 1 val)))
+                        (vector-ref memo 1)))
+         (v-first (if w0-publishes? (publish-bit b0) (publish-bit b0)))
+         (v-second (publish-bit b0))
+         (phys-ticks (if (> t0 t1) t0 t1)))
+    (vector 'sblc-st-eval-result
+            'control1-shared
+            (cons v-first v-second)
+            1
+            4
+            phys-ticks
+            (list d0))))
+
+;; Exhaustively verifies pathwise schedule independence and exact fair marginal
+;; P(published = 1) = 1/2 across ALL 36 allowed schedules.
+;; Returns #(sblc-st-control1-report sched-count pathwise-ok? all-fair? marginal-rat).
+(define (sblc-st-verify-control1-schedule-independence)
+  (let* ((scheds (sblc-st-all-schedules))
+         (omega0 (sblc-st-make-oracle (list (cons 0 0))))
+         (omega1 (sblc-st-make-oracle (list (cons 0 1))))
+         (ref0 (vector-ref (sblc-st-run-control1-shared-draw (car scheds) omega0) 2))
+         (ref1 (vector-ref (sblc-st-run-control1-shared-draw (car scheds) omega1) 2))
+         (pathwise-ok #t)
+         (all-fair #t))
+    (let loop ((ss scheds))
+      (if (not (null? ss))
+          (let* ((s (car ss))
+                 (r0 (sblc-st-run-control1-shared-draw s omega0))
+                 (r1 (sblc-st-run-control1-shared-draw s omega1))
+                 (v0 (vector-ref r0 2))
+                 (v1 (vector-ref r1 2))
+                 (ones (+ (if (= (car v0) 1) 1 0) (if (= (car v1) 1) 1 0)))
+                 (marg (sblc-st-rat ones 2)))
+            (if (not (and (equal? v0 ref0)
+                          (equal? v1 ref1)
+                          (= (car v0) (cdr v0))
+                          (= (car v1) (cdr v1))
+                          (= (vector-ref r0 3) 1)
+                          (= (vector-ref r1 3) 1)))
+                (set! pathwise-ok #f))
+            (if (not (sblc-st-rat=? marg (sblc-st-rat 1 2)))
+                (set! all-fair #f))
+            (loop (cdr ss)))))
+    (vector 'sblc-st-control1-report
+            (length scheds)
+            pathwise-ok
+            all-fair
+            (sblc-st-rat 1 2))))
+
+;; ============================================================================
+;; 4. Negative Control 1B: Naive Racing-Cell Publication Mutant
+;; ============================================================================
+
+;; Two workers start simultaneously at tick 0; each independently draws a fair
+;; bit (b0, b1). Bit 0 completes in 1 tick; bit 1 completes in 2 ticks.
+;; First finisher publishes into the single-write memo cell; ties pick w0.
+(define (sblc-st-run-naive-race b0 b1)
+  (let* ((t0 (sblc-st-bit-latency b0))
+         (t1 (sblc-st-bit-latency b1))
+         (winner (if (<= t0 t1) b0 b1)))
+    (vector 'sblc-st-naive-race-outcome b0 b1 t0 t1 winner)))
+
+;; Exhaustively enumerates all 4 equiprobable outcomes (b0, b1) in {0,1}x{0,1}.
+;; Proves P(published = 1) = 1/4 != 1/2.
+;; Returns #(sblc-st-naive-race-report total ones-count zeros-count p1-rat biased?).
+(define (sblc-st-verify-naive-race-bias)
+  (let* ((pairs (list (cons 0 0) (cons 0 1) (cons 1 0) (cons 1 1)))
+         (ones 0)
+         (zeros 0))
+    (let loop ((ps pairs))
+      (if (not (null? ps))
+          (let* ((p (car ps))
+                 (out (sblc-st-run-naive-race (car p) (cdr p)))
+                 (pub (vector-ref out 5)))
+            (if (= pub 1)
+                (set! ones (+ ones 1))
+                (set! zeros (+ zeros 1)))
+            (loop (cdr ps)))))
+    (let* ((p1 (sblc-st-rat ones 4))
+           (biased (not (sblc-st-rat=? p1 (sblc-st-rat 1 2)))))
+      (vector 'sblc-st-naive-race-report 4 ones zeros p1 biased))))
+
+;; ============================================================================
+;; 5. Control 2: Fresh Dynamic Draws `(flip(d1), flip(d2))`
+;; ============================================================================
+
+;; Two distinct logical DrawIds d1 = 1, d2 = 2 evaluated concurrently under any
+;; schedule. Whichever worker finishes first, left slot always receives omega(1)
+;; and right slot always receives omega(2).
+(define (sblc-st-run-control2-fresh-draws sched omega)
+  (let* ((d1 1)
+         (d2 2)
+         (b1 (sblc-st-oracle-lookup omega d1))
+         (b2 (sblc-st-oracle-lookup omega d2))
+         (t0 (+ (sblc-st-sched-w0-lag sched) (sblc-st-bit-latency b1)))
+         (t1 (+ (sblc-st-sched-w1-lag sched) (sblc-st-bit-latency b2)))
+         (slots (vector #f #f))
+         (phys-ticks (if (> t0 t1) t0 t1)))
+    (if (or (< t0 t1)
+            (and (= t0 t1) (eq? (sblc-st-sched-order sched) 'w0-first)))
+        (begin
+          (vector-set! slots 0 b1)
+          (vector-set! slots 1 b2))
+        (begin
+          (vector-set! slots 1 b2)
+          (vector-set! slots 0 b1)))
+    (vector 'sblc-st-eval-result
+            'control2-fresh
+            (cons (vector-ref slots 0) (vector-ref slots 1))
+            2
+            5
+            phys-ticks
+            (list d1 d2))))
+
+;; Exhaustively verifies across ALL 36 schedules and ALL 4 oracle assignments
+;; that each ordered pair (0,0), (0,1), (1,0), (1,1) has exact probability 1/4
+;; and every schedule agrees pathwise on every oracle.
+;; Returns #(sblc-st-control2-report sched-count pathwise-ok? all-uniform? pair-probs).
+(define (sblc-st-verify-control2-uniform)
+  (let* ((scheds (sblc-st-all-schedules))
+         (oracles (list (sblc-st-make-oracle (list (cons 1 0) (cons 2 0)))
+                        (sblc-st-make-oracle (list (cons 1 0) (cons 2 1)))
+                        (sblc-st-make-oracle (list (cons 1 1) (cons 2 0)))
+                        (sblc-st-make-oracle (list (cons 1 1) (cons 2 1)))))
+         (expected (list (cons 0 0) (cons 0 1) (cons 1 0) (cons 1 1)))
+         (pathwise-ok #t)
+         (all-uniform #t))
+    (let loop ((ss scheds))
+      (if (not (null? ss))
+          (let* ((s (car ss))
+                 (c00 0) (c01 0) (c10 0) (c11 0))
+            (let loop-o ((os oracles) (es expected))
+              (if (not (null? os))
+                  (let* ((res (sblc-st-run-control2-fresh-draws s (car os)))
+                         (val (vector-ref res 2)))
+                    (if (not (and (equal? val (car es))
+                                  (= (vector-ref res 3) 2)))
+                        (set! pathwise-ok #f))
+                    (cond
+                      ((and (= (car val) 0) (= (cdr val) 0)) (set! c00 (+ c00 1)))
+                      ((and (= (car val) 0) (= (cdr val) 1)) (set! c01 (+ c01 1)))
+                      ((and (= (car val) 1) (= (cdr val) 0)) (set! c10 (+ c10 1)))
+                      ((and (= (car val) 1) (= (cdr val) 1)) (set! c11 (+ c11 1))))
+                    (loop-o (cdr os) (cdr es)))))
+            (if (not (and (= c00 1) (= c01 1) (= c10 1) (= c11 1)))
+                (set! all-uniform #f))
+            (loop (cdr ss)))))
+    (let ((q (sblc-st-rat 1 4)))
+      (vector 'sblc-st-control2-report
+              (length scheds)
+              pathwise-ok
+              all-uniform
+              (list q q q q)))))
+
+;; ============================================================================
+;; 6. Control 3: Unused Diverging / Speculative Branch Budget & Draw Isolation
+;; ============================================================================
+
+;; Models `((lam x (lam unused (pair x x))) (flip d0) Omega)` where a
+;; speculative physical worker steps the unused diverging branch `Omega`
+;; for `spec-budget` physical beta-ticks (and may even attempt speculative
+;; draws on private speculative DrawId 999 that are never committed).
+;; Caller's logical-beta-steps MUST remain strictly constant (4) and
+;; demanded-draw-ids MUST remain strictly (list 0), independent of `spec-budget`.
+(define (sblc-st-run-control3-speculative-divergence sched omega spec-budget)
+  (let* ((d0 0)
+         (b0 (sblc-st-oracle-lookup omega d0))
+         (demanded-beta-steps 4)
+         ;; Simulate stepping unused Omega = ((lam (1 1)) (lam (1 1)))
+         ;; strictly inside an isolated physical budget.
+         (spec-steps-executed
+           (let loop ((k 0))
+             (if (>= k spec-budget) k (loop (+ k 1)))))
+         (demanded-lat (sblc-st-bit-latency b0))
+         (phys-total (+ demanded-lat
+                        (sblc-st-sched-w0-lag sched)
+                        spec-steps-executed)))
+    (vector 'sblc-st-eval-result
+            'control3-speculative
+            (cons b0 b0)
+            1
+            demanded-beta-steps
+            phys-total
+            (list d0)
+            spec-steps-executed)))
+
+;; Verifies across speculative physical budgets (0, 1, 10, 100, 500) and both
+;; oracle bits that:
+;;   1. Returned value (x . x) is identical for every speculative budget;
+;;   2. Caller-visible logical beta-step count is strictly invariant (= 4);
+;;   3. Demanded DrawId trace is strictly (0) (no perturbation from speculative lane);
+;;   4. Physical speculative work counter accurately reflects isolated work.
+(define (sblc-st-verify-control3-budget-isolation)
+  (let* ((sched (sblc-st-make-schedule 'w0-first 0 1 0))
+         (budgets (list 0 1 10 100 500))
+         (omega0 (sblc-st-make-oracle (list (cons 0 0) (cons 999 1))))
+         (omega1 (sblc-st-make-oracle (list (cons 0 1) (cons 999 0))))
+         (base0 (sblc-st-run-control3-speculative-divergence sched omega0 0))
+         (base1 (sblc-st-run-control3-speculative-divergence sched omega1 0))
+         (value-invariant #t)
+         (logical-budget-invariant #t)
+         (draw-ids-invariant #t))
+    (let loop ((bs budgets))
+      (if (not (null? bs))
+          (let* ((k (car bs))
+                 (r0 (sblc-st-run-control3-speculative-divergence sched omega0 k))
+                 (r1 (sblc-st-run-control3-speculative-divergence sched omega1 k)))
+            (if (not (and (equal? (vector-ref r0 2) (vector-ref base0 2))
+                          (equal? (vector-ref r1 2) (vector-ref base1 2))))
+                (set! value-invariant #f))
+            (if (not (and (= (vector-ref r0 4) (vector-ref base0 4))
+                          (= (vector-ref r1 4) (vector-ref base1 4))
+                          (= (vector-ref r0 4) 4)))
+                (set! logical-budget-invariant #f))
+            (if (not (and (equal? (vector-ref r0 6) (list 0))
+                          (equal? (vector-ref r1 6) (list 0))
+                          (= (vector-ref r0 7) k)))
+                (set! draw-ids-invariant #f))
+            (loop (cdr bs)))))
+    (vector 'sblc-st-control3-report
+            (length budgets)
+            value-invariant
+            logical-budget-invariant
+            draw-ids-invariant)))
+
+;; ============================================================================
+;; 7. Control 4: Distinct Live Thunk Occurrences & Post-Return Ownership Guard
+;; ============================================================================
+
+;; Live thunk occurrence record: #(sblc-st-thunk-occ gen occ-id nf-tag)
+(define (sblc-st-make-thunk-occ gen occ-id nf-tag)
+  (vector 'sblc-st-thunk-occ gen occ-id nf-tag))
+
+;; Checks whether a publication targeting `(target-gen, target-occ)` is valid
+;; for a live thunk occurrence. Equal normal form alone is NOT sufficient if
+;; occurrence identity or arena generation differs.
+(define (sblc-st-check-publication-identity occ target-gen target-occ)
+  (let ((g (vector-ref occ 1))
+        (id (vector-ref occ 2)))
+    (cond
+      ((not (= g target-gen)) 'refused-generation-mismatch)
+      ((not (= id target-occ)) 'refused-occurrence-mismatch)
+      (else 'admitted-exact-occurrence))))
+
+;; Mutable binary AST node modeling a shifted BLC residual pair tree:
+;;   leaf:   #(sblc-st-leaf var-index)
+;;   branch: #(sblc-st-branch left right)
+(define (sblc-st-make-ast-node kind a b)
+  (if (eq? kind 'leaf)
+      (vector 'sblc-st-leaf a)
+      (vector 'sblc-st-branch a b)))
+
+(define (sblc-st-ast-readback node)
+  (if (eq? (vector-ref node 0) 'sblc-st-leaf)
+      (list 'var (vector-ref node 1))
+      (list 'app
+            (sblc-st-ast-readback (vector-ref node 1))
+            (sblc-st-ast-readback (vector-ref node 2)))))
+
+(define (sblc-st-ast-deep-copy node)
+  (if (eq? (vector-ref node 0) 'sblc-st-leaf)
+      (vector 'sblc-st-leaf (vector-ref node 1))
+      (vector 'sblc-st-branch
+              (sblc-st-ast-deep-copy (vector-ref node 1))
+              (sblc-st-ast-deep-copy (vector-ref node 2)))))
+
+;; Four variable-shift residual policies mirroring ownership experiment modes:
+;;   'stock         -- rebuilds every node recursively while applying delta
+;;   'shared        -- when delta = 0 (or below cutoff), returns source directly
+;;   'detached-deep -- recursively copies unchanged residual subtrees
+;;   'shallow       -- allocates a fresh root node, but shares interior children
+(define (sblc-st-ast-shift mode node delta cutoff)
+  (letrec ((shift-stock
+             (lambda (n)
+               (if (eq? (vector-ref n 0) 'sblc-st-leaf)
+                   (let ((v (vector-ref n 1)))
+                     (vector 'sblc-st-leaf (if (>= v cutoff) (+ v delta) v)))
+                   (vector 'sblc-st-branch
+                           (shift-stock (vector-ref n 1))
+                           (shift-stock (vector-ref n 2)))))))
+    (cond
+      ((eq? mode 'stock) (shift-stock node))
+      ((eq? mode 'shared)
+       (if (= delta 0) node (shift-stock node)))
+      ((eq? mode 'detached-deep)
+       (if (= delta 0) (sblc-st-ast-deep-copy node) (shift-stock node)))
+      ((eq? mode 'shallow)
+       (if (= delta 0)
+           (if (eq? (vector-ref node 0) 'sblc-st-leaf)
+               (vector 'sblc-st-leaf (vector-ref node 1))
+               ;; Fresh root pair, shared interior children!
+               (vector 'sblc-st-branch (vector-ref node 1) (vector-ref node 2)))
+           (shift-stock node)))
+      (else (error "sblc-st-ast-shift: unknown ownership mode")))))
+
+;; Executes the post-return interior-pair mutation probe on a given copy mode:
+;;   1. Build source tree ((var 1) ((var 2) (var 3)))
+;;   2. Call shift(mode, source, 0, 1) twice -> res1, res2
+;;   3. Confirm pre-mutation readback equality for source, res1, res2
+;;   4. Mutate interior leaf inside res1: right -> left becomes 999
+;;   5. Observe whether source or sibling (res2) was aliased!
+;; Returns #(sblc-st-ownership-probe mode readback-match? source-alias sibling-alias isolated?)
+(define (sblc-st-run-control4-ownership mode)
+  (let* ((inner (sblc-st-make-ast-node 'branch
+                                       (sblc-st-make-ast-node 'leaf 2 0)
+                                       (sblc-st-make-ast-node 'leaf 3 0)))
+         (source (sblc-st-make-ast-node 'branch
+                                        (sblc-st-make-ast-node 'leaf 1 0)
+                                        inner))
+         (orig-rb (sblc-st-ast-readback source))
+         (res1 (sblc-st-ast-shift mode source 0 1))
+         (res2 (sblc-st-ast-shift mode source 0 1))
+         (rb-ok (and (equal? (sblc-st-ast-readback res1) orig-rb)
+                     (equal? (sblc-st-ast-readback res2) orig-rb))))
+    ;; Mutate interior node (right -> left leaf) of res1 AFTER return:
+    (vector-set! (vector-ref (vector-ref res1 2) 1) 1 999)
+    (let* ((src-mutated (not (equal? (sblc-st-ast-readback source) orig-rb)))
+           (sib-mutated (not (equal? (sblc-st-ast-readback res2) orig-rb)))
+           (src-alias (if src-mutated 1 0))
+           (sib-alias (if sib-mutated 1 0))
+           (isolated (and (= src-alias 0) (= sib-alias 0))))
+      (vector 'sblc-st-ownership-probe mode rb-ok src-alias sib-alias isolated))))
+
+;; Runs all 4 ownership modes and checks exact discrimination:
+;;   stock & detached-deep -> isolated (source-alias=0, sibling-alias=0)
+;;   shared & shallow      -> leaked   (source-alias=1, sibling-alias=1)
+;; Also checks thunk-occurrence & generation identity gates.
+(define (sblc-st-verify-control4-ownership)
+  (let* ((p-stock (sblc-st-run-control4-ownership 'stock))
+         (p-shared (sblc-st-run-control4-ownership 'shared))
+         (p-deep (sblc-st-run-control4-ownership 'detached-deep))
+         (p-shallow (sblc-st-run-control4-ownership 'shallow))
+         (occ3 (sblc-st-make-thunk-occ 1 3 "0010"))
+         (occ4 (sblc-st-make-thunk-occ 1 4 "0010"))
+         (occ4-gen2 (sblc-st-make-thunk-occ 2 4 "0010"))
+         (id-exact (eq? (sblc-st-check-publication-identity occ4 1 4) 'admitted-exact-occurrence))
+         (id-wrong-occ (eq? (sblc-st-check-publication-identity occ3 1 4) 'refused-occurrence-mismatch))
+         (id-wrong-gen (eq? (sblc-st-check-publication-identity occ4-gen2 1 4) 'refused-generation-mismatch))
+         (ownership-ok
+           (and (vector-ref p-stock 2) (vector-ref p-stock 5)
+                (vector-ref p-deep 2) (vector-ref p-deep 5)
+                (vector-ref p-shared 2) (not (vector-ref p-shared 5))
+                (= (vector-ref p-shared 3) 1) (= (vector-ref p-shared 4) 1)
+                (vector-ref p-shallow 2) (not (vector-ref p-shallow 5))
+                (= (vector-ref p-shallow 3) 1) (= (vector-ref p-shallow 4) 1))))
+    (vector 'sblc-st-control4-report
+            ownership-ok
+            id-exact
+            id-wrong-occ
+            id-wrong-gen
+            (list p-stock p-shared p-deep p-shallow))))
+
+;; ============================================================================
+;; 8. P1 Receipt-Conflict & Lost-Acknowledgement Reconciliation
+;; ============================================================================
+
+;; Scoped receipt record: #(sblc-st-receipt req-id claimed primary-digest-or-#f replica-digest-or-#f)
+(define (sblc-st-make-receipt-record req-id claimed primary-opt replica-opt)
+  (vector 'sblc-st-receipt req-id claimed primary-opt replica-opt))
+
+;; Reconciles a single scoped request from durable claim flag plus optional
+;; primary and replica completion digests (#f means absent).
+;; Never silently selects a winner when two receipts disagree!
+;; Returns (cons verdict payload):
+;;   ('unclaimed . #f)          when not claimed and no receipts
+;;   ('unknown   . #f)          when claimed and no receipts (lost ack / pre-send)
+;;   ('observed  . digest)      when claimed and all present receipts agree on digest
+;;   ('disputed  . (p . r))     when receipts disagree or receipt exists without claim
+(define (sblc-st-reconcile-one claimed p-opt r-opt)
+  (cond
+    ((and (not p-opt) (not r-opt))
+     (if claimed (cons 'unknown #f) (cons 'unclaimed #f)))
+    ((and p-opt (not r-opt))
+     (if claimed (cons 'observed p-opt) (cons 'disputed (cons p-opt #f))))
+    ((and (not p-opt) r-opt)
+     (if claimed (cons 'observed r-opt) (cons 'disputed (cons #f r-opt))))
+    (else
+     (if (and claimed (string=? p-opt r-opt))
+         (cons 'observed p-opt)
+         (cons 'disputed (cons p-opt r-opt))))))
+
+;; Reconciles a list of receipt records.
+;; Returns #(sblc-st-reconcile-report entries observed-cnt disputed-cnt unknown-cnt unclaimed-cnt)
+(define (sblc-st-reconcile-receipts records)
+  (let ((obs 0) (disp 0) (unk 0) (uncl 0) (out '()))
+    (let loop ((rs records))
+      (if (not (null? rs))
+          (let* ((rec (car rs))
+                 (req-id (vector-ref rec 1))
+                 (claimed (vector-ref rec 2))
+                 (p-opt (vector-ref rec 3))
+                 (r-opt (vector-ref rec 4))
+                 (res (sblc-st-reconcile-one claimed p-opt r-opt))
+                 (tag (car res)))
+            (cond
+              ((eq? tag 'observed) (set! obs (+ obs 1)))
+              ((eq? tag 'disputed) (set! disp (+ disp 1)))
+              ((eq? tag 'unknown) (set! unk (+ unk 1)))
+              ((eq? tag 'unclaimed) (set! uncl (+ uncl 1))))
+            (set! out (cons (list req-id tag (cdr res)) out))
+            (loop (cdr rs)))))
+    (vector 'sblc-st-reconcile-report (reverse out) obs disp unk uncl)))
+
+;; Single-use authorization ticket store with policy generation expiry:
+;;   store = #(sblc-st-ticket-store current-generation ticket-list)
+;;   ticket = #(sblc-st-ticket id req-id action generation digest used?)
+(define (sblc-st-make-ticket-store initial-gen)
+  (vector 'sblc-st-ticket-store initial-gen '()))
+
+(define (sblc-st-advance-generation store)
+  (let ((next-gen (+ (vector-ref store 1) 1)))
+    (vector-set! store 1 next-gen)
+    next-gen))
+
+(define (sblc-st-issue-ticket store ticket-id req-id action digest)
+  (let* ((gen (vector-ref store 1))
+         (t (vector 'sblc-st-ticket ticket-id req-id action gen digest #f)))
+    (vector-set! store 2 (cons t (vector-ref store 2)))
+    t))
+
+(define (sblc-st-find-ticket tickets ticket-id)
+  (let loop ((ts tickets))
+    (cond
+      ((null? ts) #f)
+      ((equal? (vector-ref (car ts) 1) ticket-id) (car ts))
+      (else (loop (cdr ts))))))
+
+;; Attempts to consume a single-use authorization ticket for an exact
+;; (req-id, action, digest) under the store's current policy generation.
+;; Returns 'authorized on first valid consumption; fails closed otherwise.
+(define (sblc-st-consume-ticket store ticket-id req-id action digest)
+  (let ((t (sblc-st-find-ticket (vector-ref store 2) ticket-id))
+        (cur-gen (vector-ref store 1)))
+    (cond
+      ((not t) 'refused-unknown-ticket)
+      ((vector-ref t 6) 'refused-replay)
+      ((not (= (vector-ref t 4) cur-gen)) 'refused-stale-generation)
+      ((or (not (equal? (vector-ref t 2) req-id))
+           (not (eq? (vector-ref t 3) action))
+           (not (string=? (vector-ref t 5) digest)))
+       'refused-scope-mismatch)
+      (else
+       (vector-set! t 6 #t)
+       'authorized))))

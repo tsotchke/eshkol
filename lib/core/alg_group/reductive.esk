@@ -1,0 +1,313 @@
+;;; core.alg_group.reductive -- Functor-of-points algebraic group schemes over
+;;;   core.ring, Zariski tangent Lie algebra via dual-number jets k[eps]/(eps^2),
+;;;   exact Bruhat decomposition, and Cartan decompositions / Killing signatures (ADR-0063).
+
+(require stdlib)
+(require core.ring)
+(require core.exact_linalg)
+(require core.hodge.structure)
+
+(provide
+  symplectic-form-J
+  alg-group-sl-member? alg-group-sp-member? alg-group-so-member?
+  alg-group-zariski-lie-member?
+  bruhat-decompose-gl2 bruhat-verify-gl2
+  cartan-involution-decompose killing-signature)
+
+;; ---------------------------------------------------------------------------
+;; Generic Ring-Matrix Operations over any core.ring carrier R
+;; ---------------------------------------------------------------------------
+
+(define (rmat-rows M) (vector-length M))
+(define (rmat-cols M) (vector-length (vector-ref M 0)))
+(define (rmat-ref M i j) (vector-ref (vector-ref M i) j))
+
+(define (rmat-make r c fill-fn)
+  (let ((M (make-vector r #f)))
+    (let li ((i 0))
+      (if (< i r)
+          (let ((row (make-vector c #f)))
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (vector-set! row j (fill-fn i j)) (lj (+ j 1)))))
+            (vector-set! M i row)
+            (li (+ i 1)))))
+    M))
+
+(define (rmat-transpose M)
+  (rmat-make (rmat-cols M) (rmat-rows M) (lambda (i j) (rmat-ref M j i))))
+
+(define (rmat-mul R A B)
+  (let ((r (rmat-rows A)) (k (rmat-cols A)) (c (rmat-cols B)))
+    (rmat-make r c
+      (lambda (i j)
+        (let loop ((t 0) (acc (r0 R)))
+          (if (= t k) acc
+              (loop (+ t 1) (r+ R acc (r* R (rmat-ref A i t) (rmat-ref B t j))))))))))
+
+(define (rmat= R A B)
+  (and (= (rmat-rows A) (rmat-rows B))
+       (= (rmat-cols A) (rmat-cols B))
+       (let li ((i 0))
+         (cond ((= i (rmat-rows A)) #t)
+               ((let lj ((j 0))
+                  (cond ((= j (rmat-cols A)) #t)
+                        ((r= R (rmat-ref A i j) (rmat-ref B i j)) (lj (+ j 1)))
+                        (else #f)))
+                (li (+ i 1)))
+               (else #f)))))
+
+(define (rmat-identity R n)
+  (rmat-make n n (lambda (i j) (if (= i j) (r1 R) (r0 R)))))
+
+;; Exact cofactor determinant over arbitrary commutative ring carrier R (small n <= 5)
+(define (rmat-minor M skip-r skip-c)
+  (let ((n (rmat-rows M)))
+    (rmat-make (- n 1) (- n 1)
+      (lambda (i j)
+        (rmat-ref M (if (< i skip-r) i (+ i 1))
+                    (if (< j skip-c) j (+ j 1)))))))
+
+(define (rmat-det R M)
+  (let ((n (rmat-rows M)))
+    (cond ((= n 0) (r1 R))
+          ((= n 1) (rmat-ref M 0 0))
+          ((= n 2)
+           (r- R (r* R (rmat-ref M 0 0) (rmat-ref M 1 1))
+                 (r* R (rmat-ref M 0 1) (rmat-ref M 1 0))))
+          (else
+           (let loop ((j 0) (acc (r0 R)))
+             (if (= j n) acc
+                 (let* ((term (r* R (rmat-ref M 0 j) (rmat-det R (rmat-minor M 0 j))))
+                        (next (if (even? j) (r+ R acc term) (r- R acc term))))
+                   (loop (+ j 1) next))))))))
+
+;; Standard 2m x 2m symplectic form J = [0 I_m; -I_m 0] over ring carrier R
+(define (symplectic-form-J R m)
+  (let ((n (* 2 m)))
+    (rmat-make n n
+      (lambda (i j)
+        (cond ((and (< i m) (= j (+ i m))) (r1 R))
+              ((and (>= i m) (= j (- i m))) (r-neg R (r1 R)))
+              (else (r0 R)))))))
+
+;; ---------------------------------------------------------------------------
+;; Functor-of-Points Algebraic Group Membership over ANY core.ring Carrier R
+;; ---------------------------------------------------------------------------
+
+(define (alg-group-sl-member? R M)
+  (and (= (rmat-rows M) (rmat-cols M))
+       (r= R (rmat-det R M) (r1 R))))
+
+(define (alg-group-sp-member? R M)
+  (let ((n (rmat-rows M)))
+    (and (= n (rmat-cols M))
+         (even? n)
+         (let ((J (symplectic-form-J R (quotient n 2))))
+           (rmat= R (rmat-mul R (rmat-transpose M) (rmat-mul R J M)) J)))))
+
+(define (alg-group-so-member? R M)
+  (let ((n (rmat-rows M)))
+    (and (= n (rmat-cols M))
+         (rmat= R (rmat-mul R (rmat-transpose M) M) (rmat-identity R n))
+         (r= R (rmat-det R M) (r1 R)))))
+
+;; ---------------------------------------------------------------------------
+;; Zariski Tangent Lie Algebra via Dual Numbers R[eps]/(eps^2):
+;;   X in Lie(G)(R)  <==>  I + eps * X in G(R[eps]/(eps^2))!
+;; Derived purely from the functor of points over core.ring's make-jets!
+;; ---------------------------------------------------------------------------
+
+(define (alg-group-zariski-lie-member? group-pred base-ring X)
+  (let* ((dual-ring (make-jets base-ring 2))
+         (n (rmat-rows X))
+         (I-plus-epsX
+          (rmat-make n n
+            (lambda (i j)
+              (make-jet dual-ring
+                        (list (if (= i j) (r1 base-ring) (r0 base-ring))
+                              (rmat-ref X i j)))))))
+    (group-pred dual-ring I-plus-epsX)))
+
+;; ---------------------------------------------------------------------------
+;; Exact Bruhat Decomposition in GL_2(Q): G = B U B*w*B
+;;   For g = [[a b] [c d]] in GL_2(Q):
+;;     - Cell w = I (c = 0): g is already in B -> (b1 = g, w = I, b2 = I)
+;;     - Cell w = s (c != 0):
+;;         g = [[1 a/c] [0 1]] * [[0 1] [1 0]] * [[c d] [0 b - a*d/c]]!
+;; ---------------------------------------------------------------------------
+
+(define (bruhat-decompose-gl2 g)
+  (let* ((a (exact-matrix-ref g 0 0))
+         (b (exact-matrix-ref g 0 1))
+         (c (exact-matrix-ref g 1 0))
+         (d (exact-matrix-ref g 1 1))
+         (det (- (* a d) (* b c))))
+    (if (= det 0)
+        (error "bruhat-decompose-gl2: singular matrix not in GL_2(Q)"))
+    (let ((I2 (vector (vector 1 0) (vector 0 1)))
+          (W1 (vector (vector 0 1) (vector 1 0))))
+      (if (= c 0)
+          (vector 'bruhat-cell 'e g I2 I2)
+          (let* ((b1 (vector (vector 1 (/ a c)) (vector 0 1)))
+                 (b2 (vector (vector c d) (vector 0 (- b (/ (* a d) c))))))
+            (vector 'bruhat-cell 's b1 W1 b2))))))
+
+(define (bruhat-verify-gl2 g decomp)
+  (let* ((b1 (vector-ref decomp 2))
+         (w  (vector-ref decomp 3))
+         (b2 (vector-ref decomp 4))
+         (prod (exact-matrix-mul (exact-matrix-mul b1 w) b2)))
+    (and (= (exact-matrix-ref b1 1 0) 0)
+         (= (exact-matrix-ref b2 1 0) 0)
+         (= (exact-matrix-ref prod 0 0) (exact-matrix-ref g 0 0))
+         (= (exact-matrix-ref prod 0 1) (exact-matrix-ref g 0 1))
+         (= (exact-matrix-ref prod 1 0) (exact-matrix-ref g 1 0))
+         (= (exact-matrix-ref prod 1 1) (exact-matrix-ref g 1 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Cartan Involution Decomposition g = k (+) p & Exact Killing Form Signature
+;; ---------------------------------------------------------------------------
+;; For a real Lie algebra with basis B_1..B_m (as n x n Q[i] matrices) and
+;; Cartan involution theta(X) = -X^dagger:
+;;   k = {X : theta(X) = +X} (compact subalgebra, skew-Hermitian)
+;;   p = {X : theta(X) = -X} (noncompact complement, Hermitian)
+;; Killing form on real basis: K(X, Y) = Tr(ad(X) o ad(Y)) in exact Q!
+
+(define (cartan-involution-decompose X)
+  (let* ((thetaX (hq-mat-scale (hq -1 0) (hq-mat-dagger X)))
+         (k-part (hq-mat-scale (hq 1/2 0) (hq-mat+ X thetaX)))
+         (p-part (hq-mat-scale (hq 1/2 0) (hq-mat- X thetaX))))
+    (vector 'cartan-decomp k-part p-part)))
+
+;; Compute exact Killing form matrix K_{ab} = Tr(ad(e_a) ad(e_b)) and its
+;; exact inertia signature (n_pos, n_neg, n_zero) via diagonal Killing bases
+;; (or exact Sylvester/Gram computation for orthogonal Lie bases).
+(define (hq-solve-real-coords basis-vec target)
+  ;; Solve target = sum_c x_c * B_c over exact Q via real flattened system
+  (let* ((m (vector-length basis-vec))
+         (n (hq-mat-rows target))
+         (rows (* 2 n n))
+         (Aug (exact-matrix-zero rows (+ m 1))))
+    (let lk ((k 0))
+      (if (< k m)
+          (let ((Bk (vector-ref basis-vec k)))
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (let ((z (hq-mat-ref Bk i j))
+                                (r0 (* 2 (+ (* i n) j))))
+                            (exact-matrix-set! Aug r0 k (hq-re z))
+                            (exact-matrix-set! Aug (+ r0 1) k (hq-im z))
+                            (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (lk (+ k 1)))))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (let ((z (hq-mat-ref target i j))
+                        (r0 (* 2 (+ (* i n) j))))
+                    (exact-matrix-set! Aug r0 m (- 0 (hq-re z)))
+                    (exact-matrix-set! Aug (+ r0 1) m (- 0 (hq-im z)))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    (let ((ker (exact-nullspace Aug)))
+      (let find ((ks ker))
+        (if (null? ks)
+            (error "killing-signature: commutator not in span of Lie basis")
+            (let* ((kv (car ks)) (last (vector-ref kv m)))
+              (if (= last 0) (find (cdr ks))
+                  (let ((c (make-vector m 0)))
+                    (let lj ((j 0))
+                      (if (< j m)
+                          (begin (vector-set! c j (/ (vector-ref kv j) last))
+                                 (lj (+ j 1)))))
+                    c))))))))
+
+(define (killing-signature basis-list)
+  (let* ((bv (list->vector basis-list))
+         (m (vector-length bv))
+         ;; Build adjoint matrices ad_a (m x m exact rational)
+         (ads (make-vector m #f)))
+    (let la ((a 0))
+      (if (< a m)
+          (let ((M (exact-matrix-zero m m))
+                (Ba (vector-ref bv a)))
+            (let lb ((b 0))
+              (if (< b m)
+                  (let* ((comm (hq-mat-commutator Ba (vector-ref bv b)))
+                         (coords (hq-solve-real-coords bv comm)))
+                    (let lc ((c 0))
+                      (if (< c m)
+                          (begin (exact-matrix-set! M c b (vector-ref coords c))
+                                 (lc (+ c 1)))))
+                    (lb (+ b 1)))))
+            (vector-set! ads a M)
+            (la (+ a 1)))))
+    ;; Killing matrix K_{ab} = Tr(ad_a * ad_b)
+    (let ((K (exact-matrix-zero m m)))
+      (let la ((a 0))
+        (if (< a m)
+            (begin
+              (let lb ((b 0))
+                (if (< b m)
+                    (let* ((P (exact-matrix-mul (vector-ref ads a) (vector-ref ads b)))
+                           (tr (let lt ((i 0) (s 0))
+                                 (if (= i m) s (lt (+ i 1) (+ s (exact-matrix-ref P i i)))))))
+                      (exact-matrix-set! K a b tr)
+                      (lb (+ b 1)))))
+              (la (+ a 1)))))
+      ;; Compute exact congruence diagonal via symmetric Gaussian elimination (Lagrange)
+      ;; to get exact inertia (n_pos, n_neg, n_zero) over Q!
+      (let ((A (exact-matrix-zero m m)))
+        (let li ((i 0))
+          (if (< i m)
+              (begin
+                (let lj ((j 0))
+                  (if (< j m)
+                      (begin (exact-matrix-set! A i j (exact-matrix-ref K i j)) (lj (+ j 1)))))
+                (li (+ i 1)))))
+        (let ((npos 0) (nneg 0) (nzero 0))
+          (let lp ((k 0))
+            (if (< k m)
+                (let ((piv (exact-matrix-ref A k k)))
+                  (if (= piv 0)
+                      ;; Look for nonzero off-diagonal entry to create diagonal pivot
+                      (let find-j ((j (+ k 1)))
+                        (cond ((= j m)
+                               (set! nzero (+ nzero 1))
+                               (lp (+ k 1)))
+                              ((not (= (exact-matrix-ref A k j) 0))
+                               ;; Add row j to row k and col j to col k -> A[k][k] becomes 2*A[k][j] + A[j][j]
+                               (let ls ((s k))
+                                 (if (< s m)
+                                     (begin
+                                       (exact-matrix-set! A k s (+ (exact-matrix-ref A k s) (exact-matrix-ref A j s)))
+                                       (ls (+ s 1)))))
+                               (let ls ((s k))
+                                 (if (< s m)
+                                     (begin
+                                       (exact-matrix-set! A s k (+ (exact-matrix-ref A s k) (exact-matrix-ref A s j)))
+                                       (ls (+ s 1)))))
+                               (lp k))
+                              (else (find-j (+ j 1)))))
+                      (begin
+                        (if (> piv 0) (set! npos (+ npos 1)) (set! nneg (+ nneg 1)))
+                        (let li ((i (+ k 1)))
+                          (if (< i m)
+                              (let ((f (/ (exact-matrix-ref A i k) piv)))
+                                (if (not (= f 0))
+                                    (let lj ((j (+ k 1)))
+                                      (if (< j m)
+                                          (begin
+                                            (exact-matrix-set! A i j
+                                              (- (exact-matrix-ref A i j)
+                                                 (* f (exact-matrix-ref A k j))))
+                                            (lj (+ j 1))))))
+                                (li (+ i 1)))))
+                        (lp (+ k 1)))))))
+          (vector 'killing-signature npos nneg nzero K))))))

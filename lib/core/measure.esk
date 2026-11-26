@@ -1,0 +1,20 @@
+;;; core.measure -- finite measure theory, partial Markov categories, and
+;;; exact rational Bayes disintegration.
+;;;
+;;; Usage: (require core.measure)
+;;;
+;;; Submodules (each can also be required independently):
+;;;   core.measure.sigma_algebra  finite Boolean sigma-algebras, atoms,
+;;;                               measurability, pushforward, homomorphisms
+;;;   core.measure.markov         exact rational sub-distributions and
+;;;                               Partial Markov Category kernels (arXiv:2502.03477)
+;;;   core.measure.disintegrate   exact rational Bayes disintegration,
+;;;                               conditional independence, and core.sblc
+;;;                               sub-distribution conditioning
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require core.measure.sigma_algebra)
+(require core.measure.markov)
+(require core.measure.disintegrate)

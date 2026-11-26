@@ -1,0 +1,220 @@
+;;; core.analysis.variational -- variational calculus via Eshkol's exact native
+;;; automatic differentiation (`derivative`).
+;;;
+;;; Provides:
+;;;   - Euler-Lagrange residual operator `euler-lagrange-residual` for
+;;;     arbitrary Lagrangians L(t, q, qdot) in both 1D (scalar q(t)) and
+;;;     multi-DOF (list of coordinate trajectories (list q1(t) ... qd(t)))
+;;;   - Canonical momenta and Legendre-transform Hamiltonian energy
+;;;   - General Noether conserved-charge evaluator `noether-charge` and exact
+;;;     time derivative `noether-charge-rate` verifying dQ/dt == 0 along
+;;;     solutions for time translation (energy), space translation (momentum),
+;;;     and rotational (angular momentum) symmetries
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+
+(provide canonical-momentum canonical-momenta
+         euler-lagrange-residual euler-lagrange-residual-norm
+         euler-lagrange-max-residual euler-lagrange-verified?
+         hamiltonian-energy
+         noether-charge noether-charge-rate
+         noether-energy noether-momentum noether-angular-momentum-2d
+         noether-conserved?)
+
+;; ---------------------------------------------------------------------------
+;; Internal list helpers
+;; ---------------------------------------------------------------------------
+
+(define (var-replace-at xs idx val)
+  (if (= idx 0)
+      (cons val (cdr xs))
+      (cons (car xs) (var-replace-at (cdr xs) (- idx 1) val))))
+
+(define (var-iota n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+(define (var-dot xs ys)
+  (let loop ((rx xs) (ry ys) (acc 0.0))
+    (if (null? rx)
+        acc
+        (loop (cdr rx) (cdr ry) (+ acc (* (car rx) (car ry)))))))
+
+(define (var-max-abs xs)
+  (let loop ((rest xs) (m 0.0))
+    (if (null? rest)
+        m
+        (let ((a (abs (car rest))))
+          (loop (cdr rest) (if (> a m) a m))))))
+
+;; ---------------------------------------------------------------------------
+;; Canonical momenta
+;; ---------------------------------------------------------------------------
+
+;; 1D canonical momentum p(t) = dL/dqdot(t, q(t), qdot(t)).
+(define (canonical-momentum L q-fn t)
+  (let ((qt (q-fn t))
+        (qdt (derivative q-fn t)))
+    (derivative (lambda (v) (L t qt v)) qdt)))
+
+;; Multi-DOF canonical momentum for coordinate index i.
+(define (var-momentum-i L q-fns i t)
+  (let ((qs (map (lambda (qf) (qf t)) q-fns))
+        (qds (map (lambda (qf) (derivative qf t)) q-fns)))
+    (derivative (lambda (v) (L t qs (var-replace-at qds i v)))
+                (list-ref qds i))))
+
+;; Multi-DOF canonical momentum list (list p_0(t) ... p_{d-1}(t)).
+(define (canonical-momenta L q-fns t)
+  (map (lambda (i) (var-momentum-i L q-fns i t))
+       (var-iota (length q-fns))))
+
+;; ---------------------------------------------------------------------------
+;; Euler-Lagrange residual operator: (d/dt)(dL/dqdot) - dL/dq
+;; ---------------------------------------------------------------------------
+
+(define (var-el-1d L q-fn t)
+  (let ((qt (q-fn t))
+        (qdt (derivative q-fn t)))
+    (let ((dL-dq (derivative (lambda (q) (L t q qdt)) qt))
+          (dp-dt (derivative (lambda (s) (canonical-momentum L q-fn s)) t)))
+      (- dp-dt dL-dq))))
+
+(define (var-el-nd L q-fns t)
+  (let* ((qs (map (lambda (qf) (qf t)) q-fns))
+         (qds (map (lambda (qf) (derivative qf t)) q-fns)))
+    (map (lambda (i)
+           (let ((dL-dqi (derivative (lambda (qi) (L t (var-replace-at qs i qi) qds))
+                                     (list-ref qs i)))
+                 (dpi-dt (derivative (lambda (s) (var-momentum-i L q-fns i s)) t)))
+             (- dpi-dt dL-dqi)))
+         (var-iota (length q-fns)))))
+
+;; Dispatches automatically on 1D procedure `q-fn` or multi-DOF list `q-fns`.
+(define (euler-lagrange-residual L q-spec t)
+  (if (procedure? q-spec)
+      (var-el-1d L q-spec t)
+      (var-el-nd L q-spec t)))
+
+(define (euler-lagrange-residual-norm L q-spec t)
+  (let ((r (euler-lagrange-residual L q-spec t)))
+    (if (number? r) (abs r) (var-max-abs r))))
+
+(define (euler-lagrange-max-residual L q-spec ts)
+  (let loop ((rest ts) (m 0.0))
+    (if (null? rest)
+        m
+        (let ((r (euler-lagrange-residual-norm L q-spec (car rest))))
+          (loop (cdr rest) (if (> r m) r m))))))
+
+(define (euler-lagrange-verified? L q-spec ts tol)
+  (< (euler-lagrange-max-residual L q-spec ts) tol))
+
+;; ---------------------------------------------------------------------------
+;; Hamiltonian energy (Legendre transform): H(t) = sum_i p_i * qdot_i - L
+;; ---------------------------------------------------------------------------
+
+(define (hamiltonian-energy L q-spec t)
+  (if (procedure? q-spec)
+      (let* ((qt (q-spec t))
+             (qdt (derivative q-spec t))
+             (pt (derivative (lambda (v) (L t qt v)) qdt)))
+        (- (* pt qdt) (L t qt qdt)))
+      (let* ((qs (map (lambda (qf) (qf t)) q-spec))
+             (qds (map (lambda (qf) (derivative qf t)) q-spec))
+             (ps (canonical-momenta L q-spec t)))
+        (- (var-dot ps qds) (L t qs qds)))))
+
+;; ---------------------------------------------------------------------------
+;; Noether conserved-charge evaluator
+;; ---------------------------------------------------------------------------
+;;
+;; For an infinitesimal point symmetry delta t = tau(t, q), delta q_i = eta_i(t, q)
+;; with optional boundary gauge function F(t, q) (default 0):
+;;   Q(t) = sum_i p_i(t) * (eta_i(t, q) - qdot_i(t) * tau(t, q))
+;;          + L(t, q, qdot) * tau(t, q) - F(t, q).
+
+(define (var-eval-noether-1d L q-fn tau-fn eta-fn gauge-fn t)
+  (let* ((qt (q-fn t))
+         (qdt (derivative q-fn t))
+         (pt (derivative (lambda (v) (L t qt v)) qdt))
+         (tau (tau-fn t qt))
+         (eta (eta-fn t qt))
+         (lval (L t qt qdt))
+         (gval (if gauge-fn (gauge-fn t qt) 0.0)))
+    (- (+ (* pt (- eta (* qdt tau))) (* lval tau)) gval)))
+
+(define (var-eval-noether-nd L q-fns tau-fn eta-spec gauge-fn t)
+  (let* ((qs (map (lambda (qf) (qf t)) q-fns))
+         (qds (map (lambda (qf) (derivative qf t)) q-fns))
+         (ps (canonical-momenta L q-fns t))
+         (tau (tau-fn t qs))
+         (etas (if (procedure? eta-spec)
+                   (eta-spec t qs)
+                   (map (lambda (ef) (ef t qs)) eta-spec)))
+         (lval (L t qs qds))
+         (gval (if gauge-fn (gauge-fn t qs) 0.0))
+         (eff (map (lambda (e qd) (- e (* qd tau))) etas qds)))
+    (- (+ (var-dot ps eff) (* lval tau)) gval)))
+
+(define (noether-charge L q-spec tau-fn eta-spec t . opt-gauge)
+  (let ((gauge-fn (if (null? opt-gauge) #f (car opt-gauge))))
+    (if (procedure? q-spec)
+        (var-eval-noether-1d L q-spec tau-fn eta-spec gauge-fn t)
+        (var-eval-noether-nd L q-spec tau-fn eta-spec gauge-fn t))))
+
+(define (noether-charge-rate L q-spec tau-fn eta-spec t . opt-gauge)
+  (let ((gauge-fn (if (null? opt-gauge) #f (car opt-gauge))))
+    (derivative
+     (lambda (s)
+       (if (procedure? q-spec)
+           (var-eval-noether-1d L q-spec tau-fn eta-spec gauge-fn s)
+           (var-eval-noether-nd L q-spec tau-fn eta-spec gauge-fn s)))
+     t)))
+
+;; Standard Noether symmetry charges:
+;;   - Time translation (tau = 1, eta = 0): Q = -H, so energy E = -Q = H.
+(define (noether-energy L q-spec t)
+  (let ((zero-eta (if (procedure? q-spec)
+                      (lambda (s q) 0.0)
+                      (lambda (s qs) (map (lambda (_) 0.0) qs)))))
+    (- (noether-charge L q-spec (lambda (s q) 1.0) zero-eta t))))
+
+;;   - Space translation along constant vector/scalar `dir` (tau = 0, eta = dir).
+(define (noether-momentum L q-spec dir t)
+  (noether-charge L q-spec
+                  (lambda (s q) 0.0)
+                  (lambda (s q) dir)
+                  t))
+
+;;   - 2D rotation in (x, y) (tau = 0, eta_x = -y, eta_y = x): Q = x*p_y - y*p_x.
+(define (noether-angular-momentum-2d L q-fns t)
+  (noether-charge L q-fns
+                  (lambda (s qs) 0.0)
+                  (lambda (s qs) (list (- (cadr qs)) (car qs)))
+                  t))
+
+;; Verify conservation across sample times `ts`:
+;;   |dQ/dt| < tol at every t in ts AND |Q(t) - Q(t0)| < tol for all t in ts.
+(define (noether-conserved? L q-spec tau-fn eta-spec ts tol . opt-gauge)
+  (if (null? ts)
+      #t
+      (let* ((gauge-fn (if (null? opt-gauge) #f (car opt-gauge)))
+             (q-at (lambda (t)
+                     (if (procedure? q-spec)
+                         (var-eval-noether-1d L q-spec tau-fn eta-spec gauge-fn t)
+                         (var-eval-noether-nd L q-spec tau-fn eta-spec gauge-fn t))))
+             (q0 (q-at (car ts))))
+        (let loop ((rest ts))
+          (if (null? rest)
+              #t
+              (let* ((t (car rest))
+                     (qt (q-at t))
+                     (rate (derivative q-at t)))
+                (if (and (< (abs rate) tol)
+                         (< (abs (- qt q0)) tol))
+                    (loop (cdr rest))
+                    #f)))))))

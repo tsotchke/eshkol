@@ -1,0 +1,330 @@
+;;; geometry_em_test.esk -- Executable verification suite for Pillars M7 & M10
+;;; Covers:
+;;;   - core.geometry.dec   (DEC incidence matrices, d^2=0, metric Hodge stars,
+;;;                          codifferentials, Hodge Laplacians, harmonic Betti
+;;;                          numbers, cup/wedge products & Leibniz rule)
+;;;   - core.geometry.gauge (U(1) and SU(2) bundles, unitarity/det=1 checks,
+;;;                          plaquette holonomy, curvature covariance, Abelian &
+;;;                          non-Abelian 3D cube Bianchi identities)
+;;;   - core.physics.em     (Covariant Maxwell dF=0, charge conservation dJ=0,
+;;;                          energy gauge invariance, native AD dE/dA, Maxwell
+;;;                          stationarity, permittivity inverse-design gradient)
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.geometry.dec)
+(require core.geometry.gauge)
+(require core.physics.em)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  [PASS] ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  [FAIL] ") (display name) (newline))))
+
+(define (approx= a b tol)
+  (<= (abs (- a b)) tol))
+
+(define (vec-approx= a b tol)
+  (and (= (vector-length a) (vector-length b))
+       (let ((n (vector-length a)))
+         (let loop ((i 0))
+           (cond ((>= i n) #t)
+                 ((approx= (vref a i) (vref b i) tol) (loop (+ i 1)))
+                 (else #f))))))
+
+(define (fd-grad f x eps)
+  (let* ((n (vector-length x))
+         (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((xp (make-vector n 0.0))
+                (xm (make-vector n 0.0)))
+            (let copy ((j 0))
+              (if (< j n)
+                  (let ((xj (vref x j)))
+                    (vector-set! xp j (if (= j i) (+ xj eps) xj))
+                    (vector-set! xm j (if (= j i) (- xj eps) xj))
+                    (copy (+ j 1)))))
+            (vector-set! g i (/ (- (f xp) (f xm)) (* 2.0 eps)))
+            (loop (+ i 1)))
+          g))))
+
+(display "=== Pillar M7: Discrete Exterior Calculus (DEC) ===") (newline)
+
+(define tri (make-dec-triangle))
+(define sq  (make-dec-square-mesh))
+(define s1  (make-dec-ring 5))
+(define s2  (make-dec-tetrahedron-surface))
+(define tet (make-dec-tetrahedron-solid))
+(define t2  (make-dec-torus-grid 3 3))
+
+;; Exact d_1 d_0 = 0 and d_2 d_1 = 0
+(check "DEC triangle: exact d_1 d_0 = 0 over Q" (dec-verify-d-squared tri))
+(check "DEC square mesh: exact d_1 d_0 = 0 over Q" (dec-verify-d-squared sq))
+(check "DEC S^2 tetrahedron surface: exact d_1 d_0 = 0" (dec-verify-d-squared s2))
+(check "DEC solid tetrahedron: exact d_2 d_1 = 0" (dec-verify-d2-d1 tet))
+(check "DEC T^2 3x3 torus: exact d_1 d_0 = 0" (dec-verify-d-squared t2))
+
+;; Counterexample: corrupt one entry of d_1 so d_1 d_0 != 0
+(let* ((d0 (dec-d0 sq))
+       (d1-bad (vector (vector 1 1 1 0 0)
+                       (vector 0 0 1 1 -1)))
+       (prod (exact-matrix-mul d1-bad d0))
+       (any-nz (let li ((i 0))
+                 (if (>= i (vector-length prod))
+                     #f
+                     (if (not (dec-vec-zero? (vector-ref prod i)))
+                         #t
+                         (li (+ i 1)))))))
+  (check "DEC counterexample: corrupted d_1 yields d_1 d_0 != 0" any-nz))
+
+;; Metric Hodge stars stay exact rational on integer-coordinate square mesh
+(check "DEC square mesh: star0 exact rational & positive"
+       (let ((s0 (dec-star0 sq)))
+         (and (exact? (vector-ref s0 0)) (> (vector-ref s0 0) 0)
+              (exact? (vector-ref s0 2)) (> (vector-ref s0 2) 0))))
+(check "DEC square mesh: star2 exact rational (= 2 for area 1/2 triangles)"
+       (and (= (vector-ref (dec-star2 sq) 0) 2)
+            (= (vector-ref (dec-star2 sq) 1) 2)))
+
+;; Exact codifferential adjointness <d_k alpha, beta> = <alpha, delta_{k+1} beta>
+(let ((a0 (vector 2 -1 3 5))
+      (b1 (vector 1 -2 4 3 -1))
+      (b2 (vector 7 -3)))
+  (check "DEC adjointness: <d_0 alpha, beta>_1 = <alpha, delta_1 beta>_0 exact"
+         (dec-verify-adjoint-0-1 sq a0 b1))
+  (check "DEC adjointness: <d_1 alpha, beta>_2 = <alpha, delta_2 beta>_1 exact"
+         (dec-verify-adjoint-1-2 sq b1 b2)))
+
+;; Harmonic cohomology & Betti numbers via ker(Delta_k)
+(check "DEC S^1 ring: Betti b_0 = 1, b_1 = 1"
+       (and (= (dec-betti-number s1 0) 1)
+            (= (dec-betti-number s1 1) 1)))
+(check "DEC S^1 ring: harmonic 1-form satisfies Delta_1 omega = 0"
+       (let ((h1 (car (dec-harmonic-forms s1 1))))
+         (dec-harmonic? s1 1 h1)))
+(check "DEC S^1 counterexample: non-constant coboundary d_0 f is not harmonic"
+       (let ((exact-1 (dec-apply-d0 s1 (vector 1 0 0 0 0))))
+         (not (dec-harmonic? s1 1 exact-1))))
+(check "DEC S^2 tetrahedron surface: Betti b_0 = 1, b_1 = 0, b_2 = 1 (chi = 2)"
+       (and (= (dec-betti-number s2 0) 1)
+            (= (dec-betti-number s2 1) 0)
+            (= (dec-betti-number s2 2) 1)))
+(check "DEC T^2 triangulated torus: Betti b_0 = 1, b_1 = 2, b_2 = 1 (chi = 0)"
+       (and (= (dec-betti-number t2 0) 1)
+            (= (dec-betti-number t2 1) 2)
+            (= (dec-betti-number t2 2) 1)))
+
+;; Cup product, antisymmetric wedge product & exact Leibniz rule
+(let ((f (vector 2 5 -3 7))
+      (a (vector 1 -2 3 4 -1))
+      (b (vector 3 1 -1 2 5)))
+  (check "DEC graded Leibniz rule: d_1(f cup a) = (d_0 f) cup a + f cup (d_1 a)"
+         (dec-verify-leibniz-0-1 sq f a))
+  (check "DEC wedge antisymmetry: a wedge b = -(b wedge a)"
+         (dec-vec-equal? (dec-wedge-1-1 sq a b)
+                         (dec-vec-scale -1 (dec-wedge-1-1 sq b a))))
+  (check "DEC wedge nilpotency: a wedge a = 0"
+         (dec-vec-zero? (dec-wedge-1-1 sq a a))))
+
+(display "=== Pillar M7: Discrete U(1) & SU(2) Gauge Bundles ===") (newline)
+
+;; U(1) validation and counterexample
+(check "U(1) valid exact rational phase (3/5, 4/5)" (u1-valid? (cx (/ 3 5) (/ 4 5))))
+(check "U(1) valid angle phase exp(i * 0.7)" (u1-valid? (u1-from-angle 0.7)))
+(check "U(1) counterexample: (2, 0) fails u1-valid?" (not (u1-valid? (cx 2 0))))
+
+;; U(1) plaquette gauge invariance and 3D cube Bianchi identity
+(let* ((u1 (u1-from-angle 0.3)) (u2 (u1-from-angle -0.5))
+       (u3 (u1-from-angle 1.1)) (u4 (u1-from-angle 0.2))
+       (g0 (u1-from-angle 0.4)) (g1 (u1-from-angle -0.9))
+       (g2 (u1-from-angle 1.3)) (g3 (u1-from-angle -0.2))
+       (p0 (u1-plaquette-holonomy u1 u2 u3 u4))
+       (p1 (u1-plaquette-holonomy (u1-gauge-transform-link g0 u1 g1)
+                                  (u1-gauge-transform-link g1 u2 g2)
+                                  (u1-gauge-transform-link g3 u3 g2)
+                                  (u1-gauge-transform-link g0 u4 g3))))
+  (check "U(1) plaquette holonomy gauge invariant" (cx-close? p0 p1 1e-12)))
+
+(let ((cube-links (vector (/ 1 2) (/ -3 4) (/ 5 7) (/ 2 3)
+                          (/ -1 5) (/ 7 8) (/ 1 3) (/ -2 9)
+                          (/ 4 5) (/ -3 7) (/ 5 6) (/ 1 11))))
+  (check "U(1) 3D cube Bianchi identity exact over Q" (u1-verify-bianchi-cube cube-links)))
+
+;; SU(2) validation: exact rational quaternions + f64 axis-angle + counterexamples
+(define q-su2-a (su2-from-quat (/ 3 5) (/ 4 5) 0 0))
+(define q-su2-b (su2-from-quat (/ 1 3) (/ 2 3) (/ 2 3) 0))
+(define q-su2-c (su2-from-quat (/ 2 7) (/ 3 7) (/ 6 7) 0))
+(define q-su2-d (su2-from-quat (/ 1 7) (/ 4 7) (/ -4 7) (/ 4 7)))
+(define f-su2-a (su2-from-axis-angle 1.0 2.0 -1.0 0.85))
+(define f-su2-b (su2-from-axis-angle -0.5 1.0 3.0 1.4))
+
+(check "SU(2) exact rational quaternion (3/5, 4/5, 0, 0) valid" (su2-valid? q-su2-a))
+(check "SU(2) exact rational quaternion (1/3, 2/3, 2/3, 0) valid" (su2-valid? q-su2-b))
+(check "SU(2) f64 axis-angle matrix valid" (su2-valid? f-su2-a))
+(check "SU(2) product of valid SU(2) matrices is valid" (su2-valid? (su2-mul q-su2-a q-su2-b)))
+
+;; SU(2) negative counterexamples
+(let ((scaled-id (vector (vector (cx 2 0) (cx 0 0)) (vector (cx 0 0) (cx 2 0))))
+      (det-neg1  (vector (vector (cx 1 0) (cx 0 0)) (vector (cx 0 0) (cx -1 0))))
+      (u2-not-su2 (vector (vector (cx 0 1) (cx 0 0)) (vector (cx 0 0) (cx 0 1)))))
+  (check "SU(2) counterexample: 2*I fails su2-valid?" (not (su2-valid? scaled-id)))
+  (check "SU(2) counterexample: diag(1, -1) (det=-1) fails su2-valid?" (not (su2-valid? det-neg1)))
+  (check "SU(2) counterexample: diag(i, i) (det=-1) fails su2-valid?" (not (su2-valid? u2-not-su2))))
+
+;; SU(2) exact rational & f64 plaquette & curvature gauge covariance
+(let ((g0 q-su2-b) (g1 q-su2-c) (g2 q-su2-d) (g3 q-su2-a))
+  (check "SU(2) plaquette holonomy exact gauge covariance over Q[i]"
+         (su2-verify-plaquette-covariance q-su2-a q-su2-b q-su2-c q-su2-d g0 g1 g2 g3))
+  (check "SU(2) discrete curvature exact gauge covariance over Q[i]"
+         (su2-verify-curvature-covariance q-su2-a q-su2-b q-su2-c q-su2-d g0 g1 g2 g3)))
+
+(let ((u01 (su2-from-axis-angle 1.0 0.2 -0.3 0.7))
+      (u12 (su2-from-axis-angle -0.4 1.1 0.5 1.2))
+      (u32 (su2-from-axis-angle 0.3 -0.7 1.4 0.5))
+      (u03 (su2-from-axis-angle 0.8 0.9 -0.2 1.6))
+      (g0  (su2-from-axis-angle 0.2 0.3 0.9 1.1))
+      (g1  (su2-from-axis-angle -1.0 0.5 0.2 0.6))
+      (g2  (su2-from-axis-angle 0.7 -0.4 0.8 2.1))
+      (g3  (su2-from-axis-angle 0.1 1.2 -0.6 0.9)))
+  (check "SU(2) plaquette & curvature gauge covariance (f64)"
+         (and (su2-verify-plaquette-covariance u01 u12 u32 u03 g0 g1 g2 g3 1e-12)
+              (su2-verify-curvature-covariance u01 u12 u32 u03 g0 g1 g2 g3 1e-12)))
+  ;; Counterexample: non-gauge-covariant link perturbation changes Tr(U_p)
+  (let* ((up0 (su2-plaquette-holonomy u01 u12 u32 u03))
+         (up-bad (su2-plaquette-holonomy (su2-mul f-su2-a u01) u12 u32 u03)))
+    (check "SU(2) counterexample: non-gauge perturbation alters Tr(U_p)"
+           (not (cx-close? (su2-trace up0) (su2-trace up-bad) 1e-6)))))
+
+;; Non-Abelian SU(2) 3D elementary cube Lattice Bianchi identity (exact rational AND f64!)
+(let ((exact-cube (vector q-su2-a q-su2-b q-su2-c q-su2-d
+                          (su2-mul q-su2-a q-su2-c) q-su2-d q-su2-a q-su2-b
+                          q-su2-c q-su2-a q-su2-d q-su2-b))
+      (f64-cube (vector (su2-from-axis-angle 1.0 0.2 0.3 0.5)
+                        (su2-from-axis-angle 0.1 1.0 -0.4 0.8)
+                        (su2-from-axis-angle -0.3 0.5 1.0 1.1)
+                        (su2-from-axis-angle 0.7 -0.2 0.6 0.4)
+                        (su2-from-axis-angle 0.2 0.8 -0.5 1.3)
+                        (su2-from-axis-angle -0.9 0.1 0.4 0.6)
+                        (su2-from-axis-angle 0.4 -0.7 0.2 0.9)
+                        (su2-from-axis-angle 0.5 0.3 0.8 1.5)
+                        (su2-from-axis-angle -0.2 0.9 0.1 0.7)
+                        (su2-from-axis-angle 0.8 -0.4 -0.3 1.0)
+                        (su2-from-axis-angle 0.3 0.6 -0.8 0.3)
+                        (su2-from-axis-angle -0.6 -0.2 0.9 1.2))))
+  (check "SU(2) 3D cube non-Abelian Bianchi identity exact over Q[i]"
+         (su2-verify-bianchi-cube exact-cube))
+  (check "SU(2) 3D cube non-Abelian Bianchi identity (12 general f64 links)"
+         (su2-verify-bianchi-cube f64-cube 1e-12))
+  ;; Counterexample: replace one link with non-unitary 2*I -> Bianchi product != I
+  (let ((bad-cube (vector (vector (vector (cx 2 0) (cx 0 0)) (vector (cx 0 0) (cx 2 0)))
+                          q-su2-b q-su2-c q-su2-d
+                          q-su2-a q-su2-d q-su2-a q-su2-b
+                          q-su2-c q-su2-a q-su2-d q-su2-b)))
+    (check "SU(2) Bianchi counterexample: non-unitary link violates cube identity"
+           (not (su2-verify-bianchi-cube bad-cube)))))
+
+(display "=== Pillar M10: Covariant & Compiler-Differentiable E&M ===") (newline)
+
+;; Homogeneous Maxwell d_2 F = 0 on solid tetrahedron + monopole counterexample
+(let* ((A-tet (vector 2 -1 3 (/ 1 2) -2 4))
+       (F-tet (em-faraday-from-potential tet A-tet))
+       (F-mono (vector 1 -1 1 -1)))
+  (check "Maxwell homogeneous d_2(d_1 A) = 0 exact on solid tetrahedron"
+         (em-verify-homogeneous-maxwell tet F-tet))
+  (check "Maxwell counterexample: magnetic monopole flux violates d_2 F = 0"
+         (not (em-verify-homogeneous-maxwell tet F-mono))))
+
+;; Inhomogeneous Maxwell & exact charge conservation delta_1 J = 0, d_0^T J_dual = 0
+(let* ((A-sq (vector 3 -2 5 1 -4))
+       (F-sq (em-faraday-from-potential sq A-sq))
+       (J-sq (em-current sq F-sq))
+       (Jd-sq (em-dual-current sq F-sq))
+       (Jd-bad (vector 1 0 0 0 0)))
+  (check "Maxwell charge conservation delta_1 J = 0 exact over Q"
+         (em-verify-charge-conservation sq J-sq))
+  (check "Maxwell dual charge conservation d_0^T J_dual = 0 exact over Q"
+         (em-verify-dual-charge-conservation sq Jd-sq))
+  (check "Maxwell counterexample: non-conserved source fails d_0^T J_bad = 0"
+         (not (em-verify-dual-charge-conservation sq Jd-bad))))
+
+;; Exact electromagnetic energy gauge invariance E(A + d_0 chi) = E(A)
+(let* ((A-sq (vector 3 -2 5 1 -4))
+       (chi  (vector 7 -3 11 2))
+       (non-exact-shift (vector 1 0 0 0 0)))
+  (check "E&M energy exact gauge invariance E(A + d_0 chi) = E(A)"
+         (em-verify-gauge-invariance sq A-sq chi))
+  (check "E&M counterexample: non-exact shift changes electromagnetic energy"
+         (not (= (em-energy sq A-sq)
+                 (em-energy sq (dec-vec-add A-sq non-exact-shift))))))
+
+;; Compiler-differentiable adjoint E&M via native Eshkol `gradient`
+(let* ((eps-q (vector (/ 3 2) (/ 5 2)))
+       (eps-f (vector 1.5 2.5))
+       (A-f   (vector 0.7 -1.2 0.4 0.9 -0.5))
+       (d1    (dec-d1 sq))
+       ;; Native AD dE/dA
+       (gradA-ad (em-energy-grad-A sq eps-f A-f))
+       ;; Analytical dE/dA = d_1^T diag(eps) d_1 A
+       (F-f   (dec-apply-d1 sq A-f))
+       (gradA-ana (let* ((d1t (exact-matrix-transpose d1))
+                         (ef (vector (* (vector-ref eps-f 0) (vector-ref F-f 0))
+                                     (* (vector-ref eps-f 1) (vector-ref F-f 1)))))
+                    (dec-mat-vec d1t ef)))
+       ;; Central FD oracle for dE/dA
+       (gradA-fd (fd-grad (lambda (a) (em-energy-f64-at d1 eps-f a)) A-f 1e-6))
+       ;; Native AD dE/deps
+       (gradE-ad (em-energy-grad-eps sq eps-f A-f))
+       ;; Analytical dE/deps_f = 0.5 * F_f^2
+       (gradE-ana (vector (* 0.5 (vector-ref F-f 0) (vector-ref F-f 0))
+                          (* 0.5 (vector-ref F-f 1) (vector-ref F-f 1))))
+       (gradE-fd (fd-grad (lambda (e) (em-energy-f64-at d1 e A-f)) eps-f 1e-6)))
+  (check "E&M AD dE/dA matches exact analytical d_1^T diag(eps) d_1 A"
+         (vec-approx= gradA-ad gradA-ana 1e-10))
+  (check "E&M AD dE/dA matches central finite-difference oracle"
+         (vec-approx= gradA-ad gradA-fd 1e-5))
+  (check "E&M AD dE/deps matches analytical (1/2) F^2"
+         (vec-approx= gradE-ad gradE-ana 1e-10))
+  (check "E&M AD dE/deps matches central finite-difference oracle"
+         (vec-approx= gradE-ad gradE-fd 1e-5))
+
+  ;; Maxwell Euler-Lagrange stationarity at exact gauge-pinned solution A*
+  (let* ((A-ref (vector 2 -1 3 1 -2))
+         (F-ref (dec-apply-d1 sq A-ref))
+         (J-conserved (dec-mat-vec (exact-matrix-transpose d1)
+                                   (vector (* (vector-ref eps-q 0) (vector-ref F-ref 0))
+                                           (* (vector-ref eps-q 1) (vector-ref F-ref 1)))))
+         (A-sol-q (em-solve-maxwell-gauge-pinned sq eps-q J-conserved 1))
+         (A-sol-f (vector (exact->inexact (vector-ref A-sol-q 0))
+                          (exact->inexact (vector-ref A-sol-q 1))
+                          (exact->inexact (vector-ref A-sol-q 2))
+                          (exact->inexact (vector-ref A-sol-q 3))
+                          (exact->inexact (vector-ref A-sol-q 4))))
+         (stat-grad (em-action-grad-A sq eps-f J-conserved A-sol-f))
+         (zeros5 (vector 0.0 0.0 0.0 0.0 0.0)))
+    (check "E&M Maxwell stationarity: native AD grad_A S(A*) = 0 at solution"
+           (vec-approx= stat-grad zeros5 1e-10)))
+
+  ;; Inverse-design permittivity gradient dL/deps verified vs analytical & FD
+  (let* ((B-target (vector 2.0 -1.5))
+         (inv-ad  (em-inverse-design-grad-eps sq A-f B-target eps-f))
+         (inv-ana (vector (* (- (* (vector-ref eps-f 0) (vector-ref F-f 0)) (vector-ref B-target 0))
+                             (vector-ref F-f 0))
+                          (* (- (* (vector-ref eps-f 1) (vector-ref F-f 1)) (vector-ref B-target 1))
+                             (vector-ref F-f 1))))
+         (inv-fd  (fd-grad (lambda (e) (em-inverse-design-loss d1 A-f B-target e)) eps-f 1e-6)))
+    (check "E&M inverse-design AD dL/deps matches analytical & FD"
+           (and (vec-approx= inv-ad inv-ana 1e-10)
+                (vec-approx= inv-ad inv-fd 1e-5)))))
+
+(newline)
+(display "geometry_em_test: ") (display pass-count) (display " passed, ")
+(display fail-count) (display " failed") (newline)
+(if (= fail-count 0)
+    (begin (display "PASS: geometry_em_test") (newline) (exit 0))
+    (begin (display "FAIL: geometry_em_test") (newline) (exit 1)))

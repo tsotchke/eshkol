@@ -1,0 +1,34 @@
+;;; core.hodge -- Umbrella module for computable Hodge theory, algebraic cycles,
+;;;               Mumford-Tate Lie algebras, and period domains (ADR-0063).
+
+(require core.hodge.structure)
+(require core.hodge.cycles)
+(require core.hodge.periods)
+(require core.hodge.weil_fourfold)
+
+(provide
+  ;; Exact rational matrix helpers & Q[i] helpers
+  exact-matrix-rows exact-matrix-cols exact-matrix-zero exact-matrix-set!
+  hq hq? hq-re hq-im hq= hq-zero? hq+ hq- hq* hq-conj hq-norm2 hq/
+  hq-vec-dot hq-mat-mul hq-mat-transpose hq-mat-dagger hq-mat-scale hq-mat+ hq-mat-
+  hq-mat= hq-mat-identity hq-mat-zero hq-mat-commutator hq-real-block hq-hermitian?
+  ;; Pure & Mixed Hodge structures
+  make-hodge-structure hodge-structure? hodge-weight hodge-dim hodge-subspaces
+  hodge-polarization hodge-numbers hodge-subspace-ref
+  hodge-decomposition-valid? hodge-riemann-bilinear-1-check
+  hodge-riemann-bilinear-2-certify hodge-classes
+  hodge-hard-lefschetz-check hodge-tate-twist hodge-tensor-product
+  hodge-exterior-square
+  make-mixed-hodge-structure mixed-hodge-structure? mixed-hodge-valid?
+  ;; Cycles, Chow rings, Hodge gap, Schubert calculus, Mumford-Tate
+  make-chow-cycle-map chow-cycle-map?
+  hodge-cycle-class-certify hodge-classify-candidate
+  schubert-gr24-mul schubert-gr24-degree
+  mumford-tate-lie-algebra-check mumford-tate-invariant-tensor?
+  ;; Weil Abelian 4-Fold Extraordinary Hodge Gap & Hypothesis Search
+  make-weil-fourfold-hodge-benchmark weil-fourfold-verify-gap
+  hodge-period-relation-hypothesis
+  ;; Periods, Siegel upper half-space, Endomorphisms, Griffiths & Picard-Fuchs
+  make-siegel-period siegel-period? siegel-period-certify
+  abelian-endomorphism-check
+  griffiths-transversality-check picard-fuchs-legendre-verify)

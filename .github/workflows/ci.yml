@@ -1967,9 +1967,10 @@ jobs:
             test_command: ./scripts/run_all_tests.sh
             # Run 36664131758 reached numeric regressions before the
             # two-hour job limit cancelled the remaining full-suite checks.
-            # Keep the complete suite and allow hosted Intel runner variance.
-            job_timeout_minutes: 330
-            test_timeout_minutes: 290
+            # Keep the complete suite and allow hosted Intel runner variance
+            # across the expanded mathematics stdlib and example suite.
+            job_timeout_minutes: 355
+            test_timeout_minutes: 330
             upload_artifact: 'true'
             artifact_name: eshkol-macos-x64
           - name: macos-arm64-xla

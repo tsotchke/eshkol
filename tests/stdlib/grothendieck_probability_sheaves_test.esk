@@ -1,0 +1,191 @@
+;;; tests/stdlib/grothendieck_probability_sheaves_test.esk
+;;; Comprehensive verification of core.grothendieck.probability_sheaves
+;;; (Ho, Wu, Raad, arXiv:2611.30692 / POPL 2027):
+;;;   1. Finite Sbp0 spaces, measure-preserving maps, almost-sure equality,
+;;;      and Doob-Dynkin atomic sheaf descent (positive & negative controls)
+;;;   2. Simpson Independent Pullback Structure (IP1-IP5), disintegration,
+;;;      and correlated-square rejection (Guard 1)
+;;;   3. Strong affine commutative extension monad G (Theorem 1) & direct
+;;;      Stochastic BLC shared-vs-fresh bridge
+;;;   4. Nu-calculus freshness: discrete coin negative control vs continuous
+;;;      Fubini certificate (Theorem 2, Prop. 3.26, Guard 2 & 3)
+;;;   5. Canonical G-algebra Theta, wp, & Higher-Order Probabilistic Hoare
+;;;      Logic rules (HRet, HComp, HFunc, HCons, HFrame, HCond), unsound
+;;;      independence rejection (Guard 4), imperative frame counterexample,
+;;;      and unbounded general recursion rejection (Guard 5)
+;;;   6. Case studies: mask mutual independence, pairwise-not-mutual XOR
+;;;      counterexample, discrete-continuous mixture, Box-Muller T1 & T2,
+;;;      normal sum expectation, Cauchy bottom, and epistemic scope manifest.
+
+(require core.grothendieck.probability_sheaves)
+
+(define *gpsh-pass* 0)
+(define *gpsh-fail* 0)
+
+(define (gpsh-check name cond)
+  (if cond
+      (set! *gpsh-pass* (+ *gpsh-pass* 1))
+      (begin
+        (set! *gpsh-fail* (+ *gpsh-fail* 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(define (gpsh-field rec key)
+  (let loop ((xs (cdr rec)))
+    (cond
+      ((null? xs) #f)
+      ((eq? (caar xs) key) (cadar xs))
+      (else (loop (cdr xs))))))
+
+;; 1. Finite probability spaces, measure-preserving maps, a.s. equality, Doob-Dynkin
+(let* ((u1 (gpsh-space-unit))
+       (c1 (gpsh-space-fair-coin))
+       (c2 (gpsh-space-product c1 c1))
+       ;; Space with a measure-zero ghost atom 'ghost
+       (c1-ghost (gpsh-make-space
+                   (list (cons 0 (gpsh-rat 1 2))
+                         (cons 1 (gpsh-rat 1 2))
+                         (cons 'ghost (gpsh-rat 0 1)))))
+       (rv-a (lambda (w) (if (eq? w 'ghost) 99 w)))
+       (rv-b (lambda (w) (if (eq? w 'ghost) -7 w)))
+       (rv-c (lambda (w) (if (equal? w 1) 0 1))))
+  (gpsh-check "space-unit-valid" (gpsh-space-valid? u1))
+  (gpsh-check "space-coin-valid" (gpsh-space-valid? c1))
+  (gpsh-check "space-product-valid" (gpsh-space-valid? c2))
+  (gpsh-check "space-ghost-valid" (gpsh-space-valid? c1-ghost))
+  ;; Example 3.5: projection pi_1 : I x I -> I is measure-preserving; constant 1 is NOT
+  (gpsh-check "proj1-measure-preserving" (gpsh-measure-preserving? c2 c1 car))
+  (gpsh-check "const1-not-measure-preserving"
+              (not (gpsh-measure-preserving? c2 c1 (lambda (w) 1))))
+  ;; Almost-sure equality ignores measure-zero ghost atom, rejects support diff
+  (gpsh-check "rv-as-equal-ignores-null-atom" (gpsh-rv-as-equal? c1-ghost rv-a rv-b))
+  (gpsh-check "rv-as-equal-detects-support-diff" (not (gpsh-rv-as-equal? c1-ghost rv-a rv-c)))
+  ;; Example 3.15: X1(w1,w2)=w1 is pi_1-invariant and descends uniquely; X2=w1+w2 is NOT
+  (let* ((x1 (lambda (p) (car p)))
+         (x2 (lambda (p) (+ (car p) (cdr p))))
+         (desc1 (gpsh-doob-dynkin-descend c2 c1 car x1))
+         (desc2 (gpsh-doob-dynkin-descend c2 c1 car x2)))
+    (gpsh-check "doob-dynkin-x1-invariant" (gpsh-s-invariant? c2 car x1))
+    (gpsh-check "doob-dynkin-x1-descends"
+                (and (eq? (car desc1) 'ok)
+                     (gpsh-rv-as-equal? c2 x1 (lambda (p) ((cadr desc1) (car p))))))
+    (gpsh-check "doob-dynkin-x2-not-invariant" (not (gpsh-s-invariant? c2 car x2)))
+    (gpsh-check "doob-dynkin-x2-rejected" (eq? (car desc2) 'not-s-invariant)))
+  ;; Exact rational expectation on Example 2.2 (gain 5 if w1=w2 else 3 => E = 4)
+  (let* ((gain (lambda (p) (if (= (car p) (cdr p)) 5 3)))
+         (law-gain (gpsh-rv-law c2 gain))
+         (exp-gain (gpsh-rv-expectation c2 gain)))
+    (gpsh-check "example-2-2-law-half-3-half-5"
+                (and (gpsh-rat=? (gpsh-rat 1 2) (cdr (assoc 3 law-gain)))
+                     (gpsh-rat=? (gpsh-rat 1 2) (cdr (assoc 5 law-gain)))))
+    (gpsh-check "example-2-2-expectation-4"
+                (gpsh-rat=? exp-gain (gpsh-rat 4 1)))))
+
+;; 2. Independent pullback structure IP1-IP5 & correlated-square rejection (Guard 1)
+(let ((ip-res (gpsh-verify-ip-axioms)))
+  (gpsh-check "ip-epistemic-exact-finite"
+              (eq? (gpsh-field ip-res 'epistemic-status) 'certified-exact-finite))
+  (gpsh-check "ip1-identity-base" (gpsh-field ip-res 'ip1))
+  (gpsh-check "ip2-symmetry" (gpsh-field ip-res 'ip2))
+  (gpsh-check "ip3-horizontal-comp" (gpsh-field ip-res 'ip3))
+  (gpsh-check "ip5-disintegration-pullback" (gpsh-field ip-res 'ip5))
+  (gpsh-check "guard1-correlated-square-rejected"
+              (gpsh-field ip-res 'correlated-square-rejected))
+  (gpsh-check "ip-all-pass" (gpsh-field ip-res 'all-pass)))
+
+;; 3. Theorem 1: Strong Affine Commutative Extension Monad G & SBLC bridge
+(let ((m-res (gpsh-verify-monad-laws))
+      (s-res (gpsh-verify-sblc-sheaf-bridge)))
+  (gpsh-check "monad-left-unit" (gpsh-field m-res 'left-unit))
+  (gpsh-check "monad-right-unit" (gpsh-field m-res 'right-unit))
+  (gpsh-check "monad-associativity" (gpsh-field m-res 'associativity))
+  (gpsh-check "monad-affineness-marginalization" (gpsh-field m-res 'affineness))
+  (gpsh-check "monad-commutativity" (gpsh-field m-res 'commutativity))
+  (gpsh-check "monad-role-not-conditioning"
+              (eq? (gpsh-field m-res 'monad-role)
+                   'sample-space-extension-and-marginalization-not-conditioning))
+  (gpsh-check "sblc-shared-diagonal-half" (gpsh-field s-res 'shared-diagonal-half))
+  (gpsh-check "sblc-shared-dependent" (gpsh-field s-res 'shared-dependent))
+  (gpsh-check "sblc-fresh-uniform-quarter" (gpsh-field s-res 'fresh-uniform-quarter))
+  (gpsh-check "sblc-fresh-independent" (gpsh-field s-res 'fresh-independent)))
+
+;; 4. Theorem 2 & Prop. 3.26: Nu-calculus freshness (discrete negative vs continuous cert)
+(let ((df (gpsh-discrete-coin-freshness-check))
+      (cf (gpsh-continuous-unif-freshness-cert)))
+  (gpsh-check "discrete-coin-collision-half"
+              (gpsh-rat=? (gpsh-field df 'collision-probability) (gpsh-rat 1 2)))
+  (gpsh-check "discrete-coin-fails-nu-freshness"
+              (gpsh-field df 'correctly-rejects-discrete-freshness))
+  (gpsh-check "continuous-unif-tagged-symbolic-hoare"
+              (eq? (gpsh-field cf 'epistemic-status) 'certified-symbolic-hoare-rule))
+  (gpsh-check "continuous-unif-cites-fubini"
+              (eq? (gpsh-field cf 'external-lemma)
+                   'fubini-atomless-lebesgue-measure-singleton-zero))
+  (gpsh-check "continuous-unif-satisfies-nu-freshness"
+              (and (gpsh-field cf 'satisfies-nu-freshness)
+                   (gpsh-field cf 'boolean-rv-almost-surely-false))))
+
+;; 5. Prop. 4.1, Theorem 3 & 4: Theta, wp, Hoare rules, Guards 3/4/5
+(let ((hr (gpsh-verify-hoare-rules))
+      (imp (gpsh-verify-imperative-frame-counterexample))
+      (rec-bad (gpsh-hoare-check-unbounded-recursion 'general-rec))
+      (rec-ok (gpsh-hoare-check-unbounded-recursion 'lambda-prob)))
+  (gpsh-check "hoare-HRet" (gpsh-field hr 'HRet))
+  (gpsh-check "hoare-HComp" (gpsh-field hr 'HComp))
+  (gpsh-check "hoare-HFunc" (gpsh-field hr 'HFunc))
+  (gpsh-check "hoare-HCons" (gpsh-field hr 'HCons))
+  (gpsh-check "hoare-HFrame" (gpsh-field hr 'HFrame))
+  (gpsh-check "hoare-HCond" (gpsh-field hr 'HCond))
+  (gpsh-check "guard3-branch-merge-rejects-pure-law"
+              (gpsh-field hr 'branch-merge-rejects-pure-law))
+  (gpsh-check "guard4-theta-rejects-unsound-independence"
+              (gpsh-field hr 'theta-rejects-unsound-independence))
+  (gpsh-check "imperative-frame-counterexample" (gpsh-field imp 'all-pass))
+  (gpsh-check "guard5-rejects-unbounded-recursion"
+              (and (eq? (car rec-bad) 'unsupported-unbounded-recursion)
+                   (not (gpsh-field rec-bad 'accepted))))
+  (gpsh-check "accepts-terminating-lambda-prob"
+              (and (eq? (car rec-ok) 'terminating-lambda-prob)
+                   (gpsh-field rec-ok 'accepted))))
+
+;; 6. Case studies (mask, pairwise-not-mutual, dcMixture, Box-Muller T1/T2, normal sum, Cauchy)
+(let ((cm (gpsh-case-mask-mutual-independence))
+      (cp (gpsh-case-pairwise-not-mutual-counterexample))
+      (cd (gpsh-case-dc-mixture))
+      (cb (gpsh-case-box-muller-t1-t2))
+      (cn (gpsh-case-normal-sum-and-expectation))
+      (cc (gpsh-case-cauchy-expectation))
+      (sc (gpsh-paper-scope-manifest)))
+  (gpsh-check "case-mask-mutual-indep" (gpsh-field cm 'mutual-independence-holds))
+  (gpsh-check "case-mask-reused-coin-rejected" (gpsh-field cm 'reused-mask-coin-rejected))
+  (gpsh-check "case-pairwise-all-three-true"
+              (and (gpsh-field cp 'pairwise-xy)
+                   (gpsh-field cp 'pairwise-xz)
+                   (gpsh-field cp 'pairwise-yz)))
+  (gpsh-check "case-pairwise-not-mutual-false"
+              (not (gpsh-field cp 'mutually-independent)))
+  (gpsh-check "case-dc-mixture-cdf" (gpsh-field cd 'cdf-checks-pass))
+  (gpsh-check "case-dc-mixture-expectation-87-4" (gpsh-field cd 'expectation-exact-87-4))
+  (gpsh-check "case-box-muller-t1-uncorrelated" (gpsh-field cb 't1-independent-spec-holds))
+  (gpsh-check "case-box-muller-t2-aliased-lock" (gpsh-field cb 't2-aliased-functional-lock))
+  (gpsh-check "case-normal-sum-expectation-zero" (gpsh-field cn 'expected-value-zero))
+  (gpsh-check "case-normal-sum-variance-two" (gpsh-field cn 'variance-two))
+  (gpsh-check "case-cauchy-bottom"
+              (and (eq? (gpsh-field cc 'expectation) 'undefined-cauchy-bottom)
+                   (not (gpsh-field cc 'is-defined))))
+  (gpsh-check "scope-manifest-unbounded-rec-open"
+              (eq? (gpsh-field sc 'unbounded-general-recursion) 'open-future-work))
+  (gpsh-check "scope-manifest-conditioning-open"
+              (eq? (gpsh-field sc 'first-class-bayesian-conditioning) 'open-future-work))
+  (gpsh-check "scope-manifest-rv-not-full"
+              (eq? (gpsh-field sc 'rv-embedding-fullness-vs-qbs)
+                   'known-non-full-faithful-embedding)))
+
+(display "grothendieck_probability_sheaves_test: ")
+(display *gpsh-pass*)
+(display " passed, ")
+(display *gpsh-fail*)
+(display " failed")
+(newline)
+(if (> *gpsh-fail* 0) (error "grothendieck_probability_sheaves_test failed") #t)

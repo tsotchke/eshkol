@@ -1,0 +1,567 @@
+;;; core.logic.modal -- propositional modal logic (K, D, T, K4, B, S4, S5, GL),
+;;; multi-agent epistemic logic with public announcements, and finite-trace LTL.
+;;;
+;;; Provides:
+;;;   - Kripke frames (mono-modal and multi-agent) and Kripke models
+;;;   - Frame-property checkers: reflexive?, irreflexive?, symmetric?,
+;;;     transitive?, serial?, euclidean?, irreflexive-converse-well-founded?,
+;;;     frame-preorder?, frame-equivalence?, frame-gl?
+;;;   - Modal evaluator over atom, not, and, or, implies, iff, box, diamond,
+;;;     box-agent, diamond-agent, everyone-knows, common-knowledge,
+;;;     public-announce
+;;;   - Exhaustive finite-frame validity checker (frame-valid?) and explicit
+;;;     countermodel finder (find-countermodel)
+;;;   - Characteristic axioms: axiom-K, axiom-D, axiom-T, axiom-4, axiom-5,
+;;;     axiom-B, axiom-GL and system verifier verify-modal-system
+;;;   - Finite-trace LTL evaluator (ltl-eval, ltl-eval-at) supporting next,
+;;;     weak-next, globally, finally, until, release
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+
+(provide make-kripke-frame make-multi-agent-frame
+         kripke-frame? frame-worlds frame-relations frame-edges
+         frame-successors frame-accessible?
+         make-kripke-model kripke-model? model-frame model-valuation
+         model-atom-holds? public-announcement-restrict
+         reflexive? irreflexive? symmetric? transitive? serial? euclidean?
+         converse-well-founded? irreflexive-converse-well-founded?
+         frame-reflexive? frame-irreflexive? frame-symmetric?
+         frame-transitive? frame-serial? frame-euclidean?
+         frame-converse-well-founded? frame-irreflexive-converse-well-founded?
+         frame-preorder? frame-equivalence? frame-gl?
+         modal-eval model-valid? formula-atoms
+         frame-valid? find-countermodel
+         countermodel? countermodel-model countermodel-world
+         countermodel-valuation
+         axiom-K axiom-D axiom-T axiom-4 axiom-5 axiom-B axiom-GL
+         verify-modal-system
+         ltl-eval ltl-eval-at)
+
+;; ---------------------------------------------------------------------------
+;; Internal list helpers
+;; ---------------------------------------------------------------------------
+
+(define (ml-member? x xs)
+  (cond ((null? xs) #f)
+        ((equal? x (car xs)) #t)
+        (else (ml-member? x (cdr xs)))))
+
+(define (ml-dedup xs)
+  (let loop ((rest xs) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((ml-member? (car rest) acc) (loop (cdr rest) acc))
+          (else (loop (cdr rest) (cons (car rest) acc))))))
+
+(define (ml-all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (ml-all? pred (cdr xs)))
+        (else #f)))
+
+(define (ml-any? pred xs)
+  (cond ((null? xs) #f)
+        ((pred (car xs)) #t)
+        (else (ml-any? pred (cdr xs)))))
+
+;; ---------------------------------------------------------------------------
+;; Kripke frames and models
+;; ---------------------------------------------------------------------------
+
+;; Distinguish multi-agent relation alist ((agent . edge-list) ...) from
+;; mono-modal edge list ((u . v) ...): in an edge (u . v), cdr is a world atom
+;; (not a list), whereas in (agent . edges), cdr is a proper list.
+(define (ml-multi-agent-alist? rels)
+  (and (pair? rels)
+       (pair? (car rels))
+       (or (null? (cdar rels))
+           (pair? (cdar rels)))))
+
+(define (make-multi-agent-frame worlds agent-relations)
+  (let ((ws (ml-dedup worlds))
+        (norm (map (lambda (entry)
+                     (cons (car entry) (ml-dedup (cdr entry))))
+                   agent-relations)))
+    (list 'kripke-frame ws 'multi norm)))
+
+(define (make-kripke-frame worlds relations)
+  (if (ml-multi-agent-alist? relations)
+      (make-multi-agent-frame worlds relations)
+      (list 'kripke-frame (ml-dedup worlds) 'mono (ml-dedup relations))))
+
+(define (kripke-frame? x)
+  (and (pair? x) (eq? (car x) 'kripke-frame)))
+
+(define (frame-worlds f) (cadr f))
+(define (frame-kind f) (caddr f))
+(define (frame-relations f) (cadddr f))
+
+(define (frame-edges f . agent-opt)
+  (if (eq? (frame-kind f) 'mono)
+      (frame-relations f)
+      (if (null? agent-opt)
+          (if (null? (frame-relations f))
+              '()
+              (cdar (frame-relations f)))
+          (let ((hit (assoc (car agent-opt) (frame-relations f))))
+            (if hit (cdr hit) '())))))
+
+(define (frame-accessible? f u v . agent-opt)
+  (let ((edges (if (null? agent-opt)
+                   (frame-edges f)
+                   (frame-edges f (car agent-opt)))))
+    (ml-member? (cons u v) edges)))
+
+(define (frame-successors f u . agent-opt)
+  (let ((edges (if (null? agent-opt)
+                   (frame-edges f)
+                   (frame-edges f (car agent-opt)))))
+    (ml-dedup
+     (let loop ((rest edges) (acc '()))
+       (cond ((null? rest) (reverse acc))
+             ((equal? (caar rest) u)
+              (loop (cdr rest) (cons (cdar rest) acc)))
+             (else (loop (cdr rest) acc)))))))
+
+(define (make-kripke-model frame valuation)
+  (list 'kripke-model frame valuation))
+
+(define (kripke-model? x)
+  (and (pair? x) (eq? (car x) 'kripke-model)))
+
+(define (model-frame m) (cadr m))
+(define (model-valuation m) (caddr m))
+
+(define (model-atom-holds? m atom world)
+  (let ((val (model-valuation m)))
+    (if (procedure? val)
+        (if (val atom world) #t #f)
+        (let ((hit (assoc atom val)))
+          (and hit (ml-member? world (cdr hit)))))))
+
+;; ---------------------------------------------------------------------------
+;; Frame-property checkers
+;; ---------------------------------------------------------------------------
+
+(define (edges-reflexive? worlds edges)
+  (ml-all? (lambda (w) (ml-member? (cons w w) edges)) worlds))
+
+(define (edges-irreflexive? worlds edges)
+  (ml-all? (lambda (w) (not (ml-member? (cons w w) edges))) worlds))
+
+(define (edges-symmetric? edges)
+  (ml-all? (lambda (e) (ml-member? (cons (cdr e) (car e)) edges)) edges))
+
+(define (edges-transitive? edges)
+  (ml-all?
+   (lambda (e1)
+     (ml-all?
+      (lambda (e2)
+        (or (not (equal? (cdr e1) (car e2)))
+            (ml-member? (cons (car e1) (cdr e2)) edges)))
+      edges))
+   edges))
+
+(define (edges-serial? worlds edges)
+  (ml-all? (lambda (w)
+             (ml-any? (lambda (e) (equal? (car e) w)) edges))
+           worlds))
+
+(define (edges-euclidean? edges)
+  (ml-all?
+   (lambda (e1)
+     (ml-all?
+      (lambda (e2)
+        (or (not (equal? (car e1) (car e2)))
+            (ml-member? (cons (cdr e1) (cdr e2)) edges)))
+      edges))
+   edges))
+
+;; Reachable worlds from `start` in >= 1 steps along `edges`.
+(define (edges-reachable-positive start edges)
+  (let ((succ-of (lambda (u)
+                   (let loop ((rs edges) (acc '()))
+                     (cond ((null? rs) acc)
+                           ((equal? (caar rs) u) (loop (cdr rs) (cons (cdar rs) acc)))
+                           (else (loop (cdr rs) acc)))))))
+    (let bfs ((frontier (ml-dedup (succ-of start))) (visited '()))
+      (if (null? frontier)
+          visited
+          (let ((u (car frontier)))
+            (if (ml-member? u visited)
+                (bfs (cdr frontier) visited)
+                (bfs (append (cdr frontier) (succ-of u))
+                     (cons u visited))))))))
+
+;; On a finite frame, converse well-foundedness (no infinite ascending chain
+;; w_0 R w_1 R w_2 ...) holds iff the relation has no directed cycles.
+(define (edges-converse-well-founded? worlds edges)
+  (ml-all? (lambda (w)
+             (not (ml-member? w (edges-reachable-positive w edges))))
+           worlds))
+
+(define (frame-reflexive? f . agent-opt)
+  (edges-reflexive? (frame-worlds f)
+                    (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-irreflexive? f . agent-opt)
+  (edges-irreflexive? (frame-worlds f)
+                      (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-symmetric? f . agent-opt)
+  (edges-symmetric? (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-transitive? f . agent-opt)
+  (edges-transitive? (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-serial? f . agent-opt)
+  (edges-serial? (frame-worlds f)
+                 (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-euclidean? f . agent-opt)
+  (edges-euclidean? (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-converse-well-founded? f . agent-opt)
+  (edges-converse-well-founded?
+   (frame-worlds f)
+   (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+
+(define (frame-irreflexive-converse-well-founded? f . agent-opt)
+  (let ((edges (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+    (and (edges-irreflexive? (frame-worlds f) edges)
+         (edges-converse-well-founded? (frame-worlds f) edges))))
+
+(define (frame-preorder? f . agent-opt)
+  (let ((edges (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+    (and (edges-reflexive? (frame-worlds f) edges)
+         (edges-transitive? edges))))
+
+(define (frame-equivalence? f . agent-opt)
+  (let ((edges (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+    (and (edges-reflexive? (frame-worlds f) edges)
+         (edges-symmetric? edges)
+         (edges-transitive? edges))))
+
+;; Finite GL frames are exactly finite transitive, irreflexive, converse
+;; well-founded frames (finite strict partial orders).
+(define (frame-gl? f . agent-opt)
+  (let ((edges (if (null? agent-opt) (frame-edges f) (frame-edges f (car agent-opt)))))
+    (and (edges-transitive? edges)
+         (edges-irreflexive? (frame-worlds f) edges)
+         (edges-converse-well-founded? (frame-worlds f) edges))))
+
+;; Shorthand aliases
+(define reflexive? frame-reflexive?)
+(define irreflexive? frame-irreflexive?)
+(define symmetric? frame-symmetric?)
+(define transitive? frame-transitive?)
+(define serial? frame-serial?)
+(define euclidean? frame-euclidean?)
+(define converse-well-founded? frame-converse-well-founded?)
+(define irreflexive-converse-well-founded? frame-irreflexive-converse-well-founded?)
+
+;; ---------------------------------------------------------------------------
+;; Public announcement model restriction M|psi
+;; ---------------------------------------------------------------------------
+
+(define (public-announcement-restrict model psi)
+  (let* ((f (model-frame model))
+         (kept (filter (lambda (w) (modal-eval model w psi)) (frame-worlds f)))
+         (filter-edges (lambda (es)
+                         (filter (lambda (e)
+                                   (and (ml-member? (car e) kept)
+                                        (ml-member? (cdr e) kept)))
+                                 es)))
+         (new-frame
+          (if (eq? (frame-kind f) 'mono)
+              (make-kripke-frame kept (filter-edges (frame-relations f)))
+              (make-multi-agent-frame
+               kept
+               (map (lambda (entry)
+                      (cons (car entry) (filter-edges (cdr entry))))
+                    (frame-relations f)))))
+         (val (model-valuation model))
+         (new-val
+          (if (procedure? val)
+              val
+              (map (lambda (entry)
+                     (cons (car entry)
+                           (filter (lambda (w) (ml-member? w kept))
+                                   (cdr entry))))
+                   val))))
+    (make-kripke-model new-frame new-val)))
+
+;; ---------------------------------------------------------------------------
+;; Modal formula evaluation
+;; ---------------------------------------------------------------------------
+
+(define (modal-eval model world phi)
+  (cond
+    ((eq? phi #t) #t)
+    ((eq? phi #f) #f)
+    ((eq? phi 'top) #t)
+    ((eq? phi 'bot) #f)
+    ((symbol? phi) (model-atom-holds? model phi world))
+    ((not (pair? phi))
+     (error "modal-eval: malformed modal formula" phi))
+    (else
+     (let ((op (car phi)))
+       (cond
+         ((eq? op 'atom)
+          (model-atom-holds? model (cadr phi) world))
+         ((eq? op 'not)
+          (not (modal-eval model world (cadr phi))))
+         ((eq? op 'and)
+          (ml-all? (lambda (sub) (modal-eval model world sub)) (cdr phi)))
+         ((eq? op 'or)
+          (ml-any? (lambda (sub) (modal-eval model world sub)) (cdr phi)))
+         ((eq? op 'implies)
+          (or (not (modal-eval model world (cadr phi)))
+              (modal-eval model world (caddr phi))))
+         ((eq? op 'iff)
+          (eq? (modal-eval model world (cadr phi))
+               (modal-eval model world (caddr phi))))
+         ((eq? op 'box)
+          (let ((succs (frame-successors (model-frame model) world)))
+            (ml-all? (lambda (v) (modal-eval model v (cadr phi))) succs)))
+         ((eq? op 'diamond)
+          (let ((succs (frame-successors (model-frame model) world)))
+            (ml-any? (lambda (v) (modal-eval model v (cadr phi))) succs)))
+         ((eq? op 'box-agent)
+          (let* ((agent (cadr phi))
+                 (sub (caddr phi))
+                 (succs (frame-successors (model-frame model) world agent)))
+            (ml-all? (lambda (v) (modal-eval model v sub)) succs)))
+         ((eq? op 'diamond-agent)
+          (let* ((agent (cadr phi))
+                 (sub (caddr phi))
+                 (succs (frame-successors (model-frame model) world agent)))
+            (ml-any? (lambda (v) (modal-eval model v sub)) succs)))
+         ((eq? op 'everyone-knows)
+          (let ((agents (cadr phi))
+                (sub (caddr phi))
+                (f (model-frame model)))
+            (ml-all? (lambda (a)
+                       (ml-all? (lambda (v) (modal-eval model v sub))
+                                (frame-successors f world a)))
+                     agents)))
+         ((eq? op 'common-knowledge)
+          (let* ((agents (cadr phi))
+                 (sub (caddr phi))
+                 (f (model-frame model))
+                 (union-edges
+                  (ml-dedup
+                   (let loop ((as agents) (acc '()))
+                     (if (null? as)
+                         acc
+                         (loop (cdr as) (append acc (frame-edges f (car as))))))))
+                 (reach (edges-reachable-positive world union-edges)))
+            (ml-all? (lambda (v) (modal-eval model v sub)) reach)))
+         ((eq? op 'public-announce)
+          (let ((psi (cadr phi))
+                (sub (caddr phi)))
+            (if (modal-eval model world psi)
+                (modal-eval (public-announcement-restrict model psi) world sub)
+                #t)))
+         (else (error "modal-eval: unknown modal operator" op)))))))
+
+(define (model-valid? model phi)
+  (ml-all? (lambda (w) (modal-eval model w phi))
+           (frame-worlds (model-frame model))))
+
+;; ---------------------------------------------------------------------------
+;; Atom collection, exhaustive frame validity, and explicit countermodels
+;; ---------------------------------------------------------------------------
+
+(define (formula-atoms phi)
+  (let ((collect
+         (letrec ((go
+                   (lambda (f)
+                     (cond
+                       ((or (boolean? f) (eq? f 'top) (eq? f 'bot)) '())
+                       ((symbol? f) (list f))
+                       ((not (pair? f)) '())
+                       ((eq? (car f) 'atom) (list (cadr f)))
+                       ((or (eq? (car f) 'box-agent)
+                            (eq? (car f) 'diamond-agent)
+                            (eq? (car f) 'everyone-knows)
+                            (eq? (car f) 'common-knowledge))
+                        (go (caddr f)))
+                       ((eq? (car f) 'public-announce)
+                        (append (go (cadr f)) (go (caddr f))))
+                       (else
+                        (let loop ((subs (cdr f)) (acc '()))
+                          (if (null? subs)
+                              acc
+                              (loop (cdr subs) (append acc (go (car subs)))))))))))
+           go)))
+    (ml-dedup (collect phi))))
+
+(define (ml-all-subsets xs)
+  (if (null? xs)
+      (list '())
+      (let ((rest (ml-all-subsets (cdr xs))))
+        (append rest (map (lambda (s) (cons (car xs) s)) rest)))))
+
+(define (countermodel? x)
+  (and (pair? x) (eq? (car x) 'countermodel)))
+
+(define (countermodel-model cm) (cadr cm))
+(define (countermodel-world cm) (caddr cm))
+(define (countermodel-valuation cm) (cadddr cm))
+
+;; Exhaustively search all valuations on `frame` for `phi`.
+;; Returns #f if `phi` is valid on `frame`, or an explicit countermodel record
+;; (countermodel model world valuation-alist) refuting `phi` at `world`.
+(define (find-countermodel frame phi)
+  (let* ((worlds (frame-worlds frame))
+         (atoms (formula-atoms phi))
+         (subsets (ml-all-subsets worlds)))
+    (let search ((rem-atoms atoms) (val '()))
+      (if (null? rem-atoms)
+          (let ((model (make-kripke-model frame val)))
+            (let check-worlds ((ws worlds))
+              (cond ((null? ws) #f)
+                    ((not (modal-eval model (car ws) phi))
+                     (list 'countermodel model (car ws) val))
+                    (else (check-worlds (cdr ws))))))
+          (let ((p (car rem-atoms)))
+            (let try-subsets ((ss subsets))
+              (if (null? ss)
+                  #f
+                  (let ((hit (search (cdr rem-atoms)
+                                     (cons (cons p (car ss)) val))))
+                    (if hit hit (try-subsets (cdr ss)))))))))))
+
+(define (frame-valid? frame phi)
+  (not (find-countermodel frame phi)))
+
+;; ---------------------------------------------------------------------------
+;; Characteristic modal axioms and system verifier
+;; ---------------------------------------------------------------------------
+
+(define axiom-K
+  '(implies (box (implies (atom p) (atom q)))
+            (implies (box (atom p)) (box (atom q)))))
+
+(define axiom-D
+  '(implies (box (atom p)) (diamond (atom p))))
+
+(define axiom-T
+  '(implies (box (atom p)) (atom p)))
+
+(define axiom-4
+  '(implies (box (atom p)) (box (box (atom p)))))
+
+(define axiom-5
+  '(implies (diamond (atom p)) (box (diamond (atom p)))))
+
+(define axiom-B
+  '(implies (atom p) (box (diamond (atom p)))))
+
+;; Lob's axiom: Box(Box p -> p) -> Box p
+(define axiom-GL
+  '(implies (box (implies (box (atom p)) (atom p)))
+            (box (atom p))))
+
+(define (verify-modal-system frame system)
+  (cond
+    ((eq? system 'K) (frame-valid? frame axiom-K))
+    ((eq? system 'D) (and (frame-valid? frame axiom-K)
+                          (frame-valid? frame axiom-D)))
+    ((eq? system 'T) (and (frame-valid? frame axiom-K)
+                          (frame-valid? frame axiom-T)))
+    ((eq? system 'K4) (and (frame-valid? frame axiom-K)
+                           (frame-valid? frame axiom-4)))
+    ((eq? system 'B) (and (frame-valid? frame axiom-K)
+                          (frame-valid? frame axiom-T)
+                          (frame-valid? frame axiom-B)))
+    ((eq? system 'S4) (and (frame-valid? frame axiom-K)
+                           (frame-valid? frame axiom-T)
+                           (frame-valid? frame axiom-4)))
+    ((eq? system 'S5) (and (frame-valid? frame axiom-K)
+                           (frame-valid? frame axiom-T)
+                           (frame-valid? frame axiom-4)
+                           (frame-valid? frame axiom-5)))
+    ((eq? system 'GL) (and (frame-valid? frame axiom-K)
+                           (frame-valid? frame axiom-4)
+                           (frame-valid? frame axiom-GL)))
+    (else (error "verify-modal-system: unknown modal system" system))))
+
+;; ---------------------------------------------------------------------------
+;; Finite-trace Linear Temporal Logic (LTL)
+;; ---------------------------------------------------------------------------
+;;
+;; A finite trace is a non-empty list of states, where each state is a list of
+;; atomic proposition symbols that hold at that time step (or a predicate on
+;; atom symbols).
+
+(define (ltl-state-holds? state atom)
+  (if (procedure? state)
+      (if (state atom) #t #f)
+      (ml-member? atom state)))
+
+(define (ltl-eval-at trace idx phi)
+  (let ((n (length trace)))
+    (if (or (< idx 0) (>= idx n))
+        #f
+        (cond
+          ((eq? phi #t) #t)
+          ((eq? phi #f) #f)
+          ((eq? phi 'top) #t)
+          ((eq? phi 'bot) #f)
+          ((symbol? phi) (ltl-state-holds? (list-ref trace idx) phi))
+          ((not (pair? phi))
+           (error "ltl-eval-at: malformed LTL formula" phi))
+          (else
+           (let ((op (car phi)))
+             (cond
+               ((eq? op 'atom)
+                (ltl-state-holds? (list-ref trace idx) (cadr phi)))
+               ((eq? op 'not)
+                (not (ltl-eval-at trace idx (cadr phi))))
+               ((eq? op 'and)
+                (ml-all? (lambda (sub) (ltl-eval-at trace idx sub)) (cdr phi)))
+               ((eq? op 'or)
+                (ml-any? (lambda (sub) (ltl-eval-at trace idx sub)) (cdr phi)))
+               ((eq? op 'implies)
+                (or (not (ltl-eval-at trace idx (cadr phi)))
+                    (ltl-eval-at trace idx (caddr phi))))
+               ((eq? op 'iff)
+                (eq? (ltl-eval-at trace idx (cadr phi))
+                     (ltl-eval-at trace idx (caddr phi))))
+               ((eq? op 'next)
+                (and (< (+ idx 1) n)
+                     (ltl-eval-at trace (+ idx 1) (cadr phi))))
+               ((eq? op 'weak-next)
+                (or (>= (+ idx 1) n)
+                    (ltl-eval-at trace (+ idx 1) (cadr phi))))
+               ((eq? op 'globally)
+                (let loop ((j idx))
+                  (cond ((>= j n) #t)
+                        ((ltl-eval-at trace j (cadr phi)) (loop (+ j 1)))
+                        (else #f))))
+               ((eq? op 'finally)
+                (let loop ((j idx))
+                  (cond ((>= j n) #f)
+                        ((ltl-eval-at trace j (cadr phi)) #t)
+                        (else (loop (+ j 1))))))
+               ((eq? op 'until)
+                (let ((p (cadr phi)) (q (caddr phi)))
+                  (let loop ((j idx))
+                    (cond ((>= j n) #f)
+                          ((ltl-eval-at trace j q) #t)
+                          ((ltl-eval-at trace j p) (loop (+ j 1)))
+                          (else #f)))))
+               ((eq? op 'release)
+                (let ((p (cadr phi)) (q (caddr phi)))
+                  (let loop ((j idx))
+                    (cond ((>= j n) #t)
+                          ((not (ltl-eval-at trace j q)) #f)
+                          ((ltl-eval-at trace j p) #t)
+                          (else (loop (+ j 1)))))))
+               (else (error "ltl-eval-at: unknown LTL operator" op)))))))))
+
+(define (ltl-eval trace phi)
+  (ltl-eval-at trace 0 phi))

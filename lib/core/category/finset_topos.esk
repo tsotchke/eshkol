@@ -1,0 +1,155 @@
+;;; core.category.finset_topos -- elementary topos structure of the FinSet
+;;; skeleton (core.category.standard): exponentials B^A with exact universal
+;;; currying/uncurrying verification, and subobject classifier Omega = {0, 1}
+;;; with characteristic morphism and pullback verification.
+;;;
+;;; Usage: (require core.category.finset_topos)
+
+(require stdlib)
+(require core.category.effective)
+(require core.category.standard)
+
+(provide
+  finset-exponential finset-curry finset-uncurry finset-exponential-universal-violations
+  finset-subobject-classifier finset-monomorphism? finset-characteristic
+  finset-subobject-classifier-violations)
+
+;; ===========================================================================
+;; Private helpers (prefix ft-)
+;; ===========================================================================
+
+(define (ft-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ft-flatmap f xs)
+  (let loop ((l xs) (acc '()))
+    (if (null? l) (reverse acc) (loop (cdr l) (append (reverse (f (car l))) acc)))))
+(define (ft-functions k l)
+  (if (= k 0) (list '())
+      (ft-flatmap (lambda (v) (map (lambda (rest) (cons v rest)) (ft-functions (- k 1) l))) (ft-range l))))
+(define (ft-position x xs)
+  (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((equal? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (ft-fs m n im) (list m n im))
+(define (ft-compose g f) (list (car f) (cadr g) (map (lambda (i) (list-ref (caddr g) i)) (caddr f))))
+
+;; ===========================================================================
+;; Exponentials B^A in the FinSet skeleton
+;; ===========================================================================
+;;
+;; B^A has size b^a, enumerating all functions a -> b in canonical order.
+;; Returns (list exp-obj eval-arrow fn-list), where eval-arrow : b^a * a -> b
+;; uses the product encoding (i, j) <-> i * a + j.
+
+(define (finset-exponential a b)
+  (let* ((fns (ft-functions a b))
+         (exp-obj (length fns))
+         (eval-im (map (lambda (k)
+                         (let ((i (quotient k a)) (j (remainder k a)))
+                           (list-ref (list-ref fns i) j)))
+                       (ft-range (* exp-obj a)))))
+    (list exp-obj (ft-fs (* exp-obj a) b eval-im) fns)))
+
+;; Curry f : c * a -> b to f~ : c -> b^a.
+(define (finset-curry a b c f)
+  (let* ((fns (ft-functions a b))
+         (exp-obj (length fns))
+         (fim (caddr f))
+         (curried-im
+          (map (lambda (x)
+                 (let ((slice (map (lambda (j) (list-ref fim (+ (* x a) j))) (ft-range a))))
+                   (ft-position slice fns)))
+               (ft-range c))))
+    (ft-fs c exp-obj curried-im)))
+
+;; Uncurry g : c -> b^a to eval o (g x id_a) : c * a -> b.
+(define (finset-uncurry a b c g)
+  (let* ((ex (finset-exponential a b))
+         (exp-obj (car ex))
+         (ev (cadr ex))
+         (gim (caddr g))
+         (gxid (ft-fs (* c a) (* exp-obj a)
+                      (map (lambda (k)
+                             (let ((x (quotient k a)) (j (remainder k a)))
+                               (+ (* (list-ref gim x) a) j)))
+                           (ft-range (* c a))))))
+    (ft-compose ev gxid)))
+
+;; Verify universal property of the exponential B^A against test object C:
+;; currying and uncurrying are mutually inverse bijections Hom(C x A, B) <-> Hom(C, B^A),
+;; and every f : C x A -> B has a unique g : C -> B^A with eval o (g x id_A) = f.
+(define (finset-exponential-universal-violations a b c)
+  (let* ((exp-obj (car (finset-exponential a b)))
+         (fs (map (lambda (im) (ft-fs (* c a) b im)) (ft-functions (* c a) b)))
+         (gs (map (lambda (im) (ft-fs c exp-obj im)) (ft-functions c exp-obj)))
+         (out '()))
+    (if (not (= (length fs) (length gs)))
+        (set! out (cons (list 'hom-count-mismatch (length fs) (length gs)) out)))
+    (for-each
+     (lambda (f)
+       (let* ((cf (finset-curry a b c f))
+              (ucf (finset-uncurry a b c cf)))
+         (if (not (equal? ucf f))
+             (set! out (cons (list 'uncurry-curry-mismatch f cf ucf) out)))
+         (let ((matches (filter (lambda (g) (equal? (finset-uncurry a b c g) f)) gs)))
+           (if (not (= (length matches) 1))
+               (set! out (cons (list 'non-unique-curry f matches) out))))))
+     fs)
+    (for-each
+     (lambda (g)
+       (let ((cg (finset-curry a b c (finset-uncurry a b c g))))
+         (if (not (equal? cg g))
+             (set! out (cons (list 'curry-uncurry-mismatch g cg) out)))))
+     gs)
+    (reverse out)))
+
+;; ===========================================================================
+;; Subobject Classifier Omega = {0, 1} in the FinSet skeleton
+;; ===========================================================================
+
+(define (finset-subobject-classifier)
+  (list 2 (ft-fs 1 2 (list 1))))
+
+(define (finset-monomorphism? m)
+  (let ((im (caddr m)))
+    (let loop ((xs im) (seen '()))
+      (cond ((null? xs) #t)
+            ((memv (car xs) seen) #f)
+            (else (loop (cdr xs) (cons (car xs) seen)))))))
+
+;; Characteristic morphism chi_m : X -> 2 of a monomorphism m : S -> X.
+(define (finset-characteristic m)
+  (if (not (finset-monomorphism? m))
+      (category-refuse 'limit-does-not-exist 'finset-characteristic "FinSet" m 'not-a-monomorphism))
+  (let ((x (cadr m)) (im (caddr m)))
+    (ft-fs x 2 (map (lambda (i) (if (memv i im) 1 0)) (ft-range x)))))
+
+;; Verify chi_m is the unique morphism X -> Omega making m the pullback of true : 1 -> Omega.
+(define (finset-subobject-classifier-violations m)
+  (if (not (finset-monomorphism? m))
+      (list (list 'not-monomorphism m))
+      (let* ((s (car m)) (x (cadr m))
+             (sc (finset-subobject-classifier))
+             (true-arr (cadr sc))
+             (bang (ft-fs s 1 (map (lambda (i) 0) (ft-range s))))
+             (chi (finset-characteristic m))
+             (out '()))
+        ;; (1) chi o m = true o !_S
+        (if (not (equal? (ft-compose chi m) (ft-compose true-arr bang)))
+            (set! out (cons (list 'square-does-not-commute m chi) out)))
+        ;; (2) Pullback of chi and true is isomorphic to S via m
+        (let* ((pb (finset-pullback chi true-arr))
+               (p (car pb)) (p1 (cadr pb)) (p2 (caddr pb)))
+          (if (not (= p s))
+              (set! out (cons (list 'pullback-size-mismatch s p) out)))
+          (let ((med (filter (lambda (u) (and (equal? (ft-compose p1 u) m)
+                                              (equal? (ft-compose p2 u) bang)))
+                             (map (lambda (im) (ft-fs s p im)) (ft-functions s p)))))
+            (if (not (and (= (length med) 1) (finset-monomorphism? (car med))))
+                (set! out (cons (list 'mediating-not-iso m pb med) out)))))
+        ;; (3) Uniqueness among all 2^x morphisms X -> 2
+        (let* ((all-chi (map (lambda (im) (ft-fs x 2 im)) (ft-functions x 2)))
+               (valid (filter (lambda (c)
+                                (and (equal? (ft-compose c m) (ft-compose true-arr bang))
+                                     (= (car (finset-pullback c true-arr)) s)))
+                              all-chi)))
+          (if (not (and (= (length valid) 1) (equal? (car valid) chi)))
+              (set! out (cons (list 'non-unique-characteristic m valid) out))))
+        (reverse out))))

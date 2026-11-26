@@ -1,0 +1,1278 @@
+;;; core.grothendieck.esquisse_tame_perfectoid
+;;;   Grothendieck Era 3B:
+;;;     1. Dessins d'Enfants, Belyi Maps & Gal(Q-bar/Q) Action (Esquisse d'un Programme, 1984)
+;;;     2. Anabelian Geometry & Grothendieck-Teichmuller Group GT-hat (La Longue Marche, 1981)
+;;;     3. Tame Topology (Topologie Moderee -- 1D o-Minimal CAD, Additive Euler & Wild Rejectors)
+;;;     4. Modern Descendant: Scholze Perfectoid Rings & Tilting Equivalence (K |-> K^flat)
+;;;
+;;;   All internal and exported identifiers carry the `gesq-` namespace tag.
+
+(require stdlib)
+
+(provide
+  ;; 1. Symmetric Group S_d & Dessins d'Enfants
+  gesq-perm-id gesq-perm-valid? gesq-perm-equal?
+  gesq-perm-compose gesq-perm-inv gesq-perm-order
+  gesq-perm-cycles gesq-perm-cycle-type gesq-perm-cycle-count
+  gesq-perm-transitive? gesq-perm-subgroup-elements gesq-perm-subgroup-order
+  gesq-perm-conjugate
+  gesq-make-dessin gesq-dessin?
+  gesq-dessin-degree gesq-dessin-s0 gesq-dessin-s1 gesq-dessin-sinf
+  gesq-dessin-passport gesq-dessin-genus gesq-dessin-monodromy-order
+  gesq-dessin-counts gesq-dessin-mirror gesq-dessin-isomorphic?
+  gesq-poly-eval gesq-poly-deriv gesq-belyi-verify-poly
+  gesq-witness-star-d3 gesq-witness-chebyshev-d3 gesq-witness-shabat-d4
+  gesq-witness-torus-d3 gesq-witness-chiral-tree-d6
+  gesq-witness-galois-orbit-sep-z6 gesq-witness-galois-orbit-sep-s5
+
+  ;; 2. Anabelian Geometry & Grothendieck-Teichmuller Group GT-hat
+  gesq-anabelian-classify
+  gesq-gt-make-associator gesq-gt-kohno-p5-matrices
+  gesq-gt-verify-relations
+
+  ;; 3. Tame Topology (1D o-Minimal Cell Decomposition & Wild Negative Controls)
+  gesq-ext-lt? gesq-ext-eq? gesq-ext-le?
+  gesq-cell-point gesq-cell-open gesq-cell-closed-interval
+  gesq-tame-canonicalize gesq-tame-union gesq-tame-intersection
+  gesq-tame-complement gesq-tame-diff
+  gesq-tame-euler gesq-tame-verify-additivity gesq-tame-cell-complex-euler
+  gesq-wild-cantor-approx gesq-wild-cantor-family
+  gesq-wild-topologist-sine-family gesq-wild-peano-curve
+  gesq-tame-check-ominimal
+
+  ;; 4. Scholze Perfectoid Spaces & Tilting Equivalence
+  gesq-perf-ring-make gesq-perf-zero gesq-perf-one gesq-perf-generator
+  gesq-perf-equal? gesq-perf-add gesq-perf-mul gesq-perf-pow
+  gesq-perf-frobenius gesq-perf-embed-next gesq-perf-pth-root
+  gesq-frobenius-surjective?
+  gesq-tilt-make-chain gesq-tilt-valid-chain? gesq-tilt-mul
+  gesq-tilt-verify-multiplicative?
+  gesq-tilt-sharp-mod-p2 gesq-tilt-verify-sharp-mod-p2?
+  gesq-non-perfectoid-fp-t-mod-t2-audit)
+
+;; ===========================================================================
+;; Internal Utilities (all `gesq-` namespaced)
+;; ===========================================================================
+
+(define (gesq-mod-pos a m)
+  (let ((r (remainder a m)))
+    (if (< r 0) (+ r m) r)))
+
+(define (gesq-gcd a b)
+  (let loop ((x (abs a)) (y (abs b)))
+    (if (= y 0) x (loop y (remainder x y)))))
+
+(define (gesq-lcm a b)
+  (if (or (= a 0) (= b 0))
+      0
+      (quotient (* (abs a) (abs b)) (gesq-gcd a b))))
+
+(define (gesq-int-pow base exp)
+  (let loop ((e exp) (acc 1))
+    (if (<= e 0) acc (loop (- e 1) (* acc base)))))
+
+(define (gesq-insert-sorted x xs less?)
+  (cond ((null? xs) (list x))
+        ((less? x (car xs)) (cons x xs))
+        (else (cons (car xs) (gesq-insert-sorted x (cdr xs) less?)))))
+
+(define (gesq-sort xs less?)
+  (let loop ((rest xs) (acc '()))
+    (if (null? rest)
+        acc
+        (loop (cdr rest) (gesq-insert-sorted (car rest) acc less?)))))
+
+(define (gesq-member-by? eq-fn item xs)
+  (cond ((null? xs) #f)
+        ((eq-fn item (car xs)) #t)
+        (else (gesq-member-by? eq-fn item (cdr xs)))))
+
+(define (gesq-dedup-sorted xs eq-fn)
+  (cond ((null? xs) '())
+        ((null? (cdr xs)) xs)
+        ((eq-fn (car xs) (cadr xs)) (gesq-dedup-sorted (cdr xs) eq-fn))
+        (else (cons (car xs) (gesq-dedup-sorted (cdr xs) eq-fn)))))
+
+(define (gesq-vec-copy v)
+  (let* ((n (vector-length v))
+         (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (vector-ref v i))
+                 (loop (+ i 1)))))
+    out))
+
+(define (gesq-vec-all? pred v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0))
+      (cond ((= i n) #t)
+            ((pred (vector-ref v i)) (loop (+ i 1)))
+            (else #f)))))
+
+;; ===========================================================================
+;; PILLAR 1: Symmetric Group S_d, Dessins d'Enfants, Belyi Maps & Gal(Q-bar/Q)
+;; ===========================================================================
+
+(define (gesq-perm-id d)
+  (let ((v (make-vector d 0)))
+    (let loop ((i 0))
+      (if (< i d) (begin (vector-set! v i i) (loop (+ i 1)))))
+    v))
+
+(define (gesq-perm-valid? p)
+  (if (not (vector? p))
+      #f
+      (let ((d (vector-length p)))
+        (if (< d 1)
+            #f
+            (let ((seen (make-vector d #f)))
+              (let loop ((i 0))
+                (if (= i d)
+                    #t
+                    (let ((v (vector-ref p i)))
+                      (if (and (integer? v) (>= v 0) (< v d)
+                               (not (vector-ref seen v)))
+                          (begin (vector-set! seen v #t)
+                                 (loop (+ i 1)))
+                          #f)))))))))
+
+(define (gesq-perm-equal? p q)
+  (if (not (= (vector-length p) (vector-length q)))
+      #f
+      (let ((d (vector-length p)))
+        (let loop ((i 0))
+          (cond ((= i d) #t)
+                ((= (vector-ref p i) (vector-ref q i)) (loop (+ i 1)))
+                (else #f))))))
+
+;; Composition (p o q)(i) = p(q(i))
+(define (gesq-perm-compose p q)
+  (let* ((d (vector-length p))
+         (out (make-vector d 0)))
+    (let loop ((i 0))
+      (if (< i d)
+          (begin (vector-set! out i (vector-ref p (vector-ref q i)))
+                 (loop (+ i 1)))))
+    out))
+
+(define (gesq-perm-inv p)
+  (let* ((d (vector-length p))
+         (out (make-vector d 0)))
+    (let loop ((i 0))
+      (if (< i d)
+          (begin (vector-set! out (vector-ref p i) i)
+                 (loop (+ i 1)))))
+    out))
+
+(define (gesq-perm-conjugate g p)
+  (gesq-perm-compose (gesq-perm-compose g p) (gesq-perm-inv g)))
+
+;; Disjoint cycles of p (including 1-cycles)
+(define (gesq-perm-cycles p)
+  (let* ((d (vector-length p))
+         (visited (make-vector d #f)))
+    (let loop ((i 0) (acc '()))
+      (if (= i d)
+          (reverse acc)
+          (if (vector-ref visited i)
+              (loop (+ i 1) acc)
+              (let trace ((cur i) (cyc '()))
+                (if (vector-ref visited cur)
+                    (loop (+ i 1) (cons (reverse cyc) acc))
+                    (begin
+                      (vector-set! visited cur #t)
+                      (trace (vector-ref p cur) (cons cur cyc))))))))))
+
+(define (gesq-perm-cycle-type p)
+  (gesq-sort (map length (gesq-perm-cycles p)) >))
+
+(define (gesq-perm-cycle-count p)
+  (length (gesq-perm-cycles p)))
+
+(define (gesq-perm-order p)
+  (let loop ((lens (gesq-perm-cycle-type p)) (acc 1))
+    (if (null? lens) acc (loop (cdr lens) (gesq-lcm acc (car lens))))))
+
+;; Transitivity of <gens> on {0, ..., d-1} via BFS orbit from 0
+(define (gesq-perm-orbit-size gens d)
+  (let* ((visited (make-vector d #f))
+         (all-gens (append gens (map gesq-perm-inv gens))))
+    (vector-set! visited 0 #t)
+    (let bfs ((queue (list 0)) (count 1))
+      (if (null? queue)
+          count
+          (let ((u (car queue))
+                (rest (cdr queue)))
+            (let step ((gs all-gens) (q rest) (cnt count))
+              (if (null? gs)
+                  (bfs q cnt)
+                  (let ((v (vector-ref (car gs) u)))
+                    (if (vector-ref visited v)
+                        (step (cdr gs) q cnt)
+                        (begin
+                          (vector-set! visited v #t)
+                          (step (cdr gs) (append q (list v)) (+ cnt 1))))))))))))
+
+(define (gesq-perm-transitive? gens d)
+  (= (gesq-perm-orbit-size gens d) d))
+
+;; Exact subgroup closure <gens> <= S_d via BFS
+;; Uses a balanced list/hash-free bucket table keyed by Lehmer-like integer hash
+(define (gesq-perm-hash p)
+  (let ((d (vector-length p)))
+    (let loop ((i 0) (h 0))
+      (if (= i d) h (loop (+ i 1) (+ (* h (+ d 1)) (vector-ref p i)))))))
+
+(define (gesq-perm-subgroup-elements gens d)
+  (let* ((nbuckets 257)
+         (buckets (make-vector nbuckets '()))
+         (id (gesq-perm-id d))
+         (all-gens (append gens (map gesq-perm-inv gens))))
+    (define (seen? p)
+      (let ((b (vector-ref buckets (gesq-mod-pos (gesq-perm-hash p) nbuckets))))
+        (gesq-member-by? gesq-perm-equal? p b)))
+    (define (mark! p)
+      (let ((idx (gesq-mod-pos (gesq-perm-hash p) nbuckets)))
+        (vector-set! buckets idx (cons p (vector-ref buckets idx)))))
+    (mark! id)
+    (let bfs ((queue (list id)) (found (list id)))
+      (if (null? queue)
+          found
+          (let ((cur (car queue))
+                (rest (cdr queue)))
+            (let step ((gs all-gens) (q rest) (f found))
+              (if (null? gs)
+                  (bfs q f)
+                  (let ((nxt (gesq-perm-compose (car gs) cur)))
+                    (if (seen? nxt)
+                        (step (cdr gs) q f)
+                        (begin
+                          (mark! nxt)
+                          (step (cdr gs) (append q (list nxt)) (cons nxt f))))))))))))
+
+(define (gesq-perm-subgroup-order gens d)
+  (length (gesq-perm-subgroup-elements gens d)))
+
+;; Dessin d'Enfant Constructor & Validator
+;; Record layout: #(dessin d s0 s1 sinf passport genus monodromy-order (c0 c1 cinf))
+(define (gesq-make-dessin s0 s1 sinf)
+  (cond
+    ((not (and (gesq-perm-valid? s0) (gesq-perm-valid? s1) (gesq-perm-valid? sinf)))
+     (vector 'err-dessin-invalid-perm s0 s1 sinf))
+    ((not (and (= (vector-length s0) (vector-length s1))
+               (= (vector-length s0) (vector-length sinf))))
+     (vector 'err-dessin-degree-mismatch
+             (vector-length s0) (vector-length s1) (vector-length sinf)))
+    (else
+     (let* ((d (vector-length s0))
+            (prod (gesq-perm-compose s0 (gesq-perm-compose s1 sinf)))
+            (id (gesq-perm-id d)))
+       (cond
+         ((not (gesq-perm-equal? prod id))
+          (vector 'err-dessin-product-mismatch prod))
+         ((not (gesq-perm-transitive? (list s0 s1) d))
+          (vector 'err-dessin-disconnected (gesq-perm-orbit-size (list s0 s1) d) d))
+         (else
+          (let* ((c0 (gesq-perm-cycle-count s0))
+                 (c1 (gesq-perm-cycle-count s1))
+                 (cinf (gesq-perm-cycle-count sinf))
+                 (chi (- (+ c0 c1 cinf) d))
+                 (genus (quotient (- 2 chi) 2))
+                 (passport (list (gesq-perm-cycle-type s0)
+                                 (gesq-perm-cycle-type s1)
+                                 (gesq-perm-cycle-type sinf)))
+                 (mon-order (gesq-perm-subgroup-order (list s0 s1) d)))
+            (vector 'dessin d s0 s1 sinf passport genus mon-order
+                    (list c0 c1 cinf)))))))))
+
+(define (gesq-dessin? obj)
+  (and (vector? obj) (= (vector-length obj) 9) (eq? (vector-ref obj 0) 'dessin)))
+
+(define (gesq-dessin-degree ds)          (vector-ref ds 1))
+(define (gesq-dessin-s0 ds)              (vector-ref ds 2))
+(define (gesq-dessin-s1 ds)              (vector-ref ds 3))
+(define (gesq-dessin-sinf ds)            (vector-ref ds 4))
+(define (gesq-dessin-passport ds)        (vector-ref ds 5))
+(define (gesq-dessin-genus ds)           (vector-ref ds 6))
+(define (gesq-dessin-monodromy-order ds) (vector-ref ds 7))
+(define (gesq-dessin-counts ds)          (vector-ref ds 8))
+
+;; Complex-conjugate / chiral mirror dessin:
+;;   s0' = s0^{-1}, s1' = s1^{-1}, sinf' = (s0' o s1')^{-1}
+(define (gesq-dessin-mirror ds)
+  (let* ((s0m (gesq-perm-inv (gesq-dessin-s0 ds)))
+         (s1m (gesq-perm-inv (gesq-dessin-s1 ds)))
+         (sinfm (gesq-perm-inv (gesq-perm-compose s0m s1m))))
+    (gesq-make-dessin s0m s1m sinfm)))
+
+;; Exact isomorphism check between two dessins of degree d:
+;;   Exists g in S_d with g o s0 o g^{-1} = s0' and g o s1 o g^{-1} = s1'?
+;;   Since <s0, s1> is transitive, choosing g(0) = k uniquely determines g via BFS!
+(define (gesq-dessin-isomorphic? d1 d2)
+  (if (not (and (gesq-dessin? d1) (gesq-dessin? d2)))
+      #f
+      (let ((deg1 (gesq-dessin-degree d1))
+            (deg2 (gesq-dessin-degree d2)))
+        (if (or (not (= deg1 deg2))
+                (not (= (gesq-dessin-genus d1) (gesq-dessin-genus d2)))
+                (not (= (gesq-dessin-monodromy-order d1) (gesq-dessin-monodromy-order d2)))
+                (not (equal? (gesq-dessin-passport d1) (gesq-dessin-passport d2))))
+            #f
+            (let ((s0a (gesq-dessin-s0 d1))
+                  (s1a (gesq-dessin-s1 d1))
+                  (s0b (gesq-dessin-s0 d2))
+                  (s1b (gesq-dessin-s1 d2)))
+              (define (try-root k)
+                (let ((g (make-vector deg1 -1)))
+                  (vector-set! g 0 k)
+                  (let bfs ((queue (list 0)))
+                    (if (null? queue)
+                        (and (gesq-perm-valid? g)
+                             (gesq-perm-equal? (gesq-perm-conjugate g s0a) s0b)
+                             (gesq-perm-equal? (gesq-perm-conjugate g s1a) s1b))
+                        (let* ((u (car queue))
+                               (gu (vector-ref g u))
+                               (u0 (vector-ref s0a u))
+                               (v0 (vector-ref s0b gu))
+                               (u1 (vector-ref s1a u))
+                               (v1 (vector-ref s1b gu))
+                               (q1 (cdr queue)))
+                          (cond
+                            ((and (not (= (vector-ref g u0) -1))
+                                  (not (= (vector-ref g u0) v0)))
+                             #f)
+                            (else
+                             (let ((q2 (if (= (vector-ref g u0) -1)
+                                           (begin (vector-set! g u0 v0)
+                                                  (append q1 (list u0)))
+                                           q1)))
+                               (cond
+                                 ((and (not (= (vector-ref g u1) -1))
+                                       (not (= (vector-ref g u1) v1)))
+                                  #f)
+                                 (else
+                                  (let ((q3 (if (= (vector-ref g u1) -1)
+                                                (begin (vector-set! g u1 v1)
+                                                       (append q2 (list u1)))
+                                                q2)))
+                                    (bfs q3))))))))))))
+              (let loop ((k 0))
+                (cond ((= k deg1) #f)
+                      ((try-root k) #t)
+                      (else (loop (+ k 1))))))))))
+
+;; Exact Polynomial Evaluation & Shabat/Belyi Polynomial Verifier over Q
+;; coeffs = (a0 a1 ... ad) representing sum_{k=0}^d a_k z^k
+(define (gesq-poly-eval coeffs z)
+  (let loop ((cs (reverse coeffs)) (acc 0))
+    (if (null? cs) acc (loop (cdr cs) (+ (* acc z) (car cs))))))
+
+(define (gesq-poly-deriv coeffs)
+  (if (or (null? coeffs) (null? (cdr coeffs)))
+      (list 0)
+      (let loop ((cs (cdr coeffs)) (k 1) (acc '()))
+        (if (null? cs)
+            (reverse acc)
+            (loop (cdr cs) (+ k 1) (cons (* k (car cs)) acc))))))
+
+;; Verify a Shabat/Belyi polynomial beta(z) in Q[z] given critical points
+;; crit-specs = list of (z_i . multiplicity_in_beta_prime)
+;; Verifies:
+;;   1. deg(beta) >= 1 and sum of critical multiplicities == deg(beta) - 1 (all critical points accounted for)
+;;   2. At every critical point z_i with multiplicity m_i:
+;;      beta'(z_i) = beta''(z_i) = ... = beta^{(m_i)}(z_i) = 0 and beta^{(m_i+1)}(z_i) != 0
+;;   3. Every critical value beta(z_i) is strictly in {0, 1}!
+(define (gesq-belyi-verify-poly coeffs crit-specs)
+  (let ((deg (- (length coeffs) 1)))
+    (if (< deg 1)
+        (vector 'err-belyi-constant coeffs)
+        (let* ((d1 (gesq-poly-deriv coeffs))
+               (mult-sum (let loop ((cs crit-specs) (s 0))
+                           (if (null? cs) s (loop (cdr cs) (+ s (cdr (car cs)))))))
+               (distinct-ok
+                 (let loop ((cs crit-specs) (seen '()))
+                   (cond ((null? cs) #t)
+                         ((gesq-member-by? = (car (car cs)) seen) #f)
+                         (else (loop (cdr cs) (cons (car (car cs)) seen)))))))
+          (cond
+            ((not distinct-ok)
+             (vector 'err-belyi-duplicate-critical-point))
+            ((not (= mult-sum (- deg 1)))
+             (vector 'err-belyi-incomplete-critical-points mult-sum (- deg 1)))
+            (else
+             (let check ((cs crit-specs) (vals '()))
+               (if (null? cs)
+                   (vector 'belyi-poly-certified deg (reverse vals))
+                   (let* ((z0 (car (car cs)))
+                          (m  (cdr (car cs)))
+                          (val (gesq-poly-eval coeffs z0)))
+                     (if (not (or (= val 0) (= val 1)))
+                         (vector 'err-belyi-critical-value-outside-01 z0 val)
+                         ;; Check derivatives 1..m vanish and (m+1)-th is nonzero
+                         (let dloop ((k 1) (cur-p d1))
+                           (cond
+                             ((<= k m)
+                              (if (= (gesq-poly-eval cur-p z0) 0)
+                                  (dloop (+ k 1) (gesq-poly-deriv cur-p))
+                                  (vector 'err-belyi-derivative-nonzero z0 k)))
+                             ((= (gesq-poly-eval cur-p z0) 0)
+                              (vector 'err-belyi-higher-multiplicity z0 m))
+                             (else
+                              (check (cdr cs) (cons (cons z0 val) vals)))))))))))))))
+
+;; Canonical Belyi & Galois Witnesses
+
+;; Degree-3 Star Tree: beta(z) = z^3, passport ((3) (1 1 1) (3)), g=0, |Mon|=3
+(define (gesq-witness-star-d3)
+  (gesq-make-dessin (vector 1 2 0) (vector 0 1 2) (vector 2 0 1)))
+
+;; Degree-3 Chebyshev/Shabat Chain Tree: beta(z) = 3z^2 - 2z^3
+;; passport ((2 1) (2 1) (3)), g=0, |Mon|=6 (S_3)
+(define (gesq-witness-chebyshev-d3)
+  (gesq-make-dessin (vector 1 0 2) (vector 0 2 1) (vector 2 0 1)))
+
+;; Degree-4 Shabat Tree: beta(z) = 16z^2(1-z)^2 = 16z^2 - 32z^3 + 16z^4
+;; passport ((2 2) (2 1 1) (4)), g=0, |Mon|=8 (D_4)
+(define (gesq-witness-shabat-d4)
+  (gesq-make-dessin (vector 1 0 3 2) (vector 0 2 1 3) (vector 2 0 3 1)))
+
+;; Genus-1 Fermat Cubic Torus Dessin (d=3):
+;; s0 = s1 = sinf = (0 1 2), c0=c1=cinf=1, chi=0 => g=1, |Mon|=3
+(define (gesq-witness-torus-d3)
+  (gesq-make-dessin (vector 1 2 0) (vector 1 2 0) (vector 1 2 0)))
+
+;; Degree-6 Chiral Plane Tree (branch lengths 1, 2, 3 around degree-3 white vertex):
+;; s0 = (0 1 2)(3)(4 5), s1 = (0)(1 3)(2 4)(5), sinf = (0 4 5 2 3 1)
+;; Same degree, genus=0, passport ((3 2 1) (2 2 1 1) (6)) and monodromy order as its mirror,
+;; yet strictly non-isomorphic (chiral complex-conjugate Gal(Q-bar/Q) orbit of size 2!).
+(define (gesq-witness-chiral-tree-d6)
+  (gesq-make-dessin (vector 1 2 0 3 5 4)
+                    (vector 0 3 4 1 2 5)
+                    (vector 4 0 3 1 5 2)))
+
+;; Galois Orbit Separation by Monodromy Group (Degree 6, Genus 2, Passport ((3 3) (6) (6))):
+;; Witness Z/6Z: s0 = (0 1 2)(3 4 5), s1 = (0 3 2 5 1 4), sinf = (0 3 2 5 1 4)
+;; Abelian monodromy group Z/6Z of exact order 6!
+(define (gesq-witness-galois-orbit-sep-z6)
+  (let* ((s0 (vector 1 2 0 4 5 3))
+         (s1 (vector 3 4 5 2 0 1))
+         (sinf (gesq-perm-inv (gesq-perm-compose s0 s1))))
+    (gesq-make-dessin s0 s1 sinf)))
+
+;; Witness S5 (PGL_2(F_5)): Exact SAME degree 6, SAME genus 2, SAME passport ((3 3) (6) (6)),
+;; yet non-abelian monodromy group S_5 of exact order 120, proving distinct Gal(Q-bar/Q) orbit!
+(define (gesq-witness-galois-orbit-sep-s5)
+  (let* ((s0 (vector 1 2 0 4 5 3))
+         (s1 (vector 1 3 4 2 5 0))
+         (sinf (gesq-perm-inv (gesq-perm-compose s0 s1))))
+    (gesq-make-dessin s0 s1 sinf)))
+
+;; ===========================================================================
+;; PILLAR 2: Anabelian Geometry & Grothendieck-Teichmuller Group GT-hat
+;; ===========================================================================
+
+;; Hyperbolic Anabelian Classifier (La Longue Marche, 1981):
+;;   Given (g, n) = (genus, punctures), computes exact Euler characteristic
+;;   chi = 2 - 2g - n. Strictly classifies chi < 0 as 'hyperbolic-anabelian
+;;   and chi >= 0 as 'non-anabelian.
+(define (gesq-anabelian-classify g n)
+  (if (or (not (integer? g)) (not (integer? n)) (< g 0) (< n 0))
+      (vector 'err-anabelian-invalid-type g n)
+      (let ((chi (- 2 (+ (* 2 g) n))))
+        (if (< chi 0)
+            (vector 'anabelian-classification g n chi
+                    'hyperbolic-anabelian
+                    (if (> n 0) 'non-abelian-free 'non-abelian-surface))
+            (let ((pi1-kind
+                    (cond ((and (= g 0) (= n 0)) 'trivial-pi1-P1)
+                          ((and (= g 0) (= n 1)) 'trivial-pi1-A1)
+                          ((and (= g 0) (= n 2)) 'abelian-Z-Gm)
+                          ((and (= g 1) (= n 0)) 'abelian-Z2-elliptic)
+                          (else 'abelian-or-trivial))))
+              (vector 'anabelian-classification g n chi
+                      'non-anabelian
+                      pi1-kind))))))
+
+;; Exact 3x3 Rational Matrix Algebra for Drinfeld-Kohno Representation of p_5
+(define (gesq-mat-zero n)
+  (let ((m (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! m i (make-vector n 0)) (loop (+ i 1)))))
+    m))
+
+(define (gesq-mat-id n)
+  (let ((m (gesq-mat-zero n)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! (vector-ref m i) i 1) (loop (+ i 1)))))
+    m))
+
+(define (gesq-mat-ref m i j) (vector-ref (vector-ref m i) j))
+(define (gesq-mat-set! m i j val) (vector-set! (vector-ref m i) j val))
+
+(define (gesq-mat-add A B)
+  (let* ((n (vector-length A)) (R (gesq-mat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (gesq-mat-set! R i j (+ (gesq-mat-ref A i j) (gesq-mat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (gesq-mat-sub A B)
+  (let* ((n (vector-length A)) (R (gesq-mat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (gesq-mat-set! R i j (- (gesq-mat-ref A i j) (gesq-mat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (gesq-mat-scale s A)
+  (let* ((n (vector-length A)) (R (gesq-mat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin (gesq-mat-set! R i j (* s (gesq-mat-ref A i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (gesq-mat-mul A B)
+  (let* ((n (vector-length A)) (R (gesq-mat-zero n)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin
+                    (let lk ((k 0) (acc 0))
+                      (if (= k n)
+                          (gesq-mat-set! R i j acc)
+                          (lk (+ k 1)
+                              (+ acc (* (gesq-mat-ref A i k) (gesq-mat-ref B k j))))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (gesq-mat-comm A B)
+  (gesq-mat-sub (gesq-mat-mul A B) (gesq-mat-mul B A)))
+
+(define (gesq-mat-zero? A)
+  (let ((n (vector-length A)))
+    (let li ((i 0))
+      (cond ((= i n) #t)
+            ((let lj ((j 0))
+               (cond ((= j n) #t)
+                     ((= (gesq-mat-ref A i j) 0) (lj (+ j 1)))
+                     (else #f)))
+             (li (+ i 1)))
+            (else #f)))))
+
+;; Exact 3x3 Drinfeld-Kohno Representation of the Pure Braid Lie Algebra p_5
+;; Constructed on the 3D irreducible standard representation W = {sum c_k = 0} of S_4:
+;;   basis: b0 = e0 - e3, b1 = e1 - e3, b2 = e2 - e3
+;;   t_{ij} = P_{ij} - (1/3) I_3   for 1 <= i < j <= 4
+;;   t_{i5} = - sum_{j != i, 1<=j<=4} t_{ij}
+;; Satisfies ALL Kohno-Drinfeld relations identically:
+;;   [t_{ij}, t_{kl}] = 0 (disjoint), [t_{ij}, t_{ik}+t_{jk}] = 0 (triple),
+;;   and sum_{j != i} t_{ij} = 0 for all i in {1,2,3,4,5}!
+(define (gesq-s4-std-transposition a b)
+  ;; Matrix of transposition (a b) on W with basis b0=e0-e3, b1=e1-e3, b2=e2-e3
+  ;; (a, b in {0, 1, 2, 3})
+  (let ((M (gesq-mat-zero 3)))
+    (define (swap-idx k)
+      (cond ((= k a) b) ((= k b) a) (else k)))
+    ;; For each basis vector b_col = e_col - e_3 (col = 0,1,2):
+    ;; P(e_col - e_3) = e_{swap(col)} - e_{swap(3)}
+    ;; Express e_u - e_v in basis {e_0-e_3, e_1-e_3, e_2-e_3}:
+    ;;   e_u - e_3 = b_u (if u < 3) else 0
+    (let col-loop ((col 0))
+      (if (< col 3)
+          (let ((u (swap-idx col))
+                (v (swap-idx 3)))
+            (if (< u 3) (gesq-mat-set! M u col (+ (gesq-mat-ref M u col) 1)))
+            (if (< v 3) (gesq-mat-set! M v col (- (gesq-mat-ref M v col) 1)))
+            (col-loop (+ col 1)))))
+    M))
+
+(define (gesq-gt-kohno-p5-matrices)
+  (let* ((shift (gesq-mat-scale 1/3 (gesq-mat-id 3)))
+         (t12 (gesq-mat-sub (gesq-s4-std-transposition 0 1) shift))
+         (t13 (gesq-mat-sub (gesq-s4-std-transposition 0 2) shift))
+         (t14 (gesq-mat-sub (gesq-s4-std-transposition 0 3) shift))
+         (t23 (gesq-mat-sub (gesq-s4-std-transposition 1 2) shift))
+         (t24 (gesq-mat-sub (gesq-s4-std-transposition 1 3) shift))
+         (t34 (gesq-mat-sub (gesq-s4-std-transposition 2 3) shift))
+         (t45 (gesq-mat-scale -1 (gesq-mat-add (gesq-mat-add t14 t24) t34)))
+         (t51 (gesq-mat-scale -1 (gesq-mat-add (gesq-mat-add t12 t13) t14))))
+    (vector 'kohno-p5 t12 t23 t34 t45 t51 t13 t14 t24)))
+
+;; Exact Non-Commutative Associative Polynomial Algebra Q<X, Y> mod deg 5
+;; Monomials represented as lists of 'x and 'y of length <= 4.
+;; Polynomials represented as alists ((word . exact-rational-coeff) ...).
+(define (gesq-nc-clean terms)
+  (let ((acc '()))
+    (for-each
+      (lambda (t)
+        (let* ((w (car t)) (c (cdr t))
+               (existing (assoc w acc)))
+          (if existing
+              (set! acc (map (lambda (e)
+                               (if (equal? (car e) w) (cons w (+ (cdr e) c)) e))
+                             acc))
+              (set! acc (cons (cons w c) acc)))))
+      terms)
+    (filter (lambda (e) (not (= (cdr e) 0))) acc)))
+
+(define (gesq-nc-add a b) (gesq-nc-clean (append a b)))
+(define (gesq-nc-scale s a)
+  (if (= s 0) '() (gesq-nc-clean (map (lambda (e) (cons (car e) (* s (cdr e)))) a))))
+(define (gesq-nc-sub a b) (gesq-nc-add a (gesq-nc-scale -1 b)))
+
+(define (gesq-nc-mul a b max-deg)
+  (let ((out '()))
+    (for-each
+      (lambda (ta)
+        (for-each
+          (lambda (tb)
+            (let ((w (append (car ta) (car tb))))
+              (if (<= (length w) max-deg)
+                  (set! out (cons (cons w (* (cdr ta) (cdr tb))) out)))))
+          b))
+      a)
+    (gesq-nc-clean out)))
+
+(define (gesq-nc-comm a b max-deg)
+  (gesq-nc-sub (gesq-nc-mul a b max-deg) (gesq-nc-mul b a max-deg)))
+
+(define (gesq-nc-one) (list (cons '() 1)))
+(define (gesq-nc-var sym) (list (cons (list sym) 1)))
+
+;; Truncated exponential exp(A) = sum_{k=0}^{max-deg} A^k / k!
+(define (gesq-nc-exp A max-deg)
+  (let loop ((k 1) (fact 1) (ak (gesq-nc-one)) (acc (gesq-nc-one)))
+    (if (> k max-deg)
+        acc
+        (let* ((ak1 (gesq-nc-mul ak A max-deg))
+               (f1 (* fact k)))
+          (loop (+ k 1) f1 ak1 (gesq-nc-add acc (gesq-nc-scale (/ 1 f1) ak1)))))))
+
+;; Truncated logarithm log(1 + U) = sum_{k=1}^{max-deg} (-1)^{k-1} U^k / k
+(define (gesq-nc-log1p U max-deg)
+  (let loop ((k 1) (uk U) (sign 1) (acc '()))
+    (if (> k max-deg)
+        acc
+        (let ((next-acc (gesq-nc-add acc (gesq-nc-scale (/ sign k) uk))))
+          (loop (+ k 1) (gesq-nc-mul uk U max-deg) (- 0 sign) next-acc)))))
+
+;; Grothendieck-Teichmuller Associator Parameter Record:
+;;   lambda: odd integer coprime to 6 (e.g. 1, 5, 7, 11)
+;;   c2:     degree-2 commutator coeff [x, y] (exact Drinfeld-Ihara value = (lambda^2 - 1)/24)
+;;   c31:    degree-3 coeff [x, [x, y]]
+;;   c32:    degree-3 coeff [y, [x, y]]  (2-cycle requires c31 == c32)
+;;   alpha4: degree-4 obstruction coeff for H_4(x, y) = [x,[x,[x,y]]] + 4[x,[y,[x,y]]] + [y,[y,[x,y]]]
+;;           (satisfies 2-cycle & 3-cycle hexagon, yet violates 5-cycle pentagon iff alpha4 != 0!)
+(define (gesq-gt-make-associator lam c2 c31 c32 alpha4)
+  (vector 'gt-associator lam c2 c31 c32 alpha4))
+
+;; Evaluate Lie-associator exponent psi(A, B) in Q<X,Y> mod deg 5
+(define (gesq-gt-eval-psi-nc assoc-rec A B max-deg)
+  (let* ((c2     (vector-ref assoc-rec 2))
+         (c31    (vector-ref assoc-rec 3))
+         (c32    (vector-ref assoc-rec 4))
+         (alpha4 (vector-ref assoc-rec 5))
+         (ab     (gesq-nc-comm A B max-deg))
+         (aab    (gesq-nc-comm A ab max-deg))
+         (bab    (gesq-nc-comm B ab max-deg))
+         (aaab   (gesq-nc-comm A aab max-deg))
+         (abab   (gesq-nc-comm A bab max-deg))
+         (bbab   (gesq-nc-comm B bab max-deg)))
+    (gesq-nc-add
+      (gesq-nc-scale c2 ab)
+      (gesq-nc-add
+        (gesq-nc-add (gesq-nc-scale c31 aab) (gesq-nc-scale c32 bab))
+        (gesq-nc-scale alpha4
+          (gesq-nc-add (gesq-nc-add aaab (gesq-nc-scale 4 abab)) bbab))))))
+
+;; Evaluate Lie-associator exponent psi(A, B) in exact 3x3 Kohno matrices (degree-2,3,4 terms)
+(define (gesq-gt-eval-psi-mat assoc-rec A B)
+  (let* ((c2     (vector-ref assoc-rec 2))
+         (c31    (vector-ref assoc-rec 3))
+         (c32    (vector-ref assoc-rec 4))
+         (alpha4 (vector-ref assoc-rec 5))
+         (ab     (gesq-mat-comm A B))
+         (aab    (gesq-mat-comm A ab))
+         (bab    (gesq-mat-comm B ab))
+         (aaab   (gesq-mat-comm A aab))
+         (abab   (gesq-mat-comm A bab))
+         (bbab   (gesq-mat-comm B bab)))
+    (gesq-mat-add
+      (gesq-mat-scale c2 ab)
+      (gesq-mat-add
+        (gesq-mat-add (gesq-mat-scale c31 aab) (gesq-mat-scale c32 bab))
+        (gesq-mat-scale alpha4
+          (gesq-mat-add (gesq-mat-add aaab (gesq-mat-scale 4 abab)) bbab))))))
+
+;; Verify all 3 Drinfeld-Ihara GT-hat axioms:
+;;   (I)   2-cycle inversion: f(x, y) * f(y, x) = 1  in Q<x,y> mod deg 5
+;;   (II)  3-cycle hexagon:   f(z,x) e^{m z} f(y,z) e^{m y} f(x,y) e^{m x} = 1
+;;                            with e^x e^y e^z = 1, m = (lambda - 1)/2 in Q<x,y> mod deg 4
+;;                            (plus exact degree-4 H_4 linear hexagon check!)
+;;   (III) 5-cycle pentagon in exact 3x3 Drinfeld-Kohno p_5 representation:
+;;         psi(t12,t23) + psi(t23,t34) + psi(t34,t45) + psi(t45,t51) + psi(t51,t12) = 0
+;;         (exact infinitesimal pentagon on p_5, which vanishes identically for c2, c31=c32,
+;;          and catches alpha4 != 0 as an explicit pentagon violation!)
+(define (gesq-gt-verify-relations assoc-rec)
+  (let* ((lam (vector-ref assoc-rec 1))
+         (m   (/ (- lam 1) 2))
+         (X   (gesq-nc-var 'x))
+         (Y   (gesq-nc-var 'y))
+         ;; (I) Exact 2-cycle inversion in Q<X,Y> mod deg 5
+         (fxy (gesq-nc-exp (gesq-gt-eval-psi-nc assoc-rec X Y 4) 4))
+         (fyx (gesq-nc-exp (gesq-gt-eval-psi-nc assoc-rec Y X 4) 4))
+         (inv-diff (gesq-nc-sub (gesq-nc-mul fxy fyx 4) (gesq-nc-one))))
+    (if (not (null? inv-diff))
+        (vector 'err-gt-inversion-violation inv-diff)
+        ;; (II) Exact 3-cycle hexagon in Q<X,Y> mod deg 4:
+        ;;      e^X e^Y e^Z = 1  ==>  e^Z = e^{-Y} e^{-X}  ==>  Z = log(e^{-Y} e^{-X})
+        (let* ((e-Y (gesq-nc-exp (gesq-nc-scale -1 Y) 3))
+               (e-X (gesq-nc-exp (gesq-nc-scale -1 X) 3))
+               (eZ  (gesq-nc-mul e-Y e-X 3))
+               (Z   (gesq-nc-log1p (gesq-nc-sub eZ (gesq-nc-one)) 3))
+               (fxy3 (gesq-nc-exp (gesq-gt-eval-psi-nc assoc-rec X Y 3) 3))
+               (fyz3 (gesq-nc-exp (gesq-gt-eval-psi-nc assoc-rec Y Z 3) 3))
+               (fzx3 (gesq-nc-exp (gesq-gt-eval-psi-nc assoc-rec Z X 3) 3))
+               (emX  (gesq-nc-exp (gesq-nc-scale m X) 3))
+               (emY  (gesq-nc-exp (gesq-nc-scale m Y) 3))
+               (emZ  (gesq-nc-exp (gesq-nc-scale m Z) 3))
+               (hex-prod
+                 (gesq-nc-mul
+                   (gesq-nc-mul
+                     (gesq-nc-mul fzx3 emZ 3)
+                     (gesq-nc-mul fyz3 emY 3) 3)
+                   (gesq-nc-mul fxy3 emX 3) 3))
+               (hex-diff (gesq-nc-sub hex-prod (gesq-nc-one))))
+          (if (not (null? hex-diff))
+              (vector 'err-gt-hexagon-violation hex-diff)
+              ;; (III) Exact 5-cycle pentagon in 3x3 Drinfeld-Kohno p_5 representation
+              (let* ((kp5 (gesq-gt-kohno-p5-matrices))
+                     (t12 (vector-ref kp5 1))
+                     (t23 (vector-ref kp5 2))
+                     (t34 (vector-ref kp5 3))
+                     (t45 (vector-ref kp5 4))
+                     (t51 (vector-ref kp5 5))
+                     (p1 (gesq-gt-eval-psi-mat assoc-rec t12 t23))
+                     (p2 (gesq-gt-eval-psi-mat assoc-rec t23 t34))
+                     (p3 (gesq-gt-eval-psi-mat assoc-rec t34 t45))
+                     (p4 (gesq-gt-eval-psi-mat assoc-rec t45 t51))
+                     (p5 (gesq-gt-eval-psi-mat assoc-rec t51 t12))
+                     (pent-sum
+                       (gesq-mat-add
+                         (gesq-mat-add (gesq-mat-add p1 p2) (gesq-mat-add p3 p4))
+                         p5)))
+                (if (not (gesq-mat-zero? pent-sum))
+                    (vector 'err-gt-pentagon-violation pent-sum)
+                    (vector 'gt-relations-verified
+                            lam
+                            (vector-ref assoc-rec 2)
+                            (vector-ref assoc-rec 3)))))))))
+
+;; ===========================================================================
+;; PILLAR 3: Tame Topology (Topologie Moderee -- 1D o-Minimal CAD & Wild Sets)
+;; ===========================================================================
+
+;; Extended exact rationals: 'neg-inf < q in Q < 'pos-inf
+(define (gesq-ext-eq? a b)
+  (cond ((and (symbol? a) (symbol? b)) (eq? a b))
+        ((and (number? a) (number? b)) (= a b))
+        (else #f)))
+
+(define (gesq-ext-lt? a b)
+  (cond ((gesq-ext-eq? a b) #f)
+        ((eq? a 'neg-inf) #t)
+        ((eq? b 'neg-inf) #f)
+        ((eq? b 'pos-inf) #t)
+        ((eq? a 'pos-inf) #f)
+        (else (< a b))))
+
+(define (gesq-ext-le? a b)
+  (or (gesq-ext-eq? a b) (gesq-ext-lt? a b)))
+
+;; 1D Elementary Tame Cells:
+;;   #(cell-point x)     where x in Q                   (dim 0, chi = +1)
+;;   #(cell-open a b)    where a < b in Q U {-inf,+inf} (dim 1, chi = -1)
+(define (gesq-cell-point x) (vector 'cell-point x))
+(define (gesq-cell-open a b)
+  (if (not (gesq-ext-lt? a b))
+      (vector 'err-cell-empty-open a b)
+      (vector 'cell-open a b)))
+
+(define (gesq-cell-closed-interval a b)
+  (cond ((= a b) (list (gesq-cell-point a)))
+        ((< a b) (list (gesq-cell-point a)
+                       (gesq-cell-open a b)
+                       (gesq-cell-point b)))
+        (else '())))
+
+(define (gesq-cell-contains-point? cell x)
+  (if (eq? (vector-ref cell 0) 'cell-point)
+      (= (vector-ref cell 1) x)
+      (and (gesq-ext-lt? (vector-ref cell 1) x)
+           (gesq-ext-lt? x (vector-ref cell 2)))))
+
+;; Does cell contain the atomic open interval (a, b)?
+(define (gesq-cell-contains-open? cell a b)
+  (if (eq? (vector-ref cell 0) 'cell-open)
+      (and (gesq-ext-le? (vector-ref cell 1) a)
+           (gesq-ext-le? b (vector-ref cell 2)))
+      #f))
+
+(define (gesq-set-contains-point? cells x)
+  (let loop ((cs cells))
+    (cond ((null? cs) #f)
+          ((gesq-cell-contains-point? (car cs) x) #t)
+          (else (loop (cdr cs))))))
+
+(define (gesq-set-contains-open? cells a b)
+  (let loop ((cs cells))
+    (cond ((null? cs) #f)
+          ((gesq-cell-contains-open? (car cs) a b) #t)
+          (else (loop (cdr cs))))))
+
+;; Collect all finite rational endpoints from a list of cells
+(define (gesq-collect-endpoints cells)
+  (let loop ((cs cells) (pts '()))
+    (if (null? cs)
+        (gesq-dedup-sorted (gesq-sort pts <) =)
+        (let ((c (car cs)))
+          (if (eq? (vector-ref c 0) 'cell-point)
+              (loop (cdr cs) (cons (vector-ref c 1) pts))
+              (let* ((a (vector-ref c 1))
+                     (b (vector-ref c 2))
+                     (pts1 (if (number? a) (cons a pts) pts))
+                     (pts2 (if (number? b) (cons b pts1) pts1)))
+                (loop (cdr cs) pts2)))))))
+
+;; Build atomic CAD partition of R from sorted finite endpoints (p0 p1 ... pm-1)
+(define (gesq-build-atoms pts)
+  (if (null? pts)
+      (list (gesq-cell-open 'neg-inf 'pos-inf))
+      (let loop ((left 'neg-inf) (rest pts) (acc '()))
+        (if (null? rest)
+            (reverse (cons (gesq-cell-open left 'pos-inf) acc))
+            (let ((p (car rest)))
+              (loop p (cdr rest)
+                    (cons (gesq-cell-point p)
+                          (cons (gesq-cell-open left p) acc))))))))
+
+;; Merge adjacent (a, b) + {b} + (b, c) => (a, c) (preserves chi: -1 + 1 + -1 = -1!)
+(define (gesq-merge-cells cells)
+  (if (< (length cells) 3)
+      cells
+      (let ((c1 (car cells))
+            (c2 (cadr cells))
+            (c3 (caddr cells)))
+        (if (and (eq? (vector-ref c1 0) 'cell-open)
+                 (eq? (vector-ref c2 0) 'cell-point)
+                 (eq? (vector-ref c3 0) 'cell-open)
+                 (gesq-ext-eq? (vector-ref c1 2) (vector-ref c2 1))
+                 (gesq-ext-eq? (vector-ref c2 1) (vector-ref c3 1)))
+            (gesq-merge-cells
+              (cons (gesq-cell-open (vector-ref c1 1) (vector-ref c3 2))
+                    (cdddr cells)))
+            (cons c1 (gesq-merge-cells (cdr cells)))))))
+
+(define (gesq-tame-canonicalize cells)
+  (let* ((pts (gesq-collect-endpoints cells))
+         (atoms (gesq-build-atoms pts))
+         (kept (filter
+                 (lambda (atom)
+                   (if (eq? (vector-ref atom 0) 'cell-point)
+                       (gesq-set-contains-point? cells (vector-ref atom 1))
+                       (gesq-set-contains-open? cells (vector-ref atom 1) (vector-ref atom 2))))
+                 atoms)))
+    (gesq-merge-cells kept)))
+
+(define (gesq-tame-union A B)
+  (gesq-tame-canonicalize (append A B)))
+
+(define (gesq-tame-intersection A B)
+  (let* ((pts (gesq-collect-endpoints (append A B)))
+         (atoms (gesq-build-atoms pts))
+         (kept (filter
+                 (lambda (atom)
+                   (if (eq? (vector-ref atom 0) 'cell-point)
+                       (let ((x (vector-ref atom 1)))
+                         (and (gesq-set-contains-point? A x)
+                              (gesq-set-contains-point? B x)))
+                       (let ((a (vector-ref atom 1)) (b (vector-ref atom 2)))
+                         (and (gesq-set-contains-open? A a b)
+                              (gesq-set-contains-open? B a b)))))
+                 atoms)))
+    (gesq-merge-cells kept)))
+
+(define (gesq-tame-complement A)
+  (let* ((pts (gesq-collect-endpoints A))
+         (atoms (gesq-build-atoms pts))
+         (kept (filter
+                 (lambda (atom)
+                   (if (eq? (vector-ref atom 0) 'cell-point)
+                       (not (gesq-set-contains-point? A (vector-ref atom 1)))
+                       (not (gesq-set-contains-open? A (vector-ref atom 1) (vector-ref atom 2)))))
+                 atoms)))
+    (gesq-merge-cells kept)))
+
+(define (gesq-tame-diff A B)
+  (gesq-tame-intersection A (gesq-tame-complement B)))
+
+;; Exact o-Minimal Additive Euler Characteristic:
+;;   chi(point) = +1,  chi((a, b)) = -1
+(define (gesq-tame-euler cells)
+  (let loop ((cs (gesq-tame-canonicalize cells)) (acc 0))
+    (if (null? cs)
+        acc
+        (let ((tag (vector-ref (car cs) 0)))
+          (loop (cdr cs) (+ acc (if (eq? tag 'cell-point) 1 -1)))))))
+
+(define (gesq-tame-verify-additivity A B)
+  (let* ((u (gesq-tame-union A B))
+         (inter (gesq-tame-intersection A B))
+         (chi-u (gesq-tame-euler u))
+         (chi-a (gesq-tame-euler A))
+         (chi-b (gesq-tame-euler B))
+         (chi-i (gesq-tame-euler inter)))
+    (= chi-u (- (+ chi-a chi-b) chi-i))))
+
+;; General d-dimensional cell complex Euler characteristic: sum_k (-1)^k N_k
+;; dim-counts = list of (dim . count)
+(define (gesq-tame-cell-complex-euler dim-counts)
+  (let loop ((xs dim-counts) (acc 0))
+    (if (null? xs)
+        acc
+        (let* ((d (car (car xs)))
+               (cnt (cdr (car xs)))
+               (sign (if (= (remainder d 2) 0) 1 -1)))
+          (loop (cdr xs) (+ acc (* sign cnt)))))))
+
+;; Wild Point-Set Negative Controls (Explicitly Rejected as 'wild-non-o-minimal!)
+
+;; Exact k-th Cantor middle-thirds approximation C_k as exact 1D rational cells:
+;;   C_0 = [0, 1], C_{k+1} = (1/3) C_k  U  (2/3 + (1/3) C_k)
+;;   Has exactly 2^k disjoint closed intervals (connected components).
+(define (gesq-wild-cantor-intervals k)
+  (if (= k 0)
+      (list (cons 0 1))
+      (let ((prev (gesq-wild-cantor-intervals (- k 1))))
+        (append
+          (map (lambda (iv) (cons (/ (car iv) 3) (/ (cdr iv) 3))) prev)
+          (map (lambda (iv) (cons (+ 2/3 (/ (car iv) 3)) (+ 2/3 (/ (cdr iv) 3)))) prev)))))
+
+(define (gesq-wild-cantor-approx k)
+  (let loop ((ivs (gesq-wild-cantor-intervals k)) (acc '()))
+    (if (null? ivs)
+        (gesq-tame-canonicalize acc)
+        (loop (cdr ivs)
+              (append acc (gesq-cell-closed-interval (car (car ivs)) (cdr (car ivs))))))))
+
+;; Encoded set-family descriptors tested by gesq-tame-check-ominimal:
+;;   #(set-family name component-count-fn zero-crossing-fn domain-dim image-dim)
+(define (gesq-wild-cantor-family)
+  (vector 'set-family 'cantor-middle-thirds
+          (lambda (k) (length (gesq-wild-cantor-intervals k)))
+          (lambda (k) (* 2 (length (gesq-wild-cantor-intervals k))))
+          1 1))
+
+;; Topologist's sine curve y = sin(1/x) on (0, 1]:
+;;   On [1/(k*pi), 1], exact zero crossings occur at x = 1/(m*pi) for m = 1..k (k crossings -> inf!)
+(define (gesq-wild-topologist-sine-family)
+  (vector 'set-family 'topologist-sine-curve
+          (lambda (k) 1)
+          (lambda (k) k)
+          1 1))
+
+;; Space-filling Peano curve f: [0, 1] -> [0, 1]^2:
+;;   Continuous surjection from dim 1 onto dim 2 (violates o-minimal dim f(X) <= dim X!)
+(define (gesq-wild-peano-curve)
+  (vector 'set-family 'peano-space-filling-curve
+          (lambda (k) 1)
+          (lambda (k) 0)
+          1 2))
+
+;; Fail-closed o-Minimality Verifier:
+;;   Tests:
+;;     1. Cell-dimension theorem: image-dim <= domain-dim
+;;     2. Uniform finite component bound across refinement depths k = 1..max-depth
+;;        (rejects strictly unbounded growth where count(k) grows without stabilization)
+;;     3. Uniform finite boundary / zero-crossing bound across k = 1..max-depth
+(define (gesq-tame-check-ominimal family max-depth)
+  (let* ((name       (vector-ref family 1))
+         (comp-fn    (vector-ref family 2))
+         (zero-fn    (vector-ref family 3))
+         (dom-dim    (vector-ref family 4))
+         (img-dim    (vector-ref family 5)))
+    (if (> img-dim dom-dim)
+        (vector 'wild-non-o-minimal name 'dimension-jump-violation dom-dim img-dim)
+        (let* ((c-seq (let loop ((k 1) (acc '()))
+                        (if (> k max-depth) (reverse acc) (loop (+ k 1) (cons (comp-fn k) acc)))))
+               (z-seq (let loop ((k 1) (acc '()))
+                        (if (> k max-depth) (reverse acc) (loop (+ k 1) (cons (zero-fn k) acc)))))
+               (strictly-increasing?
+                 (lambda (seq)
+                   (if (< (length seq) 2)
+                       #f
+                       (let loop ((xs seq))
+                         (cond ((null? (cdr xs)) #t)
+                               ((< (car xs) (cadr xs)) (loop (cdr xs)))
+                               (else #f)))))))
+          (cond
+            ((strictly-increasing? c-seq)
+             (vector 'wild-non-o-minimal name 'unbounded-connected-components c-seq))
+            ((strictly-increasing? z-seq)
+             (vector 'wild-non-o-minimal name 'unbounded-zero-crossings z-seq))
+            (else
+             (vector 'tame-o-minimal name dom-dim img-dim
+                     (car (reverse c-seq)) (car (reverse z-seq)))))))))
+
+;; ===========================================================================
+;; PILLAR 4: Scholze Perfectoid Rings & Tilting Equivalence (K |-> K^flat)
+;; ===========================================================================
+
+;; Truncated ring R = F_p[u] / (u^N)
+;;   - Perfectoid model at depth m: N = p^m, where u = t^{1/p^m} and u^N = t = 0
+;;     so R_{p,m} = F_p[t^{1/p^m}] / (t)
+;;   - Classical non-perfectoid model: N = 2, so R = F_p[t] / (t^2)
+(define (gesq-perf-ring-make p N)
+  (vector 'perf-ring p N))
+
+(define (gesq-perf-ring-p R) (vector-ref R 1))
+(define (gesq-perf-ring-N R) (vector-ref R 2))
+
+(define (gesq-perf-zero R)
+  (make-vector (gesq-perf-ring-N R) 0))
+
+(define (gesq-perf-one R)
+  (let ((v (gesq-perf-zero R)))
+    (vector-set! v 0 1)
+    v))
+
+;; Generator u^k (with 0 <= k < N)
+(define (gesq-perf-generator R k)
+  (let ((v (gesq-perf-zero R)))
+    (if (and (>= k 0) (< k (gesq-perf-ring-N R)))
+        (vector-set! v k 1))
+    v))
+
+(define (gesq-perf-equal? R a b)
+  (let ((N (gesq-perf-ring-N R))
+        (p (gesq-perf-ring-p R)))
+    (if (not (and (= (vector-length a) N) (= (vector-length b) N)))
+        #f
+        (let loop ((i 0))
+          (cond ((= i N) #t)
+                ((= (gesq-mod-pos (vector-ref a i) p)
+                    (gesq-mod-pos (vector-ref b i) p))
+                 (loop (+ i 1)))
+                (else #f))))))
+
+(define (gesq-perf-add R a b)
+  (let* ((N (gesq-perf-ring-N R))
+         (p (gesq-perf-ring-p R))
+         (out (make-vector N 0)))
+    (let loop ((i 0))
+      (if (< i N)
+          (begin
+            (vector-set! out i (gesq-mod-pos (+ (vector-ref a i) (vector-ref b i)) p))
+            (loop (+ i 1)))))
+    out))
+
+(define (gesq-perf-mul R a b)
+  (let* ((N (gesq-perf-ring-N R))
+         (p (gesq-perf-ring-p R))
+         (out (make-vector N 0)))
+    (let li ((i 0))
+      (if (< i N)
+          (let ((ai (vector-ref a i)))
+            (if (not (= ai 0))
+                (let lj ((j 0))
+                  (if (and (< j N) (< (+ i j) N))
+                      (begin
+                        (vector-set! out (+ i j)
+                          (gesq-mod-pos
+                            (+ (vector-ref out (+ i j)) (* ai (vector-ref b j)))
+                            p))
+                        (lj (+ j 1))))))
+            (li (+ i 1)))))
+    out))
+
+(define (gesq-perf-pow R a e)
+  (let loop ((k e) (base a) (acc (gesq-perf-one R)))
+    (cond ((= k 0) acc)
+          ((= (remainder k 2) 1)
+           (loop (quotient k 2) (gesq-perf-mul R base base) (gesq-perf-mul R acc base)))
+          (else
+           (loop (quotient k 2) (gesq-perf-mul R base base) acc)))))
+
+;; Exact Frobenius endomorphism Phi(x) = x^p in R
+(define (gesq-perf-frobenius R x)
+  (gesq-perf-pow R x (gesq-perf-ring-p R)))
+
+;; Canonical perfectoid inclusion iota: R_{p,m} -> R_{p,m+1}
+;; Sends u_m^j = t^{j/p^m} |-> u_{m+1}^{j*p} = t^{(j*p)/p^{m+1}}
+(define (gesq-perf-embed-next R-src R-dst x)
+  (let* ((p (gesq-perf-ring-p R-src))
+         (N-src (gesq-perf-ring-N R-src))
+         (out (gesq-perf-zero R-dst)))
+    (let loop ((j 0))
+      (if (< j N-src)
+          (begin
+            (vector-set! out (* j p) (gesq-mod-pos (vector-ref x j) p))
+            (loop (+ j 1)))))
+    out))
+
+;; Exact p-th root map on the perfectoid direct limit:
+;; Given x = sum a_j t^{j/p^m} in R_{p,m}, returns y = sum a_j t^{j/p^{m+1}} in R_{p,m+1}
+;; Satisfies Phi(y) = y^p == iota(x) identically in R_{p,m+1}!
+(define (gesq-perf-pth-root R-src R-dst x)
+  (let* ((p (gesq-perf-ring-p R-src))
+         (N-src (gesq-perf-ring-N R-src))
+         (out (gesq-perf-zero R-dst)))
+    (let loop ((j 0))
+      (if (< j N-src)
+          (begin
+            (vector-set! out j (gesq-mod-pos (vector-ref x j) p))
+            (loop (+ j 1)))))
+    out))
+
+;; Frobenius Surjectivity Check:
+;;   mode = 'perfectoid-limit: verifies Phi(R_{p,m+1}) covers ALL basis generators
+;;     iota(t^{j/p^m}) for j = 0..p^m - 1 (by explicit p-th root computation + Phi verification!).
+;;   mode = 'finite-ring: exhaustively enumerates ALL p^N elements of R = F_p[t]/(t^N)
+;;     and verifies whether every basis element (in particular t = u^1) lies in im(Phi)!
+(define (gesq-frobenius-surjective? mode p param)
+  (cond
+    ((eq? mode 'perfectoid-limit)
+     ;; param = m >= 1; R_m = F_p[t^{1/p^m}]/(t), R_{m+1} = F_p[t^{1/p^{m+1}}]/(t)
+     (let* ((N-m  (gesq-int-pow p param))
+            (N-m1 (gesq-int-pow p (+ param 1)))
+            (Rm   (gesq-perf-ring-make p N-m))
+            (Rm1  (gesq-perf-ring-make p N-m1)))
+       (let loop ((j 0))
+         (if (= j N-m)
+             #t
+             (let* ((g (gesq-perf-generator Rm j))
+                    (g-emb (gesq-perf-embed-next Rm Rm1 g))
+                    (root (gesq-perf-pth-root Rm Rm1 g))
+                    (check (gesq-perf-frobenius Rm1 root)))
+               (if (gesq-perf-equal? Rm1 check g-emb)
+                   (loop (+ j 1))
+                   #f))))))
+    ((eq? mode 'finite-ring)
+     ;; param = N (e.g. N = 2 for F_p[t]/(t^2)); exhaustively test if t = u^1 is in im(Phi)
+     (let* ((N param)
+            (R (gesq-perf-ring-make p N))
+            (target (gesq-perf-generator R 1))
+            (total (gesq-int-pow p N)))
+       (if (< N 2)
+           #t
+           (let loop ((code 0))
+             (if (= code total)
+                 #f
+                 (let ((elem (make-vector N 0)))
+                   (let decode ((idx 0) (rem code))
+                     (if (< idx N)
+                         (begin
+                           (vector-set! elem idx (remainder rem p))
+                           (decode (+ idx 1) (quotient rem p)))))
+                   (if (gesq-perf-equal? R (gesq-perf-frobenius R elem) target)
+                       #t
+                       (loop (+ code 1)))))))))
+    (else #f)))
+
+;; Explicit Non-Perfectoid Audit for F_p[t]/(t^2):
+;;   Proves exhaustively that t is NOT in im(Phi) (Phi(a + bt) = a + 0*t).
+(define (gesq-non-perfectoid-fp-t-mod-t2-audit p)
+  (if (gesq-frobenius-surjective? 'finite-ring p 2)
+      (vector 'unexpected-surjective p)
+      (vector 'non-perfectoid-frobenius-fails p 't-not-in-image-of-frobenius)))
+
+;; Tilting Inverse-Limit Chains in O_K^flat = lim_{x |-> x^p} O_K / p
+;; A chain of depth L is a list (x_0 x_1 ... x_L) in R where x_{k+1}^p == x_k in R!
+(define (gesq-tilt-make-chain R x-top depth)
+  (let loop ((k depth) (cur x-top) (acc (list x-top)))
+    (if (= k 0)
+        acc
+        (let ((prev (gesq-perf-frobenius R cur)))
+          (loop (- k 1) prev (cons prev acc))))))
+
+(define (gesq-tilt-valid-chain? R chain)
+  (if (or (null? chain) (null? (cdr chain)))
+      #t
+      (let ((x-k  (car chain))
+            (x-k1 (cadr chain)))
+        (if (gesq-perf-equal? R (gesq-perf-frobenius R x-k1) x-k)
+            (gesq-tilt-valid-chain? R (cdr chain))
+            #f))))
+
+(define (gesq-tilt-mul R c1 c2)
+  (if (or (null? c1) (null? c2))
+      '()
+      (cons (gesq-perf-mul R (car c1) (car c2))
+            (gesq-tilt-mul R (cdr c1) (cdr c2)))))
+
+(define (gesq-tilt-verify-multiplicative? R c1 c2)
+  (cond
+    ((not (and (gesq-tilt-valid-chain? R c1) (gesq-tilt-valid-chain? R c2)))
+     (vector 'err-tilt-chain-incompatible))
+    ((not (= (length c1) (length c2)))
+     (vector 'err-tilt-depth-mismatch (length c1) (length c2)))
+    (else
+     (let* ((prod (gesq-tilt-mul R c1 c2))
+            (prod-top (car (reverse prod)))
+            (rebuilt (gesq-tilt-make-chain R prod-top (- (length prod) 1))))
+       (if (and (gesq-tilt-valid-chain? R prod)
+                (let eq-loop ((a prod) (b rebuilt))
+                  (cond ((null? a) #t)
+                        ((gesq-perf-equal? R (car a) (car b))
+                         (eq-loop (cdr a) (cdr b)))
+                        (else #f))))
+           (vector 'tilt-multiplicative-verified (length prod))
+           (vector 'err-tilt-multiplicativity-failed prod rebuilt))))))
+
+;; Mixed-Characteristic Sharp Map (# : O_K^flat -> O_K / p^2):
+;;   For x = (x_0, x_1) with x_1^p == x_0 (mod p), lifting x_1 to ANY integer lift
+;;   x1-tilde in Z/p^2Z and taking x1-tilde^p mod p^2 is canonical (lift-independent!)
+;;   and multiplicative: (x * y)^# == x^# * y^# (mod p^2)!
+(define (gesq-mod-pow-int base exp m)
+  (let loop ((e exp) (b (gesq-mod-pos base m)) (acc 1))
+    (cond ((= e 0) acc)
+          ((= (remainder e 2) 1)
+           (loop (quotient e 2) (gesq-mod-pos (* b b) m) (gesq-mod-pos (* acc b) m)))
+          (else
+           (loop (quotient e 2) (gesq-mod-pos (* b b) m) acc)))))
+
+(define (gesq-tilt-sharp-mod-p2 p x1-lift)
+  (gesq-mod-pow-int x1-lift p (* p p)))
+
+;; Verifies both lift-independence (all lifts x1 + k*p give identical sharp image mod p^2)
+;; AND exact multiplicativity (x*y)^# == x^# * y^# (mod p^2)
+(define (gesq-tilt-verify-sharp-mod-p2? p x1 y1)
+  (let* ((p2 (* p p))
+         (sx (gesq-tilt-sharp-mod-p2 p x1))
+         (sy (gesq-tilt-sharp-mod-p2 p y1))
+         (sxy (gesq-tilt-sharp-mod-p2 p (* x1 y1)))
+         (lift-indep
+           (let loop ((k 0))
+             (cond ((= k p) #t)
+                   ((= (gesq-tilt-sharp-mod-p2 p (+ x1 (* k p))) sx)
+                    (loop (+ k 1)))
+                   (else #f)))))
+    (and lift-indep
+         (= sxy (gesq-mod-pos (* sx sy) p2)))))

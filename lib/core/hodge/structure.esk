@@ -1,0 +1,690 @@
+;;; core.hodge.structure -- Exact Q[i] pure & mixed polarized Hodge structures,
+;;;   Riemann-Hodge bilinear relations certified via core.exact_psd,
+;;;   Hard Lefschetz sl_2-triples, exact Hodge classes H^{2p}(X,Q) \cap H^{p,p},
+;;;   and tensor/exterior/Tate-twist constructions (ADR-0063).
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.exact_psd)
+(require core.certificate)
+
+(provide
+  exact-matrix-rows exact-matrix-cols exact-matrix-zero exact-matrix-set!
+  hq hq? hq-re hq-im hq= hq-zero? hq+ hq- hq* hq-conj hq-norm2 hq/
+  hq-i-pow
+  hq-vec-dot hq-mat-rows hq-mat-cols hq-mat-ref hq-mat-set!
+  hq-mat-zero hq-mat-identity hq-mat-scale hq-mat+ hq-mat- hq-mat-mul
+  hq-mat-transpose hq-mat-dagger hq-mat= hq-mat-commutator
+  hq-real-block hq-hermitian? hq-cols-to-real-matrix
+  make-hodge-structure hodge-structure? hodge-weight hodge-dim hodge-subspaces
+  hodge-polarization hodge-numbers hodge-subspace-ref
+  hodge-decomposition-valid? hodge-riemann-bilinear-1-check
+  hodge-riemann-bilinear-2-certify hodge-classes
+  hodge-hard-lefschetz-check hodge-tate-twist hodge-tensor-product
+  hodge-exterior-square
+  make-mixed-hodge-structure mixed-hodge-structure? mixed-hodge-valid?)
+
+;; ---------------------------------------------------------------------------
+;; Exact rational matrix utility helpers (vector of row vectors)
+;; ---------------------------------------------------------------------------
+
+(define (exact-matrix-rows M) (vector-length M))
+(define (exact-matrix-cols M) (if (= (vector-length M) 0) 0 (vector-length (vector-ref M 0))))
+(define (exact-matrix-zero r c)
+  (let ((M (make-vector r #f)))
+    (let loop ((i 0))
+      (if (< i r) (begin (vector-set! M i (make-vector c 0)) (loop (+ i 1)))))
+    M))
+(define (exact-matrix-set! M i j v) (vector-set! (vector-ref M i) j v))
+
+;; ---------------------------------------------------------------------------
+;; Exact Gaussian rationals Q[i]
+;; ---------------------------------------------------------------------------
+
+(define (hq-check-exact x)
+  (if (not (and (number? x) (exact? x) (rational? x)))
+      (error "core.hodge: exact rational component required" x))
+  x)
+
+(define (hq re im)
+  (vector 'hq (hq-check-exact re) (hq-check-exact im)))
+
+(define (hq? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'hq)))
+
+(define (hq-re z) (if (hq? z) (vector-ref z 1) (hq-check-exact z)))
+(define (hq-im z) (if (hq? z) (vector-ref z 2) 0))
+
+(define (hq= a b)
+  (and (= (hq-re a) (hq-re b)) (= (hq-im a) (hq-im b))))
+
+(define (hq-zero? a) (and (= (hq-re a) 0) (= (hq-im a) 0)))
+
+(define (hq+ a b) (hq (+ (hq-re a) (hq-re b)) (+ (hq-im a) (hq-im b))))
+(define (hq- a b) (hq (- (hq-re a) (hq-re b)) (- (hq-im a) (hq-im b))))
+(define (hq* a b)
+  (let ((ar (hq-re a)) (ai (hq-im a)) (br (hq-re b)) (bi (hq-im b)))
+    (hq (- (* ar br) (* ai bi)) (+ (* ar bi) (* ai br)))))
+(define (hq-conj a) (hq (hq-re a) (- 0 (hq-im a))))
+(define (hq-norm2 a) (+ (* (hq-re a) (hq-re a)) (* (hq-im a) (hq-im a))))
+(define (hq/ a b)
+  (let ((n2 (hq-norm2 b)))
+    (if (= n2 0) (error "core.hodge: division by zero in Q[i]"))
+    (let ((p (hq* a (hq-conj b))))
+      (hq (/ (hq-re p) n2) (/ (hq-im p) n2)))))
+
+;; Exact i^k for any integer k
+(define (hq-i-pow k)
+  (let ((r (modulo k 4)))
+    (cond ((= r 0) (hq 1 0))
+          ((= r 1) (hq 0 1))
+          ((= r 2) (hq -1 0))
+          (else    (hq 0 -1)))))
+
+;; ---------------------------------------------------------------------------
+;; Exact Q[i] matrix helpers (vectors of row vectors — NEVER #(...) literals)
+;; ---------------------------------------------------------------------------
+
+(define (hq-mat-rows M) (vector-length M))
+(define (hq-mat-cols M) (if (= (vector-length M) 0) 0 (vector-length (vector-ref M 0))))
+(define (hq-mat-ref M i j) (vector-ref (vector-ref M i) j))
+(define (hq-mat-set! M i j v) (vector-set! (vector-ref M i) j v))
+
+(define (hq-mat-zero r c)
+  (let ((M (make-vector r #f)))
+    (let loop ((i 0))
+      (if (< i r)
+          (begin (vector-set! M i (make-vector c (hq 0 0))) (loop (+ i 1)))))
+    M))
+
+(define (hq-mat-identity n)
+  (let ((M (hq-mat-zero n n)))
+    (let loop ((i 0))
+      (if (< i n) (begin (hq-mat-set! M i i (hq 1 0)) (loop (+ i 1)))))
+    M))
+
+(define (hq-mat-scale s M)
+  (let* ((r (hq-mat-rows M)) (c (hq-mat-cols M)) (R (hq-mat-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (hq-mat-set! R i j (hq* s (hq-mat-ref M i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (hq-mat+ A B)
+  (let* ((r (hq-mat-rows A)) (c (hq-mat-cols A)) (R (hq-mat-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (hq-mat-set! R i j (hq+ (hq-mat-ref A i j) (hq-mat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (hq-mat- A B)
+  (let* ((r (hq-mat-rows A)) (c (hq-mat-cols A)) (R (hq-mat-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (hq-mat-set! R i j (hq- (hq-mat-ref A i j) (hq-mat-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (hq-mat-mul A B)
+  (let* ((r (hq-mat-rows A)) (k (hq-mat-cols A)) (c (hq-mat-cols B))
+         (R (hq-mat-zero r c)))
+    (if (not (= k (hq-mat-rows B)))
+        (error "hq-mat-mul: dimension mismatch"))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (let lt ((t 0) (acc (hq 0 0)))
+                    (if (= t k)
+                        (begin (hq-mat-set! R i j acc) (lj (+ j 1)))
+                        (lt (+ t 1) (hq+ acc (hq* (hq-mat-ref A i t) (hq-mat-ref B t j))))))))
+            (li (+ i 1)))))
+    R))
+
+(define (hq-mat-transpose A)
+  (let* ((r (hq-mat-rows A)) (c (hq-mat-cols A)) (R (hq-mat-zero c r)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (hq-mat-set! R j i (hq-mat-ref A i j)) (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (hq-mat-dagger A)
+  (let* ((r (hq-mat-rows A)) (c (hq-mat-cols A)) (R (hq-mat-zero c r)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (hq-mat-set! R j i (hq-conj (hq-mat-ref A i j))) (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (hq-mat= A B)
+  (and (= (hq-mat-rows A) (hq-mat-rows B))
+       (= (hq-mat-cols A) (hq-mat-cols B))
+       (let li ((i 0))
+         (cond ((= i (hq-mat-rows A)) #t)
+               ((let lj ((j 0))
+                  (cond ((= j (hq-mat-cols A)) #t)
+                        ((hq= (hq-mat-ref A i j) (hq-mat-ref B i j)) (lj (+ j 1)))
+                        (else #f)))
+                (li (+ i 1)))
+               (else #f)))))
+
+(define (hq-mat-commutator A B)
+  (hq-mat- (hq-mat-mul A B) (hq-mat-mul B A)))
+
+(define (hq-vec-dot u v)
+  (let ((n (vector-length u)))
+    (let loop ((i 0) (acc (hq 0 0)))
+      (if (= i n) acc
+          (loop (+ i 1) (hq+ acc (hq* (vector-ref u i) (vector-ref v i))))))))
+
+(define (hq-vec-conj v)
+  (let* ((n (vector-length v)) (r (make-vector n (hq 0 0))))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (hq-conj (vector-ref v i))) (loop (+ i 1)))))
+    r))
+
+;; Bilinear evaluation u^T Q v where Q is exact rational matrix (vector of row vectors)
+(define (hq-bilinear Q u v)
+  (let ((n (vector-length u)))
+    (let li ((i 0) (acc (hq 0 0)))
+      (if (= i n) acc
+          (let ((ui (vector-ref u i))
+                (qrow (vector-ref Q i)))
+            (li (+ i 1)
+                (let lj ((j 0) (row-acc acc))
+                  (if (= j n) row-acc
+                      (lj (+ j 1)
+                          (hq+ row-acc (hq* ui (hq* (hq (vector-ref qrow j) 0)
+                                                    (vector-ref v j)))))))))))))
+
+(define (hq-hermitian? M)
+  (hq-mat= M (hq-mat-dagger M)))
+
+;; Embed n x n Hermitian Q[i] matrix H into 2n x 2n exact symmetric rational matrix
+;;   R(H) = [ Re(H)  -Im(H) ]
+;;          [ Im(H)   Re(H) ]
+;; H is strictly positive definite iff R(H) is strictly positive definite over Q!
+(define (hq-real-block H)
+  (let* ((n (hq-mat-rows H))
+         (m (* 2 n))
+         (R (exact-matrix-zero m m)))
+    (let li ((i 0))
+      (if (< i n)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (let* ((z (hq-mat-ref H i j))
+                         (re (hq-re z))
+                         (im (hq-im z)))
+                    (exact-matrix-set! R i j re)
+                    (exact-matrix-set! R i (+ j n) (- 0 im))
+                    (exact-matrix-set! R (+ i n) j im)
+                    (exact-matrix-set! R (+ i n) (+ j n) re)
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+;; Given list of Q[i] vectors of length d, construct real 2d x 2k matrix
+;; whose column space over R equals the C-span of the vectors (splitting into v, i*v).
+(define (hq-cols-to-real-matrix d vecs)
+  (let* ((k (length vecs))
+         (M (exact-matrix-zero (* 2 d) (* 2 k))))
+    (let loop ((vs vecs) (c 0))
+      (if (not (null? vs))
+          (let ((v (car vs)))
+            (let li ((i 0))
+              (if (< i d)
+                  (let* ((z (vector-ref v i))
+                         (re (hq-re z))
+                         (im (hq-im z)))
+                    ;; Column 2c: v = (re, im)
+                    (exact-matrix-set! M i (* 2 c) re)
+                    (exact-matrix-set! M (+ i d) (* 2 c) im)
+                    ;; Column 2c+1: i*v = (-im, re)
+                    (exact-matrix-set! M i (+ (* 2 c) 1) (- 0 im))
+                    (exact-matrix-set! M (+ i d) (+ (* 2 c) 1) re)
+                    (li (+ i 1)))))
+            (loop (cdr vs) (+ c 1)))))
+    M))
+
+;; ---------------------------------------------------------------------------
+;; Pure Polarized Rational Hodge Structures
+;; ---------------------------------------------------------------------------
+;; Representation: #(hodge-structure weight dim subspaces polarization)
+;;   weight: exact non-negative integer w
+;;   dim: exact positive integer d = dim_Q V
+;;   subspaces: alist of ((p . q) . list-of-hq-basis-vectors) with p+q = w
+;;   polarization: d x d exact rational matrix Q with Q^T = (-1)^w Q (or #f if unpolarized)
+
+(define (make-hodge-structure weight dim subspaces polarization)
+  (vector 'hodge-structure weight dim subspaces polarization))
+
+(define (hodge-structure? x)
+  (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'hodge-structure)))
+
+(define (hodge-weight H) (vector-ref H 1))
+(define (hodge-dim H) (vector-ref H 2))
+(define (hodge-subspaces H) (vector-ref H 3))
+(define (hodge-polarization H) (vector-ref H 4))
+
+(define (hodge-subspace-ref H p q)
+  (let ((entry (assoc (cons p q) (hodge-subspaces H))))
+    (if entry (cdr entry) '())))
+
+(define (hodge-numbers H)
+  (map (lambda (entry) (cons (car entry) (length (cdr entry))))
+       (hodge-subspaces H)))
+
+;; Check whether C-span(vecsA) == C-span(vecsB) inside C^d via exact rational rank
+(define (hq-same-c-span? d vecsA vecsB)
+  (let* ((MA (hq-cols-to-real-matrix d vecsA))
+         (MB (hq-cols-to-real-matrix d vecsB))
+         (MAB (hq-cols-to-real-matrix d (append vecsA vecsB)))
+         (rA (if (= (length vecsA) 0) 0 (exact-rank MA)))
+         (rB (if (= (length vecsB) 0) 0 (exact-rank MB)))
+         (rAB (if (= (+ (length vecsA) (length vecsB)) 0) 0 (exact-rank MAB))))
+    (and (= rA rB) (= rA rAB))))
+
+;; Verify: (1) p+q = weight for every subspace, (2) conjugate symmetry conj(H^{p,q}) = H^{q,p},
+;; (3) total basis count equals d and spans all of C^d (exact real rank 2d).
+(define (hodge-decomposition-valid? H)
+  (let* ((w (hodge-weight H))
+         (d (hodge-dim H))
+         (subs (hodge-subspaces H)))
+    (let ((all-vecs '())
+          (ok #t))
+      (for-each
+       (lambda (entry)
+         (let* ((pq (car entry))
+                (p (car pq))
+                (q (cdr pq))
+                (vs (cdr entry))
+                (conj-vs (map hq-vec-conj vs))
+                (qp-vs (hodge-subspace-ref H q p)))
+           (if (not (= (+ p q) w)) (set! ok #f))
+           (if (not (hq-same-c-span? d conj-vs qp-vs)) (set! ok #f))
+           (set! all-vecs (append all-vecs vs))))
+       subs)
+      (and ok
+           (= (length all-vecs) d)
+           (= (exact-rank (hq-cols-to-real-matrix d all-vecs)) (* 2 d))))))
+
+;; First Hodge-Riemann Bilinear Relation:
+;;   (a) Q^T = (-1)^w Q
+;;   (b) Q(H^{p,q}, H^{r,s}) = 0 whenever (p+r != w or q+s != w).
+;; Returns #t if valid, or #(bilinear-1-violation ...) counterexample witness!
+(define (hodge-riemann-bilinear-1-check H)
+  (let* ((w (hodge-weight H))
+         (d (hodge-dim H))
+         (Q (hodge-polarization H))
+         (sign (if (even? w) 1 -1)))
+    (if (not Q)
+        (vector 'bilinear-1-violation 'missing-polarization)
+        (let ((sym-fail #f))
+          (let li ((i 0))
+            (if (and (< i d) (not sym-fail))
+                (begin
+                  (let lj ((j 0))
+                    (if (and (< j d) (not sym-fail))
+                        (let ((qij (exact-matrix-ref Q i j))
+                              (qji (exact-matrix-ref Q j i)))
+                          (if (not (= qji (* sign qij)))
+                              (set! sym-fail (vector 'bilinear-1-violation 'symmetry i j qij qji)))
+                          (lj (+ j 1)))))
+                  (li (+ i 1)))))
+          (if sym-fail sym-fail
+              (let ((subs (hodge-subspaces H))
+                    (orth-fail #f))
+                (for-each
+                 (lambda (e1)
+                   (for-each
+                    (lambda (e2)
+                      (if (not orth-fail)
+                          (let* ((p (car (car e1))) (q (cdr (car e1)))
+                                 (r (car (car e2))) (s (cdr (car e2))))
+                            (if (not (and (= (+ p r) w) (= (+ q s) w)))
+                                (for-each
+                                 (lambda (u)
+                                   (for-each
+                                    (lambda (v)
+                                      (if (not orth-fail)
+                                          (let ((val (hq-bilinear Q u v)))
+                                            (if (not (hq-zero? val))
+                                                (set! orth-fail
+                                                      (vector 'bilinear-1-violation
+                                                              'non-orthogonal (cons p q) (cons r s) val))))))
+                                    (cdr e2)))
+                                 (cdr e1))))))
+                    subs))
+                 subs)
+                (if orth-fail orth-fail #t)))))))
+
+;; Second Hodge-Riemann Bilinear Relation (certified via core.exact_psd + core.certificate!):
+;; On each (p,q) subspace, the Hermitian Gram matrix
+;;   G_{ab} = i^{p-q} Q(v_a, conj(v_b))
+;; must be Hermitian and strictly positive definite (all pivots > 0 in exact LDL^T).
+;; Returns #(certified-hr2 certificates) or #(hr2-violation (p . q) witness).
+(define (hodge-riemann-bilinear-2-certify H)
+  (let ((Q (hodge-polarization H))
+        (subs (hodge-subspaces H)))
+    (if (not Q)
+        (vector 'hr2-violation 'missing-polarization)
+        (let loop ((es subs) (certs '()))
+          (if (null? es)
+              (vector 'certified-hr2 (reverse certs))
+              (let* ((e (car es))
+                     (pq (car e))
+                     (p (car pq))
+                     (q (cdr pq))
+                     (vs (cdr e))
+                     (k (length vs)))
+                (if (= k 0)
+                    (loop (cdr es) certs)
+                    (let* ((factor (hq-i-pow (- p q)))
+                           (G (hq-mat-zero k k))
+                           (vv (list->vector vs)))
+                      (let li ((a 0))
+                        (if (< a k)
+                            (begin
+                              (let lj ((b 0))
+                                (if (< b k)
+                                    (let ((val (hq* factor (hq-bilinear Q (vector-ref vv a)
+                                                                          (hq-vec-conj (vector-ref vv b))))))
+                                      (hq-mat-set! G a b val)
+                                      (lj (+ b 1)))))
+                              (li (+ a 1)))))
+                      (if (not (hq-hermitian? G))
+                          (vector 'hr2-violation pq 'not-hermitian G)
+                          (let* ((RG (hq-real-block G))
+                                 (cert (certify-psd RG))
+                                 (res (certificate-value cert)))
+                            (if (and (psd-factor? res)
+                                     (= (exact-rank RG) (* 2 k)))
+                                (loop (cdr es) (cons (cons pq cert) certs))
+                                (vector 'hr2-violation pq
+                                        (if (psd-factor? res) 'degenerate-not-strictly-pd
+                                            (psd-negative-direction res))))))))))))))
+
+;; Exact Q-basis of Hodge classes Hdg^p(H) = H_Q \cap H^{p,p} for even weight 2p.
+;; A rational vector x in Q^d lies in H^{p,p} iff there exist complex coefficients
+;; c_1..c_k (2k real coordinates) such that sum_j c_j v_j = x (real part = x, imag part = 0).
+;; Equivalently, (x, c) is in ker([I_d, -Re(V), Im(V); 0, -Im(V), -Re(V)]).
+;; We extract the x-components of the rational nullspace and take a basis!
+(define (hodge-classes H)
+  (let ((w (hodge-weight H))
+        (d (hodge-dim H)))
+    (if (odd? w)
+        '()
+        (let* ((p (quotient w 2))
+               (vs (hodge-subspace-ref H p p))
+               (k (length vs)))
+          (if (= k 0)
+              '()
+              (let* ((cols (+ d (* 2 k)))
+                     (A (exact-matrix-zero (* 2 d) cols))
+                     (vv (list->vector vs)))
+                ;; Upper-left d x d block = I_d
+                (let li ((i 0))
+                  (if (< i d)
+                      (begin (exact-matrix-set! A i i 1) (li (+ i 1)))))
+                ;; Columns d..d+2k-1: -v_j and -i*v_j
+                (let lj ((j 0))
+                  (if (< j k)
+                      (let ((v (vector-ref vv j)))
+                        (let li ((i 0))
+                          (if (< i d)
+                              (let* ((z (vector-ref v i))
+                                     (re (hq-re z))
+                                     (im (hq-im z)))
+                                (exact-matrix-set! A i (+ d (* 2 j)) (- 0 re))
+                                (exact-matrix-set! A (+ i d) (+ d (* 2 j)) (- 0 im))
+                                (exact-matrix-set! A i (+ d (* 2 j) 1) im)
+                                (exact-matrix-set! A (+ i d) (+ d (* 2 j) 1) (- 0 re))
+                                (li (+ i 1)))))
+                        (lj (+ j 1)))))
+                (let ((ker (exact-nullspace A)))
+                  ;; Project each kernel vector onto its first d rational coordinates
+                  (map (lambda (kv)
+                         (let ((x (make-vector d 0)))
+                           (let li ((i 0))
+                             (if (< i d)
+                                 (begin (vector-set! x i (vector-ref kv i)) (li (+ i 1)))))
+                           x))
+                       ker))))))))
+
+;; ---------------------------------------------------------------------------
+;; Hard Lefschetz sl_2-triple verification
+;; ---------------------------------------------------------------------------
+;; Checks exact matrix relations [H, L] = 2L, [H, Lambda] = -2*Lambda, [L, Lambda] = H
+;; over exact rational matrices (or Q[i] matrices via exact-matrix-mul).
+
+(define (rat-mat-scale s M)
+  (let* ((r (exact-matrix-rows M)) (c (exact-matrix-cols M))
+         (R (exact-matrix-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (exact-matrix-set! R i j (* s (exact-matrix-ref M i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-mat-sub A B)
+  (let* ((r (exact-matrix-rows A)) (c (exact-matrix-cols A))
+         (R (exact-matrix-zero r c)))
+    (let li ((i 0))
+      (if (< i r)
+          (begin
+            (let lj ((j 0))
+              (if (< j c)
+                  (begin (exact-matrix-set! R i j (- (exact-matrix-ref A i j)
+                                                     (exact-matrix-ref B i j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (rat-mat= A B)
+  (and (= (exact-matrix-rows A) (exact-matrix-rows B))
+       (= (exact-matrix-cols A) (exact-matrix-cols B))
+       (let li ((i 0))
+         (cond ((= i (exact-matrix-rows A)) #t)
+               ((let lj ((j 0))
+                  (cond ((= j (exact-matrix-cols A)) #t)
+                        ((= (exact-matrix-ref A i j) (exact-matrix-ref B i j)) (lj (+ j 1)))
+                        (else #f)))
+                (li (+ i 1)))
+               (else #f)))))
+
+(define (rat-comm A B)
+  (rat-mat-sub (exact-matrix-mul A B) (exact-matrix-mul B A)))
+
+(define (hodge-hard-lefschetz-check L Lambda Hop)
+  (let ((c1 (rat-comm Hop L))
+        (c2 (rat-comm Hop Lambda))
+        (c3 (rat-comm L Lambda))
+        (t1 (rat-mat-scale 2 L))
+        (t2 (rat-mat-scale -2 Lambda)))
+    (cond ((not (rat-mat= c1 t1)) (vector 'lefschetz-violation '[H,L]!=2L c1 t1))
+          ((not (rat-mat= c2 t2)) (vector 'lefschetz-violation '[H,Lambda]!=-2Lambda c2 t2))
+          ((not (rat-mat= c3 Hop)) (vector 'lefschetz-violation '[L,Lambda]!=H c3 Hop))
+          (else #t))))
+
+;; ---------------------------------------------------------------------------
+;; Functorial constructions: Tate twist Q(k), Tensor product, Exterior square
+;; ---------------------------------------------------------------------------
+
+(define (hodge-tate-twist H k)
+  (make-hodge-structure
+    (- (hodge-weight H) (* 2 k))
+    (hodge-dim H)
+    (map (lambda (e)
+           (cons (cons (- (car (car e)) k) (- (cdr (car e)) k)) (cdr e)))
+         (hodge-subspaces H))
+    (hodge-polarization H)))
+
+(define (hq-kron-vec u v)
+  (let* ((du (vector-length u)) (dv (vector-length v))
+         (out (make-vector (* du dv) (hq 0 0))))
+    (let li ((i 0))
+      (if (< i du)
+          (begin
+            (let lj ((j 0))
+              (if (< j dv)
+                  (begin (vector-set! out (+ (* i dv) j)
+                                      (hq* (vector-ref u i) (vector-ref v j)))
+                         (lj (+ j 1)))))
+            (li (+ i 1)))))
+    out))
+
+(define (rat-kron-mat A B)
+  (let* ((ra (exact-matrix-rows A)) (ca (exact-matrix-cols A))
+         (rb (exact-matrix-rows B)) (cb (exact-matrix-cols B))
+         (R (exact-matrix-zero (* ra rb) (* ca cb))))
+    (let li ((i 0))
+      (if (< i ra)
+          (begin
+            (let lj ((j 0))
+              (if (< j ca)
+                  (let ((aij (exact-matrix-ref A i j)))
+                    (let lk ((k 0))
+                      (if (< k rb)
+                          (begin
+                            (let ll ((l 0))
+                              (if (< l cb)
+                                  (begin (exact-matrix-set! R (+ (* i rb) k) (+ (* j cb) l)
+                                                            (* aij (exact-matrix-ref B k l)))
+                                         (ll (+ l 1)))))
+                            (lk (+ k 1)))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    R))
+
+(define (alist-append-pq alist pq vecs)
+  (let ((existing (assoc pq alist)))
+    (if existing
+        (map (lambda (e) (if (equal? (car e) pq) (cons pq (append (cdr e) vecs)) e)) alist)
+        (append alist (list (cons pq vecs))))))
+
+(define (hodge-tensor-product H1 H2)
+  (let ((w (+ (hodge-weight H1) (hodge-weight H2)))
+        (d (* (hodge-dim H1) (hodge-dim H2)))
+        (subs '()))
+    (for-each
+     (lambda (e1)
+       (for-each
+        (lambda (e2)
+          (let* ((p (+ (car (car e1)) (car (car e2))))
+                 (q (+ (cdr (car e1)) (cdr (car e2))))
+                 (prods '()))
+            (for-each
+             (lambda (u)
+               (for-each
+                (lambda (v)
+                  (set! prods (append prods (list (hq-kron-vec u v)))))
+                (cdr e2)))
+             (cdr e1))
+            (if (not (null? prods))
+                (set! subs (alist-append-pq subs (cons p q) prods)))))
+        (hodge-subspaces H2)))
+     (hodge-subspaces H1))
+    (make-hodge-structure
+      w d subs
+      (if (and (hodge-polarization H1) (hodge-polarization H2))
+          (rat-kron-mat (hodge-polarization H1) (hodge-polarization H2))
+          #f))))
+
+;; Exterior square \Lambda^2(H) in standard ordered basis e_i \wedge e_j (0 <= i < j < d)
+(define (hq-wedge-vec d u v)
+  (let* ((m (quotient (* d (- d 1)) 2))
+         (out (make-vector m (hq 0 0)))
+         (idx 0))
+    (let li ((i 0))
+      (if (< i d)
+          (begin
+            (let lj ((j (+ i 1)))
+              (if (< j d)
+                  (begin
+                    (vector-set! out idx
+                                 (hq- (hq* (vector-ref u i) (vector-ref v j))
+                                      (hq* (vector-ref u j) (vector-ref v i))))
+                    (set! idx (+ idx 1))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    out))
+
+(define (hodge-exterior-square H)
+  (let* ((d (hodge-dim H))
+         (m (quotient (* d (- d 1)) 2))
+         (w (* 2 (hodge-weight H)))
+         ;; Flatten tagged basis vectors: list of ((p . q) . v)
+         (tagged '())
+         (subs '()))
+    (for-each
+     (lambda (e)
+       (for-each (lambda (v) (set! tagged (append tagged (list (cons (car e) v)))))
+                 (cdr e)))
+     (hodge-subspaces H))
+    (let* ((tv (list->vector tagged))
+           (nt (vector-length tv)))
+      (let li ((i 0))
+        (if (< i nt)
+            (begin
+              (let lj ((j (+ i 1)))
+                (if (< j nt)
+                    (let* ((e1 (vector-ref tv i))
+                           (e2 (vector-ref tv j))
+                           (pq (cons (+ (car (car e1)) (car (car e2)))
+                                     (+ (cdr (car e1)) (cdr (car e2)))))
+                           (wvec (hq-wedge-vec d (cdr e1) (cdr e2))))
+                      (set! subs (alist-append-pq subs pq (list wvec)))
+                      (lj (+ j 1)))))
+              (li (+ i 1))))))
+    (make-hodge-structure w m subs #f)))
+
+;; ---------------------------------------------------------------------------
+;; Mixed Hodge Structures (Deligne weight filtration W_k + pure graded pieces)
+;; ---------------------------------------------------------------------------
+;; Representation: #(mixed-hodge-structure weights-alist)
+;;   where weights-alist is ascending list of (weight . pure-hodge-structure)
+
+(define (make-mixed-hodge-structure graded-pieces)
+  (vector 'mixed-hodge-structure graded-pieces))
+
+(define (mixed-hodge-structure? x)
+  (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'mixed-hodge-structure)))
+
+(define (mixed-hodge-valid? M)
+  (and (mixed-hodge-structure? M)
+       (let loop ((gs (vector-ref M 1)) (prev #f))
+         (cond ((null? gs) #t)
+               ((let* ((w (car (car gs))) (H (cdr (car gs))))
+                  (and (or (not prev) (< prev w))
+                       (hodge-structure? H)
+                       (= (hodge-weight H) w)
+                       (hodge-decomposition-valid? H)))
+                (loop (cdr gs) (car (car gs))))
+               (else #f)))))
