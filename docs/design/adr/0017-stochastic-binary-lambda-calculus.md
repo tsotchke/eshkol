@@ -119,11 +119,18 @@ The native VM now supports isolated int64-seeded PRNGs with JIT/AOT/VM-source/ES
 4. **VM RNG parity** — close the four PRNG gaps (`make-prng`, `prng?`, `prng-random`,
    `prng-random-integer`) and require JIT/AOT/VM trace equality. This native VM
    binding/trace slice is implemented and gated by `scripts/run_sblc_rng_parity_gate.sh`.
-5. **Differentiable proposals** (experimental, `lib/core/sblc/relax.esk`) — exact finite-logit
+5. **Differentiable proposals** (`lib/core/sblc/relax.esk`) — exact finite-logit
    oracle on enumerated domains, REINFORCE with Rao–Blackwellized inner coins, Gumbel/Concrete
    grammar relaxation only under approximate receipts, every relaxed candidate projected to a
    strict closed program and re-verified; learned proposal order can never alter
    completeness, prior weights, fair-choice probabilities, or verifier outcomes.
+   Implemented in `core.sblc.relax` with strict exact-vs-approximate receipt segregation (no
+   implicit fallback), native reverse-mode AD verification against the exact finite-logit oracle,
+   Noesis variance-reduction confidence diagnostics (`baseline-variance`, `post-rb-variance`,
+   `variance-reduction-ratio`, `variance-bound`, `low-confidence`), loud `projection-error`
+   diagnostics with explicit L1 residual on closedness or hard-constraint refusal, byte-identical
+   JIT/AOT gating via `scripts/run_sblc_relax_gate.sh` (126 checks), and standalone Lean 4.12.0
+   theorems in `proofs/lean/EshkolSBLCRelaxation.lean`.
 6. **ADR-0005 hand-off** — export exact program bits, semantic version, RNG policy and the
    verification certificate to the program-capsule boundary.
 

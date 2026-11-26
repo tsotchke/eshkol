@@ -5106,6 +5106,14 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_update_gate.sh")
         set_tests_properties(sblc_update_gate PROPERTIES
             TIMEOUT 1800 LABELS "stdlib;sblc;dbsp;parity")
+        add_test(NAME sblc_relax_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_relax_gate.sh")
+        set_tests_properties(sblc_relax_gate PROPERTIES
+            TIMEOUT 600
+            LABELS "stdlib;sblc;ad;parity"
+            PASS_REGULAR_EXPRESSION "SBLC RELAX GATE: PASS"
+            FAIL_REGULAR_EXPRESSION "SBLC RELAX RESULT: FAIL|LLVM module verification failed|fatal signal")
     endif()
 endif()
 
