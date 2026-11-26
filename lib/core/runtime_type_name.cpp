@@ -165,6 +165,9 @@ static eshkol_type_name_id_t eshkol_value_type_name_id(eshkol_tagged_value_t val
                         case HEAP_SUBTYPE_FACT:
                             type_name = ESHKOL_TYPE_NAME_FACT;
                             break;
+                        case HEAP_SUBTYPE_RULE:
+                            type_name = ESHKOL_TYPE_NAME_RULE;
+                            break;
                         case HEAP_SUBTYPE_KNOWLEDGE_BASE:
                             type_name = ESHKOL_TYPE_NAME_KNOWLEDGE_BASE;
                             break;

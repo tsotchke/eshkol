@@ -803,7 +803,7 @@ typedef enum {
     // Neuro-symbolic consciousness engine types
     HEAP_SUBTYPE_SUBSTITUTION    = 12,  // Immutable binding map {var_id -> tagged_value} [DEEPWALK]
     HEAP_SUBTYPE_FACT            = 13,  // Predicate + arguments: (pred arg1 arg2 ...) [DEEPWALK]
-    // Reserved: 14 for RULE (v1.2 backward chaining)
+    HEAP_SUBTYPE_RULE            = 14,  // Horn/weighted rule: head :- body... [DEEPWALK]
     HEAP_SUBTYPE_KNOWLEDGE_BASE  = 15,  // Collection of facts with query support [DEEPWALK]
     HEAP_SUBTYPE_FACTOR_GRAPH    = 16,  // Factor graph for probabilistic inference [DEEPWALK]
     HEAP_SUBTYPE_WORKSPACE       = 17,  // Global workspace for cognitive competition [DEEPWALK]
@@ -857,6 +857,7 @@ static inline bool eshkol_heap_subtype_is_declared(uint8_t sub) {
         case HEAP_SUBTYPE_BIGNUM:
         case HEAP_SUBTYPE_SUBSTITUTION:
         case HEAP_SUBTYPE_FACT:
+        case HEAP_SUBTYPE_RULE:
         case HEAP_SUBTYPE_KNOWLEDGE_BASE:
         case HEAP_SUBTYPE_FACTOR_GRAPH:
         case HEAP_SUBTYPE_WORKSPACE:

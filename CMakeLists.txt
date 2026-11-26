@@ -2690,6 +2690,30 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/sdnc_finetune.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
+  lib/core/cdcl_sat.cpp
+  lib/core/slg_table.cpp
+  lib/core/nars_truth.cpp
+  lib/core/forney_fg.cpp
+  lib/core/soft_unify_semiring.cpp
+  lib/core/asp_solver.cpp
+  lib/core/diff_egglog.cpp
+  lib/core/ce_persist.cpp
+  lib/core/vsa_hdc.cpp
+  lib/core/sheaf_workspace.cpp
+  lib/core/gflownet_ebm.cpp
+  lib/core/resident_cognition.cpp
+  lib/core/holomorphic_wfr.cpp
+  lib/core/staged_value_grad.cpp
+  lib/core/dbsp_zset_kg.cpp
+  lib/core/interval_taylor_enclosure.cpp
+  lib/core/cert_chain_v2.cpp
+  lib/core/recursive_ivm.cpp
+  lib/core/program_capsule.cpp
+  lib/core/cls_zset_memory.cpp
+  lib/core/stl_control_loop.cpp
+  lib/core/fenced_cognitive_ckpt.cpp
+  lib/core/qtt_incremental_psi.cpp
+  lib/core/starlight_unified_diff_zx.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4288,6 +4312,153 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(string_to_list_runtime_test PRIVATE eshkol-runtime)
     add_test(NAME string_to_list_runtime_test COMMAND string_to_list_runtime_test)
     set_tests_properties(string_to_list_runtime_test PROPERTIES TIMEOUT 30)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_substrate_scale_and_bethe_test.cpp")
+    add_executable(ce0_substrate_scale_and_bethe_test
+        tests/logic/ce0_substrate_scale_and_bethe_test.cpp)
+    target_compile_features(ce0_substrate_scale_and_bethe_test PRIVATE cxx_std_17)
+    target_include_directories(ce0_substrate_scale_and_bethe_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce0_substrate_scale_and_bethe_test PRIVATE eshkol-runtime)
+    add_test(NAME ce0_substrate_scale_and_bethe_test COMMAND ce0_substrate_scale_and_bethe_test)
+    set_tests_properties(ce0_substrate_scale_and_bethe_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce1_logic_cdcl_slg_test.cpp")
+    add_executable(ce1_logic_cdcl_slg_test
+        tests/logic/ce1_logic_cdcl_slg_test.cpp)
+    target_compile_features(ce1_logic_cdcl_slg_test PRIVATE cxx_std_17)
+    target_include_directories(ce1_logic_cdcl_slg_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce1_logic_cdcl_slg_test PRIVATE eshkol-runtime)
+    add_test(NAME ce1_logic_cdcl_slg_test COMMAND ce1_logic_cdcl_slg_test)
+    set_tests_properties(ce1_logic_cdcl_slg_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce2_forney_fg_causal_test.cpp")
+    add_executable(ce2_forney_fg_causal_test
+        tests/logic/ce2_forney_fg_causal_test.cpp)
+    target_compile_features(ce2_forney_fg_causal_test PRIVATE cxx_std_17)
+    target_include_directories(ce2_forney_fg_causal_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce2_forney_fg_causal_test PRIVATE eshkol-runtime)
+    add_test(NAME ce2_forney_fg_causal_test COMMAND ce2_forney_fg_causal_test)
+    set_tests_properties(ce2_forney_fg_causal_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce3_asp_egglog_persist_test.cpp")
+    add_executable(ce3_asp_egglog_persist_test
+        tests/logic/ce3_asp_egglog_persist_test.cpp)
+    target_compile_features(ce3_asp_egglog_persist_test PRIVATE cxx_std_17)
+    target_include_directories(ce3_asp_egglog_persist_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce3_asp_egglog_persist_test PRIVATE eshkol-runtime)
+    add_test(NAME ce3_asp_egglog_persist_test COMMAND ce3_asp_egglog_persist_test)
+    set_tests_properties(ce3_asp_egglog_persist_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce4_5_vsa_sheaf_gflownet_test.cpp")
+    add_executable(ce4_5_vsa_sheaf_gflownet_test
+        tests/logic/ce4_5_vsa_sheaf_gflownet_test.cpp)
+    target_compile_features(ce4_5_vsa_sheaf_gflownet_test PRIVATE cxx_std_17)
+    target_include_directories(ce4_5_vsa_sheaf_gflownet_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce4_5_vsa_sheaf_gflownet_test PRIVATE eshkol-runtime)
+    add_test(NAME ce4_5_vsa_sheaf_gflownet_test COMMAND ce4_5_vsa_sheaf_gflownet_test)
+    set_tests_properties(ce4_5_vsa_sheaf_gflownet_test PROPERTIES TIMEOUT 60)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce7_resident_hep_wfr_test.cpp")
+    add_executable(ce7_resident_hep_wfr_test
+        tests/logic/ce7_resident_hep_wfr_test.cpp)
+    target_compile_features(ce7_resident_hep_wfr_test PRIVATE cxx_std_17)
+    target_include_directories(ce7_resident_hep_wfr_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce7_resident_hep_wfr_test PRIVATE eshkol-runtime)
+    add_test(NAME ce7_resident_hep_wfr_test COMMAND ce7_resident_hep_wfr_test)
+    set_tests_properties(ce7_resident_hep_wfr_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce8_staged_dbsp_taylor_test.cpp")
+    add_executable(ce8_staged_dbsp_taylor_test
+        tests/logic/ce8_staged_dbsp_taylor_test.cpp)
+    target_compile_features(ce8_staged_dbsp_taylor_test PRIVATE cxx_std_17)
+    target_include_directories(ce8_staged_dbsp_taylor_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce8_staged_dbsp_taylor_test PRIVATE eshkol-runtime)
+    add_test(NAME ce8_staged_dbsp_taylor_test COMMAND ce8_staged_dbsp_taylor_test)
+    set_tests_properties(ce8_staged_dbsp_taylor_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce9_pcc_ivm_capsule_test.cpp")
+    add_executable(ce9_pcc_ivm_capsule_test
+        tests/logic/ce9_pcc_ivm_capsule_test.cpp)
+    target_compile_features(ce9_pcc_ivm_capsule_test PRIVATE cxx_std_17)
+    target_include_directories(ce9_pcc_ivm_capsule_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce9_pcc_ivm_capsule_test PRIVATE eshkol-runtime)
+    add_test(NAME ce9_pcc_ivm_capsule_test COMMAND ce9_pcc_ivm_capsule_test)
+    set_tests_properties(ce9_pcc_ivm_capsule_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce10_cls_stl_fenced_ckpt_test.cpp")
+    add_executable(ce10_cls_stl_fenced_ckpt_test
+        tests/logic/ce10_cls_stl_fenced_ckpt_test.cpp)
+    target_compile_features(ce10_cls_stl_fenced_ckpt_test PRIVATE cxx_std_17)
+    target_include_directories(ce10_cls_stl_fenced_ckpt_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce10_cls_stl_fenced_ckpt_test PRIVATE eshkol-runtime)
+    add_test(NAME ce10_cls_stl_fenced_ckpt_test COMMAND ce10_cls_stl_fenced_ckpt_test)
+    set_tests_properties(ce10_cls_stl_fenced_ckpt_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce11_qtt_incremental_psi_test.cpp")
+    add_executable(ce11_qtt_incremental_psi_test
+        tests/logic/ce11_qtt_incremental_psi_test.cpp)
+    target_compile_features(ce11_qtt_incremental_psi_test PRIVATE cxx_std_17)
+    target_include_directories(ce11_qtt_incremental_psi_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce11_qtt_incremental_psi_test PRIVATE eshkol-runtime)
+    add_test(NAME ce11_qtt_incremental_psi_test COMMAND ce11_qtt_incremental_psi_test)
+    set_tests_properties(ce11_qtt_incremental_psi_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce12_starlight_diff_zx_lean4_test.cpp")
+    add_executable(ce12_starlight_diff_zx_lean4_test
+        tests/logic/ce12_starlight_diff_zx_lean4_test.cpp)
+    target_compile_features(ce12_starlight_diff_zx_lean4_test PRIVATE cxx_std_17)
+    target_include_directories(ce12_starlight_diff_zx_lean4_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce12_starlight_diff_zx_lean4_test PRIVATE eshkol-runtime)
+    add_test(NAME ce12_starlight_diff_zx_lean4_test COMMAND ce12_starlight_diff_zx_lean4_test)
+    set_tests_properties(ce12_starlight_diff_zx_lean4_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce12_solver_evidence_test.cpp")
+    add_executable(ce12_solver_evidence_test
+        tests/logic/ce12_solver_evidence_test.cpp
+        lib/core/cdcl_sat.cpp
+        lib/core/asp_solver.cpp
+        lib/core/nars_truth.cpp)
+    target_compile_features(ce12_solver_evidence_test PRIVATE cxx_std_17)
+    target_compile_definitions(ce12_solver_evidence_test PRIVATE ESHKOL_CDCL_TEST_ALLOCATIONS)
+    target_include_directories(ce12_solver_evidence_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME ce12_solver_evidence_test COMMAND ce12_solver_evidence_test)
+    set_tests_properties(ce12_solver_evidence_test PROPERTIES TIMEOUT 60)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
@@ -8515,6 +8686,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         eshkol_add_numeric_test(padding_mask_attention tests/ml/padding_mask_attention.esk jit aot)
         eshkol_add_numeric_test(seeded_tensor_reductions tests/xla/seeded_tensor_reductions.esk jit aot)
         eshkol_add_numeric_test(factor_graph_capacity tests/vm/factor_graph_capacity.esk jit aot vm)
+        add_test(NAME ce0_bethe_and_kb_parity_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_bethe_and_kb_parity_test.esk"
+                -L${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME ce0_bethe_and_kb_parity_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ce0_bethe_and_kb_parity_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_bethe_and_kb_parity_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ce0_bethe_and_kb_parity_aot'")
+        add_test(NAME ce0_bethe_and_kb_parity_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce0_bethe_and_kb_parity_test.esk")
+        set_tests_properties(ce0_bethe_and_kb_parity_jit PROPERTIES ENVIRONMENT "ESHKOL_JIT_CACHE=0")
+        set_tests_properties(ce0_bethe_and_kb_parity_jit ce0_bethe_and_kb_parity_aot ce0_bethe_and_kb_parity_vm
+            PROPERTIES TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "CE-0 PARITY RESULT: PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
         eshkol_add_numeric_test(exact_integer_boundaries tests/ad/exact_integer_boundaries.esk jit aot vm)
         eshkol_add_numeric_test(exact_zero_quotients tests/ad/exact_zero_quotients.esk jit aot vm)
         eshkol_add_numeric_test(variable_power_slope tests/ad/variable_power_slope.esk jit aot vm)

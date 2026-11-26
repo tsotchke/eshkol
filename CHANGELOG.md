@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming, Darwin Seatbelt and Linux seccomp/Landlock sandboxing, deterministic
   socket collectives, Metal FP64 crossover dispatch, Verificatum ADR-0061 proof
   replay, and shared-library tail-transfer export ordering. (#956)
+- Add Consciousness Engine v2 userspace cognitive stack (CE-0 through CE-12
+  Starlight): `HEAP_SUBTYPE_RULE=14`, persistent salted HAMT substitutions,
+  CSR belief propagation, Bethe free energy, native CDCL+DRAT SAT, SLG-WAM WFS
+  tabling, NARS truth core, differentiable Forney factor graphs, native ASP
+  solver, colored diff-egglog, VSA/HDC, sheaf workspace, GFlowNet, PCN core,
+  holomorphic EqProp and WFR flow, staged zero-alloc AD, DBSP Z-set KG,
+  Interval-Taylor enclosures, certificate v2 chain with Lean 4 export, recursive
+  IVM, CLS Z-set memory, differentiable STL control, QTT linear incrementalizer,
+  and Starlight unified `differentiate` and ZX interference. (#959)
 
 
 ### Added

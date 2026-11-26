@@ -6003,6 +6003,7 @@ void eshkol_builtin_kb_count(sv_t* out, const sv_t* a) {
 extern void eshkol_fg_marginal_tagged(void* arena, const void* fg_tv, const void* idx_tv, void* result);
 extern void eshkol_fg_entropy_tagged(void* arena, const void* fg_tv, const void* idx_tv, void* result);
 extern void eshkol_kb_retract_tagged(void* arena, const void* kb_tv, const void* fact_tv, void* result);
+extern void eshkol_free_energy_bethe_tagged(const void* fg_tv, const void* obs_tv, void* result);
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_fg_marginal_v(eshkol_sysbuiltin_value_t fg_val,
                                                                 eshkol_sysbuiltin_value_t idx_val) {
@@ -6028,9 +6029,17 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_kb_retract_v(eshkol_sysbuiltin_v
     return result;
 }
 
+static eshkol_sysbuiltin_value_t eshkol_builtin_free_energy_bethe_v(eshkol_sysbuiltin_value_t fg_val,
+                                                                     eshkol_sysbuiltin_value_t obs_val) {
+    eshkol_sysbuiltin_value_t result = {0, 0, 0, 0, 0};
+    eshkol_free_energy_bethe_tagged(&fg_val, &obs_val, &result);
+    return result;
+}
+
 void eshkol_builtin_fg_marginal(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fg_marginal_v(*a, *b); }
 void eshkol_builtin_fg_entropy(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_fg_entropy_v(*a, *b); }
 void eshkol_builtin_kb_retract(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_kb_retract_v(*a, *b); }
+void eshkol_builtin_free_energy_bethe(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_free_energy_bethe_v(*a, *b); }
 
 /* Consciousness engine tagged wrappers — delegate to consciousness_builtins.cpp */
 extern void eshkol_make_substitution_tagged(void*, void*);

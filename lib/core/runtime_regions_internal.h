@@ -75,8 +75,9 @@ enum EvacKind : uint8_t {
     // ESH-0214d: neuro-symbolic / workspace subtypes that carry interior
     // tagged values and/or raw arena buffers (previously dropped to EVAC_LEAF,
     // which silently left those interior pointers aimed into the dying region).
-    EVAC_SUBSTITUTION,   // eshkol_substitution_t: inline terms[] tagged values
+    EVAC_SUBSTITUTION,   // eshkol_substitution_t: inline terms[] or persistent HAMT nodes
     EVAC_FACT,           // eshkol_fact_t: inline args[] tagged values (+ predicate str)
+    EVAC_RULE,           // eshkol_rule_t: head, body[], guard, unbounded name
     EVAC_KNOWLEDGE_BASE, // eshkol_knowledge_base_t: facts[] raw array of fact ptrs
     EVAC_FACTOR_GRAPH,   // eshkol_factor_graph_t: nested raw numeric buffers
     EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn

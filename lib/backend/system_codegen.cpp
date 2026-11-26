@@ -1850,6 +1850,7 @@ ONE_ARG_BUILTIN(displayError, "eshkol_builtin_display_error")
 TWO_ARG_BUILTIN(fgMarginal, "eshkol_builtin_fg_marginal")
 TWO_ARG_BUILTIN(fgEntropy, "eshkol_builtin_fg_entropy")
 TWO_ARG_BUILTIN(kbRetract, "eshkol_builtin_kb_retract")
+TWO_ARG_BUILTIN(freeEnergyBethe, "eshkol_builtin_free_energy_bethe")
 
 /* Consciousness engine — uses existing tagged functions from logic.cpp/inference.cpp/workspace.cpp.
  * These have signature: void func(arena_t* arena, const tv* arg1, ..., tv* result)

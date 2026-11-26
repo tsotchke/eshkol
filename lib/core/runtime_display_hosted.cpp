@@ -502,6 +502,9 @@ static void display_value_step(const eshkol_tagged_value_t* value,
                 case HEAP_SUBTYPE_FACT:
                     eshkol_display_fact((const eshkol_fact_t*)data_ptr, get_output(opts));
                     break;
+                case HEAP_SUBTYPE_RULE:
+                    eshkol_display_rule((const eshkol_rule_t*)data_ptr, get_output(opts));
+                    break;
                 case HEAP_SUBTYPE_KNOWLEDGE_BASE:
                     eshkol_display_kb((const eshkol_knowledge_base_t*)data_ptr, get_output(opts));
                     break;

@@ -15433,6 +15433,7 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
         // Noesis requirements
         if (func_name == "fg-marginal") co_return system_->fgMarginal(op);
         if (func_name == "fg-entropy") co_return system_->fgEntropy(op);
+        if (func_name == "free-energy-bethe") co_return system_->freeEnergyBethe(op);
         if (func_name == "kb-retract!") co_return system_->kbRetract(op);
         // Consciousness engine
         if (func_name == "make-substitution") co_return system_->makeSubstitution(op);
@@ -27262,7 +27263,7 @@ Value* EshkolLLVMCodeGen::codegenSchemeReportEnvironment(const eshkol_operations
             "string-ends-with?", "string-index-of",
             "string-pad-left", "string-pad-right",
             "kb-save", "kb-load", "tensor-token-estimate",
-            "fg-marginal", "fg-entropy", "kb-retract!",
+            "fg-marginal", "fg-entropy", "free-energy-bethe", "kb-retract!",
             "make-substitution", "unify", "walk",
             "make-fact", "make-kb", "kb-assert!", "kb-query", "kb-query-prefix",
             "make-factor-graph", "fg-add-factor!", "fg-infer!",
@@ -43767,7 +43768,7 @@ const EshkolLLVMCodeGen::InlineBuiltinSpec* EshkolLLVMCodeGen::lookupInlineBuilt
             // eshkol_warn ("requires N arguments", a wrong-arity call that still
             // returns rc=0) was kept. See LE-16 in .icc/ledger/entries/LE-16.yaml.
             // Consciousness faculty (LE-16)
-            {"fg-entropy", {2}}, {"fg-marginal", {2}}, {"kb-count", {1}},
+            {"fg-entropy", {2}}, {"fg-marginal", {2}}, {"free-energy-bethe", {2}}, {"kb-count", {1}},
             {"kb-load", {1}}, {"kb-retract!", {2}}, {"kb-save", {2}},
             // Control flow (LE-16)
             {"%make-lazy-promise", {2}}, {"%make-lazy-promise-force", {2}}, {"with-exception-handler", {2}},

@@ -390,39 +390,98 @@ static bool allocate_messages(arena_t* arena, eshkol_factor_graph_t* fg) {
     return true;
 }
 
-/* Get the message index for factor fi, local variable position vi */
-static uint32_t get_msg_idx(const eshkol_factor_graph_t* fg,
-                             uint32_t fi, uint32_t vi) {
-    uint32_t idx = 0;
-    for (uint32_t i = 0; i < fi; i++) {
-        idx += fg->factors[i]->num_vars;
+/* CSR factor-variable adjacency built transiently per inference pass so
+ * variable-to-factor and belief updates run in O(E) instead of O(F^3)
+ * while keeping eshkol_factor_graph_t ABI layout unchanged. */
+typedef struct fg_csr {
+    uint32_t* factor_msg_offset; /* [num_factors + 1] */
+    uint32_t* var_inc_offset;    /* [num_vars + 1] */
+    uint32_t* var_inc_factor;    /* [total_messages] */
+    uint32_t* var_inc_msg;       /* [total_messages] */
+    uint32_t* state_buf;         /* [max_factor_arity] */
+} fg_csr_t;
+
+static bool build_fg_csr(arena_t* arena, const eshkol_factor_graph_t* fg, fg_csr_t* csr) {
+    memset(csr, 0, sizeof(*csr));
+    uint32_t nf = fg->num_factors;
+    uint32_t nv = fg->num_vars;
+
+    csr->factor_msg_offset = (uint32_t*)arena_allocate_aligned(
+        arena, (size_t)(nf + 1) * sizeof(uint32_t), 8);
+    csr->var_inc_offset = (uint32_t*)arena_allocate_aligned(
+        arena, (size_t)(nv + 1) * sizeof(uint32_t), 8);
+    if (!csr->factor_msg_offset || !csr->var_inc_offset) return false;
+
+    memset(csr->var_inc_offset, 0, (size_t)(nv + 1) * sizeof(uint32_t));
+    uint32_t total = 0;
+    uint32_t max_arity = 1;
+    for (uint32_t fi = 0; fi < nf; fi++) {
+        csr->factor_msg_offset[fi] = total;
+        const eshkol_factor_t* f = fg->factors[fi];
+        if (f->num_vars > max_arity) max_arity = f->num_vars;
+        const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
+        for (uint32_t vi = 0; vi < f->num_vars; vi++) {
+            uint32_t v = var_indices[vi];
+            if (v < nv) csr->var_inc_offset[v + 1]++;
+        }
+        total += f->num_vars;
     }
-    return idx + vi;
+    csr->factor_msg_offset[nf] = total;
+
+    for (uint32_t v = 0; v < nv; v++) {
+        csr->var_inc_offset[v + 1] += csr->var_inc_offset[v];
+    }
+
+    uint32_t edges = csr->var_inc_offset[nv];
+    csr->var_inc_factor = (uint32_t*)arena_allocate_aligned(
+        arena, (size_t)(edges > 0 ? edges : 1) * sizeof(uint32_t), 8);
+    csr->var_inc_msg = (uint32_t*)arena_allocate_aligned(
+        arena, (size_t)(edges > 0 ? edges : 1) * sizeof(uint32_t), 8);
+    csr->state_buf = (uint32_t*)arena_allocate_aligned(
+        arena, (size_t)max_arity * sizeof(uint32_t), 8);
+    uint32_t* cursor = (uint32_t*)arena_allocate_aligned(
+        arena, (size_t)(nv > 0 ? nv : 1) * sizeof(uint32_t), 8);
+    if (!csr->var_inc_factor || !csr->var_inc_msg || !csr->state_buf || !cursor) return false;
+
+    memcpy(cursor, csr->var_inc_offset, (size_t)nv * sizeof(uint32_t));
+    for (uint32_t fi = 0; fi < nf; fi++) {
+        const eshkol_factor_t* f = fg->factors[fi];
+        const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
+        uint32_t base_msg = csr->factor_msg_offset[fi];
+        for (uint32_t vi = 0; vi < f->num_vars; vi++) {
+            uint32_t v = var_indices[vi];
+            if (v < nv) {
+                uint32_t pos = cursor[v]++;
+                csr->var_inc_factor[pos] = fi;
+                csr->var_inc_msg[pos] = base_msg + vi;
+            }
+        }
+    }
+    return true;
 }
 
 /*
  * Compute factor-to-variable message using sum-product algorithm.
  *
- * msg_{f→v}(x_v) = sum_{x_\v} [f(x) * prod_{u ∈ ne(f)\v} msg_{u→f}(x_u)]
+ * msg_{f->v}(x_v) = sum_{x_\v} [f(x) * prod_{u in ne(f)\v} msg_{u->f}(x_u)]
  *
  * In log-space: log-sum-exp over configurations of other variables.
  */
 static void compute_factor_to_var_message(
-    const eshkol_factor_graph_t* fg, uint32_t fi, uint32_t target_vi,
-    double* out_msg) {
+    const eshkol_factor_graph_t* fg, const fg_csr_t* csr,
+    uint32_t fi, uint32_t target_vi, double* out_msg) {
     const eshkol_factor_t* f = fg->factors[fi];
     const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
     uint32_t target_var = var_indices[target_vi];
     uint32_t target_dim = fg->var_dims[target_var];
+    uint32_t base_msg = csr->factor_msg_offset[fi];
 
     /* Initialize output message */
     for (uint32_t s = 0; s < target_dim; s++) {
         out_msg[s] = LOG_ZERO;
     }
 
-    /* Enumerate all configurations of the factor's variables */
-    /* Using iterative index enumeration over the factor's state space */
-    uint32_t* state = (uint32_t*)alloca(f->num_vars * sizeof(uint32_t));
+    uint32_t* state = csr->state_buf;
     memset(state, 0, f->num_vars * sizeof(uint32_t));
 
     uint32_t total_configs = f->cpt_size;
@@ -437,10 +496,10 @@ static void compute_factor_to_var_message(
         /* Compute log-potential for this configuration */
         double log_val = f->cpt[config];
 
-        /* Add log-messages from all other variables to this factor */
+        /* Add log-messages from all other variables to this factor in O(1) */
         for (uint32_t vi = 0; vi < f->num_vars; vi++) {
             if (vi == target_vi) continue;
-            uint32_t msg_idx = get_msg_idx(fg, fi, vi);
+            uint32_t msg_idx = base_msg + vi;
             log_val += fg->msg_vf[msg_idx][state[vi]];
         }
 
@@ -454,14 +513,12 @@ static void compute_factor_to_var_message(
 }
 
 /*
- * Compute variable-to-factor message.
- * msg_{v→f}(x_v) = prod_{g ∈ ne(v)\f} msg_{g→v}(x_v)
- * In log-space: sum of all incoming factor-to-variable messages except from f.
+ * Compute variable-to-factor message in O(deg(v)) using CSR adjacency.
+ * msg_{v->f}(x_v) = prod_{g in ne(v)\f} msg_{g->v}(x_v)
  */
 static void compute_var_to_factor_message(
-    const eshkol_factor_graph_t* fg,
-    uint32_t target_fi, uint32_t target_vi,
-    double* out_msg) {
+    const eshkol_factor_graph_t* fg, const fg_csr_t* csr,
+    uint32_t target_fi, uint32_t target_vi, double* out_msg) {
     const eshkol_factor_t* target_f = fg->factors[target_fi];
     const uint32_t* target_var_indices = FACTOR_VAR_INDICES(target_f);
     uint32_t var_id = target_var_indices[target_vi];
@@ -472,19 +529,15 @@ static void compute_var_to_factor_message(
         out_msg[s] = 0.0;
     }
 
-    /* Sum log-messages from all other factors connected to this variable */
-    for (uint32_t fi = 0; fi < fg->num_factors; fi++) {
-        if (fi == target_fi) continue;
-        const eshkol_factor_t* f = fg->factors[fi];
-        const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
-
-        for (uint32_t vi = 0; vi < f->num_vars; vi++) {
-            if (var_indices[vi] == var_id) {
-                uint32_t msg_idx = get_msg_idx(fg, fi, vi);
-                for (uint32_t s = 0; s < dim; s++) {
-                    out_msg[s] += fg->msg_fv[msg_idx][s];
-                }
-            }
+    /* Sum log-messages only over factors actually incident to var_id */
+    uint32_t start = csr->var_inc_offset[var_id];
+    uint32_t end = csr->var_inc_offset[var_id + 1];
+    for (uint32_t e = start; e < end; e++) {
+        if (csr->var_inc_factor[e] == target_fi) continue;
+        uint32_t msg_idx = csr->var_inc_msg[e];
+        const double* in_msg = fg->msg_fv[msg_idx];
+        for (uint32_t s = 0; s < dim; s++) {
+            out_msg[s] += in_msg[s];
         }
     }
 
@@ -494,17 +547,8 @@ static void compute_var_to_factor_message(
 /**
  * @brief Run loopy belief propagation (sum-product, log-space) to convergence.
  *
- * Lazily allocates message storage, then iterates: update all
- * variable-to-factor messages, update all factor-to-variable messages, then
- * recompute each non-observed variable's belief as the (log-space) product
- * of its incoming factor messages. Observed variables (fg->observed[v]) are
- * skipped so their clamped beliefs from eshkol_fg_observe_tagged() persist.
- *
- * @param arena Arena used for lazy message-array allocation.
- * @param fg Factor graph to run inference on (mutated in place: messages and beliefs).
- * @param max_iterations Upper bound on BP sweeps.
- * @param tolerance Convergence threshold on the max message delta.
- * @return true if converged before @p max_iterations, false otherwise (or on invalid input).
+ * Builds O(E) CSR factor-variable adjacency once per call, lazily allocates
+ * message storage, then iterates v->f updates, f->v updates, and belief updates.
  */
 bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
     uint32_t max_iterations, double tolerance) {
@@ -512,6 +556,9 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
 
     /* Allocate message storage if needed */
     if (!allocate_messages(arena, fg)) return false;
+
+    fg_csr_t csr;
+    if (!build_fg_csr(arena, fg, &csr)) return false;
 
     bool converged = false;
 
@@ -525,16 +572,18 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
     for (uint32_t iter = 0; iter < max_iterations; iter++) {
         double max_delta = 0.0;
 
-        /* Update all variable-to-factor messages */
+        /* Update all variable-to-factor messages in O(E) */
         for (uint32_t fi = 0; fi < fg->num_factors; fi++) {
             const eshkol_factor_t* f = fg->factors[fi];
+            uint32_t base_msg = csr.factor_msg_offset[fi];
+            const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
             for (uint32_t vi = 0; vi < f->num_vars; vi++) {
-                uint32_t msg_idx = get_msg_idx(fg, fi, vi);
-                uint32_t var_id = FACTOR_VAR_INDICES(f)[vi];
+                uint32_t msg_idx = base_msg + vi;
+                uint32_t var_id = var_indices[vi];
                 uint32_t dim = fg->var_dims[var_id];
 
                 double* old_msg = fg->msg_vf[msg_idx];
-                compute_var_to_factor_message(fg, fi, vi, new_msg);
+                compute_var_to_factor_message(fg, &csr, fi, vi, new_msg);
 
                 for (uint32_t s = 0; s < dim; s++) {
                     double delta = fabs(new_msg[s] - old_msg[s]);
@@ -544,16 +593,18 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
             }
         }
 
-        /* Update all factor-to-variable messages */
+        /* Update all factor-to-variable messages in O(sum |cpt_a|) */
         for (uint32_t fi = 0; fi < fg->num_factors; fi++) {
             const eshkol_factor_t* f = fg->factors[fi];
+            uint32_t base_msg = csr.factor_msg_offset[fi];
+            const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
             for (uint32_t vi = 0; vi < f->num_vars; vi++) {
-                uint32_t msg_idx = get_msg_idx(fg, fi, vi);
-                uint32_t var_id = FACTOR_VAR_INDICES(f)[vi];
+                uint32_t msg_idx = base_msg + vi;
+                uint32_t var_id = var_indices[vi];
                 uint32_t dim = fg->var_dims[var_id];
 
                 double* old_msg = fg->msg_fv[msg_idx];
-                compute_factor_to_var_message(fg, fi, vi, new_msg);
+                compute_factor_to_var_message(fg, &csr, fi, vi, new_msg);
 
                 for (uint32_t s = 0; s < dim; s++) {
                     double delta = fabs(new_msg[s] - old_msg[s]);
@@ -563,9 +614,8 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
             }
         }
 
-        /* Update beliefs: b(x_v) = prod_{f ∈ ne(v)} msg_{f→v}(x_v).
-         * Skip observed variables — their beliefs are clamped by fg-observe!.
-         * Must match the VM path (vm_inference.c:388) for AOT/VM consistency. */
+        /* Update beliefs in O(E): b(x_v) = prod_{f in ne(v)} msg_{f->v}(x_v).
+         * Skip observed variables — their beliefs are clamped by fg-observe!. */
         for (uint32_t v = 0; v < fg->num_vars; v++) {
             if (fg->observed && fg->observed[v]) continue;  /* Clamped — skip */
             uint32_t dim = fg->var_dims[v];
@@ -573,16 +623,13 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
                 fg->beliefs[v][s] = 0.0; /* log-product = sum */
             }
 
-            for (uint32_t fi = 0; fi < fg->num_factors; fi++) {
-                const eshkol_factor_t* f = fg->factors[fi];
-                const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
-                for (uint32_t vi = 0; vi < f->num_vars; vi++) {
-                    if (var_indices[vi] == v) {
-                        uint32_t msg_idx = get_msg_idx(fg, fi, vi);
-                        for (uint32_t s = 0; s < dim; s++) {
-                            fg->beliefs[v][s] += fg->msg_fv[msg_idx][s];
-                        }
-                    }
+            uint32_t start = csr.var_inc_offset[v];
+            uint32_t end = csr.var_inc_offset[v + 1];
+            for (uint32_t e = start; e < end; e++) {
+                uint32_t msg_idx = csr.var_inc_msg[e];
+                const double* in_msg = fg->msg_fv[msg_idx];
+                for (uint32_t s = 0; s < dim; s++) {
+                    fg->beliefs[v][s] += in_msg[s];
                 }
             }
 
@@ -687,6 +734,118 @@ double eshkol_free_energy(const eshkol_factor_graph_t* fg,
     double free_energy = -entropy - expected_log_joint;
 
     return free_energy;
+}
+
+/**
+ * @brief Compute the exact Bethe free energy of @p fg:
+ *   F_Bethe = sum_a (E_{b_a}[-ln f_a(x_a)] - H(b_a)) + sum_v (d_v - 1) H(b_v)
+ *
+ * Factor joint beliefs b_a(x_a) proportional to f_a(x_a) * prod_{k in a} m_{v_k->a}(x_{v_k})
+ * are formed directly in log-space from BP messages (or marginals when messages
+ * have not yet been initialized). On tree-structured factor graphs after BP
+ * convergence, F_Bethe equals -ln Z to floating-point precision.
+ */
+double eshkol_free_energy_bethe(const eshkol_factor_graph_t* fg,
+    const double* observations, uint32_t num_obs) {
+    if (!fg) return 0.0;
+
+    uint32_t nv = fg->num_vars;
+    uint32_t nf = fg->num_factors;
+
+    uint32_t deg_stack[64];
+    uint32_t* deg = (nv <= 64) ? deg_stack : (uint32_t*)calloc(nv, sizeof(uint32_t));
+    if (!deg) return 0.0;
+    if (nv <= 64) memset(deg, 0, (size_t)nv * sizeof(uint32_t));
+
+    double f_bethe = 0.0;
+    uint32_t msg_offset = 0;
+
+    for (uint32_t fi = 0; fi < nf; fi++) {
+        const eshkol_factor_t* f = fg->factors[fi];
+        const uint32_t* var_indices = FACTOR_VAR_INDICES(f);
+        for (uint32_t vi = 0; vi < f->num_vars; vi++) {
+            uint32_t v = var_indices[vi];
+            if (v < nv) deg[v]++;
+        }
+
+        uint32_t total_configs = f->cpt_size;
+        double log_b_stack[256];
+        double* log_b = (total_configs <= 256)
+            ? log_b_stack
+            : (double*)malloc((size_t)total_configs * sizeof(double));
+        if (!log_b) {
+            msg_offset += f->num_vars;
+            continue;
+        }
+
+        bool have_msgs = (fg->msg_vf != NULL && (msg_offset + f->num_vars) <= fg->total_messages);
+        double max_lb = LOG_ZERO;
+        for (uint32_t config = 0; config < total_configs; config++) {
+            uint32_t remaining = config;
+            double lv = f->cpt[config];
+            for (int32_t k = (int32_t)f->num_vars - 1; k >= 0; k--) {
+                uint32_t state = remaining % f->dims[k];
+                remaining /= f->dims[k];
+                uint32_t var_id = var_indices[k];
+                if (have_msgs) {
+                    lv += fg->msg_vf[msg_offset + (uint32_t)k][state];
+                } else {
+                    lv += fg->beliefs[var_id][state];
+                }
+            }
+            log_b[config] = lv;
+            if (lv > max_lb) max_lb = lv;
+        }
+
+        double sum_exp = 0.0;
+        for (uint32_t config = 0; config < total_configs; config++) {
+            if (log_b[config] > LOG_ZERO * 0.5) {
+                sum_exp += exp(log_b[config] - max_lb);
+            }
+        }
+        double log_z_a = (sum_exp > 0.0) ? (max_lb + log(sum_exp)) : 0.0;
+
+        for (uint32_t config = 0; config < total_configs; config++) {
+            double lb = log_b[config] - log_z_a;
+            double b = exp(lb);
+            if (b > 1e-30) {
+                /* E_{b_a}[ln b_a - ln f_a] = U_a - H_a */
+                f_bethe += b * (lb - f->cpt[config]);
+            }
+        }
+
+        if (log_b != log_b_stack) free(log_b);
+        msg_offset += f->num_vars;
+    }
+
+    /* Variable overcounting term: +sum_v (d_v - 1) * H(b_v) */
+    for (uint32_t v = 0; v < nv; v++) {
+        int32_t coeff = (int32_t)deg[v] - 1;
+        if (coeff == 0) continue;
+        double hv = 0.0;
+        uint32_t dim = fg->var_dims[v];
+        for (uint32_t s = 0; s < dim; s++) {
+            double q = exp(fg->beliefs[v][s]);
+            if (q > 1e-30) {
+                hv -= q * fg->beliefs[v][s];
+            }
+        }
+        f_bethe += (double)coeff * hv;
+    }
+
+    if (deg != deg_stack) free(deg);
+
+    if (observations && num_obs > 0) {
+        for (uint32_t i = 0; i + 1 < num_obs * 2; i += 2) {
+            uint32_t var_idx = (uint32_t)observations[i];
+            uint32_t obs_state = (uint32_t)observations[i + 1];
+            if (var_idx < fg->num_vars && obs_state < fg->var_dims[var_idx]) {
+                f_bethe -= fg->beliefs[var_idx][obs_state];
+            }
+        }
+    }
+
+    return f_bethe;
 }
 
 /**
@@ -1106,6 +1265,54 @@ void eshkol_free_energy_tagged(
     }
 
     double fe = eshkol_free_energy(fg, obs_data, num_obs);
+
+    result->type = ESHKOL_VALUE_DOUBLE;
+    result->flags = 0x20; /* INEXACT */
+    result->data.double_val = fe;
+}
+
+void eshkol_free_energy_bethe_tagged(
+    const eshkol_tagged_value_t* fg_tv,
+    const eshkol_tagged_value_t* obs_tv,
+    eshkol_tagged_value_t* result) {
+    if (!result) return;
+    memset(result, 0, sizeof(*result));
+
+    if (!fg_tv || fg_tv->type != ESHKOL_VALUE_HEAP_PTR || !fg_tv->data.ptr_val) {
+        result->type = ESHKOL_VALUE_DOUBLE;
+        result->flags = 0x20; /* INEXACT */
+        result->data.double_val = 0.0;
+        return;
+    }
+
+    const eshkol_factor_graph_t* fg = (const eshkol_factor_graph_t*)fg_tv->data.ptr_val;
+
+    double* obs_data = NULL;
+    uint32_t num_obs = 0;
+    if (obs_tv) {
+        tensor_layout_t* obs_tensor = extract_tensor(obs_tv);
+        if (obs_tensor && obs_tensor->total_elements > 0) {
+            num_obs = (uint32_t)(obs_tensor->total_elements / 2);
+            obs_data = (double*)alloca(obs_tensor->total_elements * sizeof(double));
+            for (uint32_t i = 0; i < obs_tensor->total_elements; i++) {
+                obs_data[i] = tensor_get(obs_tensor, i);
+            }
+        } else if (obs_tv->type == ESHKOL_VALUE_HEAP_PTR && obs_tv->data.ptr_val) {
+            void* obs_ptr = (void*)(uintptr_t)obs_tv->data.ptr_val;
+            eshkol_object_header_t* obs_hdr = ESHKOL_GET_HEADER(obs_ptr);
+            if (obs_hdr->subtype == HEAP_SUBTYPE_VECTOR) {
+                int64_t length = *(int64_t*)obs_ptr;
+                if (length > 0) {
+                    obs_data = (double*)alloca((size_t)length * sizeof(double));
+                    uint32_t read = fg_read_numeric(obs_tv, obs_data, (uint32_t)length);
+                    num_obs = read / 2;
+                    if (num_obs == 0) obs_data = NULL;
+                }
+            }
+        }
+    }
+
+    double fe = eshkol_free_energy_bethe(fg, obs_data, num_obs);
 
     result->type = ESHKOL_VALUE_DOUBLE;
     result->flags = 0x20; /* INEXACT */

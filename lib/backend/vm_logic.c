@@ -95,37 +95,77 @@ static VmValue vm_val_ptr(void* p) {
 }
 
 /* ========================================================================
- * Logic Variable Registry (process-global, single-threaded for VM)
+ * Logic Variable Registry (dynamic, unbounded, O(1) FNV-1a hash lookup)
  * ======================================================================== */
 
-#define VM_LOGIC_VAR_MAX 4096
+static uint64_t vm_logic_fnv1a(const char* data, size_t len, uint64_t seed) {
+    uint64_t h = 14695981039346656037ULL ^ seed;
+    for (size_t i = 0; i < len; i++) {
+        h ^= (uint8_t)data[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
 
-typedef struct {
-    uint64_t var_id;
-    char     name[64];
-} VmLogicVar;
-
-static char     g_vm_var_names[VM_LOGIC_VAR_MAX][64];
+static char**   g_vm_var_names = NULL;
 static uint64_t g_vm_var_count = 0;
+static uint64_t g_vm_var_cap   = 0;
+static uint64_t* g_vm_var_ht   = NULL; /* stores (var_id + 1), 0 = empty */
+static size_t    g_vm_var_ht_cap = 0;
 
-/** @brief Native call 500: `(make-logic-var name)` — intern @p name in the
- *         process-global logic-variable registry, deduplicating by linear
- *         scan (fine for < VM_LOGIC_VAR_MAX vars).
- * @return The variable's id, or UINT64_MAX if @p name is null or the
- *         registry is full.
- */
+static int vm_var_ht_grow(size_t new_cap) {
+    uint64_t* nh = (uint64_t*)calloc(new_cap, sizeof(uint64_t));
+    if (!nh) return 0;
+    size_t mask = new_cap - 1;
+    for (uint64_t id = 0; id < g_vm_var_count; id++) {
+        const char* s = g_vm_var_names[id];
+        if (!s) continue;
+        size_t slot = (size_t)(vm_logic_fnv1a(s, strlen(s), 0x101ULL) & mask);
+        while (nh[slot] != 0) slot = (slot + 1) & mask;
+        nh[slot] = id + 1;
+    }
+    free(g_vm_var_ht);
+    g_vm_var_ht = nh;
+    g_vm_var_ht_cap = new_cap;
+    return 1;
+}
+
+/** @brief Native call 500: `(make-logic-var name)` — dynamically intern @p name
+ *         in O(1) with no fixed variable cap or 63-char truncation. */
 static uint64_t vm_make_logic_var(const char* name) {
     if (!name) return UINT64_MAX;
-    /* Deduplicate: linear scan (fine for < 4096 vars) */
-    for (uint64_t i = 0; i < g_vm_var_count; i++) {
-        if (strcmp(g_vm_var_names[i], name) == 0) return i;
-    }
-    if (g_vm_var_count >= VM_LOGIC_VAR_MAX) return UINT64_MAX;
-    uint64_t id = g_vm_var_count++;
     size_t len = strlen(name);
-    if (len >= 63) len = 63;
-    memcpy(g_vm_var_names[id], name, len);
-    g_vm_var_names[id][len] = '\0';
+    if (g_vm_var_ht_cap == 0) {
+        if (!vm_var_ht_grow(256)) return UINT64_MAX;
+    }
+    size_t mask = g_vm_var_ht_cap - 1;
+    size_t slot = (size_t)(vm_logic_fnv1a(name, len, 0x101ULL) & mask);
+    while (g_vm_var_ht[slot] != 0) {
+        uint64_t id = g_vm_var_ht[slot] - 1;
+        if (strcmp(g_vm_var_names[id], name) == 0) return id;
+        slot = (slot + 1) & mask;
+    }
+
+    if ((g_vm_var_count + 1) * 10 >= g_vm_var_ht_cap * 7) {
+        if (!vm_var_ht_grow(g_vm_var_ht_cap * 2)) return UINT64_MAX;
+        mask = g_vm_var_ht_cap - 1;
+        slot = (size_t)(vm_logic_fnv1a(name, len, 0x101ULL) & mask);
+        while (g_vm_var_ht[slot] != 0) slot = (slot + 1) & mask;
+    }
+    if (g_vm_var_count >= g_vm_var_cap) {
+        uint64_t new_cap = g_vm_var_cap ? g_vm_var_cap * 2 : 256;
+        char** narr = (char**)realloc(g_vm_var_names, (size_t)new_cap * sizeof(char*));
+        if (!narr) return UINT64_MAX;
+        g_vm_var_names = narr;
+        g_vm_var_cap = new_cap;
+    }
+
+    char* copy = (char*)malloc(len + 1);
+    if (!copy) return UINT64_MAX;
+    memcpy(copy, name, len + 1);
+    uint64_t id = g_vm_var_count++;
+    g_vm_var_names[id] = copy;
+    g_vm_var_ht[slot] = id + 1;
     return id;
 }
 
@@ -137,93 +177,294 @@ static const char* vm_logic_var_name(uint64_t var_id) {
 }
 
 /* ------------------------------------------------------------------
- * Ground-term text interning
- *
- * Unification compares ground terms by identity, so two independently
- * heap-allocated spellings of `alice` must resolve to the SAME pointer
- * or `(kb-query kb '(parent alice ?child))` can never match a stored
- * `(parent alice bob)`.  This mirrors eshkol_intern_predicate() in
- * lib/core/logic.cpp, which the native engine relies on for exactly the
- * same reason.  `kind` separates namespaces so a symbol and a string
- * with identical text never collapse onto one pointer.
+ * Ground-term text interning (dynamic, unbounded, O(1) hash table)
  * ------------------------------------------------------------------ */
-#define VM_LOGIC_INTERN_POOL   (64 * 1024)
-#define VM_LOGIC_INTERN_MAX    4096
+typedef struct {
+    const char* text; /* points 1 byte past leading kind byte */
+    int         len;
+} VmInternEntry;
 
-static char        g_vm_intern_pool[VM_LOGIC_INTERN_POOL];
-static size_t      g_vm_intern_offset = 0;
-static const char* g_vm_intern_table[VM_LOGIC_INTERN_MAX];
-static size_t      g_vm_intern_count = 0;
+static VmInternEntry* g_vm_intern_ht      = NULL;
+static size_t         g_vm_intern_ht_cap  = 0;
+static size_t         g_vm_intern_count   = 0;
 
-/**
- * @brief Intern @p len bytes of @p text under namespace @p kind, returning a
- *        stable pointer that is pointer-equal for equal (kind, text) pairs.
- *
- * The pooled entry is stored as one leading kind byte followed by the text
- * and a NUL, and the returned pointer addresses the TEXT (one past the kind
- * byte), so callers can read it directly while distinct kinds still occupy
- * distinct addresses.
- *
- * @return Interned text pointer, or NULL if @p text is NULL or the pool /
- *         table is exhausted (callers must treat NULL as "not internable"
- *         and fall back to a non-unifiable opaque term).
- */
+static int vm_intern_ht_grow(size_t new_cap) {
+    VmInternEntry* nh = (VmInternEntry*)calloc(new_cap, sizeof(VmInternEntry));
+    if (!nh) return 0;
+    size_t mask = new_cap - 1;
+    for (size_t i = 0; i < g_vm_intern_ht_cap; i++) {
+        const char* e = g_vm_intern_ht[i].text;
+        if (!e) continue;
+        int len = g_vm_intern_ht[i].len;
+        uint64_t h = vm_logic_fnv1a(e, (size_t)len, (uint64_t)(unsigned char)e[-1] * 0x9e3779b97f4a7c15ULL);
+        size_t slot = (size_t)(h & mask);
+        while (nh[slot].text != NULL) slot = (slot + 1) & mask;
+        nh[slot] = g_vm_intern_ht[i];
+    }
+    free(g_vm_intern_ht);
+    g_vm_intern_ht = nh;
+    g_vm_intern_ht_cap = new_cap;
+    return 1;
+}
+
 static const char* vm_logic_intern_text(const char* text, int len, int kind) {
     if (!text || len < 0) return NULL;
-    for (size_t i = 0; i < g_vm_intern_count; i++) {
-        const char* e = g_vm_intern_table[i];
-        if (!e) continue;
-        if (e[-1] != (char)kind) continue;
-        if ((int)strlen(e) != len) continue;
-        if (memcmp(e, text, (size_t)len) == 0) return e;
+    if (g_vm_intern_ht_cap == 0) {
+        if (!vm_intern_ht_grow(512)) return NULL;
     }
-    if (g_vm_intern_count >= VM_LOGIC_INTERN_MAX) {
-        fprintf(stderr, "WARN: logic term intern table full (%zu entries); "
-                        "ground terms fall back to text comparison\n",
-                g_vm_intern_count);
-        return NULL;
+    uint64_t h = vm_logic_fnv1a(text, (size_t)len, (uint64_t)(unsigned char)kind * 0x9e3779b97f4a7c15ULL);
+    size_t mask = g_vm_intern_ht_cap - 1;
+    size_t slot = (size_t)(h & mask);
+    while (g_vm_intern_ht[slot].text != NULL) {
+        const char* e = g_vm_intern_ht[slot].text;
+        if (e[-1] == (char)kind && g_vm_intern_ht[slot].len == len &&
+            memcmp(e, text, (size_t)len) == 0) {
+            return e;
+        }
+        slot = (slot + 1) & mask;
     }
-    size_t needed = (size_t)len + 2; /* kind byte + text + NUL */
-    if (g_vm_intern_offset + needed > sizeof(g_vm_intern_pool)) {
-        fprintf(stderr, "WARN: logic term intern pool exhausted (%zu bytes); "
-                        "ground terms fall back to text comparison\n",
-                g_vm_intern_offset);
-        return NULL;
+    if ((g_vm_intern_count + 1) * 10 >= g_vm_intern_ht_cap * 7) {
+        if (!vm_intern_ht_grow(g_vm_intern_ht_cap * 2)) return NULL;
+        mask = g_vm_intern_ht_cap - 1;
+        slot = (size_t)(h & mask);
+        while (g_vm_intern_ht[slot].text != NULL) slot = (slot + 1) & mask;
     }
-    char* slot = g_vm_intern_pool + g_vm_intern_offset;
-    g_vm_intern_offset += needed;
-    slot[0] = (char)kind;
-    memcpy(slot + 1, text, (size_t)len);
-    slot[1 + len] = '\0';
-    g_vm_intern_table[g_vm_intern_count++] = slot + 1;
-    return slot + 1;
+    char* buf = (char*)malloc((size_t)len + 2);
+    if (!buf) return NULL;
+    buf[0] = (char)kind;
+    memcpy(buf + 1, text, (size_t)len);
+    buf[1 + len] = '\0';
+    g_vm_intern_ht[slot].text = buf + 1;
+    g_vm_intern_ht[slot].len = len;
+    g_vm_intern_count++;
+    return buf + 1;
 }
 
 /** @brief Reset the process-global logic-variable registry and the
- *         ground-term intern pool (used between test runs). */
+ *         ground-term intern table (used between test runs). */
 static void vm_logic_var_reset(void) {
     g_vm_var_count = 0;
-    g_vm_intern_offset = 0;
+    if (g_vm_var_ht && g_vm_var_ht_cap > 0) {
+        memset(g_vm_var_ht, 0, g_vm_var_ht_cap * sizeof(uint64_t));
+    }
     g_vm_intern_count = 0;
-    for (size_t i = 0; i < VM_LOGIC_INTERN_MAX; i++) g_vm_intern_table[i] = NULL;
+    if (g_vm_intern_ht && g_vm_intern_ht_cap > 0) {
+        memset(g_vm_intern_ht, 0, g_vm_intern_ht_cap * sizeof(VmInternEntry));
+    }
 }
 
 /* ========================================================================
- * Substitution (immutable, copy-on-extend)
+ * Substitution (Inline <= 8 + Persistent 32-Way Salted HAMT)
  * ======================================================================== */
 
+#define VM_SUBST_INLINE_MAX 8
+#define VM_SUBST_HAMT_BITS  5
+#define VM_SUBST_HAMT_MASK  31u
+#define VM_SUBST_HAMT_MAX_DEPTH 12
+
+typedef struct VmSubstHamtNode {
+    uint32_t bitmap;
+    uint32_t count;
+    uint64_t* leaf_ids;
+    VmValue*  leaf_terms;
+    struct VmSubstHamtNode** children;
+} VmSubstHamtNode;
+
 typedef struct {
-    uint64_t* var_ids;   /* arena-allocated array */
-    VmValue*  terms;     /* arena-allocated array */
+    uint64_t* var_ids;        /* inline array when hamt_root == NULL */
+    VmValue*  terms;          /* inline array when hamt_root == NULL */
     int       n_bindings;
     int       capacity;
+    VmSubstHamtNode* hamt_root; /* persistent 32-way salted HAMT when > 8 bindings */
 } VmSubstitution;
 
-/** @brief Native call 502: `(make-substitution [capacity])` — allocate an
- *         empty substitution with room for @p capacity bindings (default
- *         8 if <= 0). */
+static uint64_t vm_subst_salt(void) {
+    static uint64_t salt = 0;
+    if (salt == 0) {
+        uint64_t x = (uint64_t)(uintptr_t)&g_vm_var_count ^ 0x9e3779b97f4a7c15ULL;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        salt = (x ^ (x >> 31)) | 1ULL;
+    }
+    return salt;
+}
+
+static uint64_t vm_subst_hash(uint64_t var_id) {
+    uint64_t x = var_id ^ vm_subst_salt();
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static uint32_t vm_subst_popcount32(uint32_t v) {
+    return (uint32_t)__builtin_popcount(v);
+}
+
+static VmSubstHamtNode* vm_hamt_make_leaf1(VmRegionStack* rs, uint64_t var_id, const VmValue* term) {
+    VmSubstHamtNode* n = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+    if (!n) return NULL;
+    uint64_t* ids = (uint64_t*)vm_alloc(rs, sizeof(uint64_t));
+    VmValue* terms = (VmValue*)vm_alloc(rs, sizeof(VmValue));
+    if (!ids || !terms) return NULL;
+    ids[0] = var_id;
+    terms[0] = *term;
+    n->bitmap = 0;
+    n->count = 1;
+    n->leaf_ids = ids;
+    n->leaf_terms = terms;
+    n->children = NULL;
+    return n;
+}
+
+static VmSubstHamtNode* vm_hamt_insert(
+    VmRegionStack* rs, const VmSubstHamtNode* node,
+    uint64_t var_id, uint64_t hash, const VmValue* term,
+    uint32_t depth, int* inserted_new)
+{
+    if (!node) {
+        *inserted_new = 1;
+        return vm_hamt_make_leaf1(rs, var_id, term);
+    }
+
+    if (node->bitmap == 0) {
+        for (uint32_t i = 0; i < node->count; i++) {
+            if (node->leaf_ids[i] == var_id) {
+                *inserted_new = 0;
+                VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+                VmValue* terms = (VmValue*)vm_alloc(rs, (size_t)node->count * sizeof(VmValue));
+                if (!copy || !terms) return NULL;
+                memcpy(terms, node->leaf_terms, (size_t)node->count * sizeof(VmValue));
+                terms[i] = *term;
+                copy->bitmap = 0;
+                copy->count = node->count;
+                copy->leaf_ids = node->leaf_ids;
+                copy->leaf_terms = terms;
+                copy->children = NULL;
+                return copy;
+            }
+        }
+        if (depth >= VM_SUBST_HAMT_MAX_DEPTH) {
+            *inserted_new = 1;
+            uint32_t nc = node->count + 1;
+            VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+            uint64_t* ids = (uint64_t*)vm_alloc(rs, (size_t)nc * sizeof(uint64_t));
+            VmValue* terms = (VmValue*)vm_alloc(rs, (size_t)nc * sizeof(VmValue));
+            if (!copy || !ids || !terms) return NULL;
+            memcpy(ids, node->leaf_ids, (size_t)node->count * sizeof(uint64_t));
+            memcpy(terms, node->leaf_terms, (size_t)node->count * sizeof(VmValue));
+            ids[node->count] = var_id;
+            terms[node->count] = *term;
+            copy->bitmap = 0;
+            copy->count = nc;
+            copy->leaf_ids = ids;
+            copy->leaf_terms = terms;
+            copy->children = NULL;
+            return copy;
+        }
+
+        uint64_t old_id = node->leaf_ids[0];
+        uint64_t old_hash = vm_subst_hash(old_id);
+        uint32_t old_chunk = (uint32_t)((old_hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+        uint32_t new_chunk = (uint32_t)((hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+
+        VmSubstHamtNode* internal = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+        if (!internal) return NULL;
+        internal->leaf_ids = NULL;
+        internal->leaf_terms = NULL;
+
+        if (old_chunk == new_chunk) {
+            VmSubstHamtNode* sub = vm_hamt_insert(rs, node, var_id, hash, term, depth + 1, inserted_new);
+            if (!sub) return NULL;
+            VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, sizeof(VmSubstHamtNode*));
+            if (!ch) return NULL;
+            ch[0] = sub;
+            internal->bitmap = 1u << old_chunk;
+            internal->count = 1;
+            internal->children = ch;
+            return internal;
+        } else {
+            *inserted_new = 1;
+            VmSubstHamtNode* nl = vm_hamt_make_leaf1(rs, var_id, term);
+            if (!nl) return NULL;
+            VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, 2 * sizeof(VmSubstHamtNode*));
+            if (!ch) return NULL;
+            internal->bitmap = (1u << old_chunk) | (1u << new_chunk);
+            internal->count = 2;
+            if (old_chunk < new_chunk) {
+                ch[0] = (VmSubstHamtNode*)node;
+                ch[1] = nl;
+            } else {
+                ch[0] = nl;
+                ch[1] = (VmSubstHamtNode*)node;
+            }
+            internal->children = ch;
+            return internal;
+        }
+    }
+
+    uint32_t chunk = (uint32_t)((hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+    uint32_t bit = 1u << chunk;
+    uint32_t idx = vm_subst_popcount32(node->bitmap & (bit - 1u));
+
+    if (node->bitmap & bit) {
+        VmSubstHamtNode* upd = vm_hamt_insert(rs, node->children[idx], var_id, hash, term, depth + 1, inserted_new);
+        if (!upd) return NULL;
+        VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+        VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, (size_t)node->count * sizeof(VmSubstHamtNode*));
+        if (!copy || !ch) return NULL;
+        memcpy(ch, node->children, (size_t)node->count * sizeof(VmSubstHamtNode*));
+        ch[idx] = upd;
+        copy->bitmap = node->bitmap;
+        copy->count = node->count;
+        copy->leaf_ids = NULL;
+        copy->leaf_terms = NULL;
+        copy->children = ch;
+        return copy;
+    } else {
+        *inserted_new = 1;
+        VmSubstHamtNode* nl = vm_hamt_make_leaf1(rs, var_id, term);
+        if (!nl) return NULL;
+        uint32_t nc = node->count + 1;
+        VmSubstHamtNode* copy = (VmSubstHamtNode*)vm_alloc(rs, sizeof(VmSubstHamtNode));
+        VmSubstHamtNode** ch = (VmSubstHamtNode**)vm_alloc(rs, (size_t)nc * sizeof(VmSubstHamtNode*));
+        if (!copy || !ch) return NULL;
+        if (idx > 0) memcpy(ch, node->children, (size_t)idx * sizeof(VmSubstHamtNode*));
+        ch[idx] = nl;
+        if (idx < node->count) {
+            memcpy(ch + idx + 1, node->children + idx,
+                   (size_t)(node->count - idx) * sizeof(VmSubstHamtNode*));
+        }
+        copy->bitmap = node->bitmap | bit;
+        copy->count = nc;
+        copy->leaf_ids = NULL;
+        copy->leaf_terms = NULL;
+        copy->children = ch;
+        return copy;
+    }
+}
+
+static const VmValue* vm_hamt_lookup(const VmSubstHamtNode* node, uint64_t var_id, uint64_t hash) {
+    uint32_t depth = 0;
+    while (node) {
+        if (node->bitmap == 0) {
+            for (uint32_t i = 0; i < node->count; i++) {
+                if (node->leaf_ids[i] == var_id) return &node->leaf_terms[i];
+            }
+            return NULL;
+        }
+        uint32_t chunk = (uint32_t)((hash >> (depth * VM_SUBST_HAMT_BITS)) & VM_SUBST_HAMT_MASK);
+        uint32_t bit = 1u << chunk;
+        if ((node->bitmap & bit) == 0) return NULL;
+        uint32_t idx = vm_subst_popcount32(node->bitmap & (bit - 1u));
+        node = node->children[idx];
+        depth++;
+    }
+    return NULL;
+}
+
+/** @brief Native call 502: `(make-substitution [capacity])` */
 static VmSubstitution* vm_make_substitution(VmRegionStack* rs, int capacity) {
-    if (capacity <= 0) capacity = 8;
+    if (capacity <= 0) capacity = VM_SUBST_INLINE_MAX;
     VmSubstitution* s = (VmSubstitution*)vm_alloc(rs, sizeof(VmSubstitution));
     if (!s) return NULL;
     s->var_ids = (uint64_t*)vm_alloc(rs, (size_t)capacity * sizeof(uint64_t));
@@ -231,52 +472,70 @@ static VmSubstitution* vm_make_substitution(VmRegionStack* rs, int capacity) {
     if (!s->var_ids || !s->terms) return NULL;
     s->n_bindings = 0;
     s->capacity   = capacity;
+    s->hamt_root  = NULL;
     return s;
 }
 
-/** @brief Native call 503: `(subst-lookup s var-id)` — linear-scan lookup
- *         of a variable's bound term.
- * @return A pointer into @p s's terms array, or NULL if unbound.
- */
+/** @brief Native call 503: `(subst-lookup s var-id)` */
 static const VmValue* vm_subst_lookup(const VmSubstitution* s, uint64_t var_id) {
     if (!s) return NULL;
+    if (s->hamt_root) {
+        return vm_hamt_lookup(s->hamt_root, var_id, vm_subst_hash(var_id));
+    }
     for (int i = 0; i < s->n_bindings; i++) {
         if (s->var_ids[i] == var_id) return &s->terms[i];
     }
     return NULL;
 }
 
-/**
- * @brief Native call 504: `(subst-extend s var-id term)` — immutable
- *        extend: copies @p s's existing bindings into a fresh, larger
- *        (capacity-doubled as needed) substitution and appends the new
- *        (@p var_id, @p term) binding, leaving @p s untouched.
- */
+/** @brief Native call 504: `(subst-extend s var-id term)` */
 static VmSubstitution* vm_subst_extend(VmRegionStack* rs,
     const VmSubstitution* s, uint64_t var_id, const VmValue* term)
 {
     if (!rs || !term) return NULL;
 
     int old_n = s ? s->n_bindings : 0;
-    int new_cap = old_n + 1;
-    /* Ensure capacity doubling */
-    if (s && new_cap <= s->capacity) {
-        new_cap = s->capacity;
-    } else {
-        int min_cap = s ? s->capacity * 2 : 8;
-        if (new_cap < min_cap) new_cap = min_cap;
+
+    if ((s && s->hamt_root) || old_n >= VM_SUBST_INLINE_MAX) {
+        VmSubstHamtNode* root = s ? s->hamt_root : NULL;
+        if (!root && s && old_n > 0) {
+            for (int i = 0; i < old_n; i++) {
+                int dummy = 0;
+                root = vm_hamt_insert(rs, root, s->var_ids[i],
+                                      vm_subst_hash(s->var_ids[i]),
+                                      &s->terms[i], 0, &dummy);
+                if (!root) return NULL;
+            }
+        }
+        int inserted_new = 0;
+        VmSubstHamtNode* new_root = vm_hamt_insert(
+            rs, root, var_id, vm_subst_hash(var_id), term, 0, &inserted_new);
+        if (!new_root) return NULL;
+        VmSubstitution* ns = (VmSubstitution*)vm_alloc(rs, sizeof(VmSubstitution));
+        if (!ns) return NULL;
+        ns->var_ids = NULL;
+        ns->terms = NULL;
+        ns->capacity = 0;
+        ns->n_bindings = old_n + (inserted_new ? 1 : 0);
+        ns->hamt_root = new_root;
+        return ns;
     }
 
-    VmSubstitution* ns = vm_make_substitution(rs, new_cap);
+    VmSubstitution* ns = vm_make_substitution(rs, VM_SUBST_INLINE_MAX);
     if (!ns) return NULL;
 
-    /* Copy old bindings */
     if (s && old_n > 0) {
         memcpy(ns->var_ids, s->var_ids, (size_t)old_n * sizeof(uint64_t));
         memcpy(ns->terms, s->terms, (size_t)old_n * sizeof(VmValue));
+        for (int i = 0; i < old_n; i++) {
+            if (ns->var_ids[i] == var_id) {
+                ns->terms[i] = *term;
+                ns->n_bindings = old_n;
+                return ns;
+            }
+        }
     }
 
-    /* Append new binding */
     ns->var_ids[old_n] = var_id;
     ns->terms[old_n]   = *term;
     ns->n_bindings     = old_n + 1;
@@ -560,12 +819,124 @@ static VmValue vm_val_fact(VmFact* f) {
  * ======================================================================== */
 
 #define KB_INIT_CAP 16
+#define VM_KB_INDEX_THRESHOLD 32
+#define VM_KB_INDEX_INIT_BUCKETS 64
 
 typedef struct {
-    VmFact** facts;      /* arena-allocated array of fact pointers */
-    int      n_facts;
+    uint64_t predicate;
+    int      count;
     int      capacity;
+    int*     indices;
+} VmKbPredBucket;
+
+typedef struct {
+    int             num_buckets;
+    int             used_buckets;
+    VmKbPredBucket* buckets;
+} VmKbPredIndex;
+
+typedef struct {
+    VmFact**       facts;      /* arena-allocated array of fact pointers */
+    int            n_facts;
+    int            capacity;
+    VmKbPredIndex* pred_index; /* optional arena-allocated predicate index */
 } VmKnowledgeBase;
+
+static uint64_t vm_kb_hash_pred(uint64_t pred) {
+    pred ^= pred >> 33;
+    pred *= 0xff51afd7ed558ccdULL;
+    pred ^= pred >> 33;
+    pred *= 0xc4ceb9fe1a85ec53ULL;
+    pred ^= pred >> 33;
+    return pred;
+}
+
+static VmKbPredIndex* vm_kb_index_create(VmRegionStack* rs, int num_buckets) {
+    VmKbPredIndex* idx = (VmKbPredIndex*)vm_alloc(rs, sizeof(VmKbPredIndex));
+    if (!idx) return NULL;
+    VmKbPredBucket* buckets = (VmKbPredBucket*)vm_alloc(rs, (size_t)num_buckets * sizeof(VmKbPredBucket));
+    if (!buckets) return NULL;
+    memset(buckets, 0, (size_t)num_buckets * sizeof(VmKbPredBucket));
+    idx->num_buckets = num_buckets;
+    idx->used_buckets = 0;
+    idx->buckets = buckets;
+    return idx;
+}
+
+static int vm_kb_index_rehash(VmRegionStack* rs, VmKbPredIndex* idx, int new_buckets) {
+    VmKbPredBucket* nb = (VmKbPredBucket*)vm_alloc(rs, (size_t)new_buckets * sizeof(VmKbPredBucket));
+    if (!nb) return 0;
+    memset(nb, 0, (size_t)new_buckets * sizeof(VmKbPredBucket));
+    int mask = new_buckets - 1;
+    for (int i = 0; i < idx->num_buckets; i++) {
+        if (idx->buckets[i].predicate == 0) continue;
+        int slot = (int)(vm_kb_hash_pred(idx->buckets[i].predicate) & (uint64_t)mask);
+        while (nb[slot].predicate != 0) slot = (slot + 1) & mask;
+        nb[slot] = idx->buckets[i];
+    }
+    idx->buckets = nb;
+    idx->num_buckets = new_buckets;
+    return 1;
+}
+
+static void vm_kb_index_insert(VmRegionStack* rs, VmKbPredIndex* idx,
+                               uint64_t pred, int fact_idx) {
+    if (!rs || !idx || pred == 0) return;
+    if ((idx->used_buckets + 1) * 10 >= idx->num_buckets * 7) {
+        if (!vm_kb_index_rehash(rs, idx, idx->num_buckets * 2)) return;
+    }
+    int mask = idx->num_buckets - 1;
+    int slot = (int)(vm_kb_hash_pred(pred) & (uint64_t)mask);
+    while (idx->buckets[slot].predicate != 0 &&
+           idx->buckets[slot].predicate != pred) {
+        slot = (slot + 1) & mask;
+    }
+    VmKbPredBucket* b = &idx->buckets[slot];
+    if (b->predicate == 0) {
+        b->predicate = pred;
+        b->count = 0;
+        b->capacity = 8;
+        b->indices = (int*)vm_alloc(rs, (size_t)b->capacity * sizeof(int));
+        if (!b->indices) {
+            b->predicate = 0;
+            b->capacity = 0;
+            return;
+        }
+        idx->used_buckets++;
+    } else if (b->count >= b->capacity) {
+        int new_cap = b->capacity * 2;
+        int* ni = (int*)vm_alloc(rs, (size_t)new_cap * sizeof(int));
+        if (!ni) return;
+        memcpy(ni, b->indices, (size_t)b->count * sizeof(int));
+        b->indices = ni;
+        b->capacity = new_cap;
+    }
+    b->indices[b->count++] = fact_idx;
+}
+
+static const VmKbPredBucket* vm_kb_index_find(const VmKbPredIndex* idx, uint64_t pred) {
+    if (!idx || !idx->buckets || pred == 0) return NULL;
+    int mask = idx->num_buckets - 1;
+    int slot = (int)(vm_kb_hash_pred(pred) & (uint64_t)mask);
+    for (int probe = 0; probe < idx->num_buckets; probe++) {
+        const VmKbPredBucket* b = &idx->buckets[slot];
+        if (b->predicate == 0) return NULL;
+        if (b->predicate == pred) return b;
+        slot = (slot + 1) & mask;
+    }
+    return NULL;
+}
+
+static void vm_kb_build_index(VmRegionStack* rs, VmKnowledgeBase* kb) {
+    VmKbPredIndex* idx = vm_kb_index_create(rs, VM_KB_INDEX_INIT_BUCKETS);
+    if (!idx) return;
+    for (int i = 0; i < kb->n_facts; i++) {
+        if (kb->facts[i] && kb->facts[i]->predicate != 0) {
+            vm_kb_index_insert(rs, idx, kb->facts[i]->predicate, i);
+        }
+    }
+    kb->pred_index = idx;
+}
 
 /** @brief Native call 510: `(make-kb)` — allocate an empty knowledge base
  *         with an initial KB_INIT_CAP-fact capacity. */
@@ -573,15 +944,16 @@ static VmKnowledgeBase* vm_make_kb(VmRegionStack* rs) {
     VmKnowledgeBase* kb = (VmKnowledgeBase*)vm_alloc_object(rs,
         VM_SUBTYPE_KB, sizeof(VmKnowledgeBase));
     if (!kb) return NULL;
-    kb->facts    = (VmFact**)vm_alloc(rs, KB_INIT_CAP * sizeof(VmFact*));
+    kb->facts      = (VmFact**)vm_alloc(rs, KB_INIT_CAP * sizeof(VmFact*));
     if (!kb->facts) return NULL;
-    kb->n_facts  = 0;
-    kb->capacity = KB_INIT_CAP;
+    kb->n_facts    = 0;
+    kb->capacity   = KB_INIT_CAP;
+    kb->pred_index = NULL;
     return kb;
 }
 
 /** @brief Native call 511: `(kb-assert! kb fact)` — append @p fact to the
- *         knowledge base, growing its fact array (doubling) as needed. */
+ *         knowledge base, growing its fact array and updating the predicate index. */
 static void vm_kb_assert(VmRegionStack* rs, VmKnowledgeBase* kb,
     VmFact* fact)
 {
@@ -595,7 +967,15 @@ static void vm_kb_assert(VmRegionStack* rs, VmKnowledgeBase* kb,
         kb->facts    = new_arr;
         kb->capacity = new_cap;
     }
-    kb->facts[kb->n_facts++] = fact;
+    int fact_idx = kb->n_facts++;
+    kb->facts[fact_idx] = fact;
+    if (kb->pred_index) {
+        if (fact->predicate != 0) {
+            vm_kb_index_insert(rs, kb->pred_index, fact->predicate, fact_idx);
+        }
+    } else if (kb->n_facts >= VM_KB_INDEX_THRESHOLD) {
+        vm_kb_build_index(rs, kb);
+    }
 }
 
 /* ========================================================================
@@ -644,7 +1024,16 @@ static VmValue vm_kb_query(VmRegionStack* rs, const VmKnowledgeBase* kb,
         base = empty;
     }
 
-    for (int i = 0; i < kb->n_facts; i++) {
+    const VmKbPredBucket* bucket = NULL;
+    int use_index = (kb->pred_index != NULL && pattern->predicate != 0);
+    if (use_index) {
+        bucket = vm_kb_index_find(kb->pred_index, pattern->predicate);
+        if (!bucket) return result;
+    }
+
+    int n_candidates = use_index ? bucket->count : kb->n_facts;
+    for (int k = 0; k < n_candidates; k++) {
+        int i = use_index ? bucket->indices[k] : k;
         const VmFact* fact = kb->facts[i];
 
         /* Quick checks: predicate match and arity.  The predicate compare

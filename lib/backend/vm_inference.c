@@ -269,61 +269,92 @@ static int allocate_messages(VmRegionStack* rs, VmFactorGraph* fg) {
     return 1;
 }
 
-/** @brief Compute the flat index into fg->msg_fv/msg_vf for factor @p fi's
- *         @p vi'th connected variable (messages are stored densely, one
- *         slot per factor-variable edge in factor order). */
-static int get_msg_idx(const VmFactorGraph* fg, int fi, int vi) {
-    int idx = 0;
-    for (int i = 0; i < fi; i++) idx += fg->factors[i]->num_vars;
-    return idx + vi;
+/* CSR factor-variable adjacency built transiently per inference pass so
+ * variable-to-factor and belief updates run in O(E) instead of O(F^3). */
+typedef struct {
+    int* factor_msg_offset; /* [num_factors + 1] */
+    int* var_inc_offset;    /* [num_vars + 1] */
+    int* var_inc_factor;    /* [total_messages] */
+    int* var_inc_msg;       /* [total_messages] */
+} VmFgCsr;
+
+static int vm_build_fg_csr(VmRegionStack* rs, const VmFactorGraph* fg, VmFgCsr* csr) {
+    memset(csr, 0, sizeof(*csr));
+    int nf = fg->num_factors;
+    int nv = fg->num_vars;
+    csr->factor_msg_offset = (int*)vm_alloc(rs, (size_t)(nf + 1) * sizeof(int));
+    csr->var_inc_offset = (int*)vm_alloc(rs, (size_t)(nv + 1) * sizeof(int));
+    if (!csr->factor_msg_offset || !csr->var_inc_offset) return 0;
+    memset(csr->var_inc_offset, 0, (size_t)(nv + 1) * sizeof(int));
+
+    int total = 0;
+    for (int fi = 0; fi < nf; fi++) {
+        csr->factor_msg_offset[fi] = total;
+        const VmFactor* f = fg->factors[fi];
+        for (int vi = 0; vi < f->num_vars; vi++) {
+            int v = f->var_indices[vi];
+            if (v >= 0 && v < nv) csr->var_inc_offset[v + 1]++;
+        }
+        total += f->num_vars;
+    }
+    csr->factor_msg_offset[nf] = total;
+    for (int v = 0; v < nv; v++) {
+        csr->var_inc_offset[v + 1] += csr->var_inc_offset[v];
+    }
+
+    int edges = csr->var_inc_offset[nv];
+    csr->var_inc_factor = (int*)vm_alloc(rs, (size_t)(edges > 0 ? edges : 1) * sizeof(int));
+    csr->var_inc_msg = (int*)vm_alloc(rs, (size_t)(edges > 0 ? edges : 1) * sizeof(int));
+    int* cursor = (int*)vm_alloc(rs, (size_t)(nv > 0 ? nv : 1) * sizeof(int));
+    if (!csr->var_inc_factor || !csr->var_inc_msg || !cursor) return 0;
+    memcpy(cursor, csr->var_inc_offset, (size_t)nv * sizeof(int));
+
+    for (int fi = 0; fi < nf; fi++) {
+        const VmFactor* f = fg->factors[fi];
+        int base_msg = csr->factor_msg_offset[fi];
+        for (int vi = 0; vi < f->num_vars; vi++) {
+            int v = f->var_indices[vi];
+            if (v >= 0 && v < nv) {
+                int pos = cursor[v]++;
+                csr->var_inc_factor[pos] = fi;
+                csr->var_inc_msg[pos] = base_msg + vi;
+            }
+        }
+    }
+    return 1;
 }
 
 /* ========================================================================
- * Belief Propagation — Sum-Product in Log-Space
+ * Belief Propagation — Sum-Product in Log-Space (O(E) CSR)
  * ======================================================================== */
 
-/**
- * @brief Compute the factor-to-variable belief-propagation message
- *        msg_{f->v}(x_v) = sum_{x_\v} [ f(x) * prod_{u in ne(f)\v}
- *        msg_{u->f}(x_u) ], in log-space via log-sum-exp over every CPT
- *        configuration of the factor's non-target variables, into
- *        @p out_msg (log_normalize()d before returning).
- */
-static void compute_f2v_message(const VmFactorGraph* fg, int fi, int target_vi,
-    double* out_msg)
+static void compute_f2v_message(const VmFactorGraph* fg, const VmFgCsr* csr,
+    int fi, int target_vi, double* out_msg)
 {
     const VmFactor* f = fg->factors[fi];
     int target_var = f->var_indices[target_vi];
     int target_dim = fg->var_dims[target_var];
+    int base_msg = csr->factor_msg_offset[fi];
 
-    /* Initialize output */
     for (int s = 0; s < target_dim; s++) out_msg[s] = LOG_ZERO;
 
-    /* Enumerate all CPT configurations */
     int total_configs = f->cpt_size;
-
-    /* We need per-variable states. Use stack allocation (safe: num_vars small). */
     int state[VM_FACTOR_MAX_ARITY];
 
     for (int config = 0; config < total_configs; config++) {
-        /* Decode config into per-variable states (big-endian: var 0 is most significant) */
         int remaining = config;
         for (int k = f->num_vars - 1; k >= 0; k--) {
             state[k] = remaining % f->dims[k];
             remaining /= f->dims[k];
         }
 
-        /* log-potential = CPT entry */
         double log_val = f->cpt[config];
-
-        /* Add log-messages from all OTHER variables to this factor */
         for (int vi = 0; vi < f->num_vars; vi++) {
             if (vi == target_vi) continue;
-            int msg_idx = get_msg_idx(fg, fi, vi);
+            int msg_idx = base_msg + vi;
             log_val += fg->msg_vf[msg_idx][state[vi]];
         }
 
-        /* Accumulate into target state's slot via log-sum-exp */
         int ts = state[target_vi];
         out_msg[ts] = logsumexp2(out_msg[ts], log_val);
     }
@@ -331,63 +362,40 @@ static void compute_f2v_message(const VmFactorGraph* fg, int fi, int target_vi,
     log_normalize(out_msg, target_dim);
 }
 
-/**
- * @brief Compute the variable-to-factor belief-propagation message
- *        msg_{v->f}(x_v) = prod_{g in ne(v)\f} msg_{g->v}(x_v), in
- *        log-space via summing all incoming factor-to-variable messages
- *        except from the target factor, into @p out_msg
- *        (log_normalize()d before returning).
- */
-static void compute_v2f_message(const VmFactorGraph* fg, int target_fi, int target_vi,
-    double* out_msg)
+static void compute_v2f_message(const VmFactorGraph* fg, const VmFgCsr* csr,
+    int target_fi, int target_vi, double* out_msg)
 {
     const VmFactor* tf = fg->factors[target_fi];
     int var_id = tf->var_indices[target_vi];
     int dim = fg->var_dims[var_id];
 
-    /* Initialize to 0 (neutral for log-sum = product) */
     for (int s = 0; s < dim; s++) out_msg[s] = 0.0;
 
-    /* Sum messages from all OTHER factors connected to var_id */
-    for (int fi = 0; fi < fg->num_factors; fi++) {
-        if (fi == target_fi) continue;
-        VmFactor* f = fg->factors[fi];
-        for (int vi = 0; vi < f->num_vars; vi++) {
-            if (f->var_indices[vi] == var_id) {
-                int msg_idx = get_msg_idx(fg, fi, vi);
-                for (int s = 0; s < dim; s++) {
-                    out_msg[s] += fg->msg_fv[msg_idx][s];
-                }
-            }
+    int start = csr->var_inc_offset[var_id];
+    int end = csr->var_inc_offset[var_id + 1];
+    for (int e = start; e < end; e++) {
+        if (csr->var_inc_factor[e] == target_fi) continue;
+        int msg_idx = csr->var_inc_msg[e];
+        const double* in_msg = fg->msg_fv[msg_idx];
+        for (int s = 0; s < dim; s++) {
+            out_msg[s] += in_msg[s];
         }
     }
 
     log_normalize(out_msg, dim);
 }
 
-/**
- * @brief Native call 523: `(fg-infer! fg max-iterations tolerance)` — run
- *        loopy belief propagation: each iteration updates every
- *        variable-to-factor message (compute_v2f_message()), then every
- *        factor-to-variable message (compute_f2v_message()), then
- *        recomputes each non-observed variable's belief as the
- *        (log_normalize()d) sum of its incoming factor messages. Stops
- *        early once the largest message change (max_delta) drops below
- *        @p tolerance.
- * @return 1 if convergence was reached within @p max_iterations, 0
- *         otherwise (including on invalid input or allocation failure).
- */
 static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
     int max_iterations, double tolerance)
 {
     if (!rs || !fg || fg->num_factors == 0) return 0;
     if (!allocate_messages(rs, fg)) return 0;
 
+    VmFgCsr csr;
+    if (!vm_build_fg_csr(rs, fg, &csr)) return 0;
+
     int converged = 0;
 
-    /* One scratch message sized by the widest domain in the graph, so every
-     * domain the graph admits is inferred with the same contract as the
-     * native engine. */
     int max_dim = 1;
     for (int v = 0; v < fg->num_vars; v++)
         if (fg->var_dims[v] > max_dim) max_dim = fg->var_dims[v];
@@ -397,15 +405,15 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
     for (int iter = 0; iter < max_iterations; iter++) {
         double max_delta = 0.0;
 
-        /* Update all variable-to-factor messages */
         for (int fi = 0; fi < fg->num_factors; fi++) {
             VmFactor* f = fg->factors[fi];
+            int base_msg = csr.factor_msg_offset[fi];
             for (int vi = 0; vi < f->num_vars; vi++) {
-                int msg_idx = get_msg_idx(fg, fi, vi);
+                int msg_idx = base_msg + vi;
                 int var_id = f->var_indices[vi];
                 int dim = fg->var_dims[var_id];
 
-                compute_v2f_message(fg, fi, vi, new_msg);
+                compute_v2f_message(fg, &csr, fi, vi, new_msg);
 
                 double* old = fg->msg_vf[msg_idx];
                 for (int s = 0; s < dim; s++) {
@@ -416,15 +424,15 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
             }
         }
 
-        /* Update all factor-to-variable messages */
         for (int fi = 0; fi < fg->num_factors; fi++) {
             VmFactor* f = fg->factors[fi];
+            int base_msg = csr.factor_msg_offset[fi];
             for (int vi = 0; vi < f->num_vars; vi++) {
-                int msg_idx = get_msg_idx(fg, fi, vi);
+                int msg_idx = base_msg + vi;
                 int var_id = f->var_indices[vi];
                 int dim = fg->var_dims[var_id];
 
-                compute_f2v_message(fg, fi, vi, new_msg);
+                compute_f2v_message(fg, &csr, fi, vi, new_msg);
 
                 double* old = fg->msg_fv[msg_idx];
                 for (int s = 0; s < dim; s++) {
@@ -435,22 +443,18 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
             }
         }
 
-        /* Update beliefs: b(x_v) = product of all incoming f->v messages.
-         * Skip observed variables — their beliefs are clamped by fg-observe!. */
         for (int v = 0; v < fg->num_vars; v++) {
-            if (fg->observed && fg->observed[v]) continue;  /* Clamped — skip */
+            if (fg->observed && fg->observed[v]) continue;
             int dim = fg->var_dims[v];
             for (int s = 0; s < dim; s++) fg->beliefs[v][s] = 0.0;
 
-            for (int fi = 0; fi < fg->num_factors; fi++) {
-                VmFactor* f = fg->factors[fi];
-                for (int vi = 0; vi < f->num_vars; vi++) {
-                    if (f->var_indices[vi] == v) {
-                        int msg_idx = get_msg_idx(fg, fi, vi);
-                        for (int s = 0; s < dim; s++) {
-                            fg->beliefs[v][s] += fg->msg_fv[msg_idx][s];
-                        }
-                    }
+            int start = csr.var_inc_offset[v];
+            int end = csr.var_inc_offset[v + 1];
+            for (int e = start; e < end; e++) {
+                int msg_idx = csr.var_inc_msg[e];
+                const double* in_msg = fg->msg_fv[msg_idx];
+                for (int s = 0; s < dim; s++) {
+                    fg->beliefs[v][s] += in_msg[s];
                 }
             }
 
@@ -541,6 +545,112 @@ static double vm_free_energy(const VmFactorGraph* fg,
 
     /* F = -H(q) - E_q[ln p(o,s)] */
     return -entropy - expected_log_joint;
+}
+
+/**
+ * @brief Native call 528: `(free-energy-bethe fg observations)` — exact Bethe
+ *        free energy F_Bethe = sum_a (E_{b_a}[ln b_a - ln f_a]) + sum_v (d_v - 1) H(b_v).
+ *        Matches eshkol_free_energy_bethe() in lib/core/inference.cpp.
+ */
+static double vm_free_energy_bethe(const VmFactorGraph* fg,
+    const double* observations, int num_obs)
+{
+    if (!fg) return 0.0;
+    int nv = fg->num_vars;
+    int nf = fg->num_factors;
+
+    int deg_stack[64];
+    int* deg = (nv <= 64) ? deg_stack : (int*)calloc((size_t)nv, sizeof(int));
+    if (!deg) return 0.0;
+    if (nv <= 64) memset(deg, 0, (size_t)nv * sizeof(int));
+
+    double f_bethe = 0.0;
+    int msg_offset = 0;
+
+    for (int fi = 0; fi < nf; fi++) {
+        const VmFactor* f = fg->factors[fi];
+        for (int vi = 0; vi < f->num_vars; vi++) {
+            int v = f->var_indices[vi];
+            if (v >= 0 && v < nv) deg[v]++;
+        }
+
+        int total_configs = f->cpt_size;
+        double log_b_stack[256];
+        double* log_b = (total_configs <= 256)
+            ? log_b_stack
+            : (double*)malloc((size_t)total_configs * sizeof(double));
+        if (!log_b) {
+            msg_offset += f->num_vars;
+            continue;
+        }
+
+        int have_msgs = (fg->msg_vf != NULL && (msg_offset + f->num_vars) <= fg->total_msgs);
+        double max_lb = LOG_ZERO;
+        for (int config = 0; config < total_configs; config++) {
+            int remaining = config;
+            double lv = f->cpt[config];
+            for (int k = f->num_vars - 1; k >= 0; k--) {
+                int state = remaining % f->dims[k];
+                remaining /= f->dims[k];
+                int var_id = f->var_indices[k];
+                if (have_msgs) {
+                    lv += fg->msg_vf[msg_offset + k][state];
+                } else {
+                    lv += fg->beliefs[var_id][state];
+                }
+            }
+            log_b[config] = lv;
+            if (lv > max_lb) max_lb = lv;
+        }
+
+        double sum_exp = 0.0;
+        for (int config = 0; config < total_configs; config++) {
+            if (log_b[config] > LOG_ZERO * 0.5) {
+                sum_exp += exp(log_b[config] - max_lb);
+            }
+        }
+        double log_z_a = (sum_exp > 0.0) ? (max_lb + log(sum_exp)) : 0.0;
+
+        for (int config = 0; config < total_configs; config++) {
+            double lb = log_b[config] - log_z_a;
+            double b = exp(lb);
+            if (b > 1e-30) {
+                f_bethe += b * (lb - f->cpt[config]);
+            }
+        }
+
+        if (log_b != log_b_stack) free(log_b);
+        msg_offset += f->num_vars;
+    }
+
+    for (int v = 0; v < nv; v++) {
+        int coeff = deg[v] - 1;
+        if (coeff == 0) continue;
+        double hv = 0.0;
+        int dim = fg->var_dims[v];
+        for (int s = 0; s < dim; s++) {
+            double q = exp(fg->beliefs[v][s]);
+            if (q > 1e-30) {
+                hv -= q * fg->beliefs[v][s];
+            }
+        }
+        f_bethe += (double)coeff * hv;
+    }
+
+    if (deg != deg_stack) free(deg);
+
+    if (observations && num_obs > 0) {
+        for (int i = 0; i < num_obs; i++) {
+            int var_idx   = (int)observations[i * 2];
+            int obs_state = (int)observations[i * 2 + 1];
+            if (var_idx >= 0 && var_idx < fg->num_vars &&
+                obs_state >= 0 && obs_state < fg->var_dims[var_idx]) {
+                f_bethe -= fg->beliefs[var_idx][obs_state];
+            }
+        }
+    }
+
+    return f_bethe;
 }
 
 /* ========================================================================

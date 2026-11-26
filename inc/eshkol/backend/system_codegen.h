@@ -621,6 +621,8 @@ public:
     llvm::Value* fgMarginal(const eshkol_operations_t* op);
     /** @brief (fg-entropy graph) — entropy of a factor graph's current beliefs. */
     llvm::Value* fgEntropy(const eshkol_operations_t* op);
+    /** @brief (free-energy-bethe graph obs) — exact Bethe free energy of a factor graph. */
+    llvm::Value* freeEnergyBethe(const eshkol_operations_t* op);
     /** @brief (kb-retract! kb fact) — remove a fact from a knowledge base. @return Unspecified value. */
     llvm::Value* kbRetract(const eshkol_operations_t* op);
 

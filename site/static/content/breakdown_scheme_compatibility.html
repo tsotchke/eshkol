@@ -609,7 +609,7 @@ x
 <pre class="scheme"><code>(exact-&gt;inexact 1/3)                 ; =&gt; 0.3333333333333333
 (inexact? 3.14)                      ; =&gt; #t</code></pre>
 <p><strong>complex</strong> (complex number): Heap-allocated struct containing two doubles (real and imaginary parts). Type tag <code>ESHKOL_VALUE_COMPLEX</code> (7). Division uses Smith’s formula to avoid overflow.</p>
-<pre class="scheme"><code>(make-rectangular 3 4)               ; =&gt; 3+4i
+<pre class="scheme"><code>(make-rectangular 3 4)               ; =&gt; 3.0+4.0i
 (magnitude 3+4i)                     ; =&gt; 5.0
 (angle 0+1i)                         ; =&gt; 1.5707963267948966
 (real-part 3+4i)                     ; =&gt; 3.0
