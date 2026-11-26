@@ -1,0 +1,99 @@
+{
+ "target": "Fixture.lean",
+ "mutants": [
+  {
+   "id": "expect-invalid",
+   "description": "ill-typed definition",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + true",
+   "expect": "INVALID"
+  },
+  {
+   "id": "expect-refuted",
+   "description": "off-by-one with a valid witness",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + n + 1",
+   "witness": "theorem witness_odd : \u00ac type_of% @double_even := by\n  intro h\n  have h0 := h 0\n  revert h0\n  decide",
+   "witness_name": "witness_odd",
+   "refutes": "double_even",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "expect-proof-broken",
+   "description": "off-by-one without a witness",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + n + 1",
+   "expect": "PROOF_BROKEN"
+  },
+  {
+   "id": "expect-survived",
+   "description": "change to a definition no theorem mentions",
+   "old": "def unused (n : Nat) : Nat := n",
+   "new": "def unused (n : Nat) : Nat := n + 1",
+   "expect": "SURVIVED"
+  },
+  {
+   "id": "expect-equivalent",
+   "description": "semantically neutral rewrite",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := 2 * n",
+   "equivalent": "n + n = 2 * n",
+   "expect": "EQUIVALENT"
+  },
+  {
+   "id": "expect-equivalent-contradicted",
+   "description": "wrongly declared equivalent",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + n + 1",
+   "equivalent": "claimed neutral",
+   "expect": "EQUIVALENT_CONTRADICTED"
+  },
+  {
+   "id": "expect-manifest-error",
+   "description": "old text absent",
+   "old": "def triple",
+   "new": "def quadruple",
+   "expect": "MANIFEST_ERROR"
+  },
+  {
+   "id": "control-false-witness",
+   "description": "witness is false on the mutant: must not count as REFUTED",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + n + 1",
+   "witness": "theorem witness_false : \u00ac type_of% @double_ge := by\n  intro h\n  have h0 := h 0\n  revert h0\n  decide",
+   "witness_name": "witness_false",
+   "refutes": "double_ge",
+   "expect": "PROOF_BROKEN"
+  },
+  {
+   "id": "control-sorry-witness",
+   "description": "witness relies on a broken theorem: must not count as REFUTED",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + n + 1",
+   "witness": "theorem witness_borrowed : \u00ac type_of% @double_ge := fun _ => absurd (double_even 0) (by decide)",
+   "witness_name": "witness_borrowed",
+   "refutes": "double_ge",
+   "expect": "PROOF_BROKEN"
+  },
+  {
+   "id": "control-refutes-absent-obligation",
+   "description": "witness points at an obligation the spec does not have: must be a manifest error, not REFUTED",
+   "old": "def unused (n : Nat) : Nat := n",
+   "new": "def unused (n : Nat) : Nat := n + 1",
+   "witness": "theorem witness_unused : unused 0 = 1 := by decide",
+   "witness_name": "witness_unused",
+   "refutes": "unused_is_identity",
+   "expect": "MANIFEST_ERROR"
+  },
+  {
+   "id": "control-unbound-witness",
+   "description": "witness is true on the mutant but is not the negation of the named obligation: must not count as REFUTED",
+   "old": "def double (n : Nat) : Nat := n + n",
+   "new": "def double (n : Nat) : Nat := n + n + 1",
+   "witness": "theorem witness_unbound : double 0 = 1 := by decide",
+   "witness_name": "witness_unbound",
+   "refutes": "double_even",
+   "expect": "PROOF_BROKEN"
+  }
+ ]
+}
