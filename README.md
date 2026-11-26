@@ -227,7 +227,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Parser driven by an explicit continuation stack** — a child parse suspends into a heap-allocated coroutine frame, so native stack consumption is independent of grammar nesting — with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional checking: synthesis, and the checking direction for lambdas, applications, `let`, `define`, declarations and `(the T e)`, judged tail by tail; dependent types (Pi, Sigma, universe levels, length-indexed vectors, `define-type` families) with definitional equality by normalization, enforced at compile time (ADR-0042)
-- **LLVM backend** with 39 code generation modules totalling 120,420 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,407 lines — measured at the v1.3.6-evolve source (`60f345def`)
+- **LLVM backend** with 39 code generation modules totalling 120,353 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 46,537 lines — measured at `v1.4.0-connection`
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 

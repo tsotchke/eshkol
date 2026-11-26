@@ -1173,7 +1173,7 @@ are then set to `nil` in order.
 
 ### Implementation Scope
 
-The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,682 lines) is a
+The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,785 lines) is a
 fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal
 backend which requires SF64 software emulation, CUDA provides native f64
 hardware, so no precision emulation is needed.
@@ -1264,7 +1264,7 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
   `ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows builds) are set by CMake.
   `gpu_memory.mm` is compiled as Objective-C++ on macOS;
   `gpu_memory_cuda.cpp` is compiled as standard C++ on Linux/Windows.
-  A stub file (`gpu_memory_stub.cpp`, 450 lines) provides no-op
+  A stub file (`gpu_memory_stub.cpp`, 597 lines) provides no-op
   implementations when neither backend is available.
 
 - **Runtime**: `eshkol_gpu_init` (`gpu_memory_cuda.cpp`) tries CUDA

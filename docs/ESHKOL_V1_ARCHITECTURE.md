@@ -80,7 +80,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 
 | Metric | Value |
 |--------|-------|
-| Total backend (`lib/backend/`) | ~220,211 lines indexed |
+| Total backend (`lib/backend/`) | 248,072 lines indexed |
 | LLVM backend | 39 codegen modules, 120,154 lines |
 | Bytecode VM | 73 core opcodes, 800 VM-table builtins, ~57,650 lines |
 | Main codegen | 47,338 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
@@ -168,7 +168,7 @@ in `vm_run.c`, so this structural change does not alter behavior.
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (6,212 lines across 8 source files), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,267 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (6,212 lines across 8 source files), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,300 lines)
 
 ### Core Principles
 
@@ -291,7 +291,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,816 lines)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,944 lines)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -346,7 +346,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,130 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (6,087 lines)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,388 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (7,780 lines)
 
 **Universe Hierarchy**:
 ```scheme
@@ -390,7 +390,7 @@ typedef struct {
 
 #### The Type Relation
 
-**Implementation**: [`inc/eshkol/types/type_relation.h`](../inc/eshkol/types/type_relation.h) (170 lines), [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) (433 lines) (since v1.3.5; [ADR 0013](design/adr/0013-gradual-type-relation.md))
+**Implementation**: [`inc/eshkol/types/type_relation.h`](../inc/eshkol/types/type_relation.h) (181 lines), [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) (513 lines) (since v1.3.5; [ADR 0013](design/adr/0013-gradual-type-relation.md))
 
 `TypeRelation` is the sole owner of every judgment that compares, combines or prints types. It is a lightweight view over one `TypeEnvironment`: it reads and extends the environment's interned signatures, pairs and sums, fills the environment's subtype cache, and keys nothing by expression or binding (per-expression facts belong to the semantic identity tables, not to this module). The lattice has `Value` at the top and `Never` at the bottom; between them sit the nominal graph, tracked pairs `Pair<A, B>` (a bare `Pair` is `Pair<Value, Value>`), sums `(+ A B ...)`, and function signatures `(-> A... R)` below the generic procedure types `Function` and `Closure`.
 
@@ -450,7 +450,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (15,666 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (16,013 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -680,7 +680,7 @@ A call through a mutable binding evaluates the binding's current value and dispa
 
 ### Capture Resolution for Direct Calls
 
-**Implementation**: [`inc/eshkol/backend/closure_capture_scope.h`](../inc/eshkol/backend/closure_capture_scope.h) (182 lines), `AutodiffCodegen::appendDifferentiandCaptures` in [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (since v1.3.5)
+**Implementation**: [`inc/eshkol/backend/closure_capture_scope.h`](../inc/eshkol/backend/closure_capture_scope.h) (211 lines), `AutodiffCodegen::appendDifferentiandCaptures` in [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (since v1.3.5)
 
 A lambda with free variables lowers to an LLVM function that takes one pointer parameter per captured variable, appended after its user parameters. A site that calls such a function directly has to supply those pointers itself, and two rules keep that sound:
 
@@ -912,7 +912,7 @@ compilation:
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,186 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,519 lines)
 
 ### Architecture
 
@@ -983,7 +983,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,894 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,819 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (5,213 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,844 lines)
 
 ### Architecture
 
@@ -1120,7 +1120,7 @@ lib/
 
 ### Math Library Highlights
 
-**[`lib/math.esk`](../lib/math.esk)** (412 lines):
+**[`lib/math.esk`](../lib/math.esk)** (484 lines):
 
 ```scheme
 ;; Linear algebra
@@ -1458,14 +1458,14 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,816 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (47,548 lines)
-- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1,391 lines; 6,212 across the same 8 arena, region, and allocation source files)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,698 lines)
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (6,087 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,894 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,186 lines)
-- [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) - Gradual type relation (433 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,944 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (46,537 lines)
+- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1,441 lines; 6,212 across the same 8 arena, region, and allocation source files)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (12,436 lines)
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (7,780 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (5,213 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,519 lines)
+- [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) - Gradual type relation (513 lines)
 
 ### Forward-looking design documents
 

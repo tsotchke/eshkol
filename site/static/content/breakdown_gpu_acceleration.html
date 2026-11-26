@@ -999,7 +999,7 @@ target = min(target, 4096);</code></pre>
 <hr />
 <h2 id="12-cuda-backend-status">12. CUDA Backend Status</h2>
 <h3 id="implementation-scope">Implementation Scope</h3>
-<p>The CUDA backend (<code>lib/backend/gpu/gpu_memory_cuda.cpp</code>, 1,682 lines) is a fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal backend which requires SF64 software emulation, CUDA provides native f64 hardware, so no precision emulation is needed.</p>
+<p>The CUDA backend (<code>lib/backend/gpu/gpu_memory_cuda.cpp</code>, 1,785 lines) is a fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal backend which requires SF64 software emulation, CUDA provides native f64 hardware, so no precision emulation is needed.</p>
 <h3 id="what-is-fully-implemented">What Is Fully Implemented</h3>
 <p><strong>Initialization</strong> (<code>gpu_memory_cuda.cpp</code>): Device enumeration via <code>cudaGetDeviceCount</code>, device 0 selection, CUDA stream creation, cuBLAS handle creation and stream binding. Thread-safe via <code>std::mutex</code> + double-check pattern in <code>eshkol_gpu_init</code> (<code>gpu_memory_cuda.cpp</code>).</p>
 <p><strong>Memory management</strong> (<code>gpu_memory_cuda.cpp</code>): Three allocation modes: - <code>ESHKOL_MEM_UNIFIED</code>: <code>cudaMallocManaged()</code> – automatic page migration between host and device - <code>ESHKOL_MEM_DEVICE</code>: <code>cudaMalloc()</code> – device-only, maximum throughput - <code>ESHKOL_MEM_HOST_PINNED</code>: <code>cudaMallocHost()</code> – pinned host memory for async DMA</p>
@@ -1030,7 +1030,7 @@ target = min(target, 4096);</code></pre>
 <h3 id="runtime-backend-selection">Runtime Backend Selection</h3>
 <p>Metal and CUDA coexist via compile-time guards and runtime detection:</p>
 <ul>
-<li><p><strong>Compile-time</strong>: <code>ESHKOL_GPU_METAL_ENABLED</code> (macOS builds) and <code>ESHKOL_GPU_CUDA_ENABLED</code> (Linux/Windows builds) are set by CMake. <code>gpu_memory.mm</code> is compiled as Objective-C++ on macOS; <code>gpu_memory_cuda.cpp</code> is compiled as standard C++ on Linux/Windows. A stub file (<code>gpu_memory_stub.cpp</code>, 450 lines) provides no-op implementations when neither backend is available.</p></li>
+<li><p><strong>Compile-time</strong>: <code>ESHKOL_GPU_METAL_ENABLED</code> (macOS builds) and <code>ESHKOL_GPU_CUDA_ENABLED</code> (Linux/Windows builds) are set by CMake. <code>gpu_memory.mm</code> is compiled as Objective-C++ on macOS; <code>gpu_memory_cuda.cpp</code> is compiled as standard C++ on Linux/Windows. A stub file (<code>gpu_memory_stub.cpp</code>, 597 lines) provides no-op implementations when neither backend is available.</p></li>
 <li><p><strong>Runtime</strong>: <code>eshkol_gpu_init</code> (<code>gpu_memory_cuda.cpp</code>) tries CUDA first (on builds with <code>ESHKOL_GPU_CUDA_AVAILABLE</code>). The Metal backend (<code>gpu_memory.mm</code>) follows the same pattern. The first backend that successfully initializes sets <code>g_active_backend</code>; subsequent API calls dispatch to it. Only one backend is active at a time.</p></li>
 <li><p><strong>Backend query</strong>: <code>eshkol_gpu_get_backend()</code> returns the active enum (<code>ESHKOL_GPU_METAL</code>, <code>ESHKOL_GPU_CUDA</code>, or <code>ESHKOL_GPU_NONE</code>). <code>eshkol_gpu_supports_f64()</code> returns true for CUDA (native) and false for “no GPU” (<code>gpu_memory_cuda.cpp</code>). The Metal backend reports f64 support via SF64 emulation.</p></li>
 </ul>

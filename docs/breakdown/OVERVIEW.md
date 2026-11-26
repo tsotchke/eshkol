@@ -90,7 +90,7 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (47,407 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 37 further `*_codegen.cpp` modules under `lib/backend/`; `lib/` and `inc/` together total about 387,000 lines as of the v1.3.6 release, 60f345def)
+**Phase 4: LLVM IR Generation** (46,537 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 38 further `*_codegen.cpp` modules under `lib/`; `inc/` holds 54,887 lines of headers alongside the backend and core libraries)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
@@ -171,7 +171,7 @@ Closures capture variables by storing **pointers** (not values) to the captured 
   (inc)) ; Returns 2 (mutates same counter)
 ```
 
-**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 1,505 lines, [inference.cpp](../../lib/core/inference.cpp) 1,258 lines, [workspace.cpp](../../lib/core/workspace.cpp) 354 lines):
+**Consciousness Engine Runtime** ([logic.cpp](../../lib/core/logic.cpp) 1,505 lines, [inference.cpp](../../lib/core/inference.cpp) 1,321 lines, [workspace.cpp](../../lib/core/workspace.cpp) 393 lines):
 
 Three C runtime libraries implementing unification with substitutions, factor graph belief propagation, and global workspace softmax competition. LLVM codegen dispatches to these via tagged value calling conventions.
 
@@ -230,7 +230,7 @@ v1.1-accelerate adds eight major feature systems to the v1.0-foundation core:
 
 ### Machine Learning Framework (75+ Builtins)
 
-A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (2,069 lines after the v1.2 split); the per-domain implementations live in thirteen `tensor_*_codegen.cpp` siblings (23,413 lines combined) with SIMD acceleration and automatic GPU dispatch:
+A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (2,107 lines after the v1.2 split); the per-domain implementations live in thirteen sibling modules (23,487 lines combined across `tensor_*_codegen.cpp` and `tensorcore_codegen.cpp` at 231 lines) with SIMD acceleration and automatic GPU dispatch:
 
 - **Activations** (16): relu, relu6, sigmoid, tanh, gelu, swish, mish, softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu, selu, celu
 - **Loss functions** (14): mse-loss, mae-loss, cross-entropy-loss, bce-loss, huber-loss, kl-div-loss, hinge-loss, smooth-l1-loss, focal-loss, triplet-loss, contrastive-loss, label-smoothing-loss, cosine-embedding-loss
@@ -278,7 +278,7 @@ Work-stealing thread pool with parallel higher-order functions:
 - `parallel-filter` — parallel predicate-based selection
 - `parallel-for-each` — parallel side-effecting iteration
 
-Implementation: [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp) (1,237 lines), [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [thread_pool.cpp](../../lib/backend/thread_pool.cpp) (1,530 lines). Worker functions use `LinkOnceODRLinkage` for safe parallel compilation.
+Implementation: [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp) (1,296 lines), [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) (2,324 lines), [thread_pool.cpp](../../lib/backend/thread_pool.cpp) (1,602 lines). Worker functions use `LinkOnceODRLinkage` for safe parallel compilation.
 
 ### Signal Processing
 
@@ -564,7 +564,7 @@ Both pursue memory safety without garbage collection:
 
 ## Production Readiness
 
-Eshkol v1.4.0-connection represents a **mature, production-ready implementation** for scientific computing, machine learning, networked systems, and cognitive architecture deployment. The implementation-scale figures below were measured on the v1.2.1-scale tree and have since grown (the v1.3.6 release measured `lib/` and `inc/` together at about 387,000 lines); the current surface counts 1,651 total language constructs and 1,069 builtins.
+Eshkol v1.4.0-connection represents a **mature, production-ready implementation** for scientific computing, machine learning, networked systems, and cognitive architecture deployment. The implementation-scale figures below were measured on the v1.2.1-scale tree and have since grown (`lib/backend/` alone is 248,072 lines and `inc/` is 54,887 lines at v1.4.0-connection); the current surface counts 1,651 total language constructs and 1,069 builtins.
 
 ### Implementation Scale
 
@@ -592,7 +592,7 @@ Eshkol v1.4.0-connection represents a **mature, production-ready implementation*
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,894 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 5,213 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 954 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry

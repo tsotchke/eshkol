@@ -83,7 +83,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 
 In v1.2 the tensor code generator was split into thirteen per-domain modules, 23,413 lines in total, re-exported through the original dispatcher: `tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp` and `tensorcore_codegen.cpp`, with `tensor_codegen.cpp` as that dispatcher.
 
-Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 220,211 lines indexed.
+Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals 248,072 lines indexed.
 
 ---
 
@@ -169,7 +169,7 @@ Three theoretical frameworks unified as compiler primitives:
 
 **Global Workspace Theory** (Baars, 1988): `make-workspace`, `ws-register!`, `ws-step!`, `workspace?`
 
-Runtime implementation in logic.cpp (1,505 lines), inference.cpp (1,258 lines), workspace.cpp (354 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
+Runtime implementation in logic.cpp (1,505 lines), inference.cpp (1,321 lines), workspace.cpp (393 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
 
 ### GPU Acceleration
 
@@ -254,7 +254,7 @@ Eshkol has two production execution backends serving different purposes:
 
 **LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 39 specialized codegen modules totaling 120,420 lines (`find lib -iname '*codegen*.cpp'`). This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 73-opcode register+stack interpreter (`eshkol_vm.c`, 2,906 lines) with a canonical VM surface of 800 registered builtin names and aliases (`tests/coverage/language_surface.json`) — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`. The component-size table below includes the full VM module family.
+**Bytecode VM** (complementary): 73-opcode register+stack interpreter (`eshkol_vm.c`, 3,284 lines) with a canonical VM surface of 800 registered builtin names and aliases (`tests/coverage/language_surface.json`) — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`. The component-size table below includes the full VM module family.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 83 of the 84 enum opcodes in weights (82 of the paper's 83, plus `OP_SWAP=83`); `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (127/127 inline, 124/124 traced, `scripts/paper/run_paper_suite.sh` at `60f345def`). Exports QLMW binary format for qLLM loading.
 

@@ -291,7 +291,7 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
 <pre class="bash"><code>eshkol-run program.esk -B program.eskb</code></pre>
 <p>ESKB files contain: - Magic number: <code>ESKB</code> - Instruction count + constant count - Opcode/operand pairs - Constant pool (integers, floats, strings) - CRC32 checksums</p>
 <h2 id="web-compilation-server">Web Compilation Server</h2>
-<p><code>exe/eshkol-server.cpp</code> (841 lines) provides an HTTP API for on-demand compilation:</p>
+<p><code>exe/eshkol-server.cpp</code> (999 lines) provides an HTTP API for on-demand compilation:</p>
 <pre><code>POST /compile  — compile Eshkol code to WASM
   Request:  { &quot;code&quot;: &quot;(display 42)&quot;, &quot;session_id&quot;: &quot;...&quot; }
   Response: { &quot;wasm&quot;: &quot;...&quot;, &quot;session_id&quot;: &quot;...&quot; }

@@ -276,7 +276,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
 | HoTT identity types, univalence, HITs | Yes | Cubical kernel (ADR-0043): path types, transp/hcomp, Glue, circle, suspension, truncations | `(hott ...)`, `(hott-eval ...)`; JIT, AOT, VM |
-| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,548 lines |
+| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 46,537 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -634,7 +634,7 @@ every claim about the distribution is decided rather than estimated.
 | **Model Operations** |
 | Save/load weights | Yes | v1.2 | Via file I/O; `model_io_test` PASS (`ctest -R model_io_test`) — corrected 2026-08-25 from `WIP`, conformity audit item d4 |
 | Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 969 lines) |
-| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (239 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
+| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (216 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
 | Lazy loading | Planned | - | Planned |
