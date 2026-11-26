@@ -5,6 +5,8 @@
   Eshkol OS Phase K2: Machine-Checked Lean 4.12.0 Formal Proofs
     1. `no_frame_leak`: physical frame conservation across arbitrary finite
        alloc/free/double-free traces.
+       `frame_accounting_preserved`: the free and allocated counters equal the
+       number of frames the ownership table assigns to each owner.
     2. `w_x_enforcement`: strict W^X and U/K privilege isolation across all
        reachable PTE states under arbitrary map/remap/unmap traces.
     3. `kernel_non_aliasing`: no kernel-reserved physical frame ever appears
@@ -120,6 +122,123 @@ theorem no_frame_leak (p : FramePool) (ops : List PoolOp) (h : p.Conserved) :
     unfold FramePool.run
     rw [List.foldl_cons]
     exact ih (p.step op) (pool_step_preserves_conservation p op h)
+
+/-! ## Section 1b: Frame Accounting
+
+`Conserved` relates the two counters to the total only. `Accounted` ties each
+counter to the ownership table: `freeCount` is the number of frames owned by
+`.free`, and `allocatedCount` the number owned by `.user` or `.kernel`. A step
+that changed the counters without changing ownership, or the reverse, breaks it.
+-/
+
+/-- Number of frames below `n` whose owner is `o`. -/
+def countOwnedBelow (owners : Nat -> FrameOwner) (o : FrameOwner) : Nat -> Nat
+  | 0 => 0
+  | n + 1 => countOwnedBelow owners o n + (if owners n = o then 1 else 0)
+
+def FramePool.Accounted (p : FramePool) : Prop :=
+  p.freeCount = countOwnedBelow p.owners .free p.totalFrames ∧
+  p.allocatedCount = countOwnedBelow p.owners .user p.totalFrames +
+                     countOwnedBelow p.owners .kernel p.totalFrames
+
+theorem countOwnedBelow_update_above (owners : Nat -> FrameOwner) (o b : FrameOwner)
+    (idx : Nat) : ∀ n, n ≤ idx →
+    countOwnedBelow (fun i => if i = idx then b else owners i) o n = countOwnedBelow owners o n
+  | 0, _ => rfl
+  | n + 1, h => by
+    have hne : n ≠ idx := by omega
+    simp only [countOwnedBelow, hne, if_false]
+    rw [countOwnedBelow_update_above owners o b idx n (by omega)]
+
+/-- Moving frame `idx` from owner `a` to owner `b` moves one unit of count. -/
+theorem countOwnedBelow_update (owners : Nat -> FrameOwner) (o a b : FrameOwner)
+    (idx : Nat) (ha : owners idx = a) : ∀ n, idx < n →
+    countOwnedBelow (fun i => if i = idx then b else owners i) o n + (if a = o then 1 else 0) =
+    countOwnedBelow owners o n + (if b = o then 1 else 0)
+  | 0, h => absurd h (Nat.not_lt_zero _)
+  | n + 1, h => by
+    simp only [countOwnedBelow]
+    by_cases hn : n = idx
+    · subst hn
+      rw [countOwnedBelow_update_above owners o b n n (Nat.le_refl n)]
+      simp only [if_true, ha]
+      omega
+    · have hlt : idx < n := by omega
+      have ih := countOwnedBelow_update owners o a b idx ha n hlt
+      simp only [hn, if_false]
+      omega
+
+theorem pool_step_preserves_accounted (p : FramePool) (op : PoolOp)
+    (h : p.Accounted) : (p.step op).Accounted := by
+  rcases h with ⟨hfree, halloc⟩
+  cases op with
+  | allocUser idx =>
+    unfold FramePool.step
+    dsimp only
+    split
+    · rename_i hcond
+      obtain ⟨hlt, hown, _⟩ := hcond
+      have cf := countOwnedBelow_update p.owners .free .free .user idx hown p.totalFrames hlt
+      have cu := countOwnedBelow_update p.owners .user .free .user idx hown p.totalFrames hlt
+      have ck := countOwnedBelow_update p.owners .kernel .free .user idx hown p.totalFrames hlt
+      simp at cf cu ck
+      exact ⟨by dsimp only; omega, by dsimp only; omega⟩
+    · exact ⟨hfree, halloc⟩
+  | freeUser idx gen =>
+    unfold FramePool.step
+    dsimp only
+    split
+    · rename_i hcond
+      obtain ⟨hlt, hown, _⟩ := hcond
+      have cf := countOwnedBelow_update p.owners .free .user .free idx hown p.totalFrames hlt
+      have cu := countOwnedBelow_update p.owners .user .user .free idx hown p.totalFrames hlt
+      have ck := countOwnedBelow_update p.owners .kernel .user .free idx hown p.totalFrames hlt
+      simp at cf cu ck
+      exact ⟨by dsimp only; omega, by dsimp only; omega⟩
+    · exact ⟨hfree, halloc⟩
+
+/-- Every trace preserves the tie between counters and the ownership table. -/
+theorem frame_accounting_preserved (p : FramePool) (ops : List PoolOp) (h : p.Accounted) :
+    (p.run ops).Accounted := by
+  induction ops generalizing p with
+  | nil => exact h
+  | cons op rest ih =>
+    unfold FramePool.run
+    rw [List.foldl_cons]
+    exact ih (p.step op) (pool_step_preserves_accounted p op h)
+
+theorem countOwnedBelow_init_free (k : Nat) : ∀ n,
+    countOwnedBelow (fun i => if i < k then FrameOwner.kernel else .free) .free n = n - k
+  | 0 => by simp [countOwnedBelow]
+  | n + 1 => by
+    simp only [countOwnedBelow, countOwnedBelow_init_free k n]
+    by_cases h : n < k <;> simp [h] <;> omega
+
+theorem countOwnedBelow_init_kernel (k : Nat) : ∀ n,
+    countOwnedBelow (fun i => if i < k then FrameOwner.kernel else .free) .kernel n = min n k
+  | 0 => by simp [countOwnedBelow]
+  | n + 1 => by
+    simp only [countOwnedBelow, countOwnedBelow_init_kernel k n]
+    by_cases h : n < k <;> simp [h] <;> omega
+
+theorem countOwnedBelow_init_user (k : Nat) : ∀ n,
+    countOwnedBelow (fun i => if i < k then FrameOwner.kernel else .free) .user n = 0
+  | 0 => rfl
+  | n + 1 => by
+    simp only [countOwnedBelow, countOwnedBelow_init_user k n]
+    by_cases h : n < k <;> simp [h]
+
+theorem pool_init_accounted (total kRes : Nat) (hle : kRes ≤ total) :
+    FramePool.Accounted
+      { totalFrames := total
+        freeCount := total - kRes
+        allocatedCount := kRes
+        owners := fun i => if i < kRes then .kernel else .free
+        generations := fun _ => 1 } := by
+  unfold FramePool.Accounted
+  dsimp only
+  rw [countOwnedBelow_init_free, countOwnedBelow_init_kernel, countOwnedBelow_init_user]
+  exact ⟨rfl, by omega⟩
 
 /-! ## Section 2: W^X Enforcement and Kernel Non-Aliasing -/
 
