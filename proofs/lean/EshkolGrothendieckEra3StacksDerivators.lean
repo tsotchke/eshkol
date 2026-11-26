@@ -1,19 +1,4 @@
-/-
-  EshkolGrothendieckEra3StacksDerivators.lean
-  Formal Lean 4.12.0 verification of Grothendieck Era 3A core theorems:
-    1. Lurie Hierarchy & Homotopy Hypothesis (Kan subsetneq QCat subsetneq sSet):
-       - `nerve_arrow_is_quasicat_not_kan`
-       - `nerve_z2_groupoid_is_kan`
-       - `bare_inner_horn_not_quasicat`
-    2. Higher Stacks & Cech 2-Cocycle Descent:
-       - `cech_cocycle_composition_law` (gauge-invariance of 2-cocycles + explicit violated cocycle counterexample)
-    3. Les Derivateurs (1991):
-       - `derivator_hocolim_euler_exactness` (Mayer-Vietoris Euler additivity)
-       - `derivator_holim_euler_exactness` & bicartesian Euler identity
-       - `triangulated_cone_nonuniqueness` (distinct cone fillers commuting with i and p)
-
-  Standalone Lean 4.12.0 (zero external dependencies, zero sorry, zero custom axioms).
--/
+/-! # Two-dimensional horn filling, Čech transition data, Euler characteristics and cumulative universes -/
 
 namespace EshkolGrothendieckEra3
 
@@ -46,7 +31,7 @@ def HasOuter2Fillers (X : TruncSSet) : Prop :=
   forall e0 e1 : X.E, X.d0E e0 = X.d0E e1 ->
     exists t : X.T, X.d0T t = e0 /\ X.d1T t = e1
 
-/-- 2-truncated Kan complex (infinity-groupoid): fills ALL inner and outer 2-horns. -/
+/-- All three two-dimensional horn-filling predicates for the given face data. -/
 def IsKanComplex2 (X : TruncSSet) : Prop :=
   IsQuasiCat2 X /\ HasOuter0Fillers X /\ HasOuter2Fillers X
 
@@ -194,10 +179,10 @@ theorem bare_inner_horn_not_quasicat : Not (IsQuasiCat2 bareInnerHorn) := by
   exact Empty.elim t
 
 /- ============================================================================
-   2. Higher Stacks & Cech 2-Cocycle Descent Law
+   2. Higher Stacks & Cech 1-Cocycle Descent Law
    ============================================================================ -/
 
-structure FiniteGroup (G : Type) where
+structure GroupData (G : Type) where
   one : G
   mul : G -> G -> G
   inv : G -> G
@@ -207,16 +192,16 @@ structure FiniteGroup (G : Type) where
   mul_left_inv : forall a : G, mul (inv a) a = one
   mul_right_inv : forall a : G, mul a (inv a) = one
 
-/-- 2-Cocycle condition on a cover indexed by I: g(i, j) * g(j, k) = g(i, k). -/
-def IsCechCocycle {G I : Type} (grp : FiniteGroup G) (g : I -> I -> G) : Prop :=
+/-- 1-Cocycle condition on a cover indexed by I: g(i, j) * g(j, k) = g(i, k). -/
+def IsCechCocycle {G I : Type} (grp : GroupData G) (g : I -> I -> G) : Prop :=
   forall i j k : I, grp.mul (g i j) (g j k) = g i k
 
 /-- Gauge transformation of a cocycle by local 1-cochain h: I -> G. -/
-def gaugeTransform {G I : Type} (grp : FiniteGroup G) (h : I -> G) (g : I -> I -> G) :
+def gaugeTransform {G I : Type} (grp : GroupData G) (h : I -> G) (g : I -> I -> G) :
     I -> I -> G :=
   fun i j => grp.mul (h i) (grp.mul (g i j) (grp.inv (h j)))
 
-def z2Group : FiniteGroup Z2Elem :=
+def z2Group : GroupData Z2Elem :=
   { one := .e
     mul := z2Mul
     inv := fun x => x
@@ -236,7 +221,7 @@ def invalidZ2Transition : Fin 3 -> Fin 3 -> Z2Elem
 /-- Theorem 3: Gauge transformations preserve the Cech 2-cocycle condition for every group G,
     AND there exists a non-matching transition assignment violating the triple-overlap law. -/
 theorem cech_cocycle_composition_law :
-    (forall (G I : Type) (grp : FiniteGroup G) (g : I -> I -> G) (h : I -> G),
+    (forall (G I : Type) (grp : GroupData G) (g : I -> I -> G) (h : I -> G),
       IsCechCocycle grp g -> IsCechCocycle grp (gaugeTransform grp h g)) /\
     Not (IsCechCocycle z2Group invalidZ2Transition) := by
   constructor
@@ -330,8 +315,8 @@ theorem euler_hocolim_aux (dimA dimB dimC : Nat -> Nat) :
     omega
 
 /-- Theorem 4: Exact Mayer-Vietoris Euler characteristic additivity for the
-    homotopy pushout (left homotopy Kan extension p_!) in a Grothendieck derivator:
-    when A, B, C are bounded in degrees <= n (so dim_A(n+1) = 0),
+    graded dimensions of the standard mapping-cone model of a homotopy pushout:
+    when the two target dimensions vanish in degree n+1,
     chi(hocolim(B <- A -> C)) = chi(B) + chi(C) - chi(A). -/
 theorem derivator_hocolim_euler_exactness
     (dimA dimB dimC : Nat -> Nat) (n : Nat)
@@ -364,4 +349,103 @@ theorem triangulated_cone_nonuniqueness :
   · intro a b; rfl
   · decide
 
+/-! ## Cumulative Grothendieck universes in an ambient set theory -/
+
+/-- The ambient operations are specified by their elements. Separation accepts
+    an arbitrary predicate and indexed union ranges over the members of a set. -/
+structure SetOperations (V : Type u) where
+  mem : V → V → Prop
+  irreflexive : ∀ x, ¬ mem x x
+  empty : V
+  empty_spec : ∀ x, ¬ mem x empty
+  pair : V → V → V
+  pair_spec : ∀ x a b, mem x (pair a b) ↔ x = a ∨ x = b
+  power : V → V
+  power_spec : ∀ x a, mem x (power a) ↔ ∀ z, mem z x → mem z a
+  separate : V → (V → Prop) → V
+  separate_spec : ∀ x a p, mem x (separate a p) ↔ mem x a ∧ p x
+  iUnion : V → (V → V) → V
+  union_spec : ∀ x a f, mem x (iUnion a f) ↔ ∃ i, mem i a ∧ mem x (f i)
+
+structure UniverseTower {V : Type u} (S : SetOperations V) where
+  level : Nat → V
+  next : ∀ n, S.mem (level n) (level (n+1))
+  transitive : ∀ {n a x}, S.mem a (level n) → S.mem x a → S.mem x (level n)
+  empty_small : ∀ n, S.mem S.empty (level n)
+  pair_small : ∀ {n a b}, S.mem a (level n) → S.mem b (level n) → S.mem (S.pair a b) (level n)
+  power_small : ∀ {n a}, S.mem a (level n) → S.mem (S.power a) (level n)
+  union_small : ∀ {n a} {f : V → V}, S.mem a (level n) →
+    (∀ i, S.mem i a → S.mem (f i) (level n)) → S.mem (S.iUnion a f) (level n)
+
+namespace UniverseTower
+variable {V : Type u} {S : SetOperations V} (T : UniverseTower S)
+
+abbrev Small (n : Nat) (a : V) := S.mem a (T.level n)
+
+theorem cumulative {i j : Nat} (h : i ≤ j) {a : V} (ha : T.Small i a) : T.Small j a := by
+  induction h with
+  | refl => exact ha
+  | step _ ih => exact T.transitive (T.next _) ih
+
+/-- The lower universe itself witnesses strict inclusion. -/
+theorem strict_stratification {i j : Nat} (h : i < j) :
+    (∀ a, T.Small i a → T.Small j a) ∧
+    T.Small j (T.level i) ∧ ¬ T.Small i (T.level i) ∧ ¬ T.Small i (T.level j) := by
+  have hij := T.cumulative h (T.next i)
+  exact ⟨fun _ => T.cumulative (Nat.le_of_lt h), hij, S.irreflexive _, fun hji =>
+    S.irreflexive _ (T.transitive hij hji)⟩
+
+def ordered (S : SetOperations V) (a b : V) := S.pair (S.pair a a) (S.pair a b)
+
+theorem ordered_small {n a b} (ha : T.Small n a) (hb : T.Small n b) :
+    T.Small n (ordered S a b) := T.pair_small (T.pair_small ha ha) (T.pair_small ha hb)
+
+/-- The dependent sum is the union of singletons of tagged elements. -/
+def sigmaSet (S : SetOperations V) (a : V) (b : V → V) : V :=
+  S.iUnion a fun i => S.iUnion (b i) fun x => S.pair (ordered S i x) (ordered S i x)
+
+theorem mem_sigma {a y : V} {b : V → V} :
+    S.mem y (sigmaSet S a b) ↔ ∃ i, S.mem i a ∧ ∃ x, S.mem x (b i) ∧ y = ordered S i x := by
+  simp only [sigmaSet, S.union_spec, S.pair_spec, or_self]
+
+theorem sigma_small {n a} {b : V → V} (ha : T.Small n a)
+    (hb : ∀ i, S.mem i a → T.Small n (b i)) : T.Small n (sigmaSet S a b) := by
+  apply T.union_small ha
+  intro i hi
+  apply T.union_small (hb i hi)
+  intro x hx
+  have hp := T.ordered_small (T.transitive ha hi) (T.transitive (hb i hi) hx)
+  exact T.pair_small hp hp
+
+theorem separation_small {n a} (ha : T.Small n a) (p : V → Prop) :
+    T.Small n (S.separate a p) := by
+  apply T.transitive (T.power_small ha)
+  exact (S.power_spec ..).2 fun x hx => ((S.separate_spec ..).1 hx).1
+
+/-- Dependent functions are total single-valued graphs inside the dependent sum. -/
+def piSet (S : SetOperations V) (a : V) (b : V → V) : V :=
+  S.separate (S.power (sigmaSet S a b)) fun graph =>
+    ∀ i, S.mem i a → ∃ x, S.mem x (b i) ∧ S.mem (ordered S i x) graph ∧
+      ∀ y, S.mem y (b i) → S.mem (ordered S i y) graph → y = x
+
+theorem pi_small {n a} {b : V → V} (ha : T.Small n a)
+    (hb : ∀ i, S.mem i a → T.Small n (b i)) : T.Small n (piSet S a b) :=
+  T.separation_small (T.power_small (T.sigma_small ha hb)) _
+
+theorem product_and_function_small {n a b} (ha : T.Small n a) (hb : T.Small n b) :
+    T.Small n (sigmaSet S a (fun _ => b)) ∧ T.Small n (piSet S a (fun _ => b)) :=
+  ⟨T.sigma_small ha (fun _ _ => hb), T.pi_small ha (fun _ _ => hb)⟩
+
+/-- A two-point index with tags ∅ and {∅} realizes disjoint union. -/
+noncomputable def sumSet (S : SetOperations V) (a b : V) : V := by
+  letI := Classical.propDecidable
+  exact sigmaSet S (S.pair S.empty (S.pair S.empty S.empty)) (fun t => if t = S.empty then a else b)
+
+theorem sum_small {n a b} (ha : T.Small n a) (hb : T.Small n b) : T.Small n (sumSet S a b) := by
+  letI := Classical.propDecidable
+  apply T.sigma_small (T.pair_small (T.empty_small n) (T.pair_small (T.empty_small n) (T.empty_small n)))
+  intro t _
+  split <;> assumption
+
+end UniverseTower
 end EshkolGrothendieckEra3

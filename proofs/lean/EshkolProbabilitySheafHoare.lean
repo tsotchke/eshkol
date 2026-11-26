@@ -1,46 +1,28 @@
 /-
-  EshkolProbabilitySheafHoare.lean
-  Standalone Lean 4.12.0 formalization of Ho, Wu, and Raad (arXiv:2611.30692,
-  POPL 2027), "Sheaf Semantics of Probabilistic Programs":
+  Independent pullbacks, common-refinement equality of extension representatives,
+  and Hoare rules for predicates stable under sample-space extension.
+  The extension and Hoare constructions follow Ho, Wu and Raad,
+  “Sheaf Semantics of Probabilistic Programs” (arXiv:2611.30692).
 
-    1. Abstract Small Category & Simpson Independent Pullback Structure
-       `(C, I)` (Definition 3.9, axioms IP1-IP5 with universal property of
-       independent pullbacks) and Atomic Sheaves (`IsAtomicSheaf`).
-    2. Extension Monad `G` over any `(C, I)` (Definition 3.16, Lemma 3.18)
-       and Theorem 1:
-         - `ext_left_unit`, `ext_right_unit`, `ext_assoc`
-         - `ext_affine` (`G(Unit) ~= Unit`: sample-space marginalization)
-         - `ext_commutative` (independent draws reorder via `pb_univ` + IP2)
-    3. Canonical `G`-algebra `Theta : G(Prop) -> Prop` (Proposition 4.1):
-         - `theta_well_defined`, `theta_algebra_unit`, `theta_algebra_mul`,
-           `theta_left_inv`, `theta_right_inv`
-    4. Internal Higher-Order Probabilistic Hoare Logic (`wp` & `{phi} t {psi}`)
-       and Theorem 3 (all 5 proof rules of Figure 5):
-         - `hoare_HRet`
-         - `hoare_HComp`
-         - `hoare_HFunc`
-         - `hoare_HCons`
-         - `hoare_HFrame` (from monotonicity under sample-space extension)
-    5. Concrete Finite Probability Instantiation, Theorem 4 & Adversarial
-       Anti-Math-Washing Controls:
-         - `imperative_frame_fails` (Section 4.1 mutable state counterexample)
-         - `mask_triple_mutually_independent` (Example 4.9: exact 1/8 uniformity)
-         - `xor_triple_pairwise_indep_not_mutually_indep` (adversarial control)
-         - `discrete_coin_not_nu_fresh` (collision 2/4 = 1/2 != 0)
-         - `correlated_shared_coin_not_independent` (unsound independence rejected)
-         - `hcond_fair_mixture_exact_law` (Example 4.10 mixture & branch-merge control)
-         - `sblc_shared_vs_fresh_sheaf_reconciliation` (Stochastic BLC bridge)
-
-  Zero external dependencies (pure Lean 4.12.0 Prelude), zero `sorry`,
-  zero custom axioms.
+  Model-to-Implementation Correspondence
+  lib/core/sheaf.esk exposes finite-site restriction and gluing, exercised by
+  tests/stdlib/sheaf_test.esk. In lib/core/grothendieck/probability_sheaves.esk,
+  gpsh-indep-pullback constructs a conditional product on pairs of atoms.
+  Its coordinate projections motivate the unique mediator for independent cones.
+  gpsh-hoare-holds? checks finite extensions and gpsh-case-mask-mutual-independence
+  enumerates the XOR law. tests/stdlib/grothendieck_probability_sheaves_test.esk
+  checks the finite controls. The categorical proofs below take the independent
+  pullback property as a hypothesis on the chosen category.
 -/
 
 namespace EshkolProbabilitySheafHoare
 
-/-! ## 1. Small Category & Simpson Independent Pullback Structure (IP1-IP5) -/
+/-! ## 1. Independent cones and their universal spans -/
+
+universe u
 
 structure SmallCat where
-  Obj : Type
+  Obj : Type u
   Hom : Obj → Obj → Type
   id  : ∀ (A : Obj), Hom A A
   comp : ∀ {A B C : Obj}, Hom B C → Hom A B → Hom A C
@@ -49,7 +31,7 @@ structure SmallCat where
   comp_assoc : ∀ {A B C D : Obj} (h : Hom C D) (g : Hom B C) (f : Hom A B),
     comp h (comp g f) = comp (comp h g) f
 
-/-- Chosen independent pullback span for a cospan `W1 -f-> W <-g- W2` (IP5). -/
+/-- A commuting span over a cospan. -/
 structure SpanData (C : SmallCat) {W1 W2 W : C.Obj}
     (f : C.Hom W1 W) (g : C.Hom W2 W) where
   apex : C.Obj
@@ -57,9 +39,13 @@ structure SpanData (C : SmallCat) {W1 W2 W : C.Obj}
   p2 : C.Hom apex W2
   comm : C.comp f p1 = C.comp g p2
 
-/-- Simpson's Independent Pullback Structure `(C, I)` (Definition 3.9):
-    axioms IP1-IP5 including the universal property of independent pullbacks
-    with respect to independent squares (`pb_univ`). -/
+/-- A map into the apex preserving the two specified legs. -/
+def SpanData.Factors {C : SmallCat} {A B Z X : C.Obj}
+    {f : C.Hom A Z} {g : C.Hom B Z} (P : SpanData C f g)
+    (s : C.Hom X A) (t : C.Hom X B) (u : C.Hom X P.apex) : Prop :=
+  C.comp P.p1 u = s ∧ C.comp P.p2 u = t
+
+/-- Every independent cone has a unique factorization into the chosen span. -/
 structure IndepPullbackStruct (C : SmallCat) where
   Indep : ∀ {W1 W2 W3 W4 : C.Obj},
     C.Hom W1 W2 → C.Hom W1 W3 → C.Hom W2 W4 → C.Hom W3 W4 → Prop
@@ -79,9 +65,84 @@ structure IndepPullbackStruct (C : SmallCat) where
     (s : C.Hom W' W1) (t : C.Hom W' W2),
     Indep s t f g →
     ∃ u : C.Hom W' (pb f g).apex,
-      C.comp (pb f g).p1 u = s ∧ C.comp (pb f g).p2 u = t
+      (pb f g).Factors s t u ∧ ∀ v, (pb f g).Factors s t v → v = u
 
-/-- Contravariant presheaf `F : C^op -> Type`. -/
+/-- The same universal property for an arbitrary span over the cospan. -/
+structure IsIndependentPullback {C : SmallCat} (I : IndepPullbackStruct C)
+    {A B Z : C.Obj} {f : C.Hom A Z} {g : C.Hom B Z} (P : SpanData C f g) : Prop where
+  independent : I.Indep P.p1 P.p2 f g
+  universal : ∀ {X : C.Obj} (s : C.Hom X A) (t : C.Hom X B), I.Indep s t f g →
+    ∃ u, P.Factors s t u ∧ ∀ v, P.Factors s t v → v = u
+
+theorem chosen_isIndependentPullback {C : SmallCat} (I : IndepPullbackStruct C)
+    {A B Z : C.Obj} (f : C.Hom A Z) (g : C.Hom B Z) :
+    IsIndependentPullback I (I.pb f g) :=
+  ⟨I.pb_indep f g, I.pb_univ f g⟩
+
+/-- An endomorphism of a universal span preserving its projections is the identity. -/
+theorem pullback_endo_eq_id {C : SmallCat} {I : IndepPullbackStruct C}
+    {A B Z : C.Obj} {f : C.Hom A Z} {g : C.Hom B Z}
+    {P : SpanData C f g} (hP : IsIndependentPullback I P)
+    {e : C.Hom P.apex P.apex} (he : P.Factors P.p1 P.p2 e) : e = C.id P.apex := by
+  obtain ⟨_, _, uniq⟩ := hP.universal _ _ hP.independent
+  exact (uniq e he).trans (uniq _ ⟨C.comp_id _, C.comp_id _⟩).symm
+
+/-- Projection-preserving maps in both directions with inverse equations. -/
+structure SpanIso {C : SmallCat} {A B Z : C.Obj} {f : C.Hom A Z} {g : C.Hom B Z}
+    (P Q : SpanData C f g) where
+  hom : C.Hom P.apex Q.apex
+  inv : C.Hom Q.apex P.apex
+  hom_factors : Q.Factors P.p1 P.p2 hom
+  inv_factors : P.Factors Q.p1 Q.p2 inv
+  inv_hom : C.comp inv hom = C.id P.apex
+  hom_inv : C.comp hom inv = C.id Q.apex
+
+theorem pullbacks_unique_up_to_unique_iso {C : SmallCat} {I : IndepPullbackStruct C}
+    {A B Z : C.Obj} {f : C.Hom A Z} {g : C.Hom B Z} {P Q : SpanData C f g}
+    (hP : IsIndependentPullback I P) (hQ : IsIndependentPullback I Q) :
+    ∃ iso : SpanIso P Q, ∀ other : SpanIso P Q, other = iso := by
+  obtain ⟨u, hu, uniqueU⟩ := hQ.universal _ _ hP.independent
+  obtain ⟨v, hv, uniqueV⟩ := hP.universal _ _ hQ.independent
+  have vu : C.comp v u = C.id P.apex := pullback_endo_eq_id hP
+    ⟨by rw [C.comp_assoc, hv.1, hu.1], by rw [C.comp_assoc, hv.2, hu.2]⟩
+  have uv : C.comp u v = C.id Q.apex := pullback_endo_eq_id hQ
+    ⟨by rw [C.comp_assoc, hu.1, hv.1], by rw [C.comp_assoc, hu.2, hv.2]⟩
+  refine ⟨⟨u, v, hu, hv, vu, uv⟩, ?_⟩
+  intro other
+  cases other with
+  | mk w z hw hz _ _ =>
+    cases uniqueU w hw
+    cases uniqueV z hz
+    rfl
+
+/-- Concrete carrier example. Objects are small types and arrows are functions.
+    Pairing gives the mediator pointwise on compatible pairs. -/
+def carrierCat : SmallCat.{1} where
+  Obj := Type
+  Hom := fun A B => A → B
+  id := fun _ x => x
+  comp := fun g f x => g (f x)
+  id_comp := fun _ => rfl
+  comp_id := fun _ => rfl
+  comp_assoc := fun _ _ _ => rfl
+
+/-- On unweighted carriers take every commuting square as independent. -/
+def carrierPullbacks : IndepPullbackStruct carrierCat where
+  Indep := fun s t f g => ∀ x, f (s x) = g (t x)
+  ip1 := fun _ _ => rfl
+  ip2 := fun h x => (h x).symm
+  ip3 := fun { _ _ _ _ _ _ } {t _ _ _ _ _ f} h k x => (k (t x)).trans (congrArg f (h x))
+  pb := fun f g =>
+    { apex := {p : _ × _ // f p.1 = g p.2}
+      p1 := fun p => p.val.1
+      p2 := fun p => p.val.2
+      comm := funext (fun p => p.property) }
+  pb_indep := fun _ _ p => p.property
+  pb_univ := fun _ _ s t h =>
+    ⟨fun x => ⟨(s x, t x), h x⟩, ⟨rfl, rfl⟩, fun _ hv =>
+      funext (fun x => Subtype.ext (Prod.ext (congrFun hv.1 x) (congrFun hv.2 x)))⟩
+
+/-- Contravariant presheaf. -/
 structure PSh (C : SmallCat) where
   val : C.Obj → Type
   act : ∀ {W W' : C.Obj}, val W → C.Hom W' W → val W'
@@ -89,19 +150,19 @@ structure PSh (C : SmallCat) where
   act_comp : ∀ {W1 W2 W3 : C.Obj} (x : val W3) (f : C.Hom W2 W3) (g : C.Hom W1 W2),
     act (act x f) g = act x (C.comp f g)
 
-/-- Atomic sheaf condition (Definition 3.12): every `s`-invariant section in
-    `F(W')` descends uniquely along `s : W' -> W` to `F(W)`. -/
+/-- A section agrees along every pair of arrows equalized by s. -/
 def IsSInvariant {C : SmallCat} (F : PSh C) {W' W : C.Obj}
     (s : C.Hom W' W) (y : F.val W') : Prop :=
   ∀ {W'' : C.Obj} (u v : C.Hom W'' W'),
     C.comp s u = C.comp s v → F.act y u = F.act y v
 
+/-- Every invariant section descends uniquely. -/
 def IsAtomicSheaf {C : SmallCat} (F : PSh C) : Prop :=
   ∀ {W' W : C.Obj} (s : C.Hom W' W) (y : F.val W'),
     IsSInvariant F s y →
     ∃ x : F.val W, F.act x s = y ∧ ∀ x' : F.val W, F.act x' s = y → x' = x
 
-/-- Constant presheaf on `A` (in particular `Prop = Bool` / `Prop`). -/
+/-- Constant presheaf on a type A. -/
 def constPSh (C : SmallCat) (A : Type) : PSh C where
   val := fun _ => A
   act := fun a _ => a
@@ -112,8 +173,8 @@ def constPSh (C : SmallCat) (A : Type) : PSh C where
 def prodPSh {C : SmallCat} (F G : PSh C) : PSh C where
   val := fun W => F.val W × G.val W
   act := fun p f => (F.act p.1 f, G.act p.2 f)
-  act_id := fun p => by simp [F.act_id, G.act_id]
-  act_comp := fun p f g => by simp [F.act_comp, G.act_comp]
+  act_id := fun p => Prod.ext (F.act_id p.1) (G.act_id p.2)
+  act_comp := fun p f g => Prod.ext (F.act_comp p.1 f g) (G.act_comp p.2 f g)
 
 /-- Every constant presheaf is an atomic sheaf (Section 4.1, footnote 13 & 14). -/
 theorem constPSh_isAtomicSheaf (C : SmallCat) (A : Type) :
@@ -123,7 +184,16 @@ theorem constPSh_isAtomicSheaf (C : SmallCat) (A : Type) :
   intro x' hx'
   exact hx'
 
-/-! ## 2. Extension Monad `G` & Theorem 1 (Strong, Affine, Commutative) -/
+/-- Compatible pairs descend by descending each coordinate along the same arrow. -/
+theorem prodPSh_isAtomicSheaf {C : SmallCat} {F G : PSh C}
+    (hF : IsAtomicSheaf F) (hG : IsAtomicSheaf G) : IsAtomicSheaf (prodPSh F G) := by
+  intro X Y s y hy
+  obtain ⟨a, ha, ua⟩ := hF s y.1 (fun u v h => congrArg Prod.fst (hy u v h))
+  obtain ⟨b, hb, ub⟩ := hG s y.2 (fun u v h => congrArg Prod.snd (hy u v h))
+  exact ⟨(a, b), Prod.ext ha hb, fun p hp =>
+    Prod.ext (ua p.1 (congrArg Prod.fst hp)) (ub p.2 (congrArg Prod.snd hp))⟩
+
+/-! ## 2. Unit, bind and independent pairing on extension representatives -/
 
 /-- Representative `(W', f : W' -> W, x : F(W'))` of `[f, x] in G F(W)`. -/
 structure ExtRep (C : SmallCat) (F : PSh C) (W : C.Obj) where
@@ -177,16 +247,53 @@ theorem extEq_trans {C : SmallCat} (I : IndepPullbackStruct C)
 def extEta {C : SmallCat} {F : PSh C} {W : C.Obj} (x : F.val W) : ExtRep C F W :=
   ⟨W, C.id W, x⟩
 
+/-- Postcompose the projection of an extension with an ambient arrow. -/
+def ExtRep.over {C : SmallCat} {F : PSh C} {X W : C.Obj}
+    (s : C.Hom X W) (m : ExtRep C F X) : ExtRep C F W :=
+  ⟨m.stage, C.comp s m.proj, m.elem⟩
+
+theorem extEq_over {C : SmallCat} {F : PSh C} {X W : C.Obj}
+    (s : C.Hom X W) {a b : ExtRep C F X} (h : ExtEq a b) : ExtEq (a.over s) (b.over s) := by
+  obtain ⟨T, u, v, hs, hx⟩ := h
+  exact ⟨T, u, v, (C.comp_assoc s a.proj u).symm.trans
+    ((congrArg (C.comp s) hs).trans (C.comp_assoc s b.proj v)), hx⟩
+
 /-- Kleisli bind `[f, x] >>= k` (Corollary 3.20). -/
 def extBind {C : SmallCat} {F G : PSh C} {W : C.Obj}
     (m : ExtRep C F W) (k : ∀ {W' : C.Obj}, F.val W' → ExtRep C G W') : ExtRep C G W :=
-  let n := k m.elem
-  ⟨n.stage, C.comp m.proj n.proj, n.elem⟩
+  (k m.elem).over m.proj
+
+/-- A continuation compatible with restriction up to common refinement
+    induces a bind on equivalence classes of inputs. -/
+theorem extBind_respects_extEq {C : SmallCat} (I : IndepPullbackStruct C)
+    {F G : PSh C} {W : C.Obj}
+    (k : ∀ {X : C.Obj}, F.val X → ExtRep C G X)
+    (natural : ∀ {X Y : C.Obj} (x : F.val X) (u : C.Hom Y X),
+      ExtEq ((k (F.act x u)).over u) (k x))
+    {a b : ExtRep C F W} (h : ExtEq a b) : ExtEq (extBind a k) (extBind b k) := by
+  obtain ⟨T, u, v, hs, hx⟩ := h
+  have left := extEq_over a.proj (natural a.elem u)
+  have right := extEq_over b.proj (natural b.elem v)
+  have common : ((k (F.act a.elem u)).over u).over a.proj =
+      ((k (F.act b.elem v)).over v).over b.proj := by
+    dsimp only [ExtRep.over]
+    rw [C.comp_assoc, hs, hx, C.comp_assoc]
+  rw [common] at left
+  exact extEq_trans I (extEq_symm left) right
 
 /-- Functorial action `G(alpha)([f, x]) = [f, alpha(x)]`. -/
 def extMap {C : SmallCat} {F G : PSh C} {W : C.Obj}
     (alpha : ∀ {W' : C.Obj}, F.val W' → G.val W') (m : ExtRep C F W) : ExtRep C G W :=
   ⟨m.stage, m.proj, alpha m.elem⟩
+
+/-- A natural map sends any common refinement to a common refinement. -/
+theorem extMap_respects_extEq {C : SmallCat} {F G : PSh C} {W : C.Obj}
+    (α : ∀ {X : C.Obj}, F.val X → G.val X)
+    (natural : ∀ {X Y : C.Obj} (x : F.val X) (u : C.Hom Y X),
+      G.act (α x) u = α (F.act x u))
+    {a b : ExtRep C F W} (h : ExtEq a b) : ExtEq (extMap α a) (extMap α b) := by
+  obtain ⟨X, u, v, hc, he⟩ := h
+  exact ⟨X, u, v, hc, (natural _ u).trans ((congrArg α he).trans (natural _ v).symm)⟩
 
 /-- Left strength `st(x, [g, y]) = [g, (x . g, y)]`. -/
 def extSt {C : SmallCat} {F G : PSh C} {W : C.Obj}
@@ -198,8 +305,8 @@ theorem ext_left_unit {C : SmallCat} {F G : PSh C} {W : C.Obj}
     (x : F.val W) (k : ∀ {W' : C.Obj}, F.val W' → ExtRep C G W') :
     ExtEq (extBind (extEta x) k) (k x) := by
   refine ⟨(k x).stage, C.id (k x).stage, C.id (k x).stage, ?_, ?_⟩
-  · simp [extBind, extEta, C.id_comp]
-  · simp [extBind, extEta]
+  · exact congrArg (fun p => C.comp p (C.id (k x).stage)) (C.id_comp (k x).proj)
+  · rfl
 
 /-- Theorem 1 (Right Unit): `m >>= eta ~ m`. -/
 theorem ext_right_unit {C : SmallCat} {F : PSh C} {W : C.Obj}
@@ -208,7 +315,8 @@ theorem ext_right_unit {C : SmallCat} {F : PSh C} {W : C.Obj}
   have h : extBind m (fun y => extEta y) = m := by
     cases m with
     | mk st pr el =>
-      simp [extBind, extEta, C.comp_id]
+      dsimp only [extBind, ExtRep.over, extEta]
+      rw [C.comp_id]
   rw [h]
   exact extEq_refl m
 
@@ -219,7 +327,8 @@ theorem ext_assoc {C : SmallCat} {F G H : PSh C} {W : C.Obj}
     (g : ∀ {W' : C.Obj}, G.val W' → ExtRep C H W') :
     ExtEq (extBind (extBind m f) g) (extBind m (fun x => extBind (f x) g)) := by
   have h : extBind (extBind m f) g = extBind m (fun x => extBind (f x) g) := by
-    simp [extBind, C.comp_assoc]
+    dsimp only [extBind, ExtRep.over]
+    rw [C.comp_assoc]
   rw [h]
   exact extEq_refl _
 
@@ -230,10 +339,8 @@ theorem ext_affine {C : SmallCat} (I : IndepPullbackStruct C) {W : C.Obj}
   let sp := I.pb a.proj b.proj
   exact ⟨sp.apex, sp.p1, sp.p2, sp.comm, rfl⟩
 
-/-- Theorem 1 (Commutativity, Appendix B pp. 39-40):
-    sequencing independent `m1 : G F(W)` and `m2 : G G'(W)` in either order
-    produces equivalent elements of `G(F x G')(W)`, proved via `IP2` and the
-    universal property `pb_univ` of independent pullbacks. -/
+/-- Pairing two extensions via the chosen independent span gives equivalent
+    ordered observations when the pullback is formed in the opposite order. -/
 theorem ext_commutative {C : SmallCat} (I : IndepPullbackStruct C)
     {F G : PSh C} {W : C.Obj}
     (m1 : ExtRep C F W) (m2 : ExtRep C G W) :
@@ -247,7 +354,7 @@ theorem ext_commutative {C : SmallCat} (I : IndepPullbackStruct C)
   intro sp1 sp2 lhs rhs
   have hsym : I.Indep sp1.p2 sp1.p1 m2.proj m1.proj :=
     I.ip2 (I.pb_indep m1.proj m2.proj)
-  rcases I.pb_univ m2.proj m1.proj sp1.p2 sp1.p1 hsym with ⟨u, hu1, hu2⟩
+  rcases I.pb_univ m2.proj m1.proj sp1.p2 sp1.p1 hsym with ⟨u, ⟨hu1, hu2⟩, _⟩
   refine ⟨sp1.apex, C.id sp1.apex, u, ?_, ?_⟩
   · calc
       C.comp lhs.proj (C.id sp1.apex)
@@ -258,9 +365,9 @@ theorem ext_commutative {C : SmallCat} (I : IndepPullbackStruct C)
   · simp only [lhs, rhs, prodPSh]
     rw [F.act_id, G.act_id, F.act_comp, G.act_comp, hu2, hu1]
 
-/-! ## 3. Canonical G-Algebra `Theta : G(Prop) -> Prop` (Proposition 4.1) -/
+/-! ## 3. Boolean observations of extensions -/
 
-/-- Canonical `G`-algebra `Theta_W : G(Prop)(W) -> Prop` sending `[f, b] |-> b`. -/
+/-- Extract the Boolean section of a constant presheaf. -/
 def theta {C : SmallCat} {W : C.Obj} (m : ExtRep C (constPSh C Bool) W) : Bool :=
   m.elem
 
@@ -276,7 +383,7 @@ theorem theta_algebra_unit {C : SmallCat} {W : C.Obj} (b : Bool) :
     theta (extEta (C := C) (F := constPSh C Bool) (W := W) b) = b :=
   rfl
 
-/-- `Theta ∘ (m >>= k) = Theta(G(Theta)(...))` (second algebra axiom / bind). -/
+/-- Observing a bind into the constant Boolean presheaf observes its continuation. -/
 theorem theta_algebra_bind {C : SmallCat} {F : PSh C} {W : C.Obj}
     (m : ExtRep C F W)
     (k : ∀ {W' : C.Obj}, F.val W' → ExtRep C (constPSh C Bool) W') :
@@ -290,11 +397,20 @@ theorem theta_right_inv {C : SmallCat} (I : IndepPullbackStruct C) {W : C.Obj}
   let sp := I.pb (C.id W) m.proj
   exact ⟨sp.apex, sp.p1, sp.p2, sp.comm, rfl⟩
 
-/-! ## 4. Internal Higher-Order Probabilistic Hoare Logic & Theorem 3 -/
+/-- Two Boolean extensions agree up to common refinement exactly when their
+    observations agree. The unit supplies a representative of each observation. -/
+theorem theta_eq_iff_extEq {C : SmallCat} (I : IndepPullbackStruct C) {W : C.Obj}
+    (a b : ExtRep C (constPSh C Bool) W) : theta a = theta b ↔ ExtEq a b := by
+  constructor
+  · intro h
+    have ha := theta_right_inv I a
+    rw [h] at ha
+    exact extEq_trans I (extEq_symm ha) (theta_right_inv I b)
+  · exact theta_well_defined
 
-/-- Internal predicate `Prop^A(W) ~= Hom(y(W) x A, Prop)` (Remark D.2):
-    assigns a truth value to any extended stage `W'`, projection `s : W' -> W`,
-    and section `a : A(W')`, monotone under further pullback. -/
+/-! ## 4. Hoare rules on extension representatives -/
+
+/-- A stage-indexed predicate stable under further restriction. -/
 structure IntPred (C : SmallCat) (A : PSh C) (W : C.Obj) where
   eval : ∀ {W' : C.Obj}, C.Hom W' W → A.val W' → Prop
   mono : ∀ {W1 W2 : C.Obj} (s : C.Hom W1 W) (u : C.Hom W2 W1) (a : A.val W1),
@@ -310,6 +426,24 @@ def wp {C : SmallCat} {A : PSh C} {W : C.Obj}
 def Hoare {C : SmallCat} {A : PSh C} {W : C.Obj}
     (pre : Prop) (t : ExtRep C A W) (post : IntPred C A W) : Prop :=
   pre → wp t post
+
+/-- A predicate which also reflects truth along restrictions gives a
+    representative-independent weakest precondition. -/
+theorem wp_respects_extEq {C : SmallCat} {A : PSh C} {W : C.Obj}
+    (p : IntPred C A W)
+    (reflects : ∀ {X Y : C.Obj} (s : C.Hom X W) (u : C.Hom Y X) (x : A.val X),
+      p.eval (C.comp s u) (A.act x u) → p.eval s x)
+    {a b : ExtRep C A W} (h : ExtEq a b) : wp a p ↔ wp b p := by
+  obtain ⟨X, u, v, hs, hx⟩ := h
+  constructor
+  · intro ha
+    apply reflects b.proj v b.elem
+    rw [← hs, ← hx]
+    exact p.mono a.proj u a.elem ha
+  · intro hb
+    apply reflects a.proj u a.elem
+    rw [hs, hx]
+    exact p.mono b.proj v b.elem hb
 
 /-- Pullback of an internal predicate along `s : W' -> W`. -/
 def IntPred.pull {C : SmallCat} {A : PSh C} {W W' : C.Obj}
@@ -375,14 +509,26 @@ theorem hoare_HCons {C : SmallCat} {A : PSh C} {W : C.Obj}
   intro hp
   exact hpost t.proj t.elem (ht (hpre hp))
 
-/-- Theorem 3 (HFrame, Figure 5): unconditional frame rule in atomic sheaf logic,
-    valid by monotonicity under sample-space extension. -/
+/-- Framing a stage-independent proposition. -/
 theorem hoare_HFrame {C : SmallCat} {A : PSh C} {W : C.Obj}
     (pre thetaProp : Prop) (post : IntPred C A W) (t : ExtRep C A W)
     (ht : Hoare pre t post) :
     Hoare (pre ∧ thetaProp) t (IntPred.conj post (IntPred.const A W thetaProp)) := by
   intro h
   exact ⟨ht h.1, h.2⟩
+
+/-- A frame about an ambient section persists when the computation extends
+    the stage and pairs its output with the restricted section. -/
+theorem hoare_frame_strength {C : SmallCat} {A B : PSh C} {W : C.Obj}
+    (t : ExtRep C B W) (x : A.val W) (frame : IntPred C A W)
+    (post : IntPred C B W) (pre : Prop) (ht : Hoare pre t post) :
+    Hoare (frame.eval (C.id W) x ∧ pre) (extSt x t)
+      { eval := fun s p => frame.eval s p.1 ∧ post.eval s p.2
+        mono := fun s u p h => ⟨frame.mono s u p.1 h.1, post.mono s u p.2 h.2⟩ } := by
+  intro h
+  have keep := frame.mono (C.id W) t.proj x h.1
+  rw [C.id_comp] at keep
+  exact ⟨keep, ht h.2⟩
 
 /-- Theorem 3 (HConst, Lemma D.6): any proposition true before `t` remains true
     after `t`. -/
@@ -392,7 +538,7 @@ theorem hoare_HConst {C : SmallCat} {A : PSh C} {W : C.Obj}
   intro h
   exact h
 
-/-- Theorem 4 (Abstract HCond): conditional composition rule over boolean test. -/
+/-- Conditional composition for a decided Boolean guard. -/
 theorem hoare_HCond {C : SmallCat} {A : PSh C} {W : C.Obj}
     (pre : Prop) (cond : Bool) (t1 t2 : ExtRep C A W) (post : IntPred C A W)
     (h1 : cond = true → Hoare pre t1 post)
@@ -404,8 +550,7 @@ theorem hoare_HCond {C : SmallCat} {A : PSh C} {W : C.Obj}
 
 /-! ## 5. Concrete Finite Probability Controls & Paper Case Studies -/
 
-/-- Section 4.1 negative control: in imperative mutable state, the unconditional
-    frame rule FAILS (`{x=10} x:=x+1 {x=11}` holds, but framing `x <= 10` fails). -/
+/-- Incrementing a mutable cell can invalidate a frame about its old value. -/
 theorem imperative_frame_fails :
     (∀ x : Nat, x = 10 → x + 1 = 11) ∧
     ¬ (∀ x : Nat, (x = 10 ∧ x ≤ 10) → (x + 1 = 11 ∧ x + 1 ≤ 10)) := by
@@ -457,16 +602,13 @@ theorem xor_triple_pairwise_indep_not_mutually_indep :
     (allBoolPairs.filter (fun p => xorTriple p == (false, false, true))).length = 0 := by
   decide
 
-/-- Nu-calculus freshness negative control on discrete fair coin:
-    over `Bool x Bool`, `x = y` holds in 2 of 4 outcomes (`P(x = y) = 1/2 != 0`),
-    so discrete coin does NOT satisfy the continuous `nu`-calculus freshness law. -/
+/-- Two independent fair bits collide in two of their four outcomes. -/
 theorem discrete_coin_not_nu_fresh :
     (allBoolPairs.filter (fun p => p.1 == p.2)).length = 2 ∧
     (allBoolPairs.filter (fun p => p.1 == p.2)).length ≠ 0 := by
   decide
 
-/-- Tsotchke-chan Guard 4 (unsound independence rejection):
-    for a shared coin draw `(x, x)` over `Bool`, `P(x = false, x = false) = 1/2 != 1/4 = P(x=false)*P(x=false)`. -/
+/-- Both equiprobable outcomes of one fair coin. -/
 def allBools : List Bool := [false, true]
 
 theorem correlated_shared_coin_not_independent :
@@ -476,9 +618,7 @@ theorem correlated_shared_coin_not_independent :
     p00 * n ≠ p0 * p0 := by
   decide
 
-/-- Example 4.10 discrete mixture & Tsotchke-chan Guard 3 (branch-merge conflict):
-    `c <- coin; if c then 10 else 20` has exact 1/2 mass on 10 and 1/2 mass on 20;
-    neither pure-branch law (`P(z=10)=1` nor `P(z=20)=1`) holds after the merge. -/
+/-- A fair two-branch mixture with distinct return values. -/
 def branchMerge (c : Bool) : Nat := if c then 10 else 20
 
 theorem hcond_fair_mixture_exact_law :
@@ -488,37 +628,49 @@ theorem hcond_fair_mixture_exact_law :
     (allBools.filter (fun c => branchMerge c == 20)).length ≠ allBools.length := by
   decide
 
-/-- Direct Stochastic BLC bridge: shared draw `(x, x)` concentrates 1/2 + 1/2 on
-    the diagonal (0 mass off-diagonal), whereas two independent fresh draws
-    `(x, y)` assign exact uniform 1/4 mass to every ordered pair in `Bool x Bool`. -/
-theorem sblc_shared_vs_fresh_sheaf_reconciliation :
-    (allBools.filter (fun b => (b, b) == (false, true))).length = 0 ∧
-    (allBools.filter (fun b => (b, b) == (true, true))).length = 1 ∧
-    allBoolPairs.all (fun target =>
-      (allBoolPairs.filter (fun p => p == target)).length == 1) = true := by
-  decide
+/-- A shared draw has one outcome at each diagonal pair and zero elsewhere.
+    Two fresh draws have one outcome at every pair. -/
+theorem sblc_shared_vs_fresh_sheaf_reconciliation (x y : Bool) :
+    (allBools.filter (fun b => (b, b) == (x, y))).length = (if x = y then 1 else 0) ∧
+    (allBoolPairs.filter (fun p => p == (x, y))).length = 1 := by
+  cases x <;> cases y <;> decide
+
+#print axioms chosen_isIndependentPullback
+#print axioms pullback_endo_eq_id
+#print axioms pullbacks_unique_up_to_unique_iso
+#print axioms constPSh_isAtomicSheaf
+#print axioms prodPSh_isAtomicSheaf
+#print axioms extEq_refl
+#print axioms extEq_symm
+#print axioms extEq_trans
+#print axioms extEq_over
+#print axioms extBind_respects_extEq
+#print axioms extMap_respects_extEq
+#print axioms ext_left_unit
+#print axioms ext_right_unit
+#print axioms ext_assoc
+#print axioms ext_affine
+#print axioms ext_commutative
+#print axioms theta_well_defined
+#print axioms theta_algebra_unit
+#print axioms theta_algebra_bind
+#print axioms theta_right_inv
+#print axioms theta_eq_iff_extEq
+#print axioms wp_respects_extEq
+#print axioms hoare_HRet
+#print axioms hoare_HComp
+#print axioms hoare_HFunc
+#print axioms hoare_HCons
+#print axioms hoare_HFrame
+#print axioms hoare_frame_strength
+#print axioms hoare_HConst
+#print axioms hoare_HCond
+#print axioms imperative_frame_fails
+#print axioms mask_triple_mutually_independent
+#print axioms xor_triple_pairwise_indep_not_mutually_indep
+#print axioms discrete_coin_not_nu_fresh
+#print axioms correlated_shared_coin_not_independent
+#print axioms hcond_fair_mixture_exact_law
+#print axioms sblc_shared_vs_fresh_sheaf_reconciliation
 
 end EshkolProbabilitySheafHoare
-
-#print axioms EshkolProbabilitySheafHoare.constPSh_isAtomicSheaf
-#print axioms EshkolProbabilitySheafHoare.extEq_trans
-#print axioms EshkolProbabilitySheafHoare.ext_left_unit
-#print axioms EshkolProbabilitySheafHoare.ext_right_unit
-#print axioms EshkolProbabilitySheafHoare.ext_assoc
-#print axioms EshkolProbabilitySheafHoare.ext_affine
-#print axioms EshkolProbabilitySheafHoare.ext_commutative
-#print axioms EshkolProbabilitySheafHoare.theta_well_defined
-#print axioms EshkolProbabilitySheafHoare.theta_right_inv
-#print axioms EshkolProbabilitySheafHoare.hoare_HRet
-#print axioms EshkolProbabilitySheafHoare.hoare_HComp
-#print axioms EshkolProbabilitySheafHoare.hoare_HFunc
-#print axioms EshkolProbabilitySheafHoare.hoare_HCons
-#print axioms EshkolProbabilitySheafHoare.hoare_HFrame
-#print axioms EshkolProbabilitySheafHoare.hoare_HCond
-#print axioms EshkolProbabilitySheafHoare.imperative_frame_fails
-#print axioms EshkolProbabilitySheafHoare.mask_triple_mutually_independent
-#print axioms EshkolProbabilitySheafHoare.xor_triple_pairwise_indep_not_mutually_indep
-#print axioms EshkolProbabilitySheafHoare.discrete_coin_not_nu_fresh
-#print axioms EshkolProbabilitySheafHoare.correlated_shared_coin_not_independent
-#print axioms EshkolProbabilitySheafHoare.hcond_fair_mixture_exact_law
-#print axioms EshkolProbabilitySheafHoare.sblc_shared_vs_fresh_sheaf_reconciliation

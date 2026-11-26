@@ -25,6 +25,20 @@ def mvmul (a : List (List Int)) (v : List Int) : List Int := a.map (fun r => dot
 def eye (n : Nat) : List (List Int) :=
   (List.range n).map (fun i => (List.range n).map (fun j => if i = j then 1 else 0))
 
+def transposeMat (m : List (List Int)) (cols : Nat) : List (List Int) :=
+  (List.range cols).map (fun j => col m j)
+
+def scaleMat (s : Int) (m : List (List Int)) : List (List Int) :=
+  m.map (fun r => r.map (fun x => s * x))
+
+def diagMat (ds : List Int) : List (List Int) :=
+  (List.range ds.length).map (fun i =>
+    (List.range ds.length).map (fun j => if i = j then ds.getD i 0 else 0))
+
+def allPos : List Int → Bool
+  | [] => true
+  | x :: xs => decide (x > 0) && allPos xs
+
 /-- Determinant by cofactor expansion along the first row (Laplace). -/
 def det : Nat → List (List Int) → Int
   | 0, _ => 1

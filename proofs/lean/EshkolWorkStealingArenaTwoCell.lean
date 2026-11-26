@@ -1,29 +1,17 @@
 /-
-  EshkolWorkStealingArenaTwoCell.lean
-  Standalone Lean 4.12.0 formalization of:
-    1. Authorized Work-Stealing Branch-Transfer Ledger (`BranchTransfer`):
-       - `commit_stale_gen`, `commit_stale_occ`, `commit_no_permit`,
-         `commit_over_budget`, `commit_no_double_publish`,
-         `commit_decisive_switch_control` (offset 16 -> 83, charge 4 -> 11).
-    2. SBLC Unresolved-Mass vs. No-Consistent-Program Conditioning Status:
-       - `sblc_zero_step_unresolved_not_inconsistent`
-       - `sblc_one_step_resolves_consistent`
-       - `sblc_zero_unresolved_inconsistent`
-    3. Verified 64-bit Arena Bump Allocator & Reachable-Byte Exclusion
-       (standalone Lean 4.12.0 mechanization of aligned bump allocation,
-        cursor-store isolation, and live-span separation):
-       - `bump_aligned_in_bounds`, `bump_fresh_from_live`,
-         `cursor_store_preserves_outside_bytes`, `early_failure_preserves_heap`,
-         `reachable_byte_excluded`
-    4. Two-Cell Separation & Read-Only Source Preservation (`TwoCell`):
-       - `two_cell_separation_iff_ne`, `two_cell_alias_refused`,
-         `two_cell_bound_writes_exclude_readonly_src`
-    5. BF16 Rounding-Tie Divergence Counterexample & Atomic Failure Continuation:
-       - `bf16_tie_diverges_from_exact`
-       - `tx_oob_after_success_returns_err_one`
+  Branch publication, allocation arithmetic and two-cell access traces.
 
-  Zero external dependencies (pure Lean 4.12.0 Prelude), zero `sorry`,
-  zero custom axioms.
+  Model-to-Implementation Correspondence
+  lib/core/blc/work_stealing_ledger.esk implements blc-ws-commit,
+  blc-ws-sblc-classify, blc-ws-arena-bump-check and the two-cell alias check.
+  tests/stdlib/esa_packet2_work_stealing_tx_sblc_test.esk exercises stale and
+  renewed requests, conditioning status, interval overlap, alias refusal,
+  integer rounding and transactional bounds. The update-list model below
+  projects the index validation in blc-ws-tx-apply-updates-atomic.
+  arena_allocate_aligned in lib/core/runtime_arena_core.cpp aligns the absolute
+  address and rounds the requested size. The proofs use natural arithmetic for
+  the in-block path after the runtime alignment and size checks.
+  tests/core/runtime_arena_core_test.cpp checks alignment and refusal cases.
 -/
 
 namespace EshkolWorkStealingArenaTwoCell
@@ -66,10 +54,48 @@ theorem commit_no_double_publish (s : Ledger) (v0 : Bool) (h : s.result = some v
     commit s g p cost v = s := by
   simp [commit, h]
 
-/-- Decisive work-stealing control: switch moves demanded branch from bit offset
-    16 to 83 (gen 0 -> 1); stale thief commit `(0, 16, 7)` is refused leaving
-    `spent = 4`; renewed commit `(1, 83, 7)` succeeds with total charge `11`. -/
-theorem commit_decisive_switch_control :
+structure Attempt where
+  generation : Nat
+  occurrence : Nat
+  cost : Nat
+  value : Bool
+
+def commitTrace (s : Ledger) : List Attempt → Ledger
+  | [] => s
+  | a :: rest => commitTrace (commit s a.generation a.occurrence a.cost a.value) rest
+
+/-- Once a result is present, every subsequent attempt preserves the entire ledger. -/
+theorem published_ledger_absorbs_trace (s : Ledger) (v : Bool) (h : s.result = some v)
+    (trace : List Attempt) : commitTrace s trace = s := by
+  induction trace with
+  | nil => rfl
+  | cons a rest ih => simpa [commitTrace, commit_no_double_publish s v h] using ih
+
+/-- A finite trace either leaves the ledger untouched or publishes exactly one
+    matching, permitted attempt and charges its cost within budget. -/
+theorem commitTrace_outcome (s : Ledger) (trace : List Attempt) :
+    commitTrace s trace = s ∨ ∃ a ∈ trace,
+      s.permitted = true ∧ s.result = none ∧ s.generation = a.generation ∧
+      s.occurrence = a.occurrence ∧ s.spent + a.cost ≤ s.budget ∧
+      commitTrace s trace = { s with spent := s.spent + a.cost, result := some a.value } := by
+  induction trace with
+  | nil => exact Or.inl rfl
+  | cons a rest ih =>
+    simp only [commitTrace, commit]
+    split
+    · rename_i ok
+      simp only [Bool.and_eq_true, beq_iff_eq, Option.isNone_iff_eq_none,
+        decide_eq_true_eq] at ok
+      obtain ⟨⟨⟨⟨permit, gen⟩, occ⟩, empty⟩, fits⟩ := ok
+      exact Or.inr ⟨a, by simp, permit, empty, gen, occ, fits,
+        published_ledger_absorbs_trace _ a.value rfl rest⟩
+    · rcases ih with same | ⟨b, hb, cond⟩
+      · exact Or.inl same
+      · exact Or.inr ⟨b, List.mem_cons_of_mem _ hb, cond⟩
+
+/-- In the post-switch ledger, the old request is refused and the current
+    request publishes with total charge eleven. -/
+theorem commit_post_switch_concrete_witness :
     let l0 : Ledger := ⟨1, 83, true, 4, 11, none⟩
     let l1 := commit l0 0 16 7 true
     let l2 := commit l1 1 83 7 true
@@ -91,18 +117,17 @@ def classifySBLC (matchedNum unresolvedNum : Nat) : SBLCStatus :=
   else if unresolvedNum > 0 then .unresolvedUnderStepBound
   else .noConsistentProgram
 
-theorem sblc_zero_step_unresolved_not_inconsistent :
-    classifySBLC 0 1 = .unresolvedUnderStepBound ∧
-    classifySBLC 0 1 ≠ .noConsistentProgram := by
-  decide
+theorem sblc_unresolved_iff (m u : Nat) :
+    classifySBLC m u = .unresolvedUnderStepBound ↔ m = 0 ∧ 0 < u := by
+  cases m <;> cases u <;> simp [classifySBLC]
 
-theorem sblc_one_step_resolves_consistent :
-    classifySBLC 1 0 = .consistent := by
-  decide
+theorem sblc_consistent_iff (m u : Nat) :
+    classifySBLC m u = .consistent ↔ 0 < m := by
+  cases m <;> cases u <;> simp [classifySBLC]
 
-theorem sblc_zero_unresolved_inconsistent :
-    classifySBLC 0 0 = .noConsistentProgram := by
-  decide
+theorem sblc_no_consistent_program_iff (m u : Nat) :
+    classifySBLC m u = .noConsistentProgram ↔ m = 0 ∧ u = 0 := by
+  cases m <;> cases u <;> simp [classifySBLC]
 
 /-! ## 3. Verified Arena Bump Allocator & Reachable-Byte Exclusion -/
 
@@ -251,6 +276,31 @@ theorem two_cell_bound_writes_exclude_readonly_src
   | src => exact False.elim (hne hp)
   | dst => exact (two_cell_separation_iff_ne dst src).mp hsep
 
+/-- A write carries its own payload. A read leaves the heap unchanged. -/
+def runEvents {V : Type} (dst src : Nat) (heap : Nat → V) :
+    List (MemEvent × V) → Nat → V
+  | [] => heap
+  | (e, value) :: rest =>
+    let next := fun p => if e.kind = .write ∧ cellAddr dst src e.port = p then value else heap p
+    runEvents dst src next rest
+
+theorem two_cell_trace_preserves_source {V : Type} (dst src : Nat)
+    (hsep : twoCellSeparate dst src) (heap : Nat → V) (events : List (MemEvent × V))
+    (hro : ∀ p ∈ events, p.1.kind = .write → p.1.port ≠ .src) :
+    runEvents dst src heap events src = heap src := by
+  induction events generalizing heap with
+  | nil => rfl
+  | cons p rest ih =>
+    obtain ⟨e, value⟩ := p
+    have head : ¬ (e.kind = .write ∧ cellAddr dst src e.port = src) := by
+      intro ⟨hw, ha⟩
+      cases hp : e.port with
+      | src => exact hro (e, value) (by simp) hw hp
+      | dst => exact (two_cell_separation_iff_ne dst src).mp hsep (by simpa [hp, cellAddr] using ha)
+    simp only [runEvents]
+    rw [ih _ (fun r hr => hro r (List.mem_cons_of_mem _ hr))]
+    exact if_neg head
+
 /-! ## 5. BF16 Rounding-Tie Counterexample & TX-4 Atomic Failure Continuation -/
 
 /-- Round-half-to-even for non-negative rational `n / d` (`d > 0`). -/
@@ -261,44 +311,51 @@ def roundHalfToEven (n d : Nat) : Nat :=
   else if 2 * r > d then q + 1
   else if q % 2 == 0 then q else q + 1
 
-/-- Exact rational `1535 / 1024 = 1 + 511/1024 < 3/2` rounds to `1`, whereas
-    BF16 tie `3 / 2` rounds-to-even to `2`: explicit counterexample to
-    unqualified exact/BF16 interchange. -/
+/-- In the binade [1, 2) the BF16 grid has spacing 1/128. First rounding
+    1535/1024 to that grid gives 192/128. Rounding again to an integer
+    reaches two, whereas a single rounding to an integer reaches one. -/
 theorem bf16_tie_diverges_from_exact :
-    roundHalfToEven 1535 1024 = 1 ∧
-    roundHalfToEven 3 2 = 2 ∧
-    roundHalfToEven 1535 1024 ≠ roundHalfToEven 3 2 := by
+    let units := roundHalfToEven (1535 * 128) 1024
+    units = 192 ∧ roundHalfToEven units 128 = 2 ∧
+      roundHalfToEven 1535 1024 = 1 ∧ roundHalfToEven units 128 ≠ roundHalfToEven 1535 1024 := by
   decide
 
-/-- Atomic update list execution: out-of-bounds parameter index aborts the
-    entire update sequence cleanly with `none` (corresponding to error code 1). -/
+/-- Validate an entire list of update indices and return the accepted requests. -/
 def txApplyAtomic (nParams : Nat) (updates : List (Nat × Int)) : Option (List (Nat × Int)) :=
   if updates.all (fun u => decide (u.1 < nParams)) then some updates else none
 
-theorem tx_oob_after_success_returns_none :
+theorem tx_validation_iff (n : Nat) (us : List (Nat × Int)) :
+    txApplyAtomic n us = some us ↔ ∀ u ∈ us, u.1 < n := by
+  simp [txApplyAtomic, List.all_eq_true]
+
+theorem tx_oob_after_valid_index_returns_none :
     txApplyAtomic 3 [(0, 1), (99, 1)] = none ∧
     txApplyAtomic 3 [(0, 1), (2, -5)] = some [(0, 1), (2, -5)] := by
   decide
 
-end EshkolWorkStealingArenaTwoCell
+#print axioms commit_stale_gen
+#print axioms commit_stale_occ
+#print axioms commit_no_permit
+#print axioms commit_over_budget
+#print axioms commit_no_double_publish
+#print axioms published_ledger_absorbs_trace
+#print axioms commitTrace_outcome
+#print axioms commit_post_switch_concrete_witness
+#print axioms sblc_unresolved_iff
+#print axioms sblc_consistent_iff
+#print axioms sblc_no_consistent_program_iff
+#print axioms alignUp_spec
+#print axioms bump_aligned_in_bounds
+#print axioms bump_fresh_from_live
+#print axioms cursor_store_preserves_outside_bytes
+#print axioms early_failure_preserves_heap
+#print axioms reachable_byte_excluded
+#print axioms two_cell_separation_iff_ne
+#print axioms two_cell_alias_refused
+#print axioms two_cell_bound_writes_exclude_readonly_src
+#print axioms two_cell_trace_preserves_source
+#print axioms bf16_tie_diverges_from_exact
+#print axioms tx_validation_iff
+#print axioms tx_oob_after_valid_index_returns_none
 
-#print axioms EshkolWorkStealingArenaTwoCell.commit_stale_gen
-#print axioms EshkolWorkStealingArenaTwoCell.commit_stale_occ
-#print axioms EshkolWorkStealingArenaTwoCell.commit_no_permit
-#print axioms EshkolWorkStealingArenaTwoCell.commit_over_budget
-#print axioms EshkolWorkStealingArenaTwoCell.commit_no_double_publish
-#print axioms EshkolWorkStealingArenaTwoCell.commit_decisive_switch_control
-#print axioms EshkolWorkStealingArenaTwoCell.sblc_zero_step_unresolved_not_inconsistent
-#print axioms EshkolWorkStealingArenaTwoCell.sblc_one_step_resolves_consistent
-#print axioms EshkolWorkStealingArenaTwoCell.sblc_zero_unresolved_inconsistent
-#print axioms EshkolWorkStealingArenaTwoCell.alignUp_spec
-#print axioms EshkolWorkStealingArenaTwoCell.bump_aligned_in_bounds
-#print axioms EshkolWorkStealingArenaTwoCell.bump_fresh_from_live
-#print axioms EshkolWorkStealingArenaTwoCell.cursor_store_preserves_outside_bytes
-#print axioms EshkolWorkStealingArenaTwoCell.early_failure_preserves_heap
-#print axioms EshkolWorkStealingArenaTwoCell.reachable_byte_excluded
-#print axioms EshkolWorkStealingArenaTwoCell.two_cell_separation_iff_ne
-#print axioms EshkolWorkStealingArenaTwoCell.two_cell_alias_refused
-#print axioms EshkolWorkStealingArenaTwoCell.two_cell_bound_writes_exclude_readonly_src
-#print axioms EshkolWorkStealingArenaTwoCell.bf16_tie_diverges_from_exact
-#print axioms EshkolWorkStealingArenaTwoCell.tx_oob_after_success_returns_none
+end EshkolWorkStealingArenaTwoCell

@@ -1,0 +1,54 @@
+name: Lean 4 Proofs (proofs/lean)
+
+on:
+  pull_request:
+    paths:
+      - 'proofs/lean/**'
+      - '.github/workflows/lean-proofs-math.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'proofs/lean/**'
+      - '.github/workflows/lean-proofs-math.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: none
+
+jobs:
+  lean4-standalone-check:
+    name: lean4-proofs (v4.12.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan and Lean v4.12.0
+        shell: bash
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain leanprover/lean4:v4.12.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Verify every standalone Lean proof in proofs/lean/
+        shell: bash
+        run: |
+          set -euo pipefail
+          lean --version
+          count=0
+          theorems=0
+          for f in proofs/lean/*.lean; do
+            [ -f "$f" ] || continue
+            echo "=== Checking $f ==="
+            if grep -En '\bsorry\b|\badmit\b|^[[:space:]]*axiom\b' "$f"; then
+              echo "FAIL: forbidden sorry/admit/custom axiom in $f" >&2
+              exit 1
+            fi
+            lean -DwarningAsError=true "$f"
+            t=$(grep -Ec '^[[:space:]]*(private[[:space:]]+|protected[[:space:]]+)?theorem\b' "$f" || true)
+            echo "PASS: $f ($t theorems)"
+            count=$((count + 1))
+            theorems=$((theorems + t))
+          done
+          echo "Verified $count standalone Lean 4.12.0 files ($theorems theorems, 0 sorry, 0 custom axioms)."
