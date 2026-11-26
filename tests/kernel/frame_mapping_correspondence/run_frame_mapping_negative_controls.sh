@@ -2,7 +2,7 @@
 # Negative controls for the frame-mapping correspondence: each mutant in
 # proofs/lean/mutation/manifests/EshkolKernelFrameMappings.mutants.json whose
 # "differential" field is DIVERGES or AGREES is applied to the model's definitions and
-# replayed against native traces (seed 1, both ASID configurations). Exit status is
+# replayed against native traces (seed 1, both ASID configurations, distinct and shared). Exit status is
 # non-zero if any control does otherwise.
 # Usage: run_frame_mapping_negative_controls.sh [seed]   (default 1)
 set -euo pipefail
@@ -16,8 +16,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 "$cc" -std=c11 -O1 -Wall -I"$root/inc" "$here/generate_frame_mapping_traces.c" \
   "$root/lib/kernel/k2_mmu_frames.c" -o "$work/generate_frame_mapping_traces"
-"$work/generate_frame_mapping_traces" "$seed" 2000 80 unique > "$work/unique.trace"
-"$work/generate_frame_mapping_traces" "$seed" 2000 80 collide > "$work/collide.trace"
+"$work/generate_frame_mapping_traces" "$seed" 2000 80 distinct > "$work/distinct.trace"
+"$work/generate_frame_mapping_traces" "$seed" 2000 80 shared > "$work/shared.trace"
 # Write one definitions-only model per applicable mutant (the theorems would not compile).
 python3 -I - "$root/proofs/lean/EshkolKernelFrameMappings.lean" "$manifest" "$work" <<'PY'
 import json, os, sys
@@ -42,7 +42,7 @@ while read -r id expected; do
   directory="$work/$id"
   (cd "$directory" && "$lean_bin" -o EshkolKernelFrameMappings.olean EshkolKernelFrameMappings.lean)
   outcome=AGREES
-  for trace in "$work/unique.trace" "$work/collide.trace"; do
+  for trace in "$work/distinct.trace" "$work/shared.trace"; do
     if ! LEAN_PATH="$directory" "$lean_bin" --run "$here/FrameMappingCorrespondence.lean" "$trace" \
         > "$directory/replay.log" 2>&1; then
       outcome=DIVERGES
