@@ -388,8 +388,9 @@ silence.
 
 ### Six backwards, two different kinds
 
-The v1.3.5-evolve wave is often summarised as "six exact geometric backwards". The
-distinction is worth keeping:
+The v1.3.5-evolve wave — carried forward unchanged into v1.4.0-connection — is
+often summarised as "six exact geometric backwards". The distinction is worth
+keeping:
 
 - **Four newly written** — the `BRIDGE` rules above (ledger SW-65), which did not
   exist and whose nodes returned zero.
@@ -422,7 +423,7 @@ invented. So each of these rules refuses rather than picking one:
 ### The Fréchet stationarity gate
 
 `FRECHET_MEAN`'s backward is implicit differentiation of the stationarity condition
-`Σᵢ wᵢ log_μ(xᵢ) = 0`. Those formulas are the derivative **at** the fixed point;
+`Σᵢ wᵢ log_μ(xᵢ) = 0`. Those formulas are the derivative **at** the stationary point;
 away from it they return a plausible but wrong gradient. So the rule measures the
 residual and refuses above a bar.
 
@@ -517,7 +518,7 @@ before a `derivative`/`gradient` evaluates its body and popped afterward.
 This runtime push/pop is what makes nesting correct **across a function-call or
 named-let TCO boundary**. A compile-time lexical depth could not see across the
 call boundary, so a `derivative` reached *through* a called function would
-clobber the outer perturbation (this was the ESH-0070 class of bug). A runtime
+clobber the outer perturbation (this was the ESH-0070 class of defect). A runtime
 counter is invariant under TCO re-entry by construction: the inner call reads
 the level the outer one left live (level 1 → slot `e2`) and therefore seeds a
 distinct slot instead of overwriting the outer's `e1`.
@@ -662,7 +663,8 @@ An AD operator that resolves its differentiand to an `llvm::Function` calls it
 directly and passes the function's capture arguments itself.
 `AutodiffCodegen::appendDifferentiandCaptures`
 ([`autodiff_codegen.h`](../../../inc/eshkol/backend/autodiff_codegen.h)) is the
-only place that decides where a capture comes from (since v1.3.5):
+only place that decides where a capture comes from (since v1.3.5, and still
+the single resolver in v1.4.0-connection):
 
 - For a **named** differentiand it reads the captures from the closure object
   the name evaluates to. `emitClosureCaptureArguments` in
@@ -711,7 +713,7 @@ parameter, or the curried `((gradient f) point)` — a multi-parameter scalar lo
 such as `(loss x y)` was invoked as `loss(<tensor>)` and its scalar body
 misdispatched.
 
-The fix recovers the callable's arity from its **closure metadata** (no closure
+The recovery path reads the callable's arity from its **closure metadata** (no closure
 ABI change) and unpacks the point accordingly, so the indirect and curried forms
 are byte-identical to the direct call for scalar multi-argument, vector, and
 non-polynomial losses, on both the JIT and AOT paths. A 25-check suite pins the
@@ -728,9 +730,9 @@ direct/indirect/curried equivalence.
 ```
 
 A **variadic** callable is called with every coordinate of the point: its
-fixed parameters take the first ones and its rest list the remainder, so a
+positional parameters take the first ones and its rest list the remainder, so a
 rest-list loss never receives the whole point as one vector and never loses
-coordinates past its fixed count. The arithmetic builtins are variadic values,
+coordinates past its positional count. The arithmetic builtins are variadic values,
 so `(gradient + point)` is the gradient of the sum.
 
 ```scheme
@@ -744,7 +746,7 @@ so `(gradient + point)` is the gradient of the sum.
 #(1.0 1.0)
 ```
 
-A related fix follows transitive closure captures in a **custom vector-Jacobian
+A related path follows transitive closure captures in a **custom vector-Jacobian
 product**: a custom-VJP backward closure that reached a captured value through an
 intermediate closure previously had its contribution silently dropped (zero
 gradient); the capture walk now follows transitive references so the node
@@ -782,10 +784,41 @@ the tape.
 
 ---
 
+## Differentiable proposals — `core.sblc.relax`
+
+Everything above differentiates a *program* the compiler can see. v1.4.0-connection
+adds a differentiable layer one level up, over the space of candidate programs
+themselves: `core.sblc.relax`
+([ADR 0017](../../design/adr/0017-stochastic-binary-lambda-calculus.md)). It is
+labelled experimental, and it is built so that nothing approximate can be
+mistaken for an exact result.
+
+- **Exact finite-logit oracle.** On an enumerated domain the objective and its
+  gradients are computed exactly, and those gradients are checked against the
+  native AD path described in this document. The oracle is the ground truth the
+  relaxed estimators are graded against, exactly as finite differences are the
+  ground truth for the [support matrix](support-matrix.md).
+- **Rao-Blackwellized REINFORCE.** Score-function gradients with the inner coins
+  Rao-Blackwellized, reported with variance-reduction confidence diagnostics, so
+  an estimator's own uncertainty travels with its value rather than being
+  discarded.
+- **Depth-masked Gumbel-Softmax / Concrete grammar proposals.** A relaxed
+  grammar distribution with depth masking, available only under approximate
+  receipts. Every relaxed candidate is **projected to a strict closed term** and
+  re-verified before it counts; a projection error is refused loudly rather than
+  absorbed.
+- **No effect on exactness.** Learned proposal order can never alter
+  completeness, prior weights, fair-choice probabilities or verifier outcomes.
+  The surrounding SBLC machinery keeps its exact rational semantics, bounded
+  closed enumeration (L ≤ 16 bits), resumable checkpoints, DBSP Z-set
+  incremental updates and VM PRNG parity.
+
+See [`core.sblc`](../stdlib/sblc.md) for the module surface.
+
 ## See also
 
 - [operators.md](operators.md) — per-operator API, capture rules, nesting table
 - [support-matrix.md](support-matrix.md) — oracle matrix and open cells
 - [tape.md](tape.md) — the explicit `ad-*` tape builtins and the AD instrumentation counters
-- [`inc/eshkol/ad_node_registry.def`](../../../inc/eshkol/ad_node_registry.def) — the 95-row node registry itself
+- [`inc/eshkol/ad_node_registry.def`](../../../inc/eshkol/ad_node_registry.def) — the 96-row node registry itself
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — opcodes, tensor backward, tape internals

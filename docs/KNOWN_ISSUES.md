@@ -20,9 +20,20 @@ sources:
 ---
 # Known Issues
 
-These are current limitations of v1.3.6-evolve. Resolved behavior is recorded in
-[CHANGELOG.md](../CHANGELOG.md); the manifest in
+These are current limitations of v1.4.0-connection (release candidate). Resolved
+behavior is recorded in [CHANGELOG.md](../CHANGELOG.md); the manifest in
 [VM_PARITY.md](VM_PARITY.md) classifies each VM operation.
+
+## Platform and profile boundaries planned for v1.4.1
+
+- **Windows sockets & Schannel TLS:** `core.net` TCP/UDP resource leases and
+  OpenSSL TLS handshakes ship on Linux and macOS in v1.4.0-connection; Windows
+  sockets and Windows Schannel TLS are planned for v1.4.1.
+- **Exact tensors on the bytecode VM:** Exact-rational tensor elements
+  (`'exact` dtype, ADR-0058) ship on native LLVM JIT and AOT; the bytecode VM
+  explicitly refuses `'exact` tensors until v1.4.1.
+- **Embedding SDK (`libeshkol`):** The standalone packaged C/C++ embedding SDK
+  (public headers, static archive, and cold consumer contract) ships in v1.4.1.
 
 ## VM memory reclamation
 
@@ -42,14 +53,12 @@ workloads and monitor the heap budget for long-running processes.
 
 ## VM parity and library calls
 
-The parity manifest has **962** rows (`python3 -c` count over
-`tests/vm_parity/PARITY.tsv` at the release commit): 622 `vm-supported`, 45
-`native-only-justified`, and 295 `gap` — the same breakdown recorded in
-[VM_PARITY.md](VM_PARITY.md#the-manifest) as the v1.3.6-evolve preparation
-snapshot. The **405/405** differential count in
-[the release record](../tests/coverage/release_record.json) covers its test
-corpus, not every manifest row. Consult the row for a specific operation before
-moving a native workload to the VM.
+The parity manifest has **997** rows (`python3 -c` count over
+`tests/vm_parity/PARITY.tsv` on `master` at `b4eac7abd`): 630 `vm-supported`,
+45 `native-only-justified`, and 322 `gap`. The differential test corpus in
+`scripts/run_vm_parity.sh` covers 444 differential cases, not every manifest
+row. Consult the row for a specific operation before moving a native workload
+to the VM.
 
 Some documented optional arguments still have no implementation on either
 engine. For example, the two-argument form of `string-pad-left` does not supply
@@ -81,10 +90,10 @@ computation in types are outside its implemented scope.
 
 ## Inherited tracked limitations
 
-The following open issues were recorded before the v1.3.6 release work. They
-remain known limitations; a coverage waiver records an engine gap and does not
-fix it. The v1.3.5 behavior and release-record facts above remain historical
-until the v1.3.6 release record is cut.
+The following open items were recorded on the v1.3 line and remain tracked
+limitations in v1.4.0-connection; a coverage waiver records an engine gap
+rather than altering engine behavior. Final qualification totals remain
+bound to the tagged v1.4.0-connection release commit.
 
 | Ledger | Affected engine(s) and behavior | Workaround | Evidence |
 |---|---|---|---|

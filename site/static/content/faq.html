@@ -64,6 +64,29 @@ cmake --build build --parallel</code></pre>
 </ol>
 <p>These are compiled to native code, not interpreted. Belief propagation runs at C speed.</p>
 <hr />
+<h2 id="networking--systems">Networking &amp; Systems</h2>
+<h3 id="can-eshkol-talk-to-the-network">Can Eshkol talk to the network?</h3>
+<p>Yes, since v1.4.0-connection. <code>core.net</code> provides TCP and UDP sockets and Unix domain sockets; <code>core.tls</code> provides TLS client and server contexts and sessions; there is an HTTP/1.1 client (<code>http-request</code>) and a non-blocking HTTP/1.1 server on the portable event loop, plus WebSocket with RFC-validated framing and bounded Server-Sent Events streaming. <code>core.http_server</code> adds a pure-Scheme request parser and router with <code>/health</code>, <code>/ready</code> and <code>/metrics</code> fallbacks.</p>
+<pre class="scheme"><code>(require core.net)
+(call-with-tcp-connection &quot;example.org&quot; 80
+  (lambda (sock)
+    (tcp-write sock &quot;GET / HTTP/1.1\r\nHost: example.org\r\n\r\n&quot;)
+    (display (tcp-read sock 4096))))</code></pre>
+<h3 id="how-do-i-avoid-leaking-a-socket">How do I avoid leaking a socket?</h3>
+<p>Two ways, and they compose. Use the scoped forms — <code>call-with-tcp-connection</code>, <code>call-with-tcp-listener</code>, <code>call-with-tcp-accept</code>, <code>call-with-udp-socket</code>, <code>call-with-tls-client</code> — which close the handle on normal return <em>and</em> on a raise. Then compile with <code>--strict-resources</code> (ADR-0056): the compiler tracks sockets, TLS sessions, files and regions use-exactly-once, so an unclosed or twice-closed handle is a compile-time error rather than something you discover in production.</p>
+<h3 id="how-do-network-errors-surface">How do network errors surface?</h3>
+<p>As structured conditions, not bare errno values. <code>network-error?</code> identifies them and <code>network-error-code</code>, <code>network-error-operation</code> and <code>network-error-reason</code> read the detail; TLS has the matching <code>tls-error?</code> family. Check <code>(tls-available?)</code> before assuming a build carries TLS instead of silently falling back to plaintext.</p>
+<h3 id="is-anything-guaranteed-about-distributed-results">Is anything guaranteed about distributed results?</h3>
+<p>Socket collectives (broadcast, all-reduce, all-gather, reduce-scatter, barrier) reduce in rank order, so the same ranks and the same inputs give the same bits on every run. Durable writes go through a write-ahead log and commit atomically: a checkpoint lands whole, or the previous state stays intact. Subprocesses run confined under Darwin Seatbelt or Linux seccomp with Landlock, and a platform with no confinement mechanism refuses the launch rather than running unconfined.</p>
+<hr />
+<h2 id="mathematics--verification">Mathematics &amp; Verification</h2>
+<h3 id="what-is-the-mathematics-programme">What is the mathematics programme?</h3>
+<p>A set of libraries (v1.4.0-connection) that state mathematics the way a mathematician states it — a site, a sheaf, a topos, a ring — and decide each claim exactly, by enumeration and exact linear algebra, never by sampling: <code>core.sheaf</code>, <code>core.topos</code>, <code>core.ring</code>, <code>core.category</code>, <code>core.simplicial</code>, <code>core.homological</code>, <code>core.theory</code>, <code>core.manifold</code>, <code>core.curvature</code>, <code>core.exact_linalg</code> and the Stochastic Binary Lambda Calculus in <code>core.sblc</code>. A reader’s guide is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/guide/MATHEMATICS.md" target="_blank" rel="noopener noreferrer">guide/MATHEMATICS.md</a>.</p>
+<h3 id="are-the-proofs-actually-checked">Are the proofs actually checked?</h3>
+<p>Yes. 395 top-level theorems across 12 standalone proof files are machine-checked in Lean 4.12.0 in CI, with 0 <code>sorry</code> and 0 custom axioms, and replayed independently (ADR-0061, ADR-0063). 86 example programs are verified alongside them.</p>
+<h3 id="what-is-not-in-v140-connection">What is NOT in v1.4.0-connection?</h3>
+<p>Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) are later work, and multi-host distributed computing beyond single-host socket collectives is still ahead. Backend parity is a documented subset, not complete parity: the VM parity manifest carries 997 rows, 322 of them <code>gap</code>, and each construct’s engine coverage is listed in <a href="/docs#page=feature_matrix" data-url="/content/feature_matrix.html">FEATURE_MATRIX.md</a>.</p>
+<hr />
 <h2 id="performance">Performance</h2>
 <h3 id="is-eshkol-fast">Is Eshkol fast?</h3>
 <p>Eshkol compiles to native machine code via LLVM. Arithmetic and tensor operations are competitive with C. The arena memory allocator runs in O(1) constant time with zero garbage collection pauses.</p>

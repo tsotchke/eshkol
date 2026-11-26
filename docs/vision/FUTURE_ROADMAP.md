@@ -90,8 +90,8 @@ Eshkol v1.0-foundation delivers a production-ready compiler that tightly integra
 | **v1.3.0-evolve** | **Jul 2026** | **SHIPPED** | **Arbitrary-order Taylor-tower AD matrix (all 13 phases P0–P12: exact bignum/rational coefficients, GUW multivariate mixed partials, reverse-over-Taylor, tensor towers, validated Taylor models, sparse high-order tensors, differentiable control flow, checkpointed reverse, tower numerics); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure. See [`../../ROADMAP.md`](../../ROADMAP.md) (canonical) and [`../../CHANGELOG.md`](../../CHANGELOG.md).** |
 | **v1.3.1 → v1.3.4-evolve** | **Jul–Aug 2026** | **SHIPPED** | **Flat memory for resident loops, thread-safe regions, opt-in differentiable quantum computing, ML-KEM, `core.dbsp`, exact gradients through every callable form, linear `Qubit`, high-precision numerics, the portable event loop** |
 | **v1.3.5-evolve** | **2026-09-22** | **SHIPPED** | **A parser with no recursion budget, dense tensor AD end to end, VM region reclamation, multi-shot continuations on all engines, certified enclosures, the exact tower and `core.exact_linalg`** |
-| **v1.3.6-evolve** | **2026-10-08** | **PREPARED FOR PUBLICATION** | **The 46 mathematics examples documented with the scope of each result, certified mixed exact/inexact intervals, exact browser numerics, measurement-bound publication** |
-| **v1.4.0-connection** | **Prior target 2026-10-15; joint rebaseline** | **Planned** | **Networking, TLS, linear resource types for handles (the event loop shipped in v1.3.4), WebGPU dispatch** |
+| **v1.3.6-evolve** | **2026-10-19** | **SHIPPED** | **The 46 mathematics examples documented with the scope of each result, certified mixed exact/inexact intervals, exact browser numerics, measurement-bound publication** |
+| **v1.4.0-connection** | **2026-11-25** | **RELEASE CANDIDATE** | **Linear networking (TCP/UDP/TLS/Unix-domain handles under `--strict-resources`), O(1) event-loop HTTP/WebSocket/SSE, write-ahead-logged agent persistence, socket collectives, subprocess sandboxing, WebGPU browser VM dispatch (ADR-0029), exact-rational tensors (ADR-0058), the Full Mathematics Programme with differentiable SBLC search proposals (`core.sblc.relax`, ADR-0017 item 5), 395 machine-checked Lean 4.12.0 theorems, 86 verified examples** |
 | **v1.4.1 / v1.4.5-accelerate** | **Joint rebaseline** | **Planned** | **The ABI release; then the accelerator device runtime, which publishes before v1.5.0** |
 | **v1.5.0-intelligence** | **After v1.4.5; joint rebaseline** | **Planned** | **Symbol embeddings, differentiable logic, LSTM/GRU, neuro-symbolic integration, VM-as-transformer Stage 3 (lift remaining delegated opcodes into weight matrices)** |
 | **v1.9.0-types** | **Q1–Q2 2028** | **Planned** | **Effect / refinement type system, dependent types, algebraic effects, session types** |
@@ -179,7 +179,7 @@ Building on the v1.0 foundation, this release focuses on **computational acceler
 
 **Status:** **COMPLETE (Production Release).** Closed out as v1.2.1-scale on 2026-05-20.
 
-The release combined a production-grade numeric tower with the GPU dispatch infrastructure (Metal + CUDA + XLA) and the native agent FFI surface, plus the hardening pass that brought sanitiser-clean status across the regression suite.
+The release combined a production-grade numeric tower with the GPU dispatch infrastructure (Metal + CUDA + XLA) and the native agent FFI surface, plus the hardening pass that brought sanitiser-clean status across the full test suite.
 
 ### Numeric tower
 
@@ -198,7 +198,7 @@ The release combined a production-grade numeric tower with the GPU dispatch infr
 ### Agent FFI (shipped)
 
 - Native libcurl HTTP client (TLS verify-on by default, redirect-follow, NOSIGNAL for thread safety)
-- sqlite3 binding with dynamic column-text allocation (fixes the v1.2-era truncation bug)
+- sqlite3 binding with dynamic column-text allocation (column text is no longer truncated at a fixed width)
 - posix_spawn subprocess (no shell metacharacter exposure on the safe path); macOS uses kqueue+EVFILT_PROC, Linux falls back to pthread drainers
 - inotify / FSEvents / ReadDirectoryChangesW filesystem watching
 
@@ -224,9 +224,11 @@ The release combined a production-grade numeric tower with the GPU dispatch infr
 - **ONNX / Core ML / TF Lite export** — Eshkol's native `.eshkol-model` ships; cross-framework exports deferred.
 - **Multi-GPU dispatch** — single-GPU works; multi-GPU deferred.
 
-## v1.5-intelligence: Neuro-Symbolic Integration (Q4 2026)
+## v1.5-intelligence: Neuro-Symbolic Integration (after v1.4.5-accelerate)
 
-**Status:** **Planned**
+**Status:** **Planned.** Publication order is mandatory: v1.4.0 → v1.4.1 →
+v1.4.5 → v1.5.0. Consciousness Engine v2 and the Eshkol OS track are forward
+work beyond v1.4.0-connection and are not part of the current release.
 
 Advanced AI capabilities building on v1.0's homoiconic foundation.
 
@@ -256,7 +258,7 @@ Advanced AI capabilities building on v1.0's homoiconic foundation.
 - Differentiable logic programs
 - Neural theorem provers
 
-## v2.0-quantum: Advanced Research Features (Q4 2026)
+## v2.0-starlight: Advanced Research Features (target Q4 2028)
 
 **Status:** **Research Phase**
 
@@ -396,28 +398,28 @@ We welcome contributions from researchers, engineers, and enthusiasts who share 
 ### Usage
 - Building projects with Eshkol
 - Providing feedback on features and usability
-- Reporting bugs and suggesting improvements
+- Filing issue reports and suggesting improvements
 - Sharing your experiences and use cases
 
-## Near-Term Priorities (Next 6-12 Months)
+## Near-Term Priorities
 
-**Immediate (v1.1 - Q1 2026):**
-1. XLA backend integration
-2. SIMD vectorization (SSE/AVX/NEON)
-3. Parallel map/fold primitives
-4. Thread pool scheduler
+**Immediate (v1.4.0-connection — release candidate, 2026-11-25):**
+1. Final exact-commit qualification and publication of the release candidate
+2. The resource-sound systems profile: linear TCP/UDP/TLS handles, O(1)
+   event-loop HTTP/WebSocket/SSE, WAL agent persistence, socket collectives
+3. The Full Mathematics Programme, differentiable SBLC search proposals
+   (`core.sblc.relax`), and independent Lean proof replay
 
-**Next (v1.2 - Q2 2026):**
-1. CUDA backend for NVIDIA GPUs
-2. Metal backend for Apple Silicon
-3. Distributed training framework
-4. Model serialization
+**Next (v1.4.1, then v1.4.5-accelerate):**
+1. The stable public C ABI and embedding SDK (v1.4.1)
+2. The accelerator device runtime through PJRT/StableHLO (v1.4.5-accelerate)
+3. Multi-GPU dispatch
 
-**Following (v1.5 - Q2-Q3 2026):**
-1. Advanced neural network primitives
-2. Symbolic reasoning integration
-3. Expanded optimizer library
-4. Visualization tools
+**Following (v1.5.0-intelligence, after v1.4.5):**
+1. Advanced neural network primitives and symbolic reasoning integration
+2. Symbol embeddings, soft unification, differentiable logic programs
+3. Consciousness Engine v2 and the Eshkol OS track (forward work beyond
+   v1.4.0-connection; not part of the current release)
 
 ## Community and Ecosystem Growth
 
@@ -437,7 +439,7 @@ We welcome contributions from researchers, engineers, and enthusiasts who share 
 - Professional consulting available
 - Training and workshops
 - Custom feature development
-- Priority bug fixes
+- Priority issue resolution
 
 **Academic Engagement:**
 - University partnerships for curriculum integration
@@ -464,8 +466,8 @@ We welcome contributions from researchers, engineers, and enthusiasts who share 
 Eshkol v1.0-foundation **proves** that compiler-integrated automatic differentiation, deterministic memory management, and homoiconic native code can coexist in a production system. The completed implementation demonstrates technical leadership in automatic differentiation architecture and establishes a foundation for GPU acceleration, parallelism, and distributed computing.
 
 The roadmap positions Eshkol to **dominate** gradient-based computing through:
-- **Near-term** (3 months): XLA, SIMD, parallelism making Eshkol competitive with any ML framework
-- **Medium-term** (3-6 months): GPU and distributed capabilities rivaling PyTorch/JAX
-- **Long-term** (6+ months): Neuro-symbolic integration and quantum computing establishing new paradigms
+- **Near-term**: publishing v1.4.0-connection — the resource-sound systems profile, the Full Mathematics Programme, and machine-checked verification — then the v1.4.1 ABI release
+- **Medium-term**: the v1.4.5-accelerate device runtime (PJRT/StableHLO, multi-GPU) rivaling PyTorch/JAX on accelerators
+- **Long-term**: v1.5.0-intelligence neuro-symbolic integration and v2.0-starlight quantum computing establishing new paradigms
 
 We invite researchers, engineers, and organizations to join this evolution - whether through code contributions, research collaborations, or production deployments. Eshkol represents the future of computational science where mathematical elegance and uncompromising performance converge.

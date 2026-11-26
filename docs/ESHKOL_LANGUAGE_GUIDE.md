@@ -25,6 +25,8 @@
 | Consciousness Engine | **Built-in** | No | No | No |
 | Parallel Primitives | **Built-in** | Library | Built-in | None |
 | Signal Processing | **Built-in** | Library (SciPy) | Library | None |
+| Networking & TLS | **Built-in, linearly tracked** | Library | Library | None |
+| Formal proofs of the libraries | **Machine-checked (Lean 4.12.0)** | No | No | No |
 | WebAssembly | **Native compilation** | Pyodide | No | No |
 
 ---
@@ -50,7 +52,9 @@
 17. [Interactive REPL](#interactive-repl)
 18. [Examples](#examples)
 19. [Technical Architecture](#technical-architecture)
-20. [Why Eshkol?](#why-eshkol)
+20. [Networking & Connections](#networking--connections)
+21. [Mathematics Programme](#mathematics-programme)
+22. [Why Eshkol?](#why-eshkol)
 
 ---
 
@@ -282,7 +286,7 @@ Built-in operators for physics and engineering:
 
 ### Arbitrary-Order AD: Taylor Towers
 
-Everything above differentiates once (or, with nesting, a small fixed number
+Everything above differentiates once (or, with nesting, a small bounded number
 of times). The Taylor-tower engine computes **every** derivative up to an
 arbitrary order `k` in a single pass, exactly where the arithmetic allows
 it. See the [Automatic Differentiation guide](guide/AUTOMATIC_DIFFERENTIATION.md)
@@ -589,10 +593,10 @@ Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, an
 ```
 
 Re-entering a continuation while the frame that captured it is still live
-runs today. Planned for v1.4 on the JIT: re-entering it after the capturing
+runs today. Planned for a later v1.4.x release on the JIT: re-entering it after the capturing
 procedure has returned, as below.
 
-<!-- doc-example: skip pseudo-code: planned capability for v1.4 on the JIT; re-entry after the capturing procedure has returned -->
+<!-- doc-example: skip pseudo-code: planned capability for a later v1.4.x release on the JIT; re-entry after the capturing procedure has returned -->
 ```scheme
 ;; Re-entrant: the continuation outlives the frame that captured it.
 ;; In a program file it includes the later top-level forms, so the
@@ -661,7 +665,7 @@ procedure has returned, as below.
 
 ## Parallel Primitives
 
-Eshkol v1.1 provides built-in parallel execution primitives that automatically distribute work across available CPU cores. No threading libraries or manual synchronization required.
+Eshkol provides built-in parallel execution primitives (since v1.1) that automatically distribute work across available CPU cores. No threading libraries or manual synchronization required.
 
 ### Parallel Map, Filter, Fold
 
@@ -754,7 +758,7 @@ Parallel primitives use work-stealing thread pools and are optimized for scienti
 
 ## GPU Acceleration
 
-Eshkol v1.1 features automatic hardware dispatch for tensor operations. The runtime measures actual hardware throughput and routes computations to the fastest available backend: SIMD, Apple Accelerate/BLAS, Metal (macOS), or CUDA (Linux/Windows).
+Eshkol features automatic hardware dispatch (since v1.1) for tensor operations. The runtime measures actual hardware throughput and routes computations to the fastest available backend: SIMD, Apple Accelerate/BLAS, Metal (macOS), or CUDA (Linux/Windows).
 
 ### Automatic Dispatch
 
@@ -804,7 +808,7 @@ Native float64 support on NVIDIA GPUs with automatic kernel generation for eleme
 
 ## Consciousness Engine
 
-Eshkol v1.1 includes a built-in **active inference consciousness engine** implementing the Global Workspace Theory with probabilistic factor graphs and free energy minimization. This provides logic programming, probabilistic reasoning, and cognitive modeling as native language features.
+Eshkol includes a built-in **active inference consciousness engine** (since v1.1) implementing the Global Workspace Theory with probabilistic factor graphs and free energy minimization. This provides logic programming, probabilistic reasoning, and cognitive modeling as native language features.
 
 ### Logic Variables and Unification
 
@@ -934,7 +938,7 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 
 ## Signal Processing
 
-Eshkol v1.1 includes a built-in signal processing library for spectral analysis, filtering, and windowing -- compiled to native code with no interpreter overhead.
+Eshkol includes a built-in signal processing library (since v1.1) for spectral analysis, filtering, and windowing -- compiled to native code with no interpreter overhead.
 
 ### FFT and Spectral Analysis
 
@@ -1368,7 +1372,7 @@ Goodbye!
 ### Neural Network Training
 
 ```scheme
-;; Model: y = w*x + b (linear regression)
+;; Model: y = w*x + b (least-squares line fit)
 (define (model w b x) (+ (* w x) b))
 
 ;; Loss: Mean Squared Error
@@ -1635,6 +1639,102 @@ full account, with runnable examples and a guide to reading a diagnostic, is
 
 ---
 
+## Networking & Connections
+
+*(v1.4.0-connection)* A connection in Eshkol is a tracked handle. It reports
+its own failures as a typed condition, and under `--strict-resources`
+(ADR-0056) the compiler requires it to be used exactly once — so a leaked or
+twice-closed socket is a compile-time error, not a production incident.
+
+```scheme
+(require core.net)
+
+;; Scoped: the connection closes on normal return AND on a raise.
+(call-with-tcp-connection "example.org" 80
+  (lambda (sock)
+    (tcp-write sock "GET / HTTP/1.1\r\nHost: example.org\r\n\r\n")
+    (display (tcp-read sock 4096))))
+
+;; A listener, accepting one connection at a time.
+(call-with-tcp-listener "127.0.0.1" 0
+  (lambda (listener)
+    (display (net-local-port listener)) (newline)
+    (call-with-tcp-accept listener
+      (lambda (conn) (tcp-write conn "hello\n")))))
+```
+
+Failures arrive structured, never as a bare errno:
+
+```scheme
+(guard (e ((network-error? e)
+           (display (network-error-operation e)) (newline)
+           (display (network-error-reason e)) (newline)))
+  (tcp-connect "127.0.0.1" 1))
+```
+
+TLS is the same shape with its own module and condition type:
+
+```scheme
+(require core.tls)
+(if (tls-available?)
+    (call-with-tls-client "example.org" 443
+      (lambda (session)
+        (tls-write-all! session (string->utf8 "GET / HTTP/1.1\r\n\r\n"))
+        (display (tls-read session 4096))))
+    (error "this build carries no TLS"))
+```
+
+On top of sockets: an HTTP/1.1 client (`http-request`) and a non-blocking
+HTTP/1.1 server on the portable event loop (`http-server-create`,
+`http-server-accept`, `http-server-respond`), with the pure-Scheme request
+parser and router in `core.http_server`; WebSocket with RFC-validated framing
+(`websocket-connect`, `websocket-send`, `websocket-receive`); and bounded
+Server-Sent Events streaming where every stream takes an admission ticket and
+carries its own deadline (`call-with-http-sse-stream`, `sse-admit!`,
+`sse-send!`, `sse-finish!`).
+
+Durability and distribution come with it: `core.memory_store` writes through a
+write-ahead log and commits a checkpoint atomically (a commit lands whole or
+not at all), socket collectives reduce in rank order so the same inputs give
+the same bits on every run, and subprocesses run confined under Darwin
+Seatbelt or Linux seccomp with Landlock.
+
+See [API_REFERENCE.md](API_REFERENCE.md) for the full procedure tables.
+
+---
+
+## Mathematics Programme
+
+*(v1.4.0-connection)* Eshkol states mathematics the way a mathematician states
+it — a site, a sheaf, a topos, a ring — and decides each claim exactly, by
+enumeration and exact linear algebra, never by sampling.
+
+- `core.sheaf` — sites, sieves, Grothendieck topologies, sheaf cohomology by
+  Cech descent, cellular and condensed sheaves, probability sheaves
+- `core.topos` — the internal language of a presheaf topos, decided by
+  Kripke–Joyal forcing and cross-checked against the subobject classifier
+- `core.ring` — a ring is a value, so one program evaluated over integers,
+  rationals, binary64, modular arithmetic, Taylor jets, polynomial rings or
+  group rings is the same proof run at different points
+- `core.category`, `core.simplicial`, `core.homological` — finite category
+  theory, Kan extensions, simplicial sets, chain complexes, homology with
+  torsion
+- `core.theory` — functional analysis, motives and Grothendieck–Riemann–Roch,
+  stacks and derivators, six operations, Hodge theory, Lie and algebraic
+  groups, integrable systems, measure theory and Markov disintegration,
+  operator algebras, stochastic calculus
+- `core.exact_linalg` and friends — exact-rational affine solution families
+  and Gröbner bases, so a linear answer is a family, not a rounded point
+- `core.sblc` — Stochastic Binary Lambda Calculus: an exact prior over
+  programs, with every term's weight exactly `1/2^length`
+
+395 top-level theorems across 12 standalone proof files are machine-checked in
+Lean 4.12.0 in CI, with 0 `sorry` and 0 custom axioms, and replayed
+independently (ADR-0061, ADR-0063). A reader's guide is in
+[guide/MATHEMATICS.md](guide/MATHEMATICS.md).
+
+---
+
 ## Why Eshkol?
 
 ### For Machine Learning Researchers
@@ -1723,7 +1823,15 @@ full account, with runnable examples and a guide to reading a diagnostic, is
 - [x] WebAssembly compilation target
 - [x] LSP server for IDE integration
 - [x] Package manager (eshkol-pkg)
-- [ ] Distributed computing (multi-node)
+- [x] Networking: TCP/UDP and Unix domain sockets, TLS, HTTP/1.1 client and
+      server, WebSocket, Server-Sent Events (v1.4.0-connection)
+- [x] Durable persistence: write-ahead log with atomic checkpoint commit
+      (v1.4.0-connection)
+- [x] Linear resource accounting under `--strict-resources` (v1.4.0-connection)
+- [x] Deterministic socket collectives and sandboxed subprocesses
+      (v1.4.0-connection)
+- [x] Mathematics programme with machine-checked proofs (v1.4.0-connection)
+- [ ] Distributed computing (multi-node, beyond single-host collectives)
 - [ ] Debugger (step/break/inspect)
 
 ---
@@ -1731,7 +1839,7 @@ full account, with runnable examples and a guide to reading a diagnostic, is
 ## Getting Involved
 
 - **Repository**: https://github.com/tsotchke/eshkol
-- **Issues**: Report bugs, request features
+- **Issues**: Report problems, request features
 - **Pull Requests**: Contributions welcome
 
 ---

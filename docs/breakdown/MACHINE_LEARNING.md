@@ -37,6 +37,16 @@ aggressive LLVM optimization passes (constant folding, loop unrolling, vectoriza
 produces native machine code that operates on the same tensor representation used by the rest
 of the language.
 
+As of v1.4.0-connection the framework also includes relaxation-based gradient
+estimation for discrete programs: `core.sblc.relax` (ADR-0017 item 5) provides
+an exact finite-logit oracle verified against native AD, Rao-Blackwellized
+REINFORCE with exact rational inner coins and variance-reduction confidence
+diagnostics, and depth-masked Gumbel-Softmax/Concrete grammar proposals with
+strict closed-term projection (projection errors refuse loudly rather than
+degrade silently). It is built on `core.sblc` and
+`core.ml.gradient_estimators`. Tensors of dtype `exact` (ADR-0058) carry
+exact rational elements through these paths.
+
 ### Codegen Architecture
 
 All ML builtins are implemented in `TensorCodegen`. Each operation follows a consistent pattern:

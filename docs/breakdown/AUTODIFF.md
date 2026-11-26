@@ -610,7 +610,7 @@ are asserted by `ctest -R tensor_embedding_backward_gradcheck`:
 
 - **Duplicate indices accumulate.** A weight row looked up *k* times receives
   the sum of all *k* upstream rows. Assigning instead of accumulating is the
-  classic scatter-add bug and it under-counts every repeated token — the common
+  classic scatter-add pitfall and it under-counts every repeated token — the common
   case in real text — while leaving the gradient the right shape and order of
   magnitude.
 - **Unselected rows are exactly zero.** The adjoint of a gather is genuinely

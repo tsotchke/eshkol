@@ -921,7 +921,7 @@ nothing                  ; Bottom type (uninhabited)
 <li><strong>All Scheme code compiles</strong> — untyped programs have type <code>?</code> everywhere, and <code>? ~ τ</code> for all <code>τ</code>, so no type errors are possible.</li>
 <li><strong>Type annotations are optimization hints</strong> — when the compiler knows a value is <code>Int64</code>, it can emit direct machine instructions instead of polymorphic dispatch.</li>
 <li><strong>Progressive typing</strong> — developers can add annotations incrementally, each one providing more compile-time safety and better performance.</li>
-<li><strong>Warnings guide improvement</strong> — type warnings identify potential bugs without blocking development.</li>
+<li><strong>Warnings guide improvement</strong> — type warnings identify potential errors without blocking development.</li>
 </ul>
 <hr />
 <h2 id="numeric-type-hierarchy">Numeric Type Hierarchy</h2>
@@ -1886,8 +1886,8 @@ mutable map&lt;uint16_t, vector&lt;CTValueSimple&gt;&gt; dimension_cache_;</code
 bool is_port = (type_tag &amp; ESHKOL_PORT_ANY_FLAG) != 0;
 
 // INCORRECT: this always returns false for ports
-bool is_port = (type_tag == ESHKOL_VALUE_HEAP_PTR);  // BUG</code></pre>
-<p>This encoding was the root cause of a hanging-stdin bug in <code>readChar</code>/<code>peekChar</code>: the old code checked <code>type_tag == ESHKOL_VALUE_HEAP_PTR</code> (0x08), which never matched a port type byte like <code>0x18</code>, causing the fallback to stdin. The fix was <code>AND(type_tag, 0x50) != 0</code>.</p>
+bool is_port = (type_tag == ESHKOL_VALUE_HEAP_PTR);  // WRONG</code></pre>
+<p>This encoding was the root cause of a hanging-stdin failure mode in <code>readChar</code>/<code>peekChar</code>: the old code checked <code>type_tag == ESHKOL_VALUE_HEAP_PTR</code> (0x08), which never matched a port type byte like <code>0x18</code>, causing the fallback to stdin. The correct check is <code>AND(type_tag, 0x50) != 0</code>.</p>
 <p>The heap object itself still has <code>HEAP_SUBTYPE_PORT</code> (9) in its <code>eshkol_object_header_t</code>, so subtype-based dispatch (e.g., in the display system) works normally. The flag-bit encoding is specific to the <em>tagged value’s type byte</em> and exists to enable fast port-direction checks without dereferencing the heap pointer.</p>
 <h3 id="5-promise-type-heap_subtype_promise--18">5. Promise Type (HEAP_SUBTYPE_PROMISE = 18)</h3>
 <p>Promises implement R7RS <code>delay</code>/<code>force</code> with memoization. The parser desugars <code>(delay expr)</code> into a call to <code>%make-lazy-promise</code> with a thunk <code>(lambda () expr)</code> as its argument.</p>

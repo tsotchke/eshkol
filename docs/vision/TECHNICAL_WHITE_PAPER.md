@@ -5,8 +5,13 @@
 This white paper presents Eshkol, a novel programming language designed to address the computational demands of scientific computing and artificial intelligence applications. Eshkol synthesizes the expressiveness of high-level languages with the performance characteristics of systems programming languages, while incorporating domain-specific features for numerical and symbolic computation. The language employs a gradual typing system that permits both static and dynamic type checking, facilitating the transition between rapid prototyping and production-ready code. A distinguishing feature of Eshkol is its arena-based memory management system, which provides deterministic performance without the unpredictable pauses associated with garbage collection. The language compiles to LLVM IR, enabling seamless interoperability with existing codebases and leveraging mature optimization techniques. This paper details Eshkol's architecture, implementation strategies, and technical innovations, presenting preliminary performance evaluations that demonstrate its efficacy for computationally intensive tasks. We conclude by discussing future research directions and potential applications in fields requiring both symbolic and numerical computation capabilities.
 
 
-> **Status at v1.3.6-evolve (2026-10-09).** This paper sets out the design Eshkol is
-> built toward, and much of it has since shipped. Where the paper describes
+> **Status at v1.4.0-connection (2026-11-25, release candidate).** This paper sets out the design Eshkol is
+> built toward, and much of it has since shipped — most recently the
+> v1.4.0-connection systems profile (linear TCP/UDP/TLS handles, O(1)
+> event-loop HTTP/WebSocket/SSE, write-ahead-logged agent memory, socket
+> collectives), WebGPU browser VM dispatch, exact-rational tensors, the Full
+> Mathematics Programme with differentiable SBLC search proposals
+> (`core.sblc.relax`), and 395 machine-checked Lean 4.12.0 theorems. Where the paper describes
 > something that is not built yet, the claim stands as the target and the table
 > below marks it **Planned** with its [ROADMAP](../../ROADMAP.md) stage, or
 > **Research** where no release stage has been assigned. Four statements about
@@ -20,7 +25,7 @@ This white paper presents Eshkol, a novel programming language designed to addre
 
 <a id="implementation-status-v136"></a>
 
-#### Implementation status at v1.3.6-evolve
+#### Implementation status at v1.4.0-connection
 
 | § | Capability as described | Status | Evidence or stage |
 |---|---|---|---|
@@ -47,8 +52,8 @@ This white paper presents Eshkol, a novel programming language designed to addre
 | 4.2 | Forward, reverse, nested and higher-order AD; Jacobians, Hessians, sparse derivatives | SHIPPED | `lib/backend/autodiff_codegen.cpp`; arbitrary-order Taylor towers (v1.3.0); `sparse-hessian` |
 | 4.3 | Automatic vectorization | SHIPPED | LLVM loop and SLP vectorizers; per-ISA runtime dispatch is Research |
 | 4.4 | Task and data parallelism on a work-stealing scheduler | SHIPPED | `parallel-map`, `parallel-fold`, `future`/`force`; Chase–Lev deques in `lib/backend/thread_pool.cpp` |
-| 4.4 | GPU computation | SHIPPED (built-in operations) | Metal and CUDA dispatch of tensor operations; user-defined kernels are Research; WebGPU is v1.4.0 |
-| 4.4 | Distributed computation | Planned (W6) | PJRT/XLA spike at v1.4.0, native-mesh gates through v2.0 |
+| 4.4 | GPU computation | SHIPPED (built-in operations) | Metal and CUDA dispatch of tensor operations; browser VM tensor operations dispatch through WebGPU (ADR-0029, v1.4.0-connection); user-defined kernels are Research |
+| 4.4 | Distributed computation | PARTIAL (W6) | PJRT CPU plugin execution path and socket-backed collectives shipped at v1.4.0-connection; the accelerator device runtime is v1.4.5-accelerate, native-mesh gates through v2.0 |
 | 4.4 | Pipeline parallelism with backpressure | Research | Bounded channels exist (`make-channel`, `channel-send!`, `lib/agent/c/agent_concurrency.c`); no pipeline framework |
 | 6.1, 6.2 | Benchmark methodology and results | Research | The comparative results in §6.2 are design expectations, not published measurements; measured figures live in [docs/PARALLEL_MAP_PERFORMANCE_ANALYSIS.md](../PARALLEL_MAP_PERFORMANCE_ANALYSIS.md) and the high-precision GEMM design notes |
 | 7.2 | Bounds-checked indexing raising a structured error | SHIPPED | Collection and tensor accessors raise catchable errors |
@@ -58,7 +63,7 @@ This white paper presents Eshkol, a novel programming language designed to addre
 | 8.1 | Header-parsing FFI binding generation; zero-copy C data access | Research / SHIPPED | No header parser; zero-copy NumPy tensors ship in the Python bindings (v1.2) |
 | 8.2 | Library ecosystem integrations | SHIPPED in part | BLAS, SQLite, HTTP, regex, image codecs and Python bindings ship; TensorFlow, PyTorch, OpenGL/Vulkan, FFTW and the others named are Research (Vulkan is listed for v1.8.0-platform) |
 | 8.3 | Tooling | SHIPPED in part | CMake integration (`cmake/EshkolCompile.cmake`), an LSP server (`tools/lsp`), a VS Code extension (`tools/vscode-eshkol`), `eshkol-pkg`, and the API reference generator `scripts/gen_api_docs.py` (shipped as `eshkol-doc`); an AD-aware debugger/profiler is v1.9.1 |
-| 9.1 | Dependent, linear and refinement types | Planned | Linear `Qubit` shipped (v1.3.4); linear handles v1.4.0-connection; dependent and refinement types (SMT) v1.9.0-types |
+| 9.1 | Dependent, linear and refinement types | PARTIAL | Linear `Qubit` shipped (v1.3.4); linear resource handles shipped (`--strict-resources`, ADR-0056, v1.4.0-connection); dependent and refinement types (SMT) v1.9.0-types |
 | 9.1 | Quantum computing extensions | SHIPPED in part / Planned | Opt-in differentiable Moonlab VQE/CHSH (v1.3.3); quantum circuit compilation v2.0-starlight |
 | 9.2 | Self-hosting compiler; incremental and cross compilation | Research / SHIPPED in part | `--target TRIPLE` cross-targets LLVM; AOT/JIT caches invalidate on transitive dependencies; a self-hosted compiler has no stage; embedded cross-compilation is v1.8.0-platform |
 | 9.2 | JIT | SHIPPED | ORC LLJIT REPL (`lib/repl/repl_jit.cpp`), `eshkol-run -r` |
@@ -208,7 +213,7 @@ Eshkol's macro system provides powerful metaprogramming capabilities that enable
 
 Syntactic abstraction through macros enables the creation of new language constructs that capture common patterns or domain-specific concepts. These abstractions can simplify code by hiding implementation details and expressing intent more directly. For example, a domain-specific macro for matrix operations might provide a concise notation for operations like matrix multiplication or decomposition, translating these high-level expressions into efficient low-level code.
 
-Hygienic macros in Eshkol prevent variable capture problems that can occur in naive macro systems. The hygiene mechanism ensures that variables introduced by a macro do not inadvertently capture references in the macro's expansion context, and conversely, that variables in the expansion context do not capture references within the macro. This property enables robust macro composition and eliminates a class of subtle bugs that can arise in less sophisticated macro systems.
+Hygienic macros in Eshkol prevent variable capture problems that can occur in naive macro systems. The hygiene mechanism ensures that variables introduced by a macro do not inadvertently capture references in the macro's expansion context, and conversely, that variables in the expansion context do not capture references within the macro. This property enables robust macro composition and eliminates a class of subtle variable-capture errors that can arise in less sophisticated macro systems.
 
 Procedural macros extend beyond simple pattern-based substitution, allowing arbitrary computation during macro expansion. This capability enables complex code generation based on compile-time analysis of the macro arguments. Procedural macros can implement sophisticated transformations such as domain-specific optimizations, code instrumentation, or generation of boilerplate code based on declarative specifications.
 
@@ -410,7 +415,7 @@ Memory layout optimization arranges data structures to improve cache utilization
 
 Type safety in Eshkol is ensured through a comprehensive system that combines static analysis with targeted runtime checks, providing strong guarantees about program behavior while maintaining flexibility and expressiveness. This approach prevents type-related errors that can lead to undefined behavior or security vulnerabilities, enhancing both reliability and maintainability.
 
-Static type checking forms the foundation of Eshkol's type safety strategy, verifying the consistency of type usage at compile time. The type checker analyzes the program's abstract syntax tree, annotated with type information, to ensure that operations are applied only to values of appropriate types. This analysis includes verification of function applications, operator usage, assignment compatibility, and conversion validity. When type errors are detected, the compiler provides detailed diagnostic messages that identify the nature of the error and suggest potential corrections. Static type checking eliminates an entire class of runtime errors, allowing developers to detect and fix type-related issues early in the development process.
+Static type checking forms the foundation of Eshkol's type safety strategy, verifying the consistency of type usage at compile time. The type checker analyzes the program's abstract syntax tree, annotated with type information, to ensure that operations are applied only to values of appropriate types. This analysis includes verification of function applications, operator usage, assignment compatibility, and conversion validity. When type errors are detected, the compiler provides detailed diagnostic messages that identify the nature of the error and suggest potential corrections. Static type checking eliminates an entire class of runtime errors, allowing developers to detect and resolve type-related issues early in the development process.
 
 Gradual typing extends the type system to accommodate both statically and dynamically typed code within the same program. For program components with complete type annotations, the compiler performs comprehensive static checking, providing strong guarantees about type correctness. For components with partial or no annotations, the compiler inserts runtime checks at the boundaries between statically and dynamically typed code, ensuring that type safety is maintained even when static analysis is insufficient. These runtime checks are optimized to minimize performance impact, with redundant checks eliminated through static analysis and check hoisting. The gradual typing approach enables a smooth transition from dynamic to static typing, allowing developers to add type annotations incrementally as code matures.
 
@@ -422,7 +427,7 @@ Parametric polymorphism enables generic programming with type parameters, allowi
 
 ### 7.2 Memory Safety
 
-Memory safety in Eshkol is achieved through a combination of language design, static analysis, and runtime mechanisms that prevent common memory-related errors. This comprehensive approach eliminates or mitigates vulnerabilities such as buffer overflows, use-after-free errors, and null pointer dereferences, which are frequent sources of crashes and security exploits in languages with manual memory management.
+Memory safety in Eshkol is achieved through a combination of language design, static analysis, and runtime mechanisms that prevent common memory-related errors. This comprehensive approach eliminates or mitigates vulnerabilities such as buffer overflows, use-after-free errors, and null pointer dereferences, which are frequent sources of undefined behavior and security exploits in languages with manual memory management.
 
 Arena-based allocation provides the primary mechanism for preventing use-after-free errors, one of the most pernicious classes of memory safety violations. By organizing memory into regions with well-defined lifetimes, Eshkol ensures that objects are not accessed after their containing region has been deallocated. The language design encourages allocation patterns that align with program structure, such as function-local arenas for temporary objects and module-level arenas for longer-lived data. When a region is deallocated, all objects within it become inaccessible simultaneously, eliminating the possibility of dangling pointers to individual objects. This approach provides memory safety without the unpredictable performance characteristics of garbage collection, making it particularly suitable for systems with real-time constraints.
 

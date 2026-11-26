@@ -1,6 +1,6 @@
 # Eshkol Quick Reference Card
 
-**1,069 built-in functions**
+**1,069 built-in functions** on a 1,651-construct declared surface — `v1.4.0-connection` (2026-11-25, RELEASE CANDIDATE)
 
 ## Basics
 
@@ -135,7 +135,7 @@
 (vector-map f vec)        ;; map over vector elements
 (vector-map f vec1 vec2 ...)  ;; map over N vectors in lockstep (R7RS 6.9), stops at shortest
 
-;; apply: leading fixed args before the final list argument
+;; apply: leading positional args before the final list argument
 (apply + '(1 2 3))              ;; -> 6
 (apply + 1 2 '(3 4 5))          ;; -> 15 (leading args precede the final list)
 (apply vector-copy (list (vector 7 8 9)))  ;; -> #(7 8 9)  (builtins are values)
@@ -238,7 +238,7 @@ for the full walkthrough.
 (sparse-hessian-nonzeros sp)      ;; nonzero (i j) index pairs
 
 (require core.ad.taylor_numerics)
-(taylor-ode-solve f y0 t0 t1 k n) ;; order-k fixed-step scalar IVP solver
+(taylor-ode-solve f y0 t0 t1 k n) ;; order-k constant-step scalar IVP solver
 (taylor-root f x0 k)              ;; Householder root refinement (k=1 Newton, k=2 Halley)
 (taylor-inverse-series f x0 k)    ;; Taylor series of f^-1 via Lagrange inversion
 ```
@@ -593,6 +593,73 @@ reached with `(require core.ad.taylor_models)`.
 (close-port port)
 ```
 
+## Networking & Streaming (v1.4.0-connection)
+
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings (sock, ws, stream, ctx, host, port), not a complete program -->
+```scheme
+;; TCP / UDP / Unix sockets — (require core.net)
+(tcp-listen host port)            ;; listener handle
+(tcp-connect host port)           ;; connected socket
+(tcp-accept listener)             ;; one connection
+(tcp-read sock n)                 ;; read up to n bytes
+(tcp-write sock data)             ;; bytes written
+(tcp-read! sock buf)              ;; fill a caller-owned buffer
+(tcp-write-all! sock buf)         ;; write it all or raise
+(tcp-shutdown sock how)           ;; half-close
+(tcp-close sock)
+(udp-bind host port)
+(udp-sendto sock host port data)
+(udp-recvfrom sock n)
+(unix-socket-connect path)        ;; local IPC
+(net-local-port sock)             ;; also -address / -peer- variants
+(net-nonblocking! sock #t)
+(net-cancel! sock)
+
+;; Scoped: closes on normal return AND on a raise
+(call-with-tcp-listener host port proc)
+(call-with-tcp-connection host port proc)
+(call-with-tcp-accept listener proc)
+(call-with-udp-socket host port proc)
+
+;; Structured failures
+(network-error? e) (network-error-code e)
+(network-error-operation e) (network-error-reason e)
+
+;; TLS — (require core.tls)
+(tls-available?)                  ;; check, never assume
+(tls-client-context)
+(tls-server-context cert key)
+(tls-connect ctx host port)
+(tls-read session n) (tls-write-all! session buf)
+(tls-session-close session) (tls-context-close ctx)
+(call-with-tls-client host port proc)
+(tls-error? e)
+
+;; HTTP/1.1
+(http-request ...)                ;; client
+(http-server-create port)         ;; non-blocking server
+(http-server-accept server)
+(http-server-respond conn status content-type body)
+(http-server-close server)
+;; (require core.http_server) for the parser/router
+(http-request-method req) (http-request-path req)
+(http-request-header req "host") (http-request-body req)
+
+;; WebSocket
+(websocket-connect url)
+(websocket-send ws text) (websocket-send-binary ws bytes)
+(websocket-receive ws) (websocket-close ws)
+
+;; Server-Sent Events — bounded by an admission ticket and a deadline
+(call-with-http-sse-stream conn proc)
+(sse-admit! ...) (sse-send! stream event)
+(sse-progress! stream ...) (sse-finish! stream) (sse-cancel! stream)
+(sse-deadline-ms stream)
+```
+
+Compile with `--strict-resources` (ADR-0056) to have the compiler require every
+socket, TLS session, file and region to be used exactly once.
+
 ## C Interop
 
 <!-- doc-example: skip pseudo-code: a grammar shape; return-type/name/param-types are metavariables -->
@@ -619,7 +686,7 @@ reached with `(require core.ad.taylor_models)`.
 ;; Currying
 (curry2 f)                ;; curry 2-arg function
 (curry3 f)                ;; curry 3-arg function
-(partial2 f x)            ;; fix first arg
+(partial2 f x)            ;; bind first arg
 
 ;; List utilities
 (iota n)                  ;; (0 1 ... n-1)

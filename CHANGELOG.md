@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0-connection] - 2026-11-25
+
+RELEASE CANDIDATE. Planned release date: Wednesday, November 25, 2026;
+final-source qualification and publication remain pending.
+
 ### Capabilities and processes
 
 - The capability policy covers the shell, process creation, sockets and foreign
@@ -253,7 +258,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Published on 2026-10-19 ([release](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)).
 The preparation record below retains the intended date and source-stage contract.
 
-PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
+v1.3.6-evolve shipped Monday, October 19, 2026 (prepared Thursday, October 15, 2026).
 The final measurement contract requires <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
 Full source-bound preparation passed 823 configured CTest cases and 411 VM parity cases
 ([run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)). Publication requires

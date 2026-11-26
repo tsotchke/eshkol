@@ -1,6 +1,9 @@
 # Eshkol Agent FFI Subsystem
 
-**Status**: Stable — v1.2.1-scale
+**Status**: Stable — current as of v1.4.0-connection (the linear
+networking stack — TLS, HTTP/1.1, WebSocket, SSE — shipped in
+v1.4.0-connection is a separate core surface; this document covers
+the agent FFI side-doors)
 **Modules**: `agent.http`, `agent.http_server`, `agent.sqlite`,
 `agent.subprocess`, `agent.regex`, `agent.crypto`, `agent.fs-watch`,
 `agent.glob`, `agent.keychain`, `agent.git-ffi`
@@ -25,7 +28,7 @@ C translation unit under `lib/agent/c/`. The split is deliberate:
 
 - **C runtime** owns the system call, the locking, the error
   envelope, and the resource lifetime. Most modules expose work
-  through an opaque `int64_t` handle indexing a fixed-size table
+  through an opaque `int64_t` handle indexing a statically sized table
   in the runtime (see `lib/agent/c/agent_sqlite.c §alloc_db`,
   `agent_http_server.c §HttpServer`, `agent_watch.c §Watcher`).
   Subprocess returns a `void*` because the per-process struct is
@@ -92,7 +95,7 @@ transitively) — which meant a link racing a concurrent rebuild of the
 (much larger, more frequently rebuilt) agent-FFI archive could see a
 partial `.a` and fail with spurious undefined-symbol errors for
 `eshkol_sha256`/`eshkol_hmac_sha256`/etc even though the runtime was
-otherwise fine (Noesis bug report #2, 2026-07-04). macOS picks up
+otherwise fine (Noesis integration report #2, 2026-07-04). macOS picks up
 CommonCrypto + Security/SecRandom; Windows uses BCrypt; Linux/other
 uses OpenSSL via `find_package(OpenSSL)` — all three probed/linked
 unconditionally now (`lib/core/crypto_primitives.c
@@ -105,7 +108,7 @@ unconditionally now (`lib/core/crypto_primitives.c
 JIT in REPL mode can dlsym every symbol — none of these symbols
 are referenced from eshkol-run's C++, only from `(extern …
 :real …)` declarations inside `lib/agent/*.esk`
-(`CMakeLists.txt:1970-1988`, see also v2 BUG 3 in docs/HARDENING.md).
+(`CMakeLists.txt:1970-1988`, see also the corresponding v2 entry in docs/HARDENING.md).
 The same force-load wiring is applied to `eshkol-repl`
 (`CMakeLists.txt:1990-2007`) so long-lived control sessions and
 warm `--machine`-mode workers can resolve the agent symbols
@@ -257,7 +260,7 @@ and subsequent ones increment the refcount; only the last
 `qllm_http_shutdown` actually tears libcurl down. `qllm_http_get`,
 `qllm_http_post`, and `qllm_http_post_json` all lazy-init when
 `g_init_refs == 0` so callers that forget the explicit init
-don't crash (lines 182, 209, 247).
+stay well-defined (lines 182, 209, 247).
 
 #### Public ABI
 
@@ -353,9 +356,9 @@ the v1.2 cut.
 ;; JSON POST with Authorization.
 (define body "{\"prompt\":\"hello\",\"max_tokens\":32}")
 (define result
-  (http-post "https://api.anthropic.com/v1/messages"
+  (http-post "https://api.example.com/v1/messages"
              '(("Authorization" . "Bearer sk-…")
-               ("anthropic-version" . "2023-06-01"))
+               ("api-version" . "2024-01-01"))
              body
              60000))
 
@@ -387,13 +390,13 @@ addr.sin_port = htons((uint16_t)port);
 themselves on a public interface must do so behind a real
 reverse proxy — this surface is deliberately not pluggable.
 
-Server slots are a fixed `MAX_HTTP_SERVERS = 4` table
+Server slots are a static `MAX_HTTP_SERVERS = 4` table
 (`agent_http_server.c`); each entry holds the listening
 fd plus the currently-accepted client fd. `eshkol_http_server_create(0)`
 asks the kernel to allocate a free port and reads it back via
 `getsockname` so callers can advertise the bound port to a
 peer (`agent_http_server.c`). Accept is poll-driven with
-a caller-supplied timeout and a fixed 5-second per-client
+a caller-supplied timeout and a constant 5-second per-client
 `SO_RCVTIMEO` so a slow client can't pin the server forever
 (`agent_http_server.c`).
 
@@ -421,7 +424,7 @@ pong (`0xA`), and auto-replies to ping with pong
   zero mask is per-RFC valid but unusual; see comment at
   `agent_http_server.c`).
 
-The handle table is fixed at `MAX_WS_HANDLES = 8`
+The handle table is capped at `MAX_WS_HANDLES = 8`
 (`agent_http_server.c`). The wrapper module
 `http_server.esk` documents this as suitable for MCP-over-WS
 and voice streaming; for production WS work, link libcurl
@@ -537,14 +540,14 @@ readers operate against an agent's local store. There is no
 connection pool: the agent is expected to keep a single
 database handle alive for the duration of work.
 
-#### The v1.2 dynamic column-text fix
+#### The v1.2 dynamic column-text upgrade
 
-The historical bug was that `eshkol_sqlite_column_text` had no
+The historical limitation was that `eshkol_sqlite_column_text` had no
 way to communicate the true payload size to the caller — the
-old wrapper passed a fixed 8 KiB buffer and silently truncated
+old wrapper passed a constant 8 KiB buffer and silently truncated
 larger values, after which JSON parsing of the partial result
 threw "invalid JSON" deep in the agent (`MEMORY.md §session
-persistence unblockers (#236/#246/#247)`). The fix added a
+persistence unblockers (#236/#246/#247)`). The v1.2 release added a
 companion function that returns the exact byte length without
 copying:
 
@@ -742,7 +745,7 @@ actions close-on-exec — saving six `addclose` entries per
 spawn and an implicit fd-table walk in the child
 (`agent_subprocess.c`).
 
-#### Pipe leak fix — v1.2.1
+#### Pipe lifetime hardening — v1.2.1
 
 The original spawn code used short-circuit evaluation:
 
@@ -878,7 +881,7 @@ historical contract that returned `exit_code` directly: a
 child exiting with status 1 (test failure, bad-proof, etc.)
 collided with the "1=timeout" sentinel, so every legitimate
 non-zero exit was misreported as a 124 timeout (Noesis v5
-audit BUG A, see comment at `:1249-1259`).
+audit item A, see comment at `:1249-1259`).
 
 #### Read-all buffer ownership and cleanup
 
@@ -1033,7 +1036,7 @@ function_return_types entries above them). This path does
 *not* use kqueue / inotify and is independent of
 `agent_watch.c`.
 
-The watcher table is fixed-size; events are derived from
+The watcher table is statically sized; events are derived from
 mtime/size diff between two consecutive `fs-watch-poll`
 calls, emitted as `"create"`, `"change"`, or `"delete"`
 (`system_builtins.c`). This is suitable for single
@@ -1212,8 +1215,8 @@ in `{8,9,a,b}`) bits in place to comply with RFC 4122
 
 `base64url-encode` and `base64url-decode` route through
 `base64-encode-string` / `base64-decode-string` from
-`core.data.base64`. The MEMORY.md note *Bug HH —
-base64url-encode wrong API entry* (`crypto.esk`,
+`core.data.base64`. The MEMORY.md note on the
+*base64url-encode API entry* (`crypto.esk`,
 `:131-138`) documents that the previous version called
 `base64-encode` directly with a string, which expected a list
 of bytes and aborted with `cdr: argument is not a pair` —
@@ -1253,7 +1256,7 @@ on the explicit understanding that they own the quoting.
 `sqlite-exec-safe` is explicitly *not* a substitute for prepared
 statements — it blocks the dumbest injection attempts on call
 sites that absolutely cannot migrate today. The docs/HARDENING.md
-table records this as DOC, not FIX.
+table records this as a documentation entry, not a code change.
 
 ### 10.3 CRLF injection — URL + header sanitisation
 
@@ -1300,7 +1303,7 @@ returns a non-match instead of pinning the thread.
 | `qllm_process_spawn_command_impl` (Windows branch) | heap-alloc exact size, reject ≥ 32768 | `agent_subprocess.c` |
 
 `CreateProcessA` mutates lpCommandLine in place; the previous
-4096-byte stack buffer was overflowable. The fix measures the
+4096-byte stack buffer was overflowable. The current implementation measures the
 final length, rejects past the Windows hard limit, and
 heap-allocates exactly the needed size.
 

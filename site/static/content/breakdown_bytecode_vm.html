@@ -284,12 +284,14 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
 </ul>
 <p>They use the normal VM module compiler, including import aliases, exports, privacy, and per-compilation cache tracking. Product WASM has no filesystem or general source loader. A module outside this five-module set fails compilation before the program runs; it is not treated as a successful no-op. The generated header records source hashes and can be checked with <code>python3 scripts/generate_wasm_embedded_modules.py --output build/generated/vm_embedded_modules.h --check</code>.</p>
 <p>The WASM execute-and-diff lane admits fixtures from <code>tests/vm_parity/corpus/</code> by default. A fixture that requires a host file, descriptor, or another unavailable host capability must have an explicit <code>EXCLUDED</code> row in <code>tests/wasm_diff/EXCLUSIONS.tsv</code> with its individual reason. The row emits an <code>EXCLUDED</code> trace event; it is not a blanket corpus skip. Stdlib-only fixtures remain in the supported corpus and must match desktop.</p>
+<h2 id="vm-parity-manifest">VM Parity Manifest</h2>
+<p>Native-vs-VM coverage is tracked construct by construct in the VM parity manifest. As of v1.4.0-connection the manifest has 997 rows: 630 constructs are vm-supported, 45 are native-only-justified (each with an explicit justification), and 322 are recorded gaps. The manifest is the honest boundary: the VM does not claim complete backend parity, and a construct outside the supported set fails loudly rather than silently diverging.</p>
 <h2 id="eskb-binary-format">ESKB Binary Format</h2>
 <p>Programs compile to ESKB (Eshkol Bytecode) binary format:</p>
 <pre class="bash"><code>eshkol-run program.esk -B program.eskb</code></pre>
 <p>ESKB files contain: - Magic number: <code>ESKB</code> - Instruction count + constant count - Opcode/operand pairs - Constant pool (integers, floats, strings) - CRC32 checksums</p>
 <h2 id="web-compilation-server">Web Compilation Server</h2>
-<p><code>exe/eshkol-server.cpp</code> (841 lines) provides an HTTP API for on-demand compilation:</p>
+<p><code>exe/eshkol-server.cpp</code> (999 lines) provides an HTTP API for on-demand compilation:</p>
 <pre><code>POST /compile  — compile Eshkol code to WASM
   Request:  { &quot;code&quot;: &quot;(display 42)&quot;, &quot;session_id&quot;: &quot;...&quot; }
   Response: { &quot;wasm&quot;: &quot;...&quot;, &quot;session_id&quot;: &quot;...&quot; }

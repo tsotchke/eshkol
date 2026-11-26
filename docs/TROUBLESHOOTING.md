@@ -23,7 +23,7 @@ sources:
 # Troubleshooting
 
 Build and run problems the repository already knows the answer to. Each entry
-is **symptom** (the message as the tool prints it), **cause**, **fix**.
+is **symptom** (the message as the tool prints it), **cause**, **remedy**.
 
 For language-level limits see [KNOWN_ISSUES.md](KNOWN_ISSUES.md); for
 per-platform build detail see [platform/BUILD_NOTES.md](platform/BUILD_NOTES.md);
@@ -63,7 +63,7 @@ LLVM 21 llvm-config not found. Install LLVM 21 and set LLVM_CONFIG_EXECUTABLE.
 `/usr/lib/llvm-21/bin` and `/usr/local/lib/llvm-21/bin` on Linux) and then on
 `PATH`. None was found.
 
-**Fix.** Install LLVM 21, or point the build at the one you have:
+**Remedy.** Install LLVM 21, or point the build at the one you have:
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
@@ -84,7 +84,7 @@ Expected LLVM 21, got 18.1.8 from /usr/bin/llvm-config
 pinned one. The check exists so a mixed toolchain cannot be assembled by
 accident.
 
-**Fix.** Either select the LLVM 21 `llvm-config` as above, or build against
+**Remedy.** Either select the LLVM 21 `llvm-config` as above, or build against
 the version you have by changing the pin. Any major from 18 through 24 is
 accepted by the source:
 
@@ -101,9 +101,9 @@ See [Windows](#windows).
 
 ## Host compiler
 
-> Eshkol v1.3.5-evolve is built and verified with **GCC 13** and with
+> Eshkol v1.4.0-connection is built and verified with **GCC 13** and with
 > **Clang/LLVM 21**. Building the compiler itself with **GCC 15 is not
-> supported in this release**.
+> supported.
 > ([BUILD_NOTES.md](platform/BUILD_NOTES.md#supported-host-compilers);
 > [KNOWN_ISSUES.md](KNOWN_ISSUES.md#supported-host-compilers) carries the same
 > statement.)
@@ -114,7 +114,7 @@ See [Windows](#windows).
 
 **Cause.** GCC 15 is not a supported host compiler in this release.
 
-**Fix.** Select a supported compiler for the whole build tree, C and C++
+**Remedy.** Select a supported compiler for the whole build tree, C and C++
 together, in a fresh build directory:
 
 ```sh
@@ -140,7 +140,7 @@ search paths at the final link.
 **Cause.** A CUDA toolkit older than 13.0 was found together with GCC 14 or
 newer.
 
-**Fix.** As the message says: reconfigure the whole tree with
+**Remedy.** As the message says: reconfigure the whole tree with
 `CC=gcc-13 CXX=g++-13`. To build without CUDA instead, pass
 `-DESHKOL_GPU_ENABLED=OFF`.
 
@@ -149,7 +149,7 @@ newer.
 **Cause.** `-DESHKOL_REQUIRE_GPU_BACKEND=ON` was set and no GPU SDK was found.
 The build refuses to compile the CPU stub under a GPU label.
 
-**Fix.** Install the GPU SDK, or drop `ESHKOL_REQUIRE_GPU_BACKEND`. A default
+**Remedy.** Install the GPU SDK, or drop `ESHKOL_REQUIRE_GPU_BACKEND`. A default
 build (`ESHKOL_GPU_ENABLED=ON`) falls back to the CPU stub on its own.
 
 ## Standard library and module discovery
@@ -176,7 +176,7 @@ ERROR: Unresolved module dependency; refusing to compile an incomplete program
 **Cause.** `(require my.module)` names a module that is in none of the searched
 locations. A dotted name maps to a path: `my.module` is `my/module.esk`.
 
-**Fix.** Put the module's root on the search path, with `-I` or with
+**Remedy.** Put the module's root on the search path, with `-I` or with
 `ESHKOL_PATH` (a path list: `:` separated, `;` on Windows):
 
 ```sh
@@ -193,7 +193,7 @@ checkout, name that checkout's library tree: `ESHKOL_PATH=/path/to/checkout/lib`
 library is defined by its `define-library` form, so importing it earlier is a
 forward reference, not a search-path problem (R7RS-small 5.6.1).
 
-**Fix.** Move the `define-library` above the `import`, or put the library in
+**Remedy.** Move the `define-library` above the `import`, or put the library in
 its own file.
 
 ### `Could not find libeshkol-runtime.a or legacy libeshkol-static.a`
@@ -210,7 +210,7 @@ ERROR: Searched, in order: $ESHKOL_LIB_DIR, every -L directory, the directory
 **Cause.** An ahead-of-time link needs the runtime archive and `stdlib.o`, and
 the compiler binary was moved away from them, or only `eshkol-run` was built.
 
-**Fix.** Build the artifacts, or say where they are:
+**Remedy.** Build the artifacts, or say where they are:
 
 ```sh
 cmake --build build --target stdlib          # in a source build
@@ -228,7 +228,7 @@ Eshkol version produces a warning.
 **Cause.** The JIT discovers standard-library symbols from `stdlib.bc`, and it
 is not beside `stdlib.o` in any searched location.
 
-**Fix.** Keep `stdlib.o` and `stdlib.bc` together; both are produced by the
+**Remedy.** Keep `stdlib.o` and `stdlib.bc` together; both are produced by the
 `stdlib` target and both ship in `lib/eshkol/` of a package. Point
 `ESHKOL_LIB_DIR` at the directory that holds the pair.
 
@@ -264,7 +264,7 @@ bypassed when it is disabled, when the program uses `eval` or `compile`, with
 more than one input file or a debug or dump flag, with `-D` defines, and while
 language-coverage tracing is on.
 
-**Fix.** Run once without the cache, and if that differs, clear it:
+**Remedy.** Run once without the cache, and if that differs, clear it:
 
 ```sh
 ESHKOL_JIT_CACHE=0 eshkol-run -r program.esk
@@ -281,7 +281,7 @@ read-only home), give each its own directory with `ESHKOL_JIT_CACHE_DIR`.
 `/private/tmp`; the compiler does not create cache artifacts under the system
 temporary directories.
 
-**Fix.** Name a durable directory, or unset the variable to use the default.
+**Remedy.** Name a durable directory, or unset the variable to use the default.
 
 ### `-r: native link of '...' failed; refusing to fall back to a reduced in-process run`
 
@@ -290,9 +290,9 @@ temporary directories.
 program whose missing native symbols happen to resolve inside `eshkol-run`
 and would certify a build that never linked.
 
-**Fix.** Read the linker diagnostics printed above the message and see
+**Remedy.** Read the linker diagnostics printed above the message and see
 [Native links](#native-links). `ESHKOL_JIT_CACHE=0` runs in-process and is a
-way to keep working while the link is being fixed, not a fix.
+way to keep working while the link is being repaired, not a remedy.
 
 ## Stack size
 
@@ -311,7 +311,7 @@ AOT entry code raise the soft `RLIMIT_STACK` when the operating system allows
 it and check headroom at every generated function entry, so deep recursion
 ends in this diagnostic rather than in a bare signal.
 
-**Fix.** Make the recursion a tail call, which runs in constant stack:
+**Remedy.** Make the recursion a tail call, which runs in constant stack:
 
 ```scheme
 ;; Non-tail: the addition happens after the recursive call returns.
@@ -343,7 +343,7 @@ has a 1 MiB floor:
 ESHKOL_STACK_SIZE=1G eshkol-run -r program.esk
 ```
 
-On Linux the initial thread's reachable stack is fixed from the soft
+On Linux the initial thread's reachable stack is set from the soft
 `ulimit -s` at process launch, so raise that in the launching shell too:
 
 ```sh
@@ -359,7 +359,7 @@ recursion-depth ceiling. Which tail positions are proper tail calls is in
 
 ### `Linking timed out after 300 seconds and was aborted`
 
-**Fix.** Raise or disable the limit: `ESHKOL_LINK_TIMEOUT_SECONDS=900`, or `0`
+**Remedy.** Raise or disable the limit: `ESHKOL_LINK_TIMEOUT_SECONDS=900`, or `0`
 for no limit. `ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS` bounds object emission the
 same way and is unbounded by default.
 
@@ -369,7 +369,7 @@ same way and is unbounded by default.
 build time when it still exists, otherwise a `clang++` or `c++` found on
 `PATH`. A package moved to a machine whose LLVM lives elsewhere may find none.
 
-**Fix.** `ESHKOL_CXX_COMPILER=/path/to/clang++ eshkol-run program.esk -o program`
+**Remedy.** `ESHKOL_CXX_COMPILER=/path/to/clang++ eshkol-run program.esk -o program`
 
 ### An undefined reference to `roundeven`
 
@@ -378,7 +378,7 @@ LLVM `roundeven` intrinsic. On AArch64 that is one instruction. On x86-64
 without SSE4.1 in the baseline it is a call to the C library's `roundeven`, a
 C23 function that some platform C libraries do not provide.
 
-**Fix.** None is needed with the shipped runtime: configuration checks for the
+**Remedy.** None is needed with the shipped runtime: configuration checks for the
 symbol and, where the platform lacks it, the runtime archive supplies it from
 `lib/core/runtime_math_compat.c`. The configure log says which case applies:
 
@@ -396,7 +396,7 @@ different build. Check which archive `eshkol-run` reports, and set
 **Cause.** AArch64 links use `lld`, and a versioned package installs only
 `ld.lld-21`.
 
-**Fix.** `sudo ln -sf "$(command -v ld.lld-21)" /usr/local/bin/ld.lld`
+**Remedy.** `sudo ln -sf "$(command -v ld.lld-21)" /usr/local/bin/ld.lld`
 
 ## Python bindings
 
@@ -421,7 +421,7 @@ ctest --test-dir build -R python_bindings_capsule_lifetime --output-on-failure
 pybind11 package. This is a status line, not an error: the `eshkol_py` target
 is simply absent.
 
-**Fix.** Install pybind11 into the interpreter you build against and pass its
+**Remedy.** Install pybind11 into the interpreter you build against and pass its
 CMake directory: `-Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)"`.
 
 ### `Could NOT find Python3 (missing: ... Development ...)`
@@ -431,7 +431,7 @@ component (headers and library) with
 `find_package(Python3 REQUIRED COMPONENTS Interpreter Development)`. The
 interpreter is installed without its development files.
 
-**Fix.** Install them (`python3-dev` on Debian and Ubuntu, `python3-devel` on
+**Remedy.** Install them (`python3-dev` on Debian and Ubuntu, `python3-devel` on
 Fedora; Homebrew and python.org builds include them), and make both
 `Python3_EXECUTABLE` and `ESHKOL_PYTHON3_EXECUTABLE` name the same interpreter
 so the module and its test agree.
@@ -446,7 +446,7 @@ object in that closure must be position-independent. The build turns on
 created. The error appears when the option is switched on in a build directory
 that already holds non-PIC objects.
 
-**Fix.** Configure with `-DESHKOL_PYTHON_BINDINGS=ON` in a fresh build
+**Remedy.** Configure with `-DESHKOL_PYTHON_BINDINGS=ON` in a fresh build
 directory.
 
 ### `FFI JIT runtime is not linked; link eshkol-repl-lib`
@@ -457,7 +457,7 @@ force-load that archive drops it. The `eshkol_py` target force-loads both
 `eshkol-static` and `eshkol-repl-lib`; the message appears in an embedding of
 your own that links the FFI without them.
 
-**Fix.** Force-load both archives: `-Wl,-force_load,<archive>` once per archive
+**Remedy.** Force-load both archives: `-Wl,-force_load,<archive>` once per archive
 on macOS, `-Wl,--whole-archive ... -Wl,--no-whole-archive` around both on ELF.
 
 ### `python_bindings_capsule_lifetime` fails with `SKIP:`
@@ -469,7 +469,7 @@ on macOS, `-Wl,--whole-archive ... -Wl,--no-whole-archive` around both on ELF.
 test is not evidence. It prints `SKIP:` when the module or NumPy cannot be
 imported by the interpreter CMake recorded.
 
-**Fix.** Build the `eshkol_py` target, and install NumPy into the interpreter
+**Remedy.** Build the `eshkol_py` target, and install NumPy into the interpreter
 named by `ESHKOL_PYTHON3_EXECUTABLE`. The test finds the module through
 `ESHKOL_PYTHON_MODULE_DIR`, which CTest sets to the target's output directory;
 for a manual run set it yourself:
@@ -496,7 +496,7 @@ No `RTLD_GLOBAL` import flag and no preloading is needed.
 LLVM 21 CMake package not found. Install the official LLVM 21 Windows SDK and set LLVM_DIR or LLVM_HOME.
 ```
 
-**Fix.** Install the LLVM 21 SDK and configure with its CMake package
+**Remedy.** Install the LLVM 21 SDK and configure with its CMake package
 directory. Visual Studio 2022 with the ClangCL toolset is the supported native
 generator:
 
@@ -514,7 +514,7 @@ to the SDK root works as well.
 **Cause.** The LLVM SDK's CMake package names the Debug Interface Access
 library by an absolute path from the machine that built it.
 
-**Fix.** Install the "DIA SDK" component of Visual Studio. The build then
+**Remedy.** Install the "DIA SDK" component of Visual Studio. The build then
 substitutes the `diaguids.lib` of the active Visual Studio instance for the
 architecture being built.
 
@@ -532,7 +532,7 @@ was found. Set ESHKOL_CXX_COMPILER or LLVM_HOME to a complete matching LLVM tool
 of the consumer's LLVM installation, and the selected driver belongs to an
 installation without them.
 
-**Fix.** Point `ESHKOL_CXX_COMPILER` at the `clang++` of a complete LLVM 21
+**Remedy.** Point `ESHKOL_CXX_COMPILER` at the `clang++` of a complete LLVM 21
 installation, or set `LLVM_HOME` to its root.
 
 ### Other Windows notes
@@ -555,7 +555,7 @@ installation, or set `LLVM_HOME` to its root.
 the JavaScript glue. The build picks up a new host helper as an `env` import on
 its own; the browser then refuses to instantiate the module.
 
-**Fix.** Add the import to **both** glue files, `web/eshkol-repl.js` and
+**Remedy.** Add the import to **both** glue files, `web/eshkol-repl.js` and
 `site/static/eshkol-runtime.js`, and to the core-key manifest. The procedure
 is in
 [WEB_PLATFORM.md](breakdown/WEB_PLATFORM.md#101-import-glue-is-generated).
@@ -572,7 +572,7 @@ python3 scripts/check_wasm_imports.py --build-dir build
 `scripts/wasm_flat_ad_imports.fragment.js`. The block is generated; it was
 edited by hand, or the fragment changed without regenerating.
 
-**Fix.**
+**Remedy.**
 
 ```sh
 python3 scripts/generate_wasm_import_glue.py --write
@@ -584,9 +584,70 @@ python3 scripts/generate_wasm_import_glue.py --check
 **Cause.** The `eshkol_*` and `region_*` keys a glue file provides and the
 list in `scripts/wasm_core_import_keys.json` disagree.
 
-**Fix.** Add the new key to the manifest (a sorted JSON string array) when the
+**Remedy.** Add the new key to the manifest (a sorted JSON string array) when the
 glue gained an import, or add the import to the glue when the manifest is
 right. Both glue files must provide the same core set.
+
+## Networking, TLS and resource linearity
+
+### `tls-available?` answers `#f`
+
+**Cause.** The build carries no TLS: the configuration step found no system TLS
+library, so `core.tls` loads but cannot open a context.
+
+**Remedy.** Install the system TLS development package and reconfigure the tree
+from scratch, then check `eshkol-run --features`, which prints this build's
+compile-time capabilities as `KEY=VALUE` lines. A program that must not fall
+back to plaintext should test `(tls-available?)` and refuse, rather than
+assuming.
+
+### A `network-error?` condition with no obvious cause
+
+**Cause.** Socket failures are reported as structured conditions, and the
+operation that failed is often not the one the message is read against —
+`tcp-connect` on a closed port, `tcp-read` after the peer shut down, a
+non-blocking socket reporting that it would block.
+
+**Remedy.** Read the three accessors rather than the printed text:
+`(network-error-operation e)` names the call, `(network-error-code e)` the
+platform code, `(network-error-reason e)` the reason. TLS has the same shape
+through `tls-error?`, `tls-error-operation`, `tls-error-code` and
+`tls-error-reason`.
+
+### A build with `--strict-resources` rejects code that ran before
+
+**Cause.** Resource linearity (ADR-0056) is on. The compiler now requires every
+socket, TLS session, file and region to be used exactly once, so a handle left
+unclosed on some path, or closed twice, is a compile-time error. A handle
+stored into a data structure and closed elsewhere cannot be tracked.
+
+**Remedy.** Use the scoped forms — `call-with-tcp-connection`,
+`call-with-tcp-listener`, `call-with-tcp-accept`, `call-with-udp-socket`,
+`call-with-tls-client`, `call-with-tls-server` — which close the handle on
+normal return and on a raise. They are also the borrow pattern: pass the handle
+into a procedure without transferring ownership. Drop the flag to compile the
+older shape unchanged.
+
+### An SSE stream ends sooner than expected
+
+**Cause.** Server-Sent Events streams are bounded by construction: each takes
+an admission ticket and carries its own deadline (`sse-deadline-ms`), so an
+abandoned client cannot hold the stream open indefinitely.
+
+**Remedy.** Send or report progress inside the deadline (`sse-send!`,
+`sse-progress!`), finish explicitly with `sse-finish!` or `sse-cancel!`, and
+release the ticket with `sse-cleanup-ticket`. Raise the deadline at the call
+site if the work genuinely takes longer.
+
+### A subprocess refuses to launch
+
+**Cause.** Subprocesses run confined — Darwin Seatbelt, or Linux seccomp with
+Landlock. Where no confinement mechanism is available, the launch is refused
+rather than run unconfined.
+
+**Remedy.** Run on a platform with a confinement mechanism, or do the work
+in-process. The refusal is deliberate: an unconfined subprocess would be a
+silent widening of what the program may do.
 
 ## Type warnings after upgrading
 
@@ -599,7 +660,7 @@ finding on unchanged code that an older one did not examine. The warning
 describes the code, not a change in its behaviour. `--strict-types` makes type
 errors fatal; `--unsafe` skips the checks.
 
-**Fix.** Read [guide/GRADUAL_TYPING.md](guide/GRADUAL_TYPING.md): it explains
+**Remedy.** Read [guide/GRADUAL_TYPING.md](guide/GRADUAL_TYPING.md): it explains
 what each warning means, which are advisory, and how to annotate or restructure
 the code it points at.
 
@@ -611,12 +672,12 @@ How a release is verified is in
 ### A gate reports that tests which passed did not execute
 
 **Cause.** An evidence path was relative and two tools resolved it against
-different directories. The repository fixes the meaning once: a relative
+different directories. The repository settles the meaning once: a relative
 `TRACE_DIR` or `ICC_TRACE_DIR` is relative to the **repository root**, and the
 gates make it absolute before any producer uses it
 (`scripts/lib/evidence_paths.sh`).
 
-**Fix.** Nothing, when you run the gates as shipped: `TRACE_DIR=scripts/icc_traces`
+**Remedy.** Nothing, when you run the gates as shipped: `TRACE_DIR=scripts/icc_traces`
 and `TRACE_DIR="$PWD/scripts/icc_traces"` mean the same thing. When you write
 a new gate that reads an evidence location from its environment, source the
 helper before first use:
@@ -633,7 +694,7 @@ that reads `TRACE_DIR` or `ICC_TRACE_DIR` without doing so.
 
 **Cause.** The harnesses use `build/` unless told otherwise.
 
-**Fix.** Name the tree: `BUILD_DIR=build-asan scripts/run_all_tests.sh`. A
+**Remedy.** Name the tree: `BUILD_DIR=build-asan scripts/run_all_tests.sh`. A
 relative `BUILD_DIR` is read against the repository root.
 
 ### The documentation-claims gate grades text you already changed
@@ -642,7 +703,7 @@ relative `BUILD_DIR` is read against the repository root.
 index, and the index predates your edit. An unregistered checkout is invisible
 to ICC altogether.
 
-**Fix.** Refresh the index for the checkout you are editing, then rerun:
+**Remedy.** Refresh the index for the checkout you are editing, then rerun:
 
 ```sh
 icc reindex --repo <alias> --full
@@ -654,7 +715,7 @@ python3 scripts/check_doc_claims_residual.py --icc-bin icc --repo <alias>
 **Cause.** The gate walks `previous_tag..HEAD` and fails closed when it cannot:
 the checkout is shallow, or the previous release tag is not present.
 
-**Fix.**
+**Remedy.**
 
 ```sh
 git fetch --unshallow --tags     # in a shallow clone
@@ -673,7 +734,7 @@ disagrees with the manifests under `tests/coverage/` or with
 `tests/coverage/release_record.json`, or a `<!-- release-record:KEY -->` span
 was edited by hand.
 
-**Fix.** Do not edit the number. Let the gate rewrite every record-owned claim:
+**Remedy.** Do not edit the number. Let the gate rewrite every record-owned claim:
 
 ```sh
 python3 scripts/check_surface_counts.py --sync
@@ -690,5 +751,5 @@ grade an empty trace root, and fails a high-severity criterion whose newest
 evidence is older than the window (14 days by default;
 `ESHKOL_EVIDENCE_MAX_AGE_DAYS` or `--max-age-days`).
 
-**Fix.** Regenerate the evidence with the producer the criterion names; do not
+**Remedy.** Regenerate the evidence with the producer the criterion names; do not
 widen the window to pass. Trace files are build products and are not committed.

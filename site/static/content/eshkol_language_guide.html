@@ -102,6 +102,20 @@
 <td>None</td>
 </tr>
 <tr>
+<td>Networking &amp; TLS</td>
+<td><strong>Built-in, linearly tracked</strong></td>
+<td>Library</td>
+<td>Library</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Formal proofs of the libraries</td>
+<td><strong>Machine-checked (Lean 4.12.0)</strong></td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
 <td>WebAssembly</td>
 <td><strong>Native compilation</strong></td>
 <td>Pyodide</td>
@@ -132,6 +146,8 @@
 <li><a href="/docs#page=eshkol_language_guide&amp;interactive-repl" data-url="/content/eshkol_language_guide.html">Interactive REPL</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;examples" data-url="/content/eshkol_language_guide.html">Examples</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;technical-architecture" data-url="/content/eshkol_language_guide.html">Technical Architecture</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;networking--connections" data-url="/content/eshkol_language_guide.html">Networking &amp; Connections</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;mathematics-programme" data-url="/content/eshkol_language_guide.html">Mathematics Programme</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;why-eshkol" data-url="/content/eshkol_language_guide.html">Why Eshkol?</a></li>
 </ol>
 <hr />
@@ -159,7 +175,7 @@ cmake .. &amp;&amp; make -j8
 <h3 id="first-derivative">First Derivative</h3>
 <pre class="scheme"><code>;; Compute derivative of f(x) = x^2 at x = 3
 (define f (lambda (x) (* x x)))
-(display (derivative f 3.0))  ;; -&gt; 6</code></pre>
+(display (derivative f 3.0))  ;; -&gt; 6.0</code></pre>
 <hr />
 <h2 id="language-overview">Language Overview</h2>
 <p>Eshkol uses <strong>S-expression syntax</strong> familiar to Lisp/Scheme programmers:</p>
@@ -315,7 +331,7 @@ cmake .. &amp;&amp; make -j8
 </tbody>
 </table>
 <h3 id="1066-built-in-functions">1,066 Built-in Functions</h3>
-<p>Eshkol provides 1,067 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
+<p>Eshkol provides 1,069 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
 <p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>abs</code>, <code>floor</code>, <code>ceiling</code>, <code>round</code>, <code>truncate</code>, <code>modulo</code>, <code>remainder</code>, <code>quotient</code>, <code>gcd</code>, <code>lcm</code>, <code>min</code>, <code>max</code>, <code>expt</code>, <code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code></p>
 <p><strong>Math:</strong> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>exp</code>, <code>log</code>, <code>log10</code>, <code>sqrt</code>, <code>pow</code>, <code>fl-next-up</code>, <code>fl-next-down</code> (directed rounding — the next representable double above / below its argument; the primitive beneath certified enclosures)</p>
 <p><strong>Comparison:</strong> <code>&lt;</code>, <code>&gt;</code>, <code>=</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
@@ -343,7 +359,7 @@ cmake .. &amp;&amp; make -j8
 <h4 id="2-forward-mode-ad-derivative">2. Forward-Mode AD (<code>derivative</code>)</h4>
 <p>Numerical derivatives using dual numbers:</p>
 <pre class="scheme"><code>(define f (lambda (x) (* x x x)))  ;; f(x) = x^3
-(derivative f 2.0)                  ;; -&gt; 12 (f&#39;(x) = 3x^2)
+(derivative f 2.0)                  ;; -&gt; 12.0 (f&#39;(x) = 3x^2)
 
 (define g (lambda (x) (sin (* x x))))
 (derivative g 1.0)                  ;; -&gt; 1.0806046117362795 (2x*cos(x^2))</code></pre>
@@ -354,7 +370,7 @@ cmake .. &amp;&amp; make -j8
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
 
-(gradient f (vector 3.0 4.0))  ;; -&gt; #(6 8)
+(gradient f (vector 3.0 4.0))  ;; -&gt; #(6.0 8.0)
 
 ;; Jacobian matrix for vector-valued functions
 (define polar-&gt;cartesian (lambda (v)
@@ -363,34 +379,34 @@ cmake .. &amp;&amp; make -j8
             (* r (sin theta))))))
 
 (jacobian polar-&gt;cartesian (vector 1.0 0.0))
-;; -&gt; #((1 0) (0 1))
+;; -&gt; #((1.0 0.0) (0.0 1.0))
 
 ;; Hessian matrix (second derivatives)
-(hessian f (vector 1.0 1.0))  ;; -&gt; #((2 0) (0 2))</code></pre>
-<p>An inexact result with no fractional part prints without a decimal point, so the <code>6</code>, <code>8</code> and <code>2</code> above are the doubles 6.0, 8.0 and 2.0 — ask <code>exact?</code> if the distinction matters. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower reference</a>.</p>
+(hessian f (vector 1.0 1.0))  ;; -&gt; #((2.0 0.0) (0.0 2.0))</code></pre>
+<p>An inexact result with no fractional part prints with its decimal point, so the derivatives above, taken at inexact points, show as <code>6.0</code>, <code>8.0</code> and <code>2.0</code>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower reference</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <p>Built-in operators for physics and engineering:</p>
 <pre class="scheme"><code>;; Divergence: div(F)
 (define F (lambda (v) (vector (* 2 (vref v 0)) (* 3 (vref v 1)))))
-(divergence F (vector 1.0 1.0))  ;; -&gt; 5
+(divergence F (vector 1.0 1.0))  ;; -&gt; 5.0
 
 ;; Curl: curl(F) (3D only)
 (define rotating (lambda (v)
   (vector (- 0 (vref v 1)) (vref v 0) 0.0)))
-(curl rotating (vector 1.0 1.0 0.0))  ;; -&gt; #(0 0 2)
+(curl rotating (vector 1.0 1.0 0.0))  ;; -&gt; #(0.0 0.0 2.0)
 
 ;; Laplacian: laplacian(f)
 (define harmonic (lambda (v)
   (- (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
-(laplacian harmonic (vector 1.0 1.0))  ;; -&gt; 0 (it&#39;s harmonic!)
+(laplacian harmonic (vector 1.0 1.0))  ;; -&gt; 0.0 (it&#39;s harmonic!)
 
 ;; Directional derivative: D_u f
-(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6</code></pre>
+(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6.0</code></pre>
 <h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD: Taylor Towers</h3>
-<p>Everything above differentiates once (or, with nesting, a small fixed number of times). The Taylor-tower engine computes <strong>every</strong> derivative up to an arbitrary order <code>k</code> in a single pass, exactly where the arithmetic allows it. See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for the full walkthrough of all 13 phases (P0-P12: no-heap monomorphization, multivariate mixed partials, reverse-over-Taylor, exact bignum/rational coefficients, tensor towers, validated Taylor models, sparse tensors, differentiable control flow, checkpointed reverse-mode, and tower-based numerics).</p>
+<p>Everything above differentiates once (or, with nesting, a small bounded number of times). The Taylor-tower engine computes <strong>every</strong> derivative up to an arbitrary order <code>k</code> in a single pass, exactly where the arithmetic allows it. See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for the full walkthrough of all 13 phases (P0-P12: no-heap monomorphization, multivariate mixed partials, reverse-over-Taylor, exact bignum/rational coefficients, tensor towers, validated Taylor models, sparse tensors, differentiable control flow, checkpointed reverse-mode, and tower-based numerics).</p>
 <pre class="scheme"><code>;; The k-th derivative of f at x, for any order k -- no require needed
-(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -&gt; 27 (f&#39;(x) = 3x^2 at x=3)
+(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -&gt; 27.0 (f&#39;(x) = 3x^2 at x=3)
 
 ;; All K+1 Taylor coefficients c[0..K] where c[n] = f^(n)(x)/n!
 (taylor (lambda (x) (exp x)) 0.5 4)
@@ -401,7 +417,7 @@ cmake .. &amp;&amp; make -j8
 (define (f xs) (* (vref xs 0) (* (vref xs 1) (vref xs 1))))  ;; f(x,y) = x*y^2
 
 ;; d^3f/dx dy^2 at (2.0, 3.0) -- idxs is a multi-index with repetition
-(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -&gt; 2
+(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -&gt; 2.0
 
 ;; The full order-&gt;=3 symmetric derivative tensor, as (multi-index . value) pairs
 (gradient-n f (vector 2.0 3.0) 3)</code></pre>
@@ -535,26 +551,26 @@ cmake .. &amp;&amp; make -j8
 <p>Eshkol supports complex numbers as a first-class numeric type, with heap-allocated <code>{real:f64, imag:f64}</code> representation and Smith’s formula for numerically stable division.</p>
 <h3 id="creation-1">Creation</h3>
 <pre class="scheme"><code>;; Rectangular form
-(make-rectangular 3.0 4.0)     ;; -&gt; 3+4i
+(make-rectangular 3.0 4.0)     ;; -&gt; 3.0+4.0i
 
 ;; Polar form
 (make-polar 5.0 0.9273)        ;; -&gt; 2.9999808719721477+4.000014345949428i
-                               ;;    (3+4i, up to the rounding of the angle)</code></pre>
-<p>A component with no fractional part prints without a decimal point, and a zero real part or a unit imaginary part is elided, so <code>3+4i</code> above is the pair of doubles 3.0 and 4.0.</p>
+                               ;;    (3.0+4.0i, up to the rounding of the angle)</code></pre>
+<p>An inexact component with no fractional part prints with its decimal point, so the pair of doubles 3.0 and 4.0 above shows as <code>3.0+4.0i</code>; a zero real part or a unit imaginary part is elided.</p>
 <h3 id="accessors">Accessors</h3>
 <pre class="scheme"><code>(define z (make-rectangular 3.0 4.0))
 
-(real-part z)      ;; -&gt; 3
-(imag-part z)      ;; -&gt; 4
-(magnitude z)      ;; -&gt; 5
+(real-part z)      ;; -&gt; 3.0
+(imag-part z)      ;; -&gt; 4.0
+(magnitude z)      ;; -&gt; 5.0
 (angle z)          ;; -&gt; 0.9272952180016122 (radians)</code></pre>
 <h3 id="arithmetic">Arithmetic</h3>
 <pre class="scheme"><code>;; All standard arithmetic works on complex numbers
 (+ (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -&gt; 4+6i
+   (make-rectangular 3.0 4.0))     ;; -&gt; 4.0+6.0i
 
 (* (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -&gt; -5+10i
+   (make-rectangular 3.0 4.0))     ;; -&gt; -5.0+10.0i
 
 ;; Division uses Smith&#39;s formula (overflow-safe)
 (/ (make-rectangular 1.0 0.0)
@@ -580,8 +596,8 @@ cmake .. &amp;&amp; make -j8
     #f)))
 
 (find-first even? (list 1 3 5 4 7))  ;; -&gt; 4</code></pre>
-<p>Re-entering a continuation while the frame that captured it is still live runs today. Planned for v1.4 on the JIT: re-entering it after the capturing procedure has returned, as below.</p>
-<!-- doc-example: skip pseudo-code: planned capability for v1.4 on the JIT; re-entry after the capturing procedure has returned -->
+<p>Re-entering a continuation while the frame that captured it is still live runs today. Planned for a later v1.4.x release on the JIT: re-entering it after the capturing procedure has returned, as below.</p>
+<!-- doc-example: skip pseudo-code: planned capability for a later v1.4.x release on the JIT; re-entry after the capturing procedure has returned -->
 <pre class="scheme"><code>;; Re-entrant: the continuation outlives the frame that captured it.
 ;; In a program file it includes the later top-level forms, so the
 ;; counter stops the re-entry.
@@ -637,7 +653,7 @@ cmake .. &amp;&amp; make -j8
 (guard (e (#t (error-object? e))) (raise &quot;plain&quot;)) ;; -&gt; #f: a raised non-error value</code></pre>
 <hr />
 <h2 id="parallel-primitives">Parallel Primitives</h2>
-<p>Eshkol v1.1 provides built-in parallel execution primitives that automatically distribute work across available CPU cores. No threading libraries or manual synchronization required.</p>
+<p>Eshkol provides built-in parallel execution primitives (since v1.1) that automatically distribute work across available CPU cores. No threading libraries or manual synchronization required.</p>
 <h3 id="parallel-map-filter-fold">Parallel Map, Filter, Fold</h3>
 <!-- doc-example: skip fragment: file-list is an assumed binding for parallel-for-each -->
 <pre class="scheme"><code>;; parallel-map: apply function to list elements in parallel
@@ -695,7 +711,7 @@ cmake .. &amp;&amp; make -j8
 <p>Parallel primitives use work-stealing thread pools and are optimized for scientific computing workloads. For small collections, they automatically fall back to sequential execution to avoid overhead.</p>
 <hr />
 <h2 id="gpu-acceleration">GPU Acceleration</h2>
-<p>Eshkol v1.1 features automatic hardware dispatch for tensor operations. The runtime measures actual hardware throughput and routes computations to the fastest available backend: SIMD, Apple Accelerate/BLAS, Metal (macOS), or CUDA (Linux/Windows).</p>
+<p>Eshkol features automatic hardware dispatch (since v1.1) for tensor operations. The runtime measures actual hardware throughput and routes computations to the fastest available backend: SIMD, Apple Accelerate/BLAS, Metal (macOS), or CUDA (Linux/Windows).</p>
 <h3 id="automatic-dispatch">Automatic Dispatch</h3>
 <pre class="scheme"><code>;; matmul automatically selects the fastest backend
 ;; SIMD for small matrices, BLAS for medium, GPU for large
@@ -723,7 +739,7 @@ cmake .. &amp;&amp; make -j8
 <p>Native float64 support on NVIDIA GPUs with automatic kernel generation for element-wise, reduction, and matrix operations.</p>
 <hr />
 <h2 id="consciousness-engine">Consciousness Engine</h2>
-<p>Eshkol v1.1 includes a built-in <strong>active inference consciousness engine</strong> implementing the Global Workspace Theory with probabilistic factor graphs and free energy minimization. This provides logic programming, probabilistic reasoning, and cognitive modeling as native language features.</p>
+<p>Eshkol includes a built-in <strong>active inference consciousness engine</strong> (since v1.1) implementing the Global Workspace Theory with probabilistic factor graphs and free energy minimization. This provides logic programming, probabilistic reasoning, and cognitive modeling as native language features.</p>
 <h3 id="logic-variables-and-unification">Logic Variables and Unification</h3>
 <pre class="scheme"><code>;; Logic variables use ?name syntax (R7RS compatible)
 (define s (make-substitution))
@@ -830,7 +846,7 @@ cmake .. &amp;&amp; make -j8
 ;; Posterior belief in state 0 is much higher than either sensor alone</code></pre>
 <hr />
 <h2 id="signal-processing">Signal Processing</h2>
-<p>Eshkol v1.1 includes a built-in signal processing library for spectral analysis, filtering, and windowing – compiled to native code with no interpreter overhead.</p>
+<p>Eshkol includes a built-in signal processing library (since v1.1) for spectral analysis, filtering, and windowing – compiled to native code with no interpreter overhead.</p>
 <h3 id="fft-and-spectral-analysis">FFT and Spectral Analysis</h3>
 <pre class="scheme"><code>;; Fast Fourier Transform
 (define signal #(1.0 0.0 -1.0 0.0 1.0 0.0 -1.0 0.0))
@@ -1057,7 +1073,7 @@ eshkol-run program.esk --wasm -o program.wasm
 <h2 id="interactive-repl">Interactive REPL</h2>
 <h3 id="features">Features</h3>
 <ul>
-<li><strong>Tab completion</strong> for all 1,067 builtins</li>
+<li><strong>Tab completion</strong> for all 1,069 builtins</li>
 <li><strong>Syntax highlighting</strong> with ANSI colors</li>
 <li><strong>Command history</strong> (persistent across sessions)</li>
 <li><strong>Multi-line input</strong> with balanced parenthesis detection</li>
@@ -1141,7 +1157,7 @@ Goodbye!</code></pre>
 (display &quot;Loss: &quot;) (display (loss step1)) (newline)
 ;; Converges toward (3, 4)</code></pre>
 <h3 id="neural-network-training">Neural Network Training</h3>
-<pre class="scheme"><code>;; Model: y = w*x + b (linear regression)
+<pre class="scheme"><code>;; Model: y = w*x + b (least-squares line fit)
 (define (model w b x) (+ (* w x) b))
 
 ;; Loss: Mean Squared Error
@@ -1397,6 +1413,52 @@ Goodbye!</code></pre>
 <li><p><strong>Linear <code>Qubit</code> type.</strong> A first-class linear type whose values must be used exactly once. <code>define</code>/<code>lambda</code> parameters and <code>let</code> bindings may declare a linear type, and double-use (a clone) and drop are both <strong>compile-time type errors</strong> — the compile exits nonzero and writes no artifact, in the default mode and not only under <code>--strict-types</code> — giving quantum-register operations a no-cloning guarantee at the type level rather than by convention. <code>--unsafe</code> remains the documented escape hatch. The judgment is a static worst-case-path analysis: it accepts a qubit consumed once in each mutually exclusive branch of an <code>if</code>, <code>cond</code>, <code>case</code> or <code>match</code>, walks <code>when</code>, <code>unless</code>, <code>do</code>, <code>guard</code> and <code>set!</code>, follows aliases through <code>let</code>, through an immediately applied <code>lambda</code> and through a <code>set!</code> move, and rejects a bare linear reference stored into an untyped container. For a body it cannot decide — a loop whose body names the qubit, a <code>guard</code> whose handler does, <code>call/cc</code> — it says so on stderr, naming the form, and rules neither way. The same rule is enforced on the bytecode VM, which runs the same judgment rather than a second implementation of it. See <a href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">the specification, 3.6.8</a> for the exact enforced and unenforced sets.</p></li>
 </ul>
 <hr />
+<h2 id="networking--connections">Networking &amp; Connections</h2>
+<p><em>(v1.4.0-connection)</em> A connection in Eshkol is a tracked handle. It reports its own failures as a typed condition, and under <code>--strict-resources</code> (ADR-0056) the compiler requires it to be used exactly once — so a leaked or twice-closed socket is a compile-time error, not a production incident.</p>
+<pre class="scheme"><code>(require core.net)
+
+;; Scoped: the connection closes on normal return AND on a raise.
+(call-with-tcp-connection &quot;example.org&quot; 80
+  (lambda (sock)
+    (tcp-write sock &quot;GET / HTTP/1.1\r\nHost: example.org\r\n\r\n&quot;)
+    (display (tcp-read sock 4096))))
+
+;; A listener, accepting one connection at a time.
+(call-with-tcp-listener &quot;127.0.0.1&quot; 0
+  (lambda (listener)
+    (display (net-local-port listener)) (newline)
+    (call-with-tcp-accept listener
+      (lambda (conn) (tcp-write conn &quot;hello\n&quot;)))))</code></pre>
+<p>Failures arrive structured, never as a bare errno:</p>
+<pre class="scheme"><code>(guard (e ((network-error? e)
+           (display (network-error-operation e)) (newline)
+           (display (network-error-reason e)) (newline)))
+  (tcp-connect &quot;127.0.0.1&quot; 1))</code></pre>
+<p>TLS is the same shape with its own module and condition type:</p>
+<pre class="scheme"><code>(require core.tls)
+(if (tls-available?)
+    (call-with-tls-client &quot;example.org&quot; 443
+      (lambda (session)
+        (tls-write-all! session (string-&gt;utf8 &quot;GET / HTTP/1.1\r\n\r\n&quot;))
+        (display (tls-read session 4096))))
+    (error &quot;this build carries no TLS&quot;))</code></pre>
+<p>On top of sockets: an HTTP/1.1 client (<code>http-request</code>) and a non-blocking HTTP/1.1 server on the portable event loop (<code>http-server-create</code>, <code>http-server-accept</code>, <code>http-server-respond</code>), with the pure-Scheme request parser and router in <code>core.http_server</code>; WebSocket with RFC-validated framing (<code>websocket-connect</code>, <code>websocket-send</code>, <code>websocket-receive</code>); and bounded Server-Sent Events streaming where every stream takes an admission ticket and carries its own deadline (<code>call-with-http-sse-stream</code>, <code>sse-admit!</code>, <code>sse-send!</code>, <code>sse-finish!</code>).</p>
+<p>Durability and distribution come with it: <code>core.memory_store</code> writes through a write-ahead log and commits a checkpoint atomically (a commit lands whole or not at all), socket collectives reduce in rank order so the same inputs give the same bits on every run, and subprocesses run confined under Darwin Seatbelt or Linux seccomp with Landlock.</p>
+<p>See <a href="/docs#page=api_reference" data-url="/content/api_reference.html">API_REFERENCE.md</a> for the full procedure tables.</p>
+<hr />
+<h2 id="mathematics-programme">Mathematics Programme</h2>
+<p><em>(v1.4.0-connection)</em> Eshkol states mathematics the way a mathematician states it — a site, a sheaf, a topos, a ring — and decides each claim exactly, by enumeration and exact linear algebra, never by sampling.</p>
+<ul>
+<li><code>core.sheaf</code> — sites, sieves, Grothendieck topologies, sheaf cohomology by Cech descent, cellular and condensed sheaves, probability sheaves</li>
+<li><code>core.topos</code> — the internal language of a presheaf topos, decided by Kripke–Joyal forcing and cross-checked against the subobject classifier</li>
+<li><code>core.ring</code> — a ring is a value, so one program evaluated over integers, rationals, binary64, modular arithmetic, Taylor jets, polynomial rings or group rings is the same proof run at different points</li>
+<li><code>core.category</code>, <code>core.simplicial</code>, <code>core.homological</code> — finite category theory, Kan extensions, simplicial sets, chain complexes, homology with torsion</li>
+<li><code>core.theory</code> — functional analysis, motives and Grothendieck–Riemann–Roch, stacks and derivators, six operations, Hodge theory, Lie and algebraic groups, integrable systems, measure theory and Markov disintegration, operator algebras, stochastic calculus</li>
+<li><code>core.exact_linalg</code> and friends — exact-rational affine solution families and Gröbner bases, so a linear answer is a family, not a rounded point</li>
+<li><code>core.sblc</code> — Stochastic Binary Lambda Calculus: an exact prior over programs, with every term’s weight exactly <code>1/2^length</code></li>
+</ul>
+<p>395 top-level theorems across 12 standalone proof files are machine-checked in Lean 4.12.0 in CI, with 0 <code>sorry</code> and 0 custom axioms, and replayed independently (ADR-0061, ADR-0063). A reader’s guide is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/guide/MATHEMATICS.md" target="_blank" rel="noopener noreferrer">guide/MATHEMATICS.md</a>.</p>
+<hr />
 <h2 id="why-eshkol">Why Eshkol?</h2>
 <h3 id="for-machine-learning-researchers">For Machine Learning Researchers</h3>
 <ul>
@@ -1584,14 +1646,19 @@ Goodbye!</code></pre>
 <li><label><input type="checkbox" checked="" />WebAssembly compilation target</label></li>
 <li><label><input type="checkbox" checked="" />LSP server for IDE integration</label></li>
 <li><label><input type="checkbox" checked="" />Package manager (eshkol-pkg)</label></li>
-<li><label><input type="checkbox" />Distributed computing (multi-node)</label></li>
+<li><label><input type="checkbox" checked="" />Networking: TCP/UDP and Unix domain sockets, TLS, HTTP/1.1 client and server, WebSocket, Server-Sent Events (v1.4.0-connection)</label></li>
+<li><label><input type="checkbox" checked="" />Durable persistence: write-ahead log with atomic checkpoint commit (v1.4.0-connection)</label></li>
+<li><label><input type="checkbox" checked="" />Linear resource accounting under <code>--strict-resources</code> (v1.4.0-connection)</label></li>
+<li><label><input type="checkbox" checked="" />Deterministic socket collectives and sandboxed subprocesses (v1.4.0-connection)</label></li>
+<li><label><input type="checkbox" checked="" />Mathematics programme with machine-checked proofs (v1.4.0-connection)</label></li>
+<li><label><input type="checkbox" />Distributed computing (multi-node, beyond single-host collectives)</label></li>
 <li><label><input type="checkbox" />Debugger (step/break/inspect)</label></li>
 </ul>
 <hr />
 <h2 id="getting-involved">Getting Involved</h2>
 <ul>
 <li><strong>Repository</strong>: https://github.com/tsotchke/eshkol</li>
-<li><strong>Issues</strong>: Report bugs, request features</li>
+<li><strong>Issues</strong>: Report problems, request features</li>
 <li><strong>Pull Requests</strong>: Contributions welcome</li>
 </ul>
 <hr />

@@ -1,7 +1,52 @@
-# Eshkol v1.3.6-evolve — Release Notes
+# Eshkol v1.4.0-connection — Release Notes
 
-**Status:** PREPARED FOR PUBLICATION.
-**Intended release date:** Thursday, October 15, 2026.
+**Status:** RELEASE CANDIDATE.
+**Planned release date:** Wednesday, November 25, 2026.
+
+Final publication requires fresh exact-commit qualification (full CTest and VM
+parity suites) with no failed, skipped or infrastructure-only checks, and an
+ICC ready/100 verdict. PR #956 merged Track B to `master` at `b4eac7abd` after
+all 36 CI checks passed ([run](https://github.com/tsotchke/eshkol/actions/runs/45713545739)).
+
+### Highlights
+
+- **Systems profile & networking.** O(1) event-loop scaling, non-blocking
+  HTTP/WebSocket server, bounded native HTTP SSE streaming, managed-resource
+  TCP/UDP/TLS socket leases, linear handle tracking (`--strict-resources`),
+  deterministic socket collectives, and Darwin Seatbelt / Linux seccomp +
+  Landlock subprocess sandboxing. (#845, #956)
+- **Full Mathematics Programme & algebraic calculus.** Grothendieck three-era
+  libraries (`core.sheaf`, `core.topos`, `core.ring`, `core.category`,
+  `core.simplicial`, `core.homological`, schemes, derived categories, and
+  six-functor formalism), Beyond Frontiers (Hodge theory, Lie and algebraic
+  groups, integrable systems, representation theory, K-theory), Probability
+  Sheaves (`arXiv:2611.30692`), exact-rational affine solution families
+  (`core.exact_linalg`), signed-curvature unified chart (`core.curvature`,
+  ADR-0018), Stochastic Binary Lambda Calculus (`core.sblc`) & lexical-environment
+  `core.blc` evaluation, differentiable SBLC search proposals (`core.sblc.relax`,
+  ADR-0017 item 5: an exact finite-logit oracle on enumerated domains,
+  Rao-Blackwellized REINFORCE with exact rational inner coins and
+  variance-reduction confidence diagnostics, and strict-projected
+  Gumbel-Softmax/Concrete grammar proposals — every relaxed candidate is
+  projected to a strict closed program and re-verified exactly), rational
+  heat-stencil verification, 395 machine-checked Lean 4.12.0 theorems across
+  12 standalone proof files (287 for the mathematics programme and 108 in
+  `EshkolSBLCRelaxation.lean`, ADR-0063), and an expanded 86-example verified
+  suite. (#785, #845, #912, #942, #945, #958)
+- **Compiler, AD, GPU & verification hardening.** Arbitrary-depth nested
+  differentiation (ADR-0057), native cross-entropy reverse gradients, Windows
+  x64 JIT unwind and continuation restoration, Metal FP64 matmul BLAS crossover
+  dispatch, NumPy exact tensor binding, CUDA precision policy, shared-library
+  tail-transfer export ordering, and Verificatum ADR-0061 independent proof
+  replay. (#845, #869, #871, #956)
+- **Documentation & runtime alignment.** Qualified setup, exact-arithmetic,
+  ownership, memory, and VM AD documentation. (#870, #883, #899)
+
+---
+
+## Eshkol v1.3.6-evolve — Release Notes
+
+v1.3.6-evolve shipped Monday, October 19, 2026 (prepared Thursday, October 15, 2026).
 
 Final publication requires **CTest 823/823** and **VM parity 411/411**, with no
 failed, skipped or infrastructure-only checks. Full source-bound preparation

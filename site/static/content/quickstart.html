@@ -2,13 +2,13 @@
 <p><strong>Get started with Eshkol in 15 minutes</strong></p>
 <p>This hands-on tutorial introduces Eshkol’s core features through practical examples. You’ll learn functions, lists, tensors, and automatic differentiation - the tools for scientific computing and AI systems programming.</p>
 <blockquote>
-<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>. An inexact value is sometimes written with its <code>.0</code> (<code>6.0</code>) for clarity, but what the compiler <em>prints</em> for an integral double omits the decimal point — <code>6</code>, not <code>6.0</code> — and the value is still inexact. <code>-0.0</code> is the one exception and prints in full. Text inside a fenced result block is the exact printed output. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
+<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>. An inexact value is written with its <code>.0</code> (<code>6.0</code>), which is also what the compiler <em>prints</em> for an integral double, so an exact <code>6</code> and an inexact <code>6.0</code> are told apart on sight. <code>-0.0</code> prints in full, keeping its sign. Text inside a fenced result block is the exact printed output. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
 </blockquote>
 <hr />
 <h2 id="try-without-installing">Try Without Installing</h2>
 <p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to try Eshkol in your browser:</p>
 <ul>
-<li><strong>Playground</strong> — Full REPL with a 72-opcode core VM and 741 VM-table builtins running in WebAssembly</li>
+<li><strong>Playground</strong> — Full REPL with a 73-opcode core VM and 800 VM-table builtins running in WebAssembly</li>
 <li><strong>Learn</strong> — interactive textbook with runnable code examples, plus 27 in-depth tutorials</li>
 <li><strong>Examples</strong> — 10 complete programs you can run instantly</li>
 </ul>
@@ -113,7 +113,7 @@ eshkol-run hello.esk -o hello
 (sqrt 16)           ; =&gt; 4
 (sin 3.14159)       ; =&gt; 2.65358979335273e-06
 (pow 2 10)          ; =&gt; 1024</code></pre>
-<p><strong>Type System</strong>: Polymorphic arithmetic with automatic promotion (exact integer → rational → double, promoting only when a value actually requires it). An inexact value with no fractional part prints without a decimal point, so <code>4</code> above may be either exact or inexact — ask <code>exact?</code> if it matters. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower reference</a>.</p>
+<p><strong>Type System</strong>: Polymorphic arithmetic with automatic promotion (exact integer → rational → double, promoting only when a value actually requires it). An inexact value with no fractional part prints with its decimal point, so the <code>4</code> above is the exact integer (<code>(sqrt 16)</code> of an exact square is exact) and an inexact four would print <code>4.0</code>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower reference</a>.</p>
 <hr />
 <h3 id="variables-and-functions">Variables and Functions</h3>
 <pre class="scheme"><code>; Define variables
@@ -204,22 +204,22 @@ eshkol-run hello.esk -o hello
 ; Tensor creation functions
 (zeros 5)           ; =&gt; #(0.0 0.0 0.0 0.0 0.0)
 (ones 2 3)          ; =&gt; #((1.0 1.0 1.0) (1.0 1.0 1.0))
-(eye 3)             ; =&gt; #((1 0 0) (0 1 0) (0 0 1))  (a 3x3 identity matrix)
-(arange 0.0 1.0 0.2) ; =&gt; #(0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
+(eye 3)             ; =&gt; #((1.0 0.0 0.0) (0.0 1.0 0.0) (0.0 0.0 1.0))  (a 3x3 identity matrix)
+(arange 0.0 1.0 0.2) ; =&gt; #(0.0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
 
 ; Element access
 (vref v 0)          ; =&gt; 1.0
-(tensor-get M 1 2)  ; =&gt; 6
+(tensor-get M 1 2)  ; =&gt; 6.0
 
 ; Arithmetic (element-wise)
-(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5 7 9)
+(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5.0 7.0 9.0)
 (tensor-mul v v)                ; =&gt; #(1.0 4.0 9.0)
 
 ; Linear algebra
 (define A #(#(1 2) #(3 4)))
 (define B #(#(5 6) #(7 8)))
-(matmul A B)        ; =&gt; #((19 22) (43 50))
-(transpose A)       ; =&gt; #((1 3) (2 4))
+(matmul A B)        ; =&gt; #((19.0 22.0) (43.0 50.0))
+(transpose A)       ; =&gt; #((1.0 3.0) (2.0 4.0))
 (trace A)           ; =&gt; 5.0
 
 ; Reductions
@@ -448,6 +448,20 @@ eshkol-run hello.esk -o hello
 (close-port in)
 (display line)  ; =&gt; Hello, File!</code></pre>
 <hr />
+<h3 id="6-networking-with-handles-you-cannot-leak">6. <strong>Networking, with Handles You Cannot Leak</strong></h3>
+<p><em>(v1.4.0-connection)</em></p>
+<pre class="scheme"><code>(require core.net)
+
+;; The scoped form closes the socket on normal return AND on a raise.
+(call-with-tcp-connection &quot;example.org&quot; 80
+  (lambda (sock)
+    (tcp-write sock &quot;GET / HTTP/1.1\r\nHost: example.org\r\n\r\n&quot;)
+    (display (tcp-read sock 4096))))</code></pre>
+<p>Failures arrive as structured conditions rather than bare errno values:</p>
+<pre class="scheme"><code>(guard (e ((network-error? e) (display (network-error-reason e))))
+  (tcp-connect &quot;127.0.0.1&quot; 1))</code></pre>
+<p>Compile with <code>--strict-resources</code> and the compiler requires every socket, TLS session, file and region to be used exactly once — a leaked or twice-closed handle stops the build instead of reaching production. TLS (<code>core.tls</code>), an HTTP/1.1 client and server, WebSocket and Server-Sent Events are built on the same handle model; see <a href="/docs#page=api_reference&amp;sockets--tls" data-url="/content/api_reference.html">API_REFERENCE.md</a>.</p>
+<hr />
 <h2 id="advanced-example-optimization">Advanced Example: Optimization</h2>
 <p>Gradient descent to find minimum of Rosenbrock function.</p>
 <pre class="scheme"><code>; Rosenbrock function: f(x,y) = (1-x)² + 100(y-x²)²
@@ -593,7 +607,7 @@ f(optimum) = 8.4e-7</code></pre>
 <h2 id="next-steps">Next Steps</h2>
 <h3 id="learn-more">Learn More</h3>
 <ol type="1">
-<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> — Complete function reference (550+ functions)</li>
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> — Complete function reference (1,069 built-in functions)</li>
 <li><strong><a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html">Architecture Guide</a></strong> — System internals (memory, types, compilation)</li>
 <li><strong><a href="/docs#page=reference_language" data-url="/content/reference_language.html">Language Reference</a></strong> — Comprehensive language guide</li>
 <li><strong><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Autodiff Deep Dive</a></strong> — Three differentiation modes in detail</li>
@@ -620,7 +634,7 @@ f(optimum) = 8.4e-7</code></pre>
 
 (define data &#39;(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
 
-(display (median data))         ; =&gt; 8
+(display (median data))         ; =&gt; 8.0
 (display (std-dev data))        ; =&gt; 4.181432170919432
 (display (percentile data 75))  ; =&gt; 11.5   (linear interpolation between order
                                 ;            statistics, as NumPy&#39;s default)
@@ -722,7 +736,7 @@ eshkol-run --no-stdlib program.esk -o program</code></pre>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <p><strong>Error: “Unknown function”</strong> - Check spelling and imports - Use <code>(require core.module)</code> for standard library</p>
 <p><strong>Error: “Type mismatch”</strong> - Eshkol uses gradual typing - type errors are warnings - Check if you’re mixing incompatible types</p>
-<p><strong>Segfault or crash</strong> - Report bug with minimal reproducer - Check if using external pointers correctly</p>
+<p><strong>A memory fault</strong> - File a report with a minimal reproducer - Check that external pointers are used correctly</p>
 <p><strong>Slow performance</strong> - Compile with <code>eshkol-run</code> for production (not REPL) - Use tensors for numerical code - Enable tail call optimization with <code>letrec</code></p>
 <hr />
 <h2 id="repl-commands">REPL Commands</h2>
@@ -766,8 +780,8 @@ ar rcs libmylib.a mylib.o</code></pre>
 (+ r r)             ; =&gt; 2/3 (exact)
 
 ;; R7RS: exact + inexact → inexact
-(+ big 0.5)         ; =&gt; 9223372036854776000 (a double, printed without a
-                    ;    decimal point because it has no fractional part)
+(+ big 0.5)         ; =&gt; 9223372036854776000.0 (a double: its decimal
+                    ;    point marks it inexact)
 
 ;; Exact roots and exact expt: exactness follows the VALUE, not the operator
 (sqrt 4/9)          ; =&gt; 2/3   exact
@@ -786,16 +800,16 @@ ar rcs libmylib.a mylib.o</code></pre>
 <h3 id="complex-numbers">Complex Numbers</h3>
 <pre class="scheme"><code>;; Create complex numbers
 (define z (make-rectangular 3.0 4.0))
-(magnitude z)       ; =&gt; 5
+(magnitude z)       ; =&gt; 5.0
 (angle z)           ; =&gt; 0.9272952180016122
 
 ;; Complex arithmetic
-(+ z (make-rectangular 1.0 -1.0))  ; =&gt; 4+3i
-(* z z)             ; =&gt; -7+24i
+(+ z (make-rectangular 1.0 -1.0))  ; =&gt; 4.0+3.0i
+(* z z)             ; =&gt; -7.0+24.0i
 
 ;; Smith&#39;s formula for numerical stability
 (/ (make-rectangular 1e300 1e300)
-   (make-rectangular 1e300 1e300))  ; =&gt; 1 (no overflow; the zero imaginary
+   (make-rectangular 1e300 1e300))  ; =&gt; 1.0 (no overflow; the zero imaginary
                                     ;    part is not printed)</code></pre>
 <hr />
 <h3 id="gpu-acceleration">GPU Acceleration</h3>

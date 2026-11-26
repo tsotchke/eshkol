@@ -1,8 +1,8 @@
 # Automatic Differentiation — Support Matrix
 
 This is the authoritative, machine-verified statement of what Eshkol's AD
-system does and does not do in v1.3.5-evolve. It mirrors the **AD composition
-oracle**
+system does and does not do in v1.4.0-connection. It mirrors the **AD
+composition oracle**
 ([`tests/ad_oracle/`](../../../tests/ad_oracle/)), which enumerates the whole AD
 surface as a matrix and checks **every cell against in-language central finite
 differences** — ground truth with no hand computation.
@@ -18,7 +18,8 @@ ad_oracle gate: PASS
 `total` counts each of the 30 probe files under two modes (JIT + AOT); JIT and
 AOT verdicts are identical. The corpus is **235 probes / 490 checks in 30
 files**. `passed` = agrees with finite differences; `xknown` = a tracked open
-bug (expected); `failed`/`crashed`/`hung` = 0, so the gate is green — and with
+cell (expected); the abnormal-termination and timeout counts are 0, so the gate
+is green — and with
 `xknown = 0`, every enumerated cell is now a genuine pass.
 
 ---
@@ -60,7 +61,7 @@ Tolerance: `|ad - fd| ≤ atol + rtol·|fd|`, `rtol = 1e-4`. First-order stencil
 - **AD reused inside a bounded loop** (stable over 1000+ iterations).
 - **Exact-element vectors**: integer/rational elements are tag-coerced by value
   before vector gradients; they do not become heap-address doubles. The Keller
-  map regression checks the exact and inexact representations.
+  map probe checks the exact and inexact representations.
 
 ---
 
@@ -176,15 +177,15 @@ JIT, AOT and the VM.
 differences in both the JIT and AOT lanes: `xknown=0`.
 
 The five cells that were open through v1.3.0–v1.3.3 are all closed. Their
-minimal repros are kept in
+minimal reproducers are kept in
 [`tests/ad_oracle/found/`](../../../tests/ad_oracle/found/) as the acceptance
-tests of the fixes, and they now print the correct answers:
+tests for those closures, and they now print the correct answers:
 
 | Task | Cells | Was | Now |
 |------|-------|-----|-----|
-| **ESH-0072** | `grad.*.s.caplocal` (scalar point) | Reverse-mode lambda capturing a **local scalar** failed LLVM verification (`PtrToInt source must be pointer`) at compile time. | Compiles and differentiates; `(define (mk a) (gradient (lambda (x) (* a x x)) 3.0))`, `(mk 2.0)` → `12`. |
-| **ESH-0097** | `{grad,jac,hess,div,curl,lap}.*.v*.caplocal / .capvrefout` | Same `PtrToInt` failure for any **vector-param** reverse-mode operator capturing a local param or a `vref` of an outer param. | Compiles; [`found/esh0097_…`](../../../tests/ad_oracle/found/esh0097_local_capture_vector_ad_ptrtoint.esk) prints its expected `#(4.42 0)`. |
-| **ESH-0095** | `hess.poly.t2/t3`, `lap.poly.t2/t3` | `hessian`/`laplacian` **SIGSEGV** at a `tensor`/`#(…)` point. | Points are classified by runtime value, not AST node kind (#343); every point form gives the same result. |
+| **ESH-0072** | `grad.*.s.caplocal` (scalar point) | Reverse-mode lambda capturing a **local scalar** was refused by LLVM verification (`PtrToInt source must be pointer`) at compile time. | Compiles and differentiates; `(define (mk a) (gradient (lambda (x) (* a x x)) 3.0))`, `(mk 2.0)` → `12`. |
+| **ESH-0097** | `{grad,jac,hess,div,curl,lap}.*.v*.caplocal / .capvrefout` | The same `PtrToInt` refusal for any **vector-param** reverse-mode operator capturing a local param or a `vref` of an outer param. | Compiles; [`found/esh0097_…`](../../../tests/ad_oracle/found/esh0097_local_capture_vector_ad_ptrtoint.esk) prints its expected `#(4.42 0)`. |
+| **ESH-0095** | `hess.poly.t2/t3`, `lap.poly.t2/t3` | `hessian`/`laplacian` stopped with **SIGSEGV** at a `tensor`/`#(…)` point. | Points are classified by runtime value, not AST node kind (#343); every point form gives the same result. |
 | **ESH-0096** | `nest.gofg.*.v1/v2` | `gradient` of `gradient` at a **vector** param silently returned zeros. | Returns the true second derivative — `#(12)` for the 1-D case, `#(8 6)` for the 2-D one. |
 | **ESH-0078** | `nest.gofg.*.s.named/lamvar` | Second-order gradient through a **named** inner function returned `0`. | Returns `18`, matching the inline-lambda form. |
 
@@ -222,11 +223,11 @@ scripts/run_ad_oracle.sh --regen    # regenerate the (deterministic) corpus firs
 
 Point it at a build dir with `BUILD_DIR=…`. Per-file verdicts: `PASS` / `FAIL`
 (an *untracked* cell diverged from finite differences) / `XKNOWN` (tracked open
-bug) / `CRASH` / `HANG`. The gate is green iff there are no FAIL/CRASH/HANG.
+cell) / `CRASH` / `HANG`. The gate is green iff there are no FAIL/CRASH/HANG.
 Verdicts stream to `scripts/icc_traces/ad_oracle.jsonl` as `kind:"ad_oracle"`
 events (consumed by `.icc/completion-oracles.yaml::ad-oracle`).
 
-When a task is fixed, its probes flip `XKNOWN → PASS` automatically — no oracle
+When a task closes, its probes flip `XKNOWN → PASS` automatically — no oracle
 edit needed. The generator ([`gen_ad_oracle.py`](../../../tests/ad_oracle/gen_ad_oracle.py))
 is deterministic; regenerating reproduces the corpus byte-for-byte.
 

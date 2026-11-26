@@ -12,7 +12,7 @@
 <li><a href="/docs#page=documentation&amp;7-historical-pages" data-url="/content/documentation.html">Historical pages</a></li>
 <li><a href="/docs#page=documentation&amp;8-when-the-page-and-the-code-disagree" data-url="/content/documentation.html">When the page and the code disagree</a></li>
 <li><a href="/docs#page=documentation&amp;9-the-gates-and-how-to-run-them" data-url="/content/documentation.html">The gates, and how to run them</a></li>
-<li><a href="/docs#page=documentation&amp;10-the-v140-plan" data-url="/content/documentation.html">The v1.4.0 plan</a></li>
+<li><a href="/docs#page=documentation&amp;10-the-documentation-plan" data-url="/content/documentation.html">The documentation plan</a></li>
 </ol>
 <h2 id="1-where-a-page-goes">1. Where a page goes</h2>
 <table>
@@ -73,7 +73,7 @@
 kind: guide            # tutorial | guide | reference | explanation | project | report
 status: current        # current | historical | superseded
 owner-area: types      # the subsystem that owns the page
-since: v1.3.5          # the release in which the page first shipped
+since: v1.4.0          # the release in which the page first shipped
 sources:               # machine sources and source files the page&#39;s facts come from
   - lib/types/type_relation.cpp
 ---</code></pre>
@@ -86,7 +86,7 @@ sources:               # machine sources and source files the page&#39;s facts c
 <p>Pages without front matter are valid and are counted. The count lives in <code>tests/coverage/doc_front_matter_baseline.json</code> and can only go down: when you add front matter to a page, lower the baseline with <code>python3 scripts/check_doc_front_matter.py --update-baseline</code>.</p>
 <h2 id="3-evergreen-wording">3. Evergreen wording</h2>
 <p>Tutorials, guides, reference and explanation pages describe <strong>what is true now</strong>, in the present tense. They carry no release narrative: not “new in”, “recently”, “now fixed”, “no longer”, “this release adds”, and no account of how something used to misbehave. That material belongs in <code>CHANGELOG.md</code>, <code>RELEASE_NOTES.md</code>, <code>ANNOUNCEMENT.md</code> and <a href="/docs#page=upgrading" data-url="/content/upgrading.html"><code>UPGRADING.md</code></a>.</p>
-<p>Where provenance helps the reader, annotate the statement: “(since v1.3.5)”.</p>
+<p>Where provenance helps the reader, annotate the statement: “(since v1.4.0)”.</p>
 <table>
 <colgroup>
 <col style="width: 50%" />
@@ -101,19 +101,19 @@ sources:               # machine sources and source files the page&#39;s facts c
 <tbody>
 <tr>
 <td>“The checker now descends into <code>cond</code> bodies.”</td>
-<td>“The checker examines every <code>cond</code> body (since v1.3.5).”</td>
+<td>“The checker examines every <code>cond</code> body (since v1.4.0).”</td>
 </tr>
 <tr>
 <td>“Previously this crashed; it has been fixed.”</td>
 <td>State the behaviour. The fix is a <code>CHANGELOG.md</code> line.</td>
 </tr>
 <tr>
-<td>“New in v1.3.5: <code>json-get-in</code> takes a default.”</td>
+<td>“New in v1.4.0: <code>json-get-in</code> takes a default.”</td>
 <td>“<code>(json-get-in obj path [default])</code>” with the default described.</td>
 </tr>
 </tbody>
 </table>
-<p>The front-matter gate enforces a fixed list of release-narrative phrases (“new in v”, “what’s new”, “recently”, “refreshed candidate”, “release candidate”, “this release adds”, “in this release”) on every evergreen page that carries front matter; the rest of this section is the reviewer’s rule. A line that must keep such a phrase (a quotation, a heading of a historical table) carries <code>&lt;!-- evergreen: allow &lt;reason&gt; --&gt;</code>.</p>
+<p>The front-matter gate enforces a declared list of release-narrative phrases (“new in v”, “what’s new”, “recently”, “refreshed candidate”, “release candidate”, “this release adds”, “in this release”) on every evergreen page that carries front matter; the rest of this section is the reviewer’s rule. A line that must keep such a phrase (a quotation, a heading of a historical table) carries <code>&lt;!-- evergreen: allow &lt;reason&gt; --&gt;</code>.</p>
 <h2 id="4-facts-come-from-sources">4. Facts come from sources</h2>
 <p>A number, date, tag or status that more than one page states is rendered from its source, never retyped.</p>
 <table>
@@ -250,11 +250,11 @@ owner-area: testing
 since: v1.3.5
 sources: []
 ---</code></pre>
-<p>A current page that links to a historical or superseded page says so on the same line (“the dated audit of 2026-08-25”, “superseded by …”). When a later document corrects a figure, the correction is propagated to every current page that cites it; <code>icc citation-binding</code> and <code>icc supersession-propagation</code> list the citations still to fix.</p>
+<p>A current page that links to a historical or superseded page says so on the same line (“the dated audit of 2026-08-25”, “superseded by …”). When a later document corrects a figure, the correction is propagated to every current page that cites it; <code>icc citation-binding</code> and <code>icc supersession-propagation</code> list the citations still to correct.</p>
 <h2 id="8-when-the-page-and-the-code-disagree">8. When the page and the code disagree</h2>
 <p>Decide which one is the design before touching either.</p>
 <ul>
-<li>The page is wrong about what exists (a signature, a flag, a count, a path): fix the page.</li>
+<li>The page is wrong about what exists (a signature, a flag, a count, a path): correct the page.</li>
 <li>The page states the designed behaviour and the implementation lags: the page stays as written. File the gap as a ledger entry under <code>.icc/ledger/entries/</code>, and if an executed example shows it, mark that example <code>known-defect</code> with the entry’s id.</li>
 </ul>
 <p>A page is never edited down to match a defect.</p>
@@ -278,8 +278,8 @@ icc supersession-propagation --repo &lt;alias&gt;              # corrections not
 icc unreferenced-docs --repo &lt;alias&gt;                     # orphan pages
 icc doc-coverage --repo &lt;alias&gt;                          # public symbols without documentation</code></pre>
 <p>A wrong typed claim is corrected in the text. Only a finding the detector misattributes (a cross-repository citation, an aggregate bound to the wrong file) or a dated historical statement goes in <code>.icc/doc-claims-allowlist.yaml</code>, with a reason in the style of the existing entries.</p>
-<h2 id="10-the-v140-plan">10. The v1.4.0 plan</h2>
-<p>Recorded in ADR 0019 and listed here so that a contributor can pick one up.</p>
+<h2 id="10-the-documentation-plan">10. The documentation plan</h2>
+<p>Recorded in ADR 0019 and listed here so that a contributor can pick one up. The items below are the standing plan for the v1.4.x line.</p>
 <p><strong>Generated references.</strong> A CLI reference for every binary harvested from its <code>--help</code>; an environment-variable registry harvested from the <code>getenv</code> call sites; a diagnostics catalogue harvested from the compiler’s messages; a stdlib export index harvested from <code>provide</code> forms. Each gets a <code>--check</code> freshness gate like <code>gen_api_docs.py</code>.</p>
 <p><strong>The doc-impact gate.</strong> The <code>sources</code> lists and the doc-symbol graph map each public symbol, builtin, flag, environment variable and diagnostic to its pages. A pull request that changes one of them touches the mapped pages or carries a reasoned “no documentation impact” entry.</p>
 <p><strong>Coverage.</strong> The example gate over <code>docs/guide</code>, <code>docs/reference</code> and the README samples; front matter on every page; the ADR registry gate; typed claims, citations and supersessions as a required check.</p>

@@ -1,8 +1,8 @@
 <h1 id="eshkol-api-reference">Eshkol API Reference</h1>
-<p><strong>Version</strong>: 1.3.5 <strong>Last Updated</strong>: 2026-09-14 <strong>Audience</strong>: Scientific Computing &amp; AI Systems Programming</p>
+<p><strong>Version</strong>: 1.4.0-connection (RELEASE CANDIDATE, 2026-11-25) <strong>Last Updated</strong>: 2026-11-26 <strong>Audience</strong>: Scientific Computing &amp; AI Systems Programming</p>
 <p>This reference documents Eshkol’s language surface and implementation contracts. The generated language-surface inventory and the AD support matrix distinguish implemented operations, engine-specific restrictions, and measured parity.</p>
 <blockquote>
-<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>, and an inexact value is written with its <code>.0</code> (<code>6.0</code>) where that is what makes the example clear. What the compiler <strong>prints</strong> for an integral double omits the decimal point — <code>(derivative (lambda (x) (* x x)) 3.0)</code> displays <code>6</code>, not <code>6.0</code>, and it is still inexact. The one exception is <code>-0.0</code>, which prints in full because reading <code>-0</code> back would lose both the inexactness and the sign. Output shown inside a fenced result block is always the exact printed text. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
+<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>, and an inexact value is written with its <code>.0</code> (<code>6.0</code>). That is also what the compiler <strong>prints</strong> for an integral double — <code>(derivative (lambda (x) (* x x)) 3.0)</code> displays <code>6.0</code> — so printed text reads back inexact; <code>-0.0</code> likewise prints in full, keeping its sign. Output shown inside a fenced result block is always the exact printed text. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
 </blockquote>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
@@ -37,6 +37,10 @@
 <li><a href="/docs#page=api_reference&amp;web-platform-wasm" data-url="/content/api_reference.html">Web Platform (WASM)</a> (v1.1)</li>
 <li><a href="/docs#page=api_reference&amp;thread-pool--promise-builtins" data-url="/content/api_reference.html">Thread Pool &amp; Promise Builtins</a> (v1.1)</li>
 <li><a href="/docs#page=api_reference&amp;command-line-tools" data-url="/content/api_reference.html">Command-Line Tools</a></li>
+<li><a href="/docs#page=api_reference&amp;sockets--tls" data-url="/content/api_reference.html">Sockets &amp; TLS</a> (v1.4.0-connection)</li>
+<li><a href="/docs#page=api_reference&amp;http-websocket--server-sent-events" data-url="/content/api_reference.html">HTTP, WebSocket &amp; Server-Sent Events</a> (v1.4.0-connection)</li>
+<li><a href="/docs#page=api_reference&amp;durability-collectives--sandboxing" data-url="/content/api_reference.html">Durability, Collectives &amp; Sandboxing</a> (v1.4.0-connection)</li>
+<li><a href="/docs#page=api_reference&amp;mathematics-programme--sblc" data-url="/content/api_reference.html">Mathematics Programme &amp; SBLC</a> (v1.4.0-connection)</li>
 </ol>
 <hr />
 <h2 id="special-forms">Special Forms</h2>
@@ -390,7 +394,7 @@
 <h4 id="stop-gradient"><code>stop-gradient</code></h4>
 <p><strong>Syntax:</strong> <code>(stop-gradient x)</code> → the value of <code>x</code></p>
 <p>Returns <code>x</code> with every derivative carrier removed, so every enclosing <code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, <code>gradient</code> or <code>jacobian</code> pass treats the result as a constant. A non-carrier is returned unchanged; an exact primal stays exact. The straight-through identity <code>(+ s (stop-gradient (- h s)))</code> has the value <code>h</code> and the derivative of <code>s</code>.</p>
-<pre class="scheme"><code>(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; =&gt; 3
+<pre class="scheme"><code>(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; =&gt; 3.0
 (derivative (lambda (x) (* x (stop-gradient x))) 1/3)   ; =&gt; 1/3</code></pre>
 <p><strong>Implementation:</strong> <code>eshkol_stop_gradient_tagged</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_taylor.c" target="_blank" rel="noopener noreferrer">lib/core/runtime_taylor.c</a>; VM native id 2252. Design: <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0049-neuro-symbolic-bridge.md" target="_blank" rel="noopener noreferrer">ADR-0049</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
@@ -499,9 +503,9 @@
 <p>N-dimensional tensor indexing with slicing support.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(define M #(#(1 2 3) #(4 5 6)))
-(tensor-get M 0 1)   ; =&gt; 2 (scalar element)
-(tensor-get M 1)     ; =&gt; #(4 5 6) (row slice)
-(vref #(10 20 30) 1) ; =&gt; 20 (1D shorthand)</code></pre>
+(tensor-get M 0 1)   ; =&gt; 2.0 (scalar element)
+(tensor-get M 1)     ; =&gt; #(4.0 5.0 6.0) (row slice)
+(vref #(10 20 30) 1) ; =&gt; 20.0 (1D shorthand)</code></pre>
 <p><strong>Type</strong>: Tensor indexing<br />
 <strong>Slicing</strong>: Partial indexing returns view tensor (zero-copy)<br />
 <strong>AD-Aware</strong>: Preserves AD node pointers during gradient computation<br />
@@ -520,7 +524,7 @@
 <p><strong>Syntax</strong>: <code>(transpose matrix)</code></p>
 <p>Transposes 2D matrix (swaps rows and columns).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(transpose #(#(1 2 3) #(4 5 6)))  ; =&gt; #((1 4) (2 5) (3 6))</code></pre>
+<pre class="scheme"><code>(transpose #(#(1 2 3) #(4 5 6)))  ; =&gt; #((1.0 4.0) (2.0 5.0) (3.0 6.0))</code></pre>
 <p><strong>Type</strong>: Matrix transformation<br />
 <strong>Complexity</strong>: O(mn) time, O(mn) space<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>transpose()</code></a></p>
@@ -529,8 +533,8 @@
 <p><strong>Syntax</strong>: <code>(reshape tensor dim...)</code> or <code>(reshape tensor dims-list)</code></p>
 <p>Changes tensor shape (zero-copy view).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(reshape #(1 2 3 4 5 6) 2 3)  ; =&gt; #((1 2 3) (4 5 6))
-(reshape #(1 2 3 4 5 6) &#39;(3 2))  ; =&gt; #((1 2) (3 4) (5 6))</code></pre>
+<pre class="scheme"><code>(reshape #(1 2 3 4 5 6) 2 3)  ; =&gt; #((1.0 2.0 3.0) (4.0 5.0 6.0))
+(reshape #(1 2 3 4 5 6) &#39;(3 2))  ; =&gt; #((1.0 2.0) (3.0 4.0) (5.0 6.0))</code></pre>
 <p><strong>Type</strong>: Shape transformation<br />
 <strong>Constraint</strong>: Total elements must match<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>reshape()</code></a></p>
@@ -539,7 +543,7 @@
 <p><strong>Syntax</strong>: <code>(flatten tensor)</code></p>
 <p>Flattens N-dimensional tensor to 1D (zero-copy view).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(flatten #(#(1 2) #(3 4)))  ; =&gt; #(1 2 3 4)</code></pre>
+<pre class="scheme"><code>(flatten #(#(1 2) #(3 4)))  ; =&gt; #(1.0 2.0 3.0 4.0)</code></pre>
 <p><strong>Type</strong>: Dimensionality reduction<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenFlatten()</code></a></p>
 <hr />
@@ -564,7 +568,7 @@
 <p><strong>Syntax</strong>: <code>(tensor-load path)</code></p>
 <p>Loads a tensor checkpoint from disk.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-load &quot;/tmp/tensor.em&quot;)  ; =&gt; #(1 2 3)</code></pre>
+<pre class="scheme"><code>(tensor-load &quot;/tmp/tensor.em&quot;)  ; =&gt; #(1.0 2.0 3.0)</code></pre>
 <p><strong>Type</strong>: Serialization<br />
 <strong>Returns</strong>: Tensor on success, <code>()</code>/null-equivalent on failure. The ESKM magic, version, shape, payload size, complete record boundary, and CRC-32 are validated before the tensor is materialized; invalid or missing files emit an <code>ERROR</code> diagnostic.</p>
 <hr />
@@ -589,8 +593,8 @@
 <p><strong>Syntax</strong>: <code>(tensor-add A B)</code>, etc.</p>
 <p>Element-wise arithmetic operations. Supports both tensors and Scheme vectors.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5 7 9)
-(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; =&gt; #((2 4) (6 8))</code></pre>
+<pre class="scheme"><code>(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5.0 7.0 9.0)
+(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; =&gt; #((2.0 4.0) (6.0 8.0))</code></pre>
 <p><strong>Type</strong>: Element-wise binary operations<br />
 <strong>Constraint</strong>: Operands must have same shape<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorArithmetic()</code></a></p>
@@ -600,10 +604,10 @@
 <p>Matrix multiplication for 2D, dot product for 1D.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>; 1D vectors: dot product
-(tensor-dot #(1 2 3) #(4 5 6))  ; =&gt; 32
+(tensor-dot #(1 2 3) #(4 5 6))  ; =&gt; 32.0
 
 ; 2D matrices: matmul
-(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; =&gt; #((19 22) (43 50))</code></pre>
+(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; =&gt; #((19.0 22.0) (43.0 50.0))</code></pre>
 <p><strong>Type</strong>: Linear algebra operation<br />
 <strong>Complexity</strong>: O(mnk) for m×k @ k×n matrices<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorDot()</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenMatmul()</code></a></p>
@@ -612,7 +616,7 @@
 <p><strong>Syntax</strong>: <code>(trace matrix)</code></p>
 <p>Sum of diagonal elements.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(trace #(#(1 2) #(3 4)))  ; =&gt; 5</code></pre>
+<pre class="scheme"><code>(trace #(#(1 2) #(3 4)))  ; =&gt; 5.0</code></pre>
 <p><strong>Type</strong>: Matrix invariant<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenTrace()</code></a></p>
 <hr />
@@ -628,7 +632,7 @@
 <p><strong>Syntax</strong>: <code>(outer u v)</code></p>
 <p>Outer product of vectors: <code>(u ⊗ v)[i,j] = uᵢ vⱼ</code></p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(outer #(1 2) #(3 4 5))  ; =&gt; #((3 4 5) (6 8 10))</code></pre>
+<pre class="scheme"><code>(outer #(1 2) #(3 4 5))  ; =&gt; #((3.0 4.0 5.0) (6.0 8.0 10.0))</code></pre>
 <p><strong>Type</strong>: Tensor product<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenOuterProduct()</code></a></p>
 <hr />
@@ -655,7 +659,7 @@
 <p><strong>Syntax</strong>: <code>(tensor-apply tensor func)</code></p>
 <p>Maps function over tensor elements.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; =&gt; #(1 4 9)</code></pre>
+<pre class="scheme"><code>(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; =&gt; #(1.0 4.0 9.0)</code></pre>
 <p><strong>Type</strong>: Element-wise map <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorApply()</code></a></p>
 <hr />
 <h3 id="broadcasting-rules">Broadcasting Rules</h3>
@@ -796,7 +800,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(car &#39;(1 2 3))   ; =&gt; 1
 (cdr &#39;(1 2 3))   ; =&gt; (2 3)
-(car #(10 20 30)) ; =&gt; 10 (vector support)</code></pre>
+(car #(10 20 30)) ; =&gt; 10.0 (vector support)</code></pre>
 <p><strong>Type</strong>: Pair accessors<br />
 <strong>Returns</strong>: Tagged value (preserves type of stored element)<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>car()</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>cdr()</code></a></p>
@@ -890,7 +894,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (- 10 3)        ; =&gt; 7
 (- 5)           ; =&gt; -5 (unary negation)
 (* 2 3 4)       ; =&gt; 24
-(/ 10 2)        ; =&gt; 5.0 (always returns double)</code></pre>
+(/ 10 2)        ; =&gt; 5 (always returns double)</code></pre>
 <p><strong>Type Promotion</strong>: - Int64 + Int64 = Int64 (exact) - Int64 + Double = Double (inexact) - Double + Double = Double (inexact)</p>
 <p><strong>AD Support</strong>: - Dual numbers: Automatic derivative propagation - AD nodes: Computational graph construction</p>
 <p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>polymorphicAdd()</code></a>, etc.</p>
@@ -1034,7 +1038,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <pre class="scheme"><code>(number-&gt;string 42)         ; =&gt; &quot;42&quot;
 (string-&gt;number &quot;3.14&quot;)     ; =&gt; 3.14
 (number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;
-(number-&gt;string 3.0)        ; =&gt; &quot;3&quot;      (integral double, still inexact)
+(number-&gt;string 3.0)        ; =&gt; &quot;3.0&quot;    (integral double, reads back inexact)
 (number-&gt;string -0.0)       ; =&gt; &quot;-0.0&quot;   (sign and inexactness both survive)</code></pre>
 <hr />
 <h2 id="file--io">File &amp; I/O</h2>
@@ -1297,10 +1301,10 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (expt (make-rectangular 0.0 1.0)
       (make-rectangular 0.0 1.0))     ; =&gt; 0.20787957635076193 (i^i)</code></pre>
 <pre class="scheme"><code>(define z1 (make-rectangular 3.0 4.0))
-(magnitude z1)      ; =&gt; 5
+(magnitude z1)      ; =&gt; 5.0
 (angle z1)          ; =&gt; 0.9272952180016122 (atan(4/3))
-(+ z1 z1)           ; =&gt; 6+8i
-(* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4+3i</code></pre>
+(+ z1 z1)           ; =&gt; 6.0+8.0i
+(* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4.0+3.0i</code></pre>
 <hr />
 <h2 id="continuations--control-flow">Continuations &amp; Control Flow</h2>
 <p>Eshkol implements full R7RS continuations with <code>call/cc</code>, <code>dynamic-wind</code>, and structured exception handling via <code>guard</code>/<code>raise</code>. Continuations are first-class values that capture the “rest of the computation” — invoking a continuation abandons the current computation and resumes from the captured point.</p>
@@ -1614,6 +1618,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p>Creates a factor graph with <code>n-vars</code> variable nodes. The second argument <code>dims-tensor</code> is a tensor specifying the number of discrete states for each variable: <code>dims-tensor[i]</code> = |S_i|.</p>
 <p><strong>Note:</strong> The second argument is a <strong>tensor of per-variable state counts</strong>, not a scalar. This allows heterogeneous state spaces (e.g., one binary variable and one ternary variable).</p>
 <p><strong>Returns:</strong> A <code>FactorGraph</code> (heap subtype 16) with no factors attached.</p>
+<p><strong>Admission:</strong> <code>n-vars</code> must be a positive integer, and <code>dims-tensor</code> must supply a positive integer state count for every variable (a bare number gives every variable that many states). Any other argument raises a catchable error. Domains are not capped: the compiled engines and the bytecode VM size their message storage from the widest domain in the graph.</p>
 <p><strong>Implementation:</strong> <code>LogicWorkspaceCodegen::codegenMakeFactorGraph</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>, runtime <code>eshkol_make_factor_graph_tagged</code>.</p>
 <pre class="scheme"><code>;; Two binary variables (each with 2 states)
 (define fg (make-factor-graph 2 #(2 2)))
@@ -1624,6 +1629,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Syntax:</strong> <code>(fg-add-factor! fg var-indices cpt)</code> → void</p>
 <p>Adds a factor node to the graph. <code>var-indices</code> is a tensor of variable indices specifying which variables are in this factor’s scope. <code>cpt</code> is a flat tensor of <strong>log-probabilities</strong> indexed by the joint state assignment of the scoped variables.</p>
 <p><strong>CPT Layout:</strong> For a factor over variables v_a and v_b with |S_a| and |S_b| states respectively, the CPT has |S_a| × |S_b| entries. Entry at index <code>i * |S_b| + j</code> corresponds to log P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i), depending on the model structure).</p>
+<p><strong>Admission:</strong> a factor connects at most 32 variables, and each index must be an integer naming a variable of <code>fg</code>. Any other index list raises a catchable error and adds no factor.</p>
 <p><strong>Implementation:</strong> <code>LogicWorkspaceCodegen::codegenFGAddFactor</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>, runtime <code>eshkol_fg_add_factor_tagged</code>.</p>
 <pre class="scheme"><code>;; Unary factor: prior over variable 0 (binary)
 ;; P(sunny) = 0.7, P(rainy) = 0.3
@@ -1969,17 +1975,17 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Implementation:</strong> <code>tensorDropout</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="activation-function-examples">Activation Function Examples</h4>
 <pre class="scheme"><code>(define x #(-2.0 -1.0 0.0 1.0 2.0))
-(relu x)               ; =&gt; #(0 0 0 1 2)
+(relu x)               ; =&gt; #(0.0 0.0 0.0 1.0 2.0)
 (sigmoid x)            ; =&gt; #(0.11920292202211755 0.2689414213699951 0.5 0.7310585786300049 0.8807970779778823)
 (softmax x)            ; =&gt; #(0.011656230956039605 0.03168492079612427 0.0861285444362687 0.23412165725273662 0.6364086465588308)
-(gelu x)               ; =&gt; #(-0.04540230591222494 -0.15880800939172324 0 0.8411919906082768 1.954597694087775)
-(leaky-relu x)         ; =&gt; #(-0.02 -0.01 0 1 2)
-(silu x)               ; =&gt; #(-0.2384058440442351 -0.2689414213699951 0 0.7310585786300049 1.7615941559557646)
-(elu x)                ; =&gt; #(-0.8646647167633873 -0.6321205588285577 0 1 2)
-(mish x)               ; =&gt; #(-0.2525014826957091 -0.30340146137410895 0 0.8650983882673103 1.9439589595339946)
+(gelu x)               ; =&gt; #(-0.04540230591222494 -0.15880800939172324 0.0 0.8411919906082768 1.954597694087775)
+(leaky-relu x)         ; =&gt; #(-0.02 -0.01 0.0 1.0 2.0)
+(silu x)               ; =&gt; #(-0.2384058440442351 -0.2689414213699951 0.0 0.7310585786300049 1.7615941559557646)
+(elu x)                ; =&gt; #(-0.8646647167633873 -0.6321205588285577 0.0 1.0 2.0)
+(mish x)               ; =&gt; #(-0.2525014826957091 -0.30340146137410895 0.0 0.8650983882673103 1.9439589595339946)
 (dropout x 0.5 #t)     ; =&gt; #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; =&gt; #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)</code></pre>
-<p>(An integral double prints without a decimal point — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">the numeric tower</a>. <code>#(0 0 0 1 2)</code> above is five inexact values, not five exact integers.)</p>
+<p>(An integral double prints with its decimal point — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">the numeric tower</a>. <code>#(0.0 0.0 0.0 1.0 2.0)</code> above is five inexact values.)</p>
 <blockquote>
 <p><strong>Known limitation — <code>leaky-relu</code>’s α argument is ignored (build item).</strong> <code>(leaky-relu x 0.1)</code> and <code>(leaky-relu x 0.5)</code> both answer <code>#(-0.02 -0.01 0 1 2)</code>: the documented α is accepted and then not applied, so the negative slope is always the default 0.01. The signature and semantics above are the contract; the codegen does not yet honour the second operand. Until it does, use <code>(leaky-relu x)</code> for the default slope, or scale explicitly.</p>
 </blockquote>
@@ -1990,7 +1996,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Syntax:</strong> <code>(mse-loss pred target)</code> → Number</p>
 <p>Mean Squared Error: L = (1/n) Σ_i (ŷ_i - y_i)².</p>
 <p><strong>Gradient:</strong> ∂L/∂ŷ_i = (2/n)(ŷ_i - y_i). Linear gradient — penalizes large errors quadratically.</p>
-<p><strong>Probabilistic interpretation:</strong> Maximizing the log-likelihood under a Gaussian noise model N(y | ŷ, σ²) with fixed σ.</p>
+<p><strong>Probabilistic interpretation:</strong> Maximizing the log-likelihood under a Gaussian noise model N(y | ŷ, σ²) with constant σ.</p>
 <p><strong>Use case:</strong> Regression tasks with Gaussian-distributed residuals.</p>
 <p><strong>Implementation:</strong> <code>mseLoss</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="mae-loss"><code>mae-loss</code></h4>
@@ -2016,7 +2022,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <h4 id="bce-loss"><code>bce-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(bce-loss pred target)</code> → Number</p>
 <p>Binary Cross-Entropy: L = -(1/n) Σ_i [y_i · log(ŷ_i) + (1 - y_i) · log(1 - ŷ_i)].</p>
-<p>Predictions must be in (0, 1) — typically the output of a sigmoid layer. Internally clamped to [ε, 1-ε] for numerical stability.</p>
+<p>Both spellings clamp predicted probabilities to <code>[1e-7, 1 - 1e-7]</code> before evaluating the logarithms.</p>
 <p><strong>Use case:</strong> Binary classification, multi-label classification.</p>
 <p><strong>Implementation:</strong> <code>bceLoss</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="binary-cross-entropy-loss"><code>binary-cross-entropy-loss</code></h4>
@@ -2089,7 +2095,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (define anchor #(1.0 0.0 0.0))
 (define positive #(0.9 0.1 0.0))
 (define negative #(0.0 1.0 0.0))
-(triplet-loss anchor positive negative 1.0) ; =&gt; 0
+(triplet-loss anchor positive negative 1.0) ; =&gt; 0.0
 ;; = max(d(a,p) - d(a,n) + 1, 0) = max(0.1414 - 1.4142 + 1, 0) = 0 — an easy
 ;; triplet, already satisfying the margin, so no gradient signal.</code></pre>
 <h3 id="optimizers">Optimizers</h3>
@@ -2137,7 +2143,7 @@ v̂_t = v_t / (1 - β₂^t)                         (bias correction)
 <pre><code>G_t = G_{t-1} + g_t²
 θ_t = θ_{t-1} - η · g_t / (√G_t + ε)</code></pre>
 <p><strong>Default:</strong> ε = 1e-8.</p>
-<p><strong>Properties:</strong> The effective learning rate monotonically decreases over training. This makes Adagrad well-suited for sparse features (common in NLP) but may cause premature convergence for dense features. RMSprop was developed as a fix for this issue.</p>
+<p><strong>Properties:</strong> The effective learning rate monotonically decreases over training. This makes Adagrad well-suited for sparse features (common in NLP) but may cause premature convergence for dense features. RMSprop was developed to address this.</p>
 <p><strong>Implementation:</strong> <code>adagradStep</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="zero-grad"><code>zero-grad!</code></h4>
 <p><strong>Syntax:</strong> <code>(zero-grad! grad-tensor)</code> → void</p>
@@ -2267,14 +2273,14 @@ v̂_t = v_t / (1 - β₂^t)                         (bias correction)
     (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
 ;; called directly, each scheduler follows its documented curve:
-(linear-warmup-lr    0.001 0    1000)  ; =&gt; 0
+(linear-warmup-lr    0.001 0    1000)  ; =&gt; 0.0
 (linear-warmup-lr    0.001 500  1000)  ; =&gt; 5e-04
 (linear-warmup-lr    0.001 1000 1000)  ; =&gt; 0.001
 (cosine-annealing-lr 0.001 0.0 0    9000)  ; =&gt; 0.001
 (cosine-annealing-lr 0.001 0.0 4500 9000)  ; =&gt; 5e-04
-(cosine-annealing-lr 0.001 0.0 9000 9000)  ; =&gt; 0</code></pre>
+(cosine-annealing-lr 0.001 0.0 9000 9000)  ; =&gt; 0.0</code></pre>
 <blockquote>
-<p><strong>Known limitation — a scheduler called through a user function’s parameter answers 0 (build item).</strong> The composition above is the intended shape, and the direct calls show the intended values. But <code>(define (w s) (linear-warmup-lr 0.001 s 1000))</code> makes <code>(w 500)</code> answer <code>0</code> where <code>(linear-warmup-lr 0.001 500 1000)</code> answers <code>5e-04</code>: the <code>step</code> operand arriving as a user function’s parameter is not read the way a literal is. <code>lr-schedule</code> above therefore prints <code>0</code> for both warmup queries on this build. Call the scheduler with the step expression written at the call site, or bind it to a top-level value, until the operand handling is fixed.</p>
+<p><strong>Known limitation — a scheduler called through a user function’s parameter answers 0 (build item).</strong> The composition above is the intended shape, and the direct calls show the intended values. But <code>(define (w s) (linear-warmup-lr 0.001 s 1000))</code> makes <code>(w 500)</code> answer <code>0</code> where <code>(linear-warmup-lr 0.001 500 1000)</code> answers <code>5e-04</code>: the <code>step</code> operand arriving as a user function’s parameter is not read the way a literal is. <code>lr-schedule</code> above therefore prints <code>0</code> for both warmup queries on this build. Call the scheduler with the step expression written at the call site, or bind it to a top-level value, until the operand handling is extended.</p>
 </blockquote>
 <h3 id="convolutional-neural-networks">Convolutional Neural Networks</h3>
 <p>Convolution extracts local spatial features by sliding a learnable kernel over the input tensor. The convolution theorem shows that this operation in the spatial domain corresponds to pointwise multiplication in the frequency domain; however, for small kernels the direct spatial computation (or the im2col transformation + GEMM) is more efficient.</p>
@@ -2368,7 +2374,7 @@ PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))</code></pre>
 <p><strong>Implementation:</strong> <code>causalMask</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="padding-mask"><code>padding-mask</code></h4>
 <p><strong>Syntax:</strong> <code>(padding-mask lengths max-len)</code> → Tensor</p>
-<p>Creates a padding mask for variable-length sequences. Marks valid positions as 0 and padding positions as -∞. Shape: (batch, max-len).</p>
+<p>Creates a padding mask for variable-length sequences. Marks valid positions as 0 and padding positions as -∞. The shape <code>(batch, 1, max-len)</code> applies the same key mask to every query within a batch in scaled dot-product and multi-head attention.</p>
 <p><code>lengths</code> is a tensor of actual sequence lengths for each batch element.</p>
 <p><strong>Implementation:</strong> <code>paddingMask</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="feed-forward"><code>feed-forward</code></h4>
@@ -3614,7 +3620,7 @@ PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))</code></pre>
 <p><strong>Returns</strong>: Boolean</p>
 <hr />
 <h2 id="ode-solvers">ODE Solvers</h2>
-<p>Numerical methods for solving ordinary differential equations of the form dy/dt = f(t, y). All solvers support both scalar states (y is a number) and vector states (y is a Scheme vector). Fixed-step methods return a trajectory as a list of <code>(t y)</code> pairs; adaptive methods adjust step size to meet a specified tolerance.</p>
+<p>Numerical methods for solving ordinary differential equations of the form dy/dt = f(t, y). All solvers support both scalar states (y is a number) and vector states (y is a Scheme vector). Constant-step methods return a trajectory as a list of <code>(t y)</code> pairs; adaptive methods adjust step size to meet a specified tolerance.</p>
 <p><strong>Module</strong>: <code>lib/math/ode.esk</code> <strong>Import</strong>: <code>(require "math/ode")</code></p>
 <h3 id="euler-method--oh">Euler Method – O(h)</h3>
 <h4 id="euler"><code>euler</code></h4>
@@ -3678,7 +3684,7 @@ k2 = f(t + h/2, y + h*k1/2)
 k3 = f(t + h/2, y + h*k2/2)
 k4 = f(t + h, y + h*k3)
 y_{n+1} = y_n + (h/6) * (k1 + 2*k2 + 2*k3 + k4)</code></pre>
-<p>Fourth-order accurate (global error O(h^4)). The workhorse of fixed-step ODE integration, requiring four function evaluations per step.</p>
+<p>Fourth-order accurate (global error O(h^4)). The workhorse of constant-step ODE integration, requiring four function evaluations per step.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>;; Solve dy/dt = -y, y(0) = 1 from t=0 to t=2 with h=0.1
 (define trajectory (rk4 (lambda (t y) (- y)) 0.0 1.0 2.0 0.1))
@@ -3724,7 +3730,7 @@ y_{n+1} = y_n + (h/6) * (k1 + 2*k2 + 2*k3 + k4)</code></pre>
 <p><strong>Syntax</strong>: <code>(backward-euler f t0 y0 tf h)</code></p>
 <p>Solves an ODE using the implicit (backward) Euler method with Newton iteration. The implicit equation solved at each step is:</p>
 <pre><code>y_{n+1} = y_n + h * f(t_{n+1}, y_{n+1})</code></pre>
-<p>Newton iteration (scalar case) or fixed-point iteration (vector case) is used to solve for y_{n+1}. The implicit method is unconditionally A-stable, making it suitable for stiff systems where explicit methods require impractically small step sizes. Uses up to 10 Newton iterations with tolerance 1e-10.</p>
+<p>Newton iteration (scalar case) or successive-substitution iteration (vector case) is used to solve for y_{n+1}. The implicit method is unconditionally A-stable, making it suitable for stiff systems where explicit methods require impractically small step sizes. Uses up to 10 Newton iterations with tolerance 1e-10.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>;; Stiff problem: dy/dt = -1000*y
 (define trajectory (backward-euler (lambda (t y) (* -1000 y)) 0.0 1.0 0.01 0.001))</code></pre>
@@ -4417,8 +4423,8 @@ eshkol_tagged_value_t r = f(eshkol_make_int64(41, true));</code></pre>
 <p>The relocatable object flavour keeps the <strong>internal</strong> convention on every symbol, because those objects are linked into other Eshkol modules (the precompiled standard library, <code>cmake/EshkolCompile.cmake</code> consumers) that call with it. Do not dlopen a <code>--shared-lib -c</code> object and call it from C.</p>
 <hr />
 <h3 id="eshkol-repl--interactive-repl"><code>eshkol-repl</code> – Interactive REPL</h3>
-<p>A visual live coding environment with JIT compilation, tab completion, and crash recovery.</p>
-<p><strong>Features</strong>: - JIT compilation via LLVM ORC (expressions compiled and executed immediately) - Tab completion for all builtins (1,042) and user-defined symbols - Readline integration with persistent history (<code>~/.eshkol_history</code>) - Crash recovery: segfaults during JIT execution are caught and reported without terminating the session - Multi-line input with automatic bracket balancing</p>
+<p>A visual live coding environment with JIT compilation, tab completion, and fault recovery.</p>
+<p><strong>Features</strong>: - JIT compilation via LLVM ORC (expressions compiled and executed immediately) - Tab completion for all builtins (1,069) and user-defined symbols - Readline integration with persistent history (<code>~/.eshkol_history</code>) - Fault recovery: a memory fault during JIT execution is caught and reported without terminating the session - Multi-line input with automatic bracket balancing</p>
 <p><strong>REPL Commands</strong>:</p>
 <table>
 <colgroup>
@@ -4772,7 +4778,7 @@ math-utils = &quot;1.0.0&quot;</code></pre>
   (sqrt (+ (expt (- (point-x p1) (point-x p2)) 2)
            (expt (- (point-y p1) (point-y p2)) 2))))
 
-(distance (make-point 0 0) (make-point 3 4))   ; =&gt; 5.0</code></pre>
+(distance (make-point 0 0) (make-point 3 4))   ; =&gt; 5</code></pre>
 <hr />
 <h2 id="ml-standard-library">ML Standard Library</h2>
 <p>The ML standard library provides high-level optimization algorithms and utility functions implemented in Eshkol. These are stdlib functions (compiled to <code>stdlib.o</code>), distinct from the compiler-level ML builtins documented in <a href="/docs#page=api_reference&amp;machine-learning--neural-networks" data-url="/content/api_reference.html">Machine Learning &amp; Neural Networks</a>.</p>
@@ -4888,6 +4894,540 @@ math-utils = &quot;1.0.0&quot;</code></pre>
 ;; =&gt; #(-1.414 -0.707 0.0 0.707 1.414)
 (clip #(1.0 5.0 10.0) 2.0 8.0)
 ;; =&gt; #(2.0 5.0 8.0)</code></pre>
+<hr />
+<h2 id="sockets--tls">Sockets &amp; TLS</h2>
+<p><em>(v1.4.0-connection)</em> <code>(require core.net)</code> for sockets, <code>(require core.tls)</code> for TLS. Every handle is tracked; under <code>--strict-resources</code> (ADR-0056) a socket or TLS session must be used exactly once, so an unclosed or twice-closed handle is a compile-time error.</p>
+<h3 id="tcp">TCP</h3>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 31%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(tcp-listen host port)</code></td>
+<td>String × Integer → Socket</td>
+<td>Bind and listen</td>
+</tr>
+<tr>
+<td><code>(tcp-connect host port)</code></td>
+<td>String × Integer → Socket</td>
+<td>Connect to a peer</td>
+</tr>
+<tr>
+<td><code>(tcp-accept listener)</code></td>
+<td>Socket → Socket</td>
+<td>Accept one connection</td>
+</tr>
+<tr>
+<td><code>(tcp-read sock n)</code></td>
+<td>Socket × Integer → String</td>
+<td>Read up to <code>n</code> bytes</td>
+</tr>
+<tr>
+<td><code>(tcp-read! sock buf)</code></td>
+<td>Socket × Bytevector → Integer</td>
+<td>Fill a caller-owned buffer</td>
+</tr>
+<tr>
+<td><code>(tcp-write sock data)</code></td>
+<td>Socket × String → Integer</td>
+<td>Write, returning bytes written</td>
+</tr>
+<tr>
+<td><code>(tcp-write! sock buf)</code></td>
+<td>Socket × Bytevector → Integer</td>
+<td>Write from a buffer</td>
+</tr>
+<tr>
+<td><code>(tcp-write-all! sock buf)</code></td>
+<td>Socket × Bytevector → Integer</td>
+<td>Write the whole buffer or raise</td>
+</tr>
+<tr>
+<td><code>(tcp-shutdown sock how)</code></td>
+<td>Socket × Symbol → Unspecified</td>
+<td>Half-close a direction</td>
+</tr>
+<tr>
+<td><code>(tcp-close sock)</code></td>
+<td>Socket → Unspecified</td>
+<td>Close the handle</td>
+</tr>
+</tbody>
+</table>
+<h3 id="udp">UDP</h3>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 31%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(udp-bind host port)</code></td>
+<td>String × Integer → Socket</td>
+<td>Bind a datagram socket</td>
+</tr>
+<tr>
+<td><code>(udp-sendto sock host port data)</code></td>
+<td>Socket × String × Integer × String → Integer</td>
+<td>Send a datagram</td>
+</tr>
+<tr>
+<td><code>(udp-recvfrom sock n)</code></td>
+<td>Socket × Integer → List</td>
+<td>Receive a datagram with its origin</td>
+</tr>
+<tr>
+<td><code>(udp-send-to! sock host port buf)</code></td>
+<td>Socket × String × Integer × Bytevector → Integer</td>
+<td>Buffer-based send</td>
+</tr>
+<tr>
+<td><code>(udp-receive-from! sock buf)</code></td>
+<td>Socket × Bytevector → List</td>
+<td>Buffer-based receive</td>
+</tr>
+<tr>
+<td><code>(udp-close sock)</code></td>
+<td>Socket → Unspecified</td>
+<td>Close the handle</td>
+</tr>
+</tbody>
+</table>
+<h3 id="unix-domain-sockets-introspection-and-errors">Unix domain sockets, introspection and errors</h3>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 31%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(unix-socket-connect path)</code></td>
+<td>String → Socket</td>
+<td>Connect over a filesystem path</td>
+</tr>
+<tr>
+<td><code>(net-local-address sock)</code> / <code>(net-peer-address sock)</code></td>
+<td>Socket → String</td>
+<td>Local / peer address</td>
+</tr>
+<tr>
+<td><code>(net-local-port sock)</code> / <code>(net-peer-port sock)</code></td>
+<td>Socket → Integer</td>
+<td>Local / peer port</td>
+</tr>
+<tr>
+<td><code>(net-nonblocking! sock flag)</code></td>
+<td>Socket × Boolean → Unspecified</td>
+<td>Select blocking mode</td>
+</tr>
+<tr>
+<td><code>(net-cancel! sock)</code></td>
+<td>Socket → Unspecified</td>
+<td>Cancel an in-flight operation</td>
+</tr>
+<tr>
+<td><code>(network-error? obj)</code></td>
+<td>Any → Boolean</td>
+<td>Condition predicate</td>
+</tr>
+<tr>
+<td><code>(network-error-code e)</code> / <code>(network-error-operation e)</code> / <code>(network-error-reason e)</code></td>
+<td>Condition → Value</td>
+<td>Structured failure detail</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scoped-socket-forms">Scoped socket forms</h3>
+<table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 54%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(call-with-tcp-listener host port proc)</code></td>
+<td>Listener closed on normal return and on a raise</td>
+</tr>
+<tr>
+<td><code>(call-with-tcp-connection host port proc)</code></td>
+<td>Connection closed on either exit path</td>
+</tr>
+<tr>
+<td><code>(call-with-tcp-accept listener proc)</code></td>
+<td>Accepted connection closed on either exit path</td>
+</tr>
+<tr>
+<td><code>(call-with-udp-socket host port proc)</code></td>
+<td>Datagram socket closed on either exit path</td>
+</tr>
+</tbody>
+</table>
+<pre class="scheme"><code>(require core.net)
+(call-with-tcp-connection &quot;127.0.0.1&quot; 8080
+  (lambda (sock)
+    (tcp-write sock &quot;GET / HTTP/1.1\r\nHost: localhost\r\n\r\n&quot;)
+    (display (tcp-read sock 1024))))</code></pre>
+<h3 id="tls">TLS</h3>
+<table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 54%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(tls-available?)</code></td>
+<td>Whether this build carries TLS — check it rather than assuming</td>
+</tr>
+<tr>
+<td><code>(tls-client-context)</code> / <code>(tls-client-context/options opts)</code></td>
+<td>Client context, optionally configured</td>
+</tr>
+<tr>
+<td><code>(tls-server-context cert key)</code></td>
+<td>Server context from a certificate and key</td>
+</tr>
+<tr>
+<td><code>(tls-context-close ctx)</code></td>
+<td>Release a context</td>
+</tr>
+<tr>
+<td><code>(tls-connect ctx host port)</code></td>
+<td>Client session</td>
+</tr>
+<tr>
+<td><code>(tls-listen ctx host port)</code> / <code>(tls-listener-port l)</code> / <code>(tls-accept l)</code></td>
+<td>Server listener and sessions</td>
+</tr>
+<tr>
+<td><code>(tls-read s n)</code> / <code>(tls-read! s buf)</code></td>
+<td>Read from a session</td>
+</tr>
+<tr>
+<td><code>(tls-write s data)</code> / <code>(tls-write! s buf)</code> / <code>(tls-write-all! s buf)</code></td>
+<td>Write to a session</td>
+</tr>
+<tr>
+<td><code>(tls-cancel! s)</code></td>
+<td>Cancel an in-flight operation</td>
+</tr>
+<tr>
+<td><code>(tls-session-close s)</code> / <code>(tls-listener-close l)</code></td>
+<td>Close a session / listener</td>
+</tr>
+<tr>
+<td><code>(tls-error? obj)</code>, <code>(tls-error-code e)</code>, <code>(tls-error-operation e)</code>, <code>(tls-error-reason e)</code></td>
+<td>Structured failures</td>
+</tr>
+<tr>
+<td><code>(call-with-tls-client …)</code>, <code>(call-with-tls-server …)</code>, <code>(call-with-tls-connection …)</code>, <code>(call-with-tls-accept …)</code></td>
+<td>Scoped forms closing session and context</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="http-websocket--server-sent-events">HTTP, WebSocket &amp; Server-Sent Events</h2>
+<p><em>(v1.4.0-connection)</em></p>
+<h3 id="http-client">HTTP client</h3>
+<table>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(http-request …)</code></td>
+<td>Perform an HTTP/1.1 request</td>
+</tr>
+<tr>
+<td><code>(http-set-proxy url)</code></td>
+<td>Configure the proxy for subsequent requests</td>
+</tr>
+<tr>
+<td><code>(http-set-tls-client-cert cert key)</code></td>
+<td>Present a client certificate</td>
+</tr>
+</tbody>
+</table>
+<h3 id="http-server">HTTP server</h3>
+<table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 54%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(http-server-create port)</code></td>
+<td>Non-blocking server on the portable event loop</td>
+</tr>
+<tr>
+<td><code>(http-server-port server)</code></td>
+<td>The bound port (useful when binding port 0)</td>
+</tr>
+<tr>
+<td><code>(http-server-accept server)</code></td>
+<td>Accept a pending request</td>
+</tr>
+<tr>
+<td><code>(http-server-respond conn status content-type body)</code></td>
+<td>Send a response</td>
+</tr>
+<tr>
+<td><code>(http-server-close server)</code></td>
+<td>Close the server</td>
+</tr>
+</tbody>
+</table>
+<h3 id="request-parsing-and-routing-corehttp_server">Request parsing and routing (<code>core.http_server</code>)</h3>
+<p><code>(require core.http_server)</code> — not auto-loaded. A response is <code>(status content-type body)</code>; a route is <code>(method path handler)</code>.</p>
+<table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 54%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(http-request-line req)</code></td>
+<td>The request line verbatim</td>
+</tr>
+<tr>
+<td><code>(http-request-method req)</code></td>
+<td>Method token, or <code>""</code></td>
+</tr>
+<tr>
+<td><code>(http-request-target req)</code></td>
+<td>Target including the query</td>
+</tr>
+<tr>
+<td><code>(http-request-path req)</code></td>
+<td>Target with the query stripped</td>
+</tr>
+<tr>
+<td><code>(http-request-query req)</code></td>
+<td>Query string after <code>?</code>, or <code>""</code></td>
+</tr>
+<tr>
+<td><code>(http-request-version req)</code></td>
+<td>e.g. <code>"HTTP/1.1"</code></td>
+</tr>
+<tr>
+<td><code>(http-request-header req name)</code></td>
+<td>Header by case-insensitive name, or <code>#f</code></td>
+</tr>
+<tr>
+<td><code>(http-request-content-length req)</code></td>
+<td>Numeric <code>Content-Length</code>, or <code>#f</code></td>
+</tr>
+<tr>
+<td><code>(http-request-body req)</code></td>
+<td>Body text, or <code>""</code></td>
+</tr>
+<tr>
+<td><code>(http-request-body-too-large? req)</code></td>
+<td>Whether the body exceeds <code>http-max-request-body-size</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>/health</code>, <code>/ready</code> and <code>/metrics</code> have built-in fallbacks.</p>
+<h3 id="websocket">WebSocket</h3>
+<table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 54%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(websocket-connect url)</code></td>
+<td>Open a connection, performing the upgrade handshake</td>
+</tr>
+<tr>
+<td><code>(websocket-send ws text)</code></td>
+<td>Send a text frame</td>
+</tr>
+<tr>
+<td><code>(websocket-send-binary ws bytes)</code></td>
+<td>Send a binary frame</td>
+</tr>
+<tr>
+<td><code>(websocket-receive ws)</code></td>
+<td>Receive the next frame</td>
+</tr>
+<tr>
+<td><code>(websocket-close ws)</code></td>
+<td>Close the connection</td>
+</tr>
+</tbody>
+</table>
+<p>Framing is RFC-validated: a malformed frame is refused rather than reinterpreted.</p>
+<h3 id="server-sent-events">Server-Sent Events</h3>
+<table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 54%" />
+</colgroup>
+<thead>
+<tr>
+<th>Procedure</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(call-with-http-sse-stream conn proc)</code></td>
+<td>Bracket an SSE stream</td>
+</tr>
+<tr>
+<td><code>(sse-admit! …)</code></td>
+<td>Take an admission ticket, bounding concurrent streams</td>
+</tr>
+<tr>
+<td><code>(sse-send! stream event)</code></td>
+<td>Emit an event</td>
+</tr>
+<tr>
+<td><code>(sse-progress! stream …)</code></td>
+<td>Emit a progress event</td>
+</tr>
+<tr>
+<td><code>(sse-finish! stream)</code> / <code>(sse-cancel! stream)</code></td>
+<td>End the stream</td>
+</tr>
+<tr>
+<td><code>(sse-deadline-ms stream)</code></td>
+<td>The stream’s deadline, so an abandoned client cannot hold it open</td>
+</tr>
+<tr>
+<td><code>(sse-cleanup-ticket …)</code></td>
+<td>Explicit ticket cleanup</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="durability-collectives--sandboxing">Durability, Collectives &amp; Sandboxing</h2>
+<p><em>(v1.4.0-connection)</em></p>
+<ul>
+<li><strong>Write-ahead log and atomic persistence</strong> — <code>core.memory_store</code> writes through a write-ahead log; the atomic checkpoint layer brackets a durable write as begin / write / commit / abort. A commit either lands whole or leaves the previous state intact, and an aborted checkpoint leaves no partial file behind. <code>core.merkle</code> verifies content-addressed records over the same store.</li>
+<li><strong>Collective operations</strong> — broadcast, all-reduce, all-gather, reduce-scatter and barrier over sockets, with rank-ordered reduction: the same ranks and the same inputs give the same bits on every run.</li>
+<li><strong>Subprocess sandboxing</strong> — subprocesses run confined under Darwin Seatbelt or Linux seccomp with Landlock. A platform with no confinement mechanism refuses to launch rather than running unconfined.</li>
+<li><strong>Shared-library tail transfer</strong> — a tail call crossing a <code>--shared-lib</code> boundary transfers control instead of growing the stack.</li>
+<li><strong>Exact-rational tensors</strong> — tensors of dtype <code>exact</code> (ADR-0058) keep exact rational elements end to end, including across the NumPy binding.</li>
+<li><strong>WebGPU browser dispatch</strong> — the bytecode VM dispatches compute work to WebGPU in the browser lane (ADR-0029).</li>
+</ul>
+<hr />
+<h2 id="mathematics-programme--sblc">Mathematics Programme &amp; SBLC</h2>
+<p><em>(v1.4.0-connection)</em> Each module below decides its claims exactly, by enumeration and exact linear algebra, never by sampling. A reader’s guide is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/guide/MATHEMATICS.md" target="_blank" rel="noopener noreferrer">guide/MATHEMATICS.md</a>.</p>
+<table>
+<colgroup>
+<col style="width: 47%" />
+<col style="width: 52%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Surface</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>core.sheaf</code></td>
+<td>Sites, sieves, Grothendieck topologies, Cech cohomology, cellular and condensed sheaves, probability sheaves</td>
+</tr>
+<tr>
+<td><code>core.topos</code></td>
+<td>Presheaf topos internal language, Kripke–Joyal forcing, subobject classifier, modal logic, forcing and ordinals</td>
+</tr>
+<tr>
+<td><code>core.ring</code>, <code>core.multimodular</code></td>
+<td>Rings as values (functor of points) over integers, rationals, binary64, modular arithmetic, Taylor jets, polynomial and group rings</td>
+</tr>
+<tr>
+<td><code>core.category</code>, <code>core.effective</code>, <code>core.monoidal</code></td>
+<td>Finite category theory, functor categories, adjunctions via comma categories, Kan extensions, monoidal structure</td>
+</tr>
+<tr>
+<td><code>core.simplicial</code>, <code>core.homological</code></td>
+<td>Simplicial sets, chain complexes, homology with torsion, DG categories, operads</td>
+</tr>
+<tr>
+<td><code>core.theory</code></td>
+<td>Functional analysis, SGA/motives/Grothendieck–Riemann–Roch, esquisse and tame topology, stacks and derivators, six operations, Hodge and Weil, Lie and algebraic groups, integrable systems, AQFT and lattice QFT, measure theory and Markov disintegration, operator and C* algebras, stochastic calculus and Malliavin derivatives</td>
+</tr>
+<tr>
+<td><code>core.manifold</code>, <code>core.curvature</code></td>
+<td>Geometry, discrete exterior calculus, gauge theory, signed-curvature unified chart (ADR-0018)</td>
+</tr>
+<tr>
+<td><code>core.exact_linalg</code>, <code>core.integer_linalg</code>, <code>core.exact_psd</code>, <code>core.groebner</code>, <code>core.polynomial_exact</code>, <code>core.extension_field</code>, <code>core.cyclotomic</code></td>
+<td>Exact-rational affine solution families, Gröbner bases, exact polynomial and field arithmetic</td>
+</tr>
+<tr>
+<td><code>core.blc</code>, <code>core.sblc</code></td>
+<td>Binary lambda calculus with lexical environments; Stochastic BLC with exact rational term weights (<code>1/2^length</code>), bounded closed enumeration to L &lt;= 16 bits, resumable checkpoints (<code>sblc-search-start</code>, <code>sblc-search-resume</code>), DBSP Z-set incremental updates, and VM PRNG parity (<code>make-prng</code>, <code>prng?</code>, <code>prng-random</code>, <code>prng-random-integer</code>)</td>
+</tr>
+<tr>
+<td><code>core.sblc.relax</code></td>
+<td>Differentiable proposals (experimental): exact finite-logit oracle matching native AD, Rao-Blackwellized REINFORCE with variance-reduction confidence diagnostics, depth-masked Gumbel-Softmax / Concrete grammar proposals. Every relaxed candidate is projected to a strict closed term and re-verified; a projection error is refused loudly. Proposal order can never change completeness, prior weights, fair-choice probabilities or verifier outcomes</td>
+</tr>
+</tbody>
+</table>
+<p>Formal verification: 395 top-level machine-checked theorems across 12 standalone proof files (287 for the mathematics programme, 108 in <code>EshkolSBLCRelaxation.lean</code>), with 0 <code>sorry</code> and 0 custom axioms, checked in Lean 4.12.0 in CI, plus independent Verificatum proof replay (ADR-0061, ADR-0063) and 86 verified example programs.</p>
 <hr />
 <h2 id="see-also">See Also</h2>
 <ul>

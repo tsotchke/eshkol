@@ -1,7 +1,10 @@
 <h1 id="eshkol-system-architecture-reference">Eshkol System Architecture Reference</h1>
-<p><strong>Version</strong>: v1.3.6-evolve <strong>Release</strong>: v1.3.6-evolve (prepared for publication) <strong>Date</strong>: October 2026 <strong>Status</strong>: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic</p>
+<p><strong>Version</strong>: v1.4.0-connection <strong>Release</strong>: v1.4.0-connection (2026-11-25) <strong>Date</strong>: November 2026 <strong>Status</strong>: Production-ready compiler with a networked systems profile, GPU acceleration, consciousness engine, exact arithmetic, and a machine-checked mathematics programme</p>
 <blockquote>
 <p><strong>Note</strong>: This document describes the <strong>actual implemented system</strong> based on comprehensive code analysis. Features marked as “planned” or “future” are documented separately in roadmap documents.</p>
+</blockquote>
+<blockquote>
+<p><strong>Since v1.4.0.</strong> The connection and systems layer is described in <a href="/docs#page=eshkol_v1_architecture&amp;v140-architecture-extensions" data-url="/content/eshkol_v1_architecture.html">v1.4.0 Architecture Extensions</a>: sockets, TLS, HTTP/1.1, WebSocket, Server-Sent Events, write-ahead durability, socket collectives, subprocess confinement, shared-library tail transfer, exact-rational tensors, WebGPU browser VM dispatch, and linear resource accounting under <code>--strict-resources</code> (ADR-0056).</p>
 </blockquote>
 <blockquote>
 <p><strong>Since v1.3.6.</strong> Each of the following is detailed in the <code>[1.3.6-evolve]</code> section of <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>: generated cons, vector and closure construction and exception-handler frames check their allocations (#721); a native executable <code>main</code> has a checked signature (#724); CUDA builds admit cuBLAS lazily, on the first GPU GEMM (#740); the output-string port registry retires closed slots (#748); the browser LLVM/WASM host carries exact integer and rational values for finite doubles (#744); and native REPL input is one reader across line-editing backends (#737).</p>
@@ -24,6 +27,7 @@
 <li><a href="/docs#page=eshkol_v1_architecture&amp;code-organization" data-url="/content/eshkol_v1_architecture.html">Code Organization</a></li>
 <li><a href="/docs#page=eshkol_v1_architecture&amp;performance-characteristics" data-url="/content/eshkol_v1_architecture.html">Performance Characteristics</a></li>
 <li><a href="/docs#page=eshkol_v1_architecture&amp;v11-architecture-extensions" data-url="/content/eshkol_v1_architecture.html">v1.1 Architecture Extensions</a></li>
+<li><a href="/docs#page=eshkol_v1_architecture&amp;v140-architecture-extensions" data-url="/content/eshkol_v1_architecture.html">v1.4.0 Architecture Extensions</a></li>
 </ol>
 <hr />
 <h2 id="executive-summary">Executive Summary</h2>
@@ -53,7 +57,7 @@
 <tbody>
 <tr>
 <td>Total backend (<code>lib/backend/</code>)</td>
-<td>~220,211 lines indexed</td>
+<td>248,072 lines indexed</td>
 </tr>
 <tr>
 <td>LLVM backend</td>
@@ -61,7 +65,7 @@
 </tr>
 <tr>
 <td>Bytecode VM</td>
-<td>66 core opcodes, 722 VM-table builtins, ~57,650 lines</td>
+<td>73 core opcodes, 800 VM-table builtins, ~57,650 lines</td>
 </tr>
 <tr>
 <td>Main codegen</td>
@@ -180,7 +184,7 @@
 <p>The neighboring modules retain their existing ownership boundaries: builtin trampolines and native dispatch are in <code>vm_native.c</code>, error-object support is in <code>vm_error.c</code>, and coverage hooks plus public ESKB/VM entry points are in <code>eshkol_vm.c</code>. The unity hub includes the extracted modules before <code>vm_run.c</code>, after the native and region-evacuation components they call. Handlers whose threaded and switch paths intentionally differ remain inline in <code>vm_run.c</code>, so this structural change does not alter behavior.</p>
 <hr />
 <h2 id="memory-architecture-oalr">Memory Architecture (OALR)</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> and its <code>runtime_arena_*</code> / <code>runtime_regions</code> / <code>runtime_*_alloc</code> siblings (6,212 lines across 8 source files), against the <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/arena_memory.h" target="_blank" rel="noopener noreferrer"><code>lib/core/arena_memory.h</code></a> interface (1,267 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> and its <code>runtime_arena_*</code> / <code>runtime_regions</code> / <code>runtime_*_alloc</code> siblings (6,212 lines across 8 source files), against the <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/arena_memory.h" target="_blank" rel="noopener noreferrer"><code>lib/core/arena_memory.h</code></a> interface (1,300 lines)</p>
 <h3 id="core-principles">Core Principles</h3>
 <p>Eshkol uses <strong>Ownership-Aware Lexical Regions</strong> (OALR) instead of garbage collection:</p>
 <ul>
@@ -257,7 +261,7 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);</code></pre>
 <h2 id="type-system-triple-layer">Type System (Triple-Layer)</h2>
 <p>Eshkol uses <strong>three layers</strong> of type information for different purposes:</p>
 <h3 id="layer-1-runtime-types-tagged-values">Layer 1: Runtime Types (Tagged Values)</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,816 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,944 lines)</p>
 <pre class="c"><code>typedef struct eshkol_tagged_value {
     uint8_t type;        // eshkol_value_type_t (0-255)
     uint8_t flags;       // Exactness, indirection flags
@@ -296,7 +300,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 // ... (deprecated, use consolidated types in new code)</code></pre>
 <p><strong>Critical</strong>: New code MUST use consolidated types (8-9) with subtypes. Legacy types exist only for the display system.</p>
 <h3 id="layer-2-compile-time-types-hott">Layer 2: Compile-Time Types (HoTT)</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/hott_types.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/hott_types.cpp</code></a> (1,130 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (6,087 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/hott_types.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/hott_types.cpp</code></a> (1,388 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (7,780 lines)</p>
 <p><strong>Universe Hierarchy</strong>:</p>
 <pre class="scheme"><code>𝒰₂ (Propositions)
   ├── Eq, &lt;, Bounded, Subtype (proof types, erased at runtime)
@@ -326,7 +330,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 <p><strong>35+ Built-in Types</strong> organized in supertype hierarchies: - Numeric tower: <code>Number</code> → <code>Integer</code>/<code>Real</code> - Collections: <code>List&lt;T&gt;</code>, <code>Vector&lt;T&gt;</code>, <code>Tensor&lt;T,Shape&gt;</code> - Functions: Π-types (dependent function types) - Proofs: <code>Eq</code>, <code>&lt;</code>, <code>Bounded</code> (erased at runtime)</p>
 <p><strong>Current Status</strong>: Type checker produces <strong>warnings only</strong> and does not block compilation (gradual typing), with one deliberate exception: a value carrying <code>TYPE_FLAG_LINEAR</code> (<code>Qubit</code>, <code>Handle</code>, <code>Stream</code>) is enforced. Cloning one is a compile-time error in the default build on both engines and no artifact is written (v1.3.5-evolve, #471).</p>
 <h4 id="the-type-relation">The Type Relation</h4>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/types/type_relation.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/types/type_relation.h</code></a> (170 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> (433 lines) (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013</a>)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/types/type_relation.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/types/type_relation.h</code></a> (181 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> (513 lines) (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013</a>)</p>
 <p><code>TypeRelation</code> is the sole owner of every judgment that compares, combines or prints types. It is a lightweight view over one <code>TypeEnvironment</code>: it reads and extends the environment’s interned signatures, pairs and sums, fills the environment’s subtype cache, and keys nothing by expression or binding (per-expression facts belong to the semantic identity tables, not to this module). The lattice has <code>Value</code> at the top and <code>Never</code> at the bottom; between them sit the nominal graph, tracked pairs <code>Pair&lt;A, B&gt;</code> (a bare <code>Pair</code> is <code>Pair&lt;Value, Value&gt;</code>), sums <code>(+ A B ...)</code>, and function signatures <code>(-&gt; A... R)</code> below the generic procedure types <code>Function</code> and <code>Closure</code>.</p>
 <table>
 <colgroup>
@@ -411,7 +415,7 @@ DimensionChecker::Result checkMatMulDimensions(
 <p><strong>Usage</strong>: Tensor operations use dependent types to verify dimension compatibility.</p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (15,666 lines), with reverse-mode AD dispatch sites inside <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a></p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (16,013 lines), with reverse-mode AD dispatch sites inside <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a></p>
 <p>Eshkol provides <strong>three modes</strong> of automatic differentiation, each optimized for different use cases:</p>
 <h3 id="mode-1-symbolic-differentiation">Mode 1: Symbolic Differentiation</h3>
 <p><strong>Compile-time AST transformation</strong>:</p>
@@ -519,7 +523,7 @@ ad_node_t* __outer_ad_node_stack[16];  // Outer AD nodes for double backward</co
     uint64_t num_captures;           // Packed: [captures:16][params:16][variadic:1]
     eshkol_tagged_value_t captures[];// Flexible array of captured values
 } eshkol_closure_env_t;</code></pre>
-<p><strong>Packed field encoding</strong> (num_captures): - Bits 0-31: Actual capture count - Bits 32-47: Fixed parameter count (0-65535) - Bit 63: Variadic flag (0=fixed arity, 1=variadic)</p>
+<p><strong>Packed field encoding</strong> (num_captures): - Bits 0-31: Actual capture count - Bits 32-47: Required parameter count (0-65535) - Bit 63: Variadic flag (0=exact arity, 1=variadic)</p>
 <p><strong>Access macros</strong>:</p>
 <pre class="c"><code>CLOSURE_ENV_GET_NUM_CAPTURES(packed)   // Extract bits 0-31
 CLOSURE_ENV_GET_FIXED_PARAMS(packed)   // Extract bits 32-47
@@ -547,13 +551,14 @@ CLOSURE_ENV_IS_VARIADIC(packed)        // Test bit 63</code></pre>
 </ol>
 <p>A call through a mutable binding evaluates the binding’s current value and dispatches through the closure ABI; an unmodified binding keeps direct-call resolution. <code>inheritStaticCalleeCapture</code> propagates an alias into a nested function only for a capture proven immutable.</p>
 <h3 id="capture-resolution-for-direct-calls">Capture Resolution for Direct Calls</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/closure_capture_scope.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/backend/closure_capture_scope.h</code></a> (182 lines), <code>AutodiffCodegen::appendDifferentiandCaptures</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (since v1.3.5)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/closure_capture_scope.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/backend/closure_capture_scope.h</code></a> (211 lines), <code>AutodiffCodegen::appendDifferentiandCaptures</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (since v1.3.5)</p>
 <p>A lambda with free variables lowers to an LLVM function that takes one pointer parameter per captured variable, appended after its user parameters. A site that calls such a function directly has to supply those pointers itself, and two rules keep that sound:</p>
 <ol type="1">
 <li><strong>A captured value comes only from the function being emitted</strong> (one of its own arguments or instructions) or from the module (a global, constant or function). <code>valueUsableInFunction</code> is the structural check every capture site applies. A value that belongs to an enclosing function is reached through the current function’s own capture pointer; where no such pointer exists, code generation stops with a diagnostic that names the variable, the owning function, the function being emitted and the source location.</li>
-<li><strong>A callee reached through a name takes its captures from the closure object.</strong> <code>emitClosureCaptureArguments</code> reads them from the closure’s environment under the closure-call ABI, including the environment-pointer form used above 64 captures, which is what the runtime closure call does. An inline lambda created at the call site resolves its captures by name.</li>
+<li><strong>A callee reached through a name takes its captures from the closure object.</strong> <code>emitClosureCaptureArguments</code> reads them from the closure’s environment under the closure-call ABI — capture parameter <em>i</em> of the procedure body receives the address of capture slot <em>i</em>, for any number of captures — which is what the runtime closure call does. An inline lambda passed to <code>map</code> is compiled once to its closure and takes its capture slots from that closure in the same way when it has at most 64 captures; with more it is called through its closure value. An inline lambda used as a differentiand resolves its captures by name, under rule 1.</li>
 </ol>
 <p><code>appendDifferentiandCaptures</code> is the single resolver for a differentiated closure’s captures. <code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, every <code>gradient</code> path, <code>jacobian</code>, <code>hessian</code>, and through them <code>divergence</code>, <code>curl</code>, <code>laplacian</code> and <code>directional-derivative</code>, all use it. <code>MapCodegen</code> applies the same two rules for <code>map</code> and multi-list <code>map</code>, and <code>reduce</code> dispatches on the closure value.</p>
+<p>The closure call itself has one shape for every capture count: it passes the user arguments followed by the addresses of the first 64 capture slots. The code address stored in a closure object is the procedure body when the body has at most 64 captures, and otherwise an entry function that receives the address of slot 0 and forwards every slot address to the body, so the arity check and rest-list construction are the same for all procedures.</p>
 <h3 id="variadic-functions">Variadic Functions</h3>
 <p><strong>Rest parameters</strong>:</p>
 <pre class="scheme"><code>(define (variadic-fn a b . rest)
@@ -675,7 +680,7 @@ int64_t wrong = static_cast&lt;int64_t&gt;(value);  // → 3 (loses precision!)<
 <p>Deterministic locations are what make language-coverage records reproducible; <code>language_coverage_determinism_test</code> holds that property (see <a href="/docs#page=testing&amp;language-coverage-instrumentation" data-url="/content/testing.html">TESTING.md</a>).</p>
 <h3 id="driver-analyses-before-codegen">Driver Analyses Before Codegen</h3>
 <p><strong>Implementation</strong>: <code>OwnershipAnalyzer</code> and <code>EscapeAnalyzer</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a></p>
-<p>Ownership analysis and escape analysis traverse the AST iteratively. Each analyzer keeps an explicit stack of work records (<code>WorkItem</code>): an <code>AST</code> record visits a node, and continuation records (<code>LET_BINDING</code>, <code>EXIT_SCOPE</code>, <code>UNBORROW</code> for ownership; <code>LET_BINDING</code>, <code>EXIT_SCOPE</code>, <code>LET_EXIT</code>, <code>LAMBDA_EXIT</code> for escape) run the step that follows a child’s traversal. The records preserve the traversal order and the scope cleanup of a recursive walk, so diagnostics are unchanged, while native stack use is independent of source nesting. Together with the explicit continuation stacks in the parser, the type checker and codegen, this lets deeply nested source compile ahead of time within the default 8 MiB stack: the <code>parser_stack_compile</code> CTest compiles and runs 16,000 levels of nesting through the JIT and AOT with the stack limit fixed at 8 MiB, and <code>ownership_nested_diagnostics</code> holds the analyzers’ diagnostics on nested input (since v1.3.5).</p>
+<p>Ownership analysis and escape analysis traverse the AST iteratively. Each analyzer keeps an explicit stack of work records (<code>WorkItem</code>): an <code>AST</code> record visits a node, and continuation records (<code>LET_BINDING</code>, <code>EXIT_SCOPE</code>, <code>UNBORROW</code> for ownership; <code>LET_BINDING</code>, <code>EXIT_SCOPE</code>, <code>LET_EXIT</code>, <code>LAMBDA_EXIT</code> for escape) run the step that follows a child’s traversal. The records preserve the traversal order and the scope cleanup of a recursive walk, so diagnostics are unchanged, while native stack use is independent of source nesting. Together with the explicit continuation stacks in the parser, the type checker and codegen, this lets deeply nested source compile ahead of time within the default 8 MiB stack: the <code>parser_stack_compile</code> CTest compiles and runs 16,000 levels of nesting through the JIT and AOT with the stack limit set to 8 MiB, and <code>ownership_nested_diagnostics</code> holds the analyzers’ diagnostics on nested input (since v1.3.5).</p>
 <h3 id="ast-ownership">AST ownership</h3>
 <p>Every phase above reads the same AST, so its data lives for the whole compilation:</p>
 <ul>
@@ -694,7 +699,7 @@ int64_t wrong = static_cast&lt;int64_t&gt;(value);  // → 3 (loses precision!)<
 <p><strong>Pattern Matching</strong>: Recursive patterns with <code>match</code></p>
 <hr />
 <h2 id="module-system">Module System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> (6,186 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> (6,519 lines)</p>
 <h3 id="architecture">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │ ModuleDependencyResolver (DFS-based cycle detection)            │
@@ -741,7 +746,7 @@ __test_modules_mod_a__helper</code></pre>
 <p><strong>stdlib.o linking</strong>: - Compiler detects <code>(require stdlib)</code> or <code>(require core.*)</code> - Auto-links pre-compiled stdlib.o if found - Skips recompiling modules present in .o file - External declarations for exported symbols</p>
 <hr />
 <h2 id="repljit-system">REPL/JIT System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,894 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,819 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (5,213 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,844 lines)</p>
 <h3 id="architecture-1">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │                    Interactive REPL                             │
@@ -848,7 +853,7 @@ eshkol&gt; (cube 3)
 │       ├── arithmetic.esk  # First-class +, -, *, /
 │       └── compare.esk     # First-class &lt;, &gt;, =, etc.</code></pre>
 <h3 id="math-library-highlights">Math Library Highlights</h3>
-<p><strong><a href="https://github.com/tsotchke/eshkol/blob/master/lib/math.esk" target="_blank" rel="noopener noreferrer"><code>lib/math.esk</code></a></strong> (412 lines):</p>
+<p><strong><a href="https://github.com/tsotchke/eshkol/blob/master/lib/math.esk" target="_blank" rel="noopener noreferrer"><code>lib/math.esk</code></a></strong> (484 lines):</p>
 <pre class="scheme"><code>;; Linear algebra
 (define (det M n)           ; Determinant via LU decomposition
 (define (inv M n)           ; Matrix inverse via Gauss-Jordan
@@ -1106,7 +1111,7 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></
 <p><strong>Bottleneck</strong>: LLVM optimization passes (can be reduced with -O0)</p>
 <hr />
 <h2 id="build-system">Build System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,735 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a></p>
 <h3 id="requirements">Requirements</h3>
 <ul>
 <li><strong>CMake</strong>: 3.14 or higher</li>
@@ -1232,7 +1237,7 @@ target_link_options(eshkol-static PUBLIC
 <li><strong>What IS implemented</strong>: Quantum RNG (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/quantum/quantum_rng.c" target="_blank" rel="noopener noreferrer"><code>lib/quantum/quantum_rng.c</code></a>)</li>
 </ul></li>
 <li><p><strong>Multimedia</strong>: Windows, graphics, audio, GPIO (design in <code>MULTIMEDIA_SYSTEM_ARCHITECTURE.md</code>)</p></li>
-<li><p><strong>Full Linear Types</strong>: Compile-time enforcement of use-exactly-once (partial: warnings only)</p></li>
+<li><p><strong>Full Linear Types</strong>: compile-time use-exactly-once enforcement across the whole value space remains partial (warnings only). What IS enforced as an error, since v1.4.0-connection, is resource linearity under <code>--strict-resources</code> (ADR-0056): a socket, TLS session, file or region that is left unclosed or closed twice is a compile-time error</p></li>
 <li><p><strong>Dependent Types with Proofs</strong>: Full proof terms (partial: dimension checking only)</p></li>
 </ul>
 <p><strong>Note</strong>: Logic programming, previously listed as unimplemented, shipped in v1.1 as part of the Consciousness Engine (see <a href="/docs#page=eshkol_v1_architecture&amp;v11-architecture-extensions" data-url="/content/eshkol_v1_architecture.html">v1.1 Architecture Extensions</a>).</p>
@@ -1241,14 +1246,14 @@ target_link_options(eshkol-static PUBLIC
 <h2 id="references">References</h2>
 <h3 id="primary-source-files-analyzed-in-detail">Primary Source Files (analyzed in detail)</h3>
 <ul>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,816 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,548 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1,391 lines; 6,212 across the same 8 arena, region, and allocation source files)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,698 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,087 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,894 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,186 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> - Gradual type relation (433 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,944 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (46,537 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1,441 lines; 6,212 across the same 8 arena, region, and allocation source files)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (12,436 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (7,780 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (5,213 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,519 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> - Gradual type relation (513 lines)</li>
 </ul>
 <h3 id="forward-looking-design-documents">Forward-looking design documents</h3>
 <ul>
@@ -1495,7 +1500,7 @@ GPU offload            ← element count ≥ 100,000</code></pre>
 <p>v1.1 resolves several production issues in the interactive JIT:</p>
 <p><strong>Stdlib hot-loading</strong>: Pre-compiled <code>stdlib.o</code> is loaded via <code>addObjectFile</code> (no recompilation). Symbol discovery uses <code>.bc</code> metadata extracted at build time, exposing 237 functions and 305 globals to the JIT symbol resolver.</p>
 <p><strong>ABI-correct optimization level</strong>: <code>JITTargetMachineBuilder::setCodeGenOptLevel(CodeGenOptLevel::None)</code> matches the <code>-O0</code> level used to compile <code>stdlib.o</code>. On ARM64, mismatched optimization levels produce different stack layouts for the <code>{i8,i8,i16,i32,i64}</code> tagged value struct, causing the 3rd+ function argument to arrive as zero. This was the root cause of stdlib functions with 3+ arguments returning incorrect results in the REPL.</p>
-<p><strong>Crash recovery</strong>: Signal handlers for <code>SIGSEGV</code>, <code>SIGFPE</code>, and <code>SIGBUS</code> catch runtime faults in JIT-compiled code and return control to the REPL prompt rather than terminating the process.</p>
+<p><strong>Fault recovery</strong>: Signal handlers for <code>SIGSEGV</code>, <code>SIGFPE</code>, and <code>SIGBUS</code> catch runtime faults in JIT-compiled code and return control to the REPL prompt rather than terminating the process.</p>
 <p><strong>Archive linking</strong>: <code>-force_load</code> on macOS and <code>--whole-archive</code> on Linux prevent the linker from dead-stripping archive members (e.g., XLA runtime functions) that are referenced only by JIT-compiled code at runtime. Combined with <code>-export_dynamic</code>, all runtime symbols are visible to the ORC <code>DynamicLibrarySearchGenerator</code>.</p>
 <h3 id="v11-feature-integration">v1.1 Feature Integration</h3>
 <p><strong>Consciousness Engine in the Runtime Layer.</strong> The consciousness engine (logic inference, active inference, and global workspace) integrates into the runtime as a set of 22 builtin functions backed by three C++ modules: <code>logic.h/logic.cpp</code> (unification, substitution, knowledge base), <code>inference.h/inference.cpp</code> (factor graph belief propagation, free energy minimization), and <code>workspace.h/workspace.cpp</code> (module registration, softmax competition). These are not separate subsystems – they use the same arena allocator and tagged value representation as the core runtime, with dedicated heap subtypes (SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17) and a logic variable type tag (ESHKOL_VALUE_LOGIC_VAR=10). The <code>?x</code> syntax for logic variables is parsed as <code>ESHKOL_LOGIC_VAR_OP</code>, remaining compatible with R7RS since <code>?</code> is a valid identifier start character. Workspace stepping (<code>ws-step!</code>) uses <code>codegenClosureCall</code> in LLVM IR to invoke module closures, while C runtime helpers handle tensor wrapping and softmax broadcast.</p>
@@ -1503,4 +1508,39 @@ GPU offload            ← element count ≥ 100,000</code></pre>
 <p><strong>Parallel Execution in the Memory Model.</strong> Eshkol’s arena-based memory model supports parallel execution through per-worker arena allocation and <code>LinkOnceODRLinkage</code> for parallel worker functions to prevent duplicate symbol conflicts at link time. The parallel primitives (<code>parallel-map</code>, <code>parallel-for</code>, etc.) partition work across OS threads, each operating on independent arena segments. Tensor operations that internally parallelize (e.g., GPU compute kernels, cBLAS) are safe because they operate on pre-allocated contiguous buffers – the arena allocator is only invoked to allocate result tensors before the parallel kernel launches. The REPL JIT uses <code>-force_load</code> / <code>--whole-archive</code> on the static library and matches the compilation’s <code>CodeGenOptLevel::None</code> to avoid ABI divergence in struct passing on ARM64, which is critical for correct tagged value transmission across the JIT boundary.</p>
 <p><strong>Exact Arithmetic in the Numeric Tower.</strong> The numeric tower extends from fixnums through bignums, rationals, and complex to tensors, with all transitions handled by the tagged value system’s 16-byte <code>{type:8, flags:8, reserved:16, data:64}</code> representation (the 32 bits between <code>reserved</code> and <code>data</code> are implicit alignment padding, not a field). Bignum operations dispatch through C runtime functions (<code>eshkol_bignum_binary_tagged</code>, <code>eshkol_bignum_compare_tagged</code>) that examine the type tag at index 0 and operate on GMP-backed arbitrary-precision integers stored as heap pointers. R7RS exactness semantics are preserved: mixed exact/inexact operations promote to inexact (e.g., bignum + double returns double), while <code>expt</code> with exact integer arguments and non-negative exponent uses repeated squaring (<code>eshkol_bignum_pow</code>) to return an exact bignum result. The rational type stores numerator/denominator bignums and dispatches through <code>eshkol_rational_compare_tagged_ptr</code> for comparisons. All numeric types are checked in <code>ArithmeticCodegen::compare()</code>, <code>abs()</code>, <code>min/max</code>, and <code>pow()</code> to prevent precision loss from fallthrough to double paths.</p>
 <hr />
-<p><em>This document reflects the v1.3.6-evolve release. All claims are verified against actual source code. For questions or corrections, see <a href="/docs#page=contributing" data-url="/content/contributing.html"><code>CONTRIBUTING.md</code></a>.</em></p>
+<hr />
+<h2 id="v140-architecture-extensions">v1.4.0 Architecture Extensions</h2>
+<h3 id="the-connection-layer">The connection layer</h3>
+<p>Networking enters the architecture as a runtime layer with a language-level handle, not as a library bolted on top of file descriptors.</p>
+<pre><code>┌──────────────────────────────────────────────────────────────┐
+│  core.net · core.tls · core.http_server · websocket · SSE    │  Eshkol
+└───────────────────────────┬──────────────────────────────────┘
+┌───────────────────────────▼──────────────────────────────────┐
+│  net.c · tls.c · http_event_server.c · collectives.c         │  C runtime
+│  (socket/TLS/HTTP handles, structured error records)         │
+└───────────────────────────┬──────────────────────────────────┘
+┌───────────────────────────▼──────────────────────────────────┐
+│  event_loop.c → kqueue (BSD/macOS) · epoll (Linux)           │  Platform
+│                  IOCP + WSAPoll/PeekNamedPipe (Windows)      │
+│                  fail-closed stub (WASM)                     │
+└──────────────────────────────────────────────────────────────┘</code></pre>
+<p>Three properties matter architecturally:</p>
+<ol type="1">
+<li><strong>One readiness mechanism.</strong> The HTTP server, WebSocket, SSE streaming and socket leases all run on the same portable event loop that shipped in v1.3.4-evolve, so readiness scaling is O(1) in the number of connections rather than a per-connection scan, and there is exactly one place where platform behaviour differs.</li>
+<li><strong>Handles are values with identity.</strong> A socket, TLS session or HTTP server is a tagged runtime handle, and failures surface as structured conditions (<code>network-error?</code>, <code>tls-error?</code>) carrying code, operation and reason — never a bare errno at the language surface.</li>
+<li><strong>Resource linearity is a compile-time property.</strong> Under <code>--strict-resources</code> (ADR-0056) the compiler tracks these handles use-exactly-once, with scoped <code>call-with-…</code> forms as the borrow pattern. An unclosed or twice-closed handle is rejected at compile time.</li>
+</ol>
+<h3 id="durability">Durability</h3>
+<p><code>core.memory_store</code> writes through a write-ahead log, and the atomic checkpoint layer (<code>lib/core/model_io_atomic.c</code>) brackets a durable write as begin / write / commit / abort: a commit either lands whole or leaves the previous state intact, and an abort leaves no partial file behind. <code>core.merkle</code> verifies content-addressed records over the same store.</p>
+<h3 id="collectives-and-process-confinement">Collectives and process confinement</h3>
+<p><code>lib/core/collectives.c</code> implements broadcast, all-reduce, all-gather, reduce-scatter and barrier over sockets with rank-ordered reduction, so the same ranks and the same inputs produce the same bits on every run. Subprocess launches are confined — Darwin Seatbelt, Linux seccomp with Landlock — and a platform offering no confinement mechanism refuses the launch rather than running unconfined.</p>
+<h3 id="tail-transfer-across-shared-libraries">Tail transfer across shared libraries</h3>
+<p>Shared-library export ordering plus <code>lib/core/runtime_tail_transfer.cpp</code> let a tail call that crosses a <code>--shared-lib</code> boundary transfer control instead of growing the stack, so a mutually recursive pair split across libraries still runs in constant stack space.</p>
+<h3 id="exactness-at-the-boundaries">Exactness at the boundaries</h3>
+<p>Tensors of dtype <code>exact</code> (ADR-0058, <code>lib/core/runtime_exact_tensor.cpp</code>) carry exact rational elements end to end, including across the NumPy binding, so no boundary silently demotes an exact value to binary64. In the browser lane the bytecode VM dispatches compute work to WebGPU (ADR-0029).</p>
+<h3 id="mathematics-programme-and-proof-layer">Mathematics programme and proof layer</h3>
+<p>The mathematics libraries (<code>core.sheaf</code>, <code>core.topos</code>, <code>core.ring</code>, <code>core.category</code>, <code>core.simplicial</code>, <code>core.homological</code>, <code>core.theory</code>, <code>core.manifold</code>, <code>core.curvature</code>, <code>core.exact_linalg</code>, <code>core.blc</code>, <code>core.sblc</code>) sit on the same exact numeric tower and arena allocator as the rest of the runtime: a claim is decided by enumeration and exact linear algebra, never by sampling. Alongside them, <code>verification/</code> carries 395 top-level machine-checked theorems across 12 standalone proof files (287 for the mathematics programme, 108 in <code>EshkolSBLCRelaxation.lean</code>), with 0 <code>sorry</code> and 0 custom axioms, checked in Lean 4.12.0 in CI and replayed independently (ADR-0061, ADR-0063).</p>
+<h3 id="not-in-v140-connection">Not in v1.4.0-connection</h3>
+<p>Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) remain post-v1.4.0 work. Backend parity remains a documented subset — the VM parity manifest carries 997 rows, of which 322 are <code>gap</code> — never complete parity.</p>
+<hr />
+<p><em>This document reflects the v1.4.0-connection release. All claims are verified against actual source code. For questions or corrections, see <a href="/docs#page=contributing" data-url="/content/contributing.html"><code>CONTRIBUTING.md</code></a>.</em></p>

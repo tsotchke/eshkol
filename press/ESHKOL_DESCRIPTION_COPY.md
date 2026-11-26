@@ -2,6 +2,29 @@
 
 ## A compiled Scheme with a constructive proof that a transformer is an interpreter
 
+Eshkol v1.4.0-connection (release candidate, November 2026) adds a
+resource-sound systems profile — managed-resource TCP/UDP/TLS leases (ADR-0055),
+O(1) event-loop HTTP/WebSocket and bounded SSE streaming, Unix domain sockets,
+deterministic socket collectives, compile-time linear handle tracking under
+`--strict-resources` (ADR-0056), narrow-only capability policies with Darwin
+Seatbelt and Linux seccomp/Landlock subprocess sandboxing, arbitrary-depth
+nested differentiation (ADR-0057), exact-rational tensor elements (ADR-0058),
+the full Mathematics Programme (Grothendieck three-era libraries across
+`core.sheaf`, `core.topos`, `core.ring`, `core.category`, `core.simplicial`,
+`core.homological`, `core.monoidal`, `core.theory`, `core.effective`, schemes,
+derived categories, and six-functor formalism; Beyond Frontiers spanning Hodge
+theory, Lie/algebraic groups, integrable systems, representation theory, and
+K-theory; Probability Sheaves `arXiv:2611.30692`; Stochastic Binary Lambda
+Calculus with differentiable search proposals, `core.sblc.relax` — an exact
+finite-logit oracle, Rao-Blackwellized REINFORCE with exact rational inner
+coins and variance-reduction confidence diagnostics, and strict-projected
+Gumbel-Softmax/Concrete grammar proposals, each relaxed candidate re-verified
+exactly), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
+395 machine-checked Lean 4.12.0 theorems across 12 standalone proof files (287
+for the mathematics programme, 108 in `EshkolSBLCRelaxation.lean`), 86 verified
+example programs, and built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
+<!-- source: CHANGELOG.md §1.4.0-connection (#845, #956, #958); RELEASE_NOTES.md -->
+
 Eshkol v1.3.6-evolve checks mathematics that machines discovered. That is not a
 metaphor. The FunSearch cap set, the AlphaTensor matrix multiplication
 decompositions over F₂, and a polynomial counterexample map to the Jacobian
@@ -67,18 +90,19 @@ fit by gradient descent.
 ## Launch post
 
 ```
-Eshkol v1.3.6-evolve is out now.
+Eshkol v1.4.0-connection is here (release candidate).
 
-It checks mathematics that machines discovered: the FunSearch cap set, the
-AlphaTensor decompositions, a Jacobian-conjecture counterexample. Exactly, and
-completely.
+A resource-sound systems profile for compiled Scheme: linear socket/TLS/file
+handles checked at compile time (--strict-resources), O(1) event-loop HTTP/WS
+and SSE streaming, OS-sandboxed subprocesses, arbitrary-depth nested AD, exact
+rational tensors, finite decidable mathematics, and independent proof replay.
 
 https://github.com/tsotchke/eshkol
 ```
 
 ## Long-form article title
 
-`Eshkol v1.3.6-evolve: Checking Machine-Discovered Mathematics in a Compiled Scheme`
+`Eshkol v1.4.0-connection: A Resource-Sound Systems Profile and Verified Exact Mathematics in Compiled Scheme`
 
 ---
 
@@ -450,7 +474,7 @@ Each item below cites the file or measurement that grounds the claim.
   arena-allocated bignum; the architecture-model invariant that checks this is
   derived from the source rather than from a hand-typed list, resolved through a
   libclang semantic index of the real case arms. `ESHKOL_ARENA_POISON=1` poisons
-  freed arena memory so any remaining gap crashes loudly instead of corrupting
+  freed arena memory so any remaining gap halts loudly instead of corrupting
   silently. See *lib/core/runtime_regions.cpp* and
   *tests/memory/region_evac_taylor_exact_test.esk*.
 
@@ -757,8 +781,8 @@ Outputs land under `artifacts/paper/outputs/` with stable SHA-256 hashes printed
 by the harness. A current successful run produces, among others,
 `weights.qlmw = 381599e7…3f0c`, `vm-traces.jsonl = 4239cbb9…4801` (the
 transformer trace agrees bitwise: same SHA), and
-`comparison-report.json = 80aa6fed…4105`. Platform divergence is treated as a
-bug.
+`comparison-report.json = 80aa6fed…4105`. Platform divergence violates the
+artefact's contract and should be reported.
 
 As of v1.3.5-evolve the performance claims reproduce in one command too:
 
@@ -790,7 +814,7 @@ builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.6-evolve |
-| Release status | Prepared for publication; intended release date 15 October 2026 (builds on v1.3.5-evolve, 22 September 2026; v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Release status | Prepared for publication; intended release date 25 November 2026 (builds on v1.3.5-evolve, 22 September 2026; v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM. The source compiles against LLVM 18 through 24; a build pins one major version (21 by default, `ESHKOL_REQUIRED_LLVM_MAJOR`) and aborts on a mismatch |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |

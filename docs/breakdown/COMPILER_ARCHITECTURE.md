@@ -15,7 +15,7 @@ sources:
   - lib/backend/llvm_codegen.cpp
   - scripts/gate_compiler_architecture.py
 ---
-# Compiler Architecture in Eshkol (v1.3.5-evolve)
+# Compiler Architecture in Eshkol (v1.4.0-connection)
 
 ## Table of Contents
 
@@ -38,7 +38,7 @@ sources:
 
 ## Overview
 
-Eshkol is a **production compiler** targeting **LLVM IR** for native code generation. The v1.1-accelerate release extends the v1.0 foundation with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic (full R7RS numeric tower), first-class continuations, signal processing, a 75+ builtin ML framework, and WebAssembly output.
+Eshkol is a **production compiler** targeting **LLVM IR** for native code generation. The v1.1-accelerate release extended the v1.0 foundation with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic (full R7RS numeric tower), first-class continuations, signal processing, a 75+ builtin ML framework, and WebAssembly output; later lines through v1.4.0-connection added persistence, the stable C FFI, exactness hardening, and the connection-era systems surface (networking, WAL persistence, collectives) on the same pipeline, which now serves 1,651 total language constructs and 1,069 builtins.
 
 The architecture combines:
 
@@ -102,7 +102,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,312 lines)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,337 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -127,7 +127,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,698 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (12,436 lines)
 
 The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:
 
@@ -186,7 +186,7 @@ See [ESHKOL_V1_ARCHITECTURE.md](../ESHKOL_V1_ARCHITECTURE.md#source-locations-an
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (6,087 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (7,780 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -371,7 +371,7 @@ static constexpr unsigned TAGGED_VALUE_PADDING_IDX = 3;  // uint32_t padding
 static constexpr unsigned TAGGED_VALUE_DATA_IDX = 4;     // int64_t data
 ```
 
-**Critical:** The data field is at index **4**, not 3. Using index 3 accesses the padding field, which was the root cause of multiple null dereference bugs in v1.0.
+**Critical:** The data field is at index **4**, not 3. Using index 3 accesses the padding field, which was the root cause of multiple null dereference failures in v1.0.
 
 ### Type Tags
 
@@ -462,7 +462,7 @@ The LLVM backend distributes code generation across 39 `*codegen*.cpp` translati
 | **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 743 | make-hash, hash-ref, hash-set!, hash-for-each |
 | **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 624 | Complex number arithmetic (Smith's formula division) |
 
-The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 23,413 lines re-exported through the dispatcher above.
+The original monolithic tensor code generator was decomposed in v1.2 into `tensor_codegen.cpp` (2,107 lines) plus thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, and `tensorcore_codegen.cpp` at 231 lines; 23,487 lines across the thirteen siblings), re-exported through the dispatcher above.
 
 **Additional backend components (not in the module table above):**
 
@@ -528,7 +528,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,237 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,296 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,324 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,602 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -543,7 +543,7 @@ Worker functions use `LinkOnceODRLinkage` to prevent duplicate symbol errors whe
 
 ### Consciousness Engine Codegen
 
-**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,505 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,258 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (354 lines)
+**Runtime:** [`lib/core/logic.cpp`](../../lib/core/logic.cpp) (1,505 lines), [`lib/core/inference.cpp`](../../lib/core/inference.cpp) (1,321 lines), [`lib/core/workspace.cpp`](../../lib/core/workspace.cpp) (393 lines)
 
 **Codegen:** Dispatched directly from [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp) (not a separate module)
 
@@ -561,7 +561,7 @@ Logic variables use syntax `?x` (parsed as `ESHKOL_LOGIC_VAR_OP`), which is R7RS
 
 ### Exact Arithmetic Dispatch
 
-**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,851 lines)
+**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,855 lines)
 
 The full R7RS numeric tower with automatic precision promotion:
 
@@ -601,7 +601,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,896 lines)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,107-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,921 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -677,7 +677,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,894 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (5,213 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
@@ -719,7 +719,7 @@ auto jtmb = orc::JITTargetMachineBuilder::detectHost();
 jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);  // Match stdlib.o
 ```
 
-Without this fix, the 3rd and subsequent tagged value arguments to stdlib functions arrive as all-zeros on ARM64, because the ABI for struct passing differs between optimization levels.
+Without this setting, the 3rd and subsequent tagged value arguments to stdlib functions arrive as all-zeros on ARM64, because the ABI for struct passing differs between optimization levels.
 
 ### Stdlib Preloading
 
@@ -975,8 +975,8 @@ A dynamic array of AD nodes allocated during the forward pass, topologically sor
 
 Three C runtime libraries:
 - **Logic** ([`lib/core/logic.cpp`](../../lib/core/logic.cpp), 1,505 lines): Robinson's unification, substitution environments, knowledge base query
-- **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp), 1,258 lines): Factor graph construction, belief propagation, free energy computation
-- **Workspace** ([`lib/core/workspace.cpp`](../../lib/core/workspace.cpp), 354 lines): Module registration, softmax competitive attention, step execution
+- **Inference** ([`lib/core/inference.cpp`](../../lib/core/inference.cpp), 1,321 lines): Factor graph construction, belief propagation, free energy computation
+- **Workspace** ([`lib/core/workspace.cpp`](../../lib/core/workspace.cpp), 393 lines): Module registration, softmax competitive attention, step execution
 
 LLVM codegen dispatches to these runtime functions via tagged value calling conventions, with heap subtypes 12-17 identifying consciousness engine objects.
 

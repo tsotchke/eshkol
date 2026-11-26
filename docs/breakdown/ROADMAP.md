@@ -18,9 +18,20 @@
 
 ## Current Release
 
-**Current Release:** v1.2.1-scale (2026-05-20). See [`../../RELEASE_NOTES.md`](../../RELEASE_NOTES.md) for the closeout (v1.2 acceptance evidence: 37-suite aggregate gate, 87 passing edge / security tests, zero outstanding audit blockers — detail was in an internal runbook, not published).
+**Current Release:** v1.4.0-connection (release candidate, 2026-11-25). See [`../../RELEASE_NOTES.md`](../../RELEASE_NOTES.md) for the release record.
 
-The remainder of this document is organised as: (1) a recap of features delivered across the four shipped lines (`v1.0-foundation`, `v1.1-accelerate`, `v1.2-scale`, `v1.2.1-scale`); (2) the forward roadmap for `v1.3-evolve` and beyond; and (3) long-term vision items that remain research-scope.
+v1.4.0-connection is the systems profile of the language: linear networking with
+TLS, HTTP/1.1, WebSocket and Server-Sent Events; a write-ahead log with atomic
+persistence; collective parallel operations; subprocess sandboxing;
+shared-library tail transfer; WebGPU browser VM dispatch (ADR-0029) with a
+476KB site WASM and 1762KB VM WASM; and exact-rational tensors. The surface
+counts 1,651 total language constructs and 1,069 builtins, with a 997-row VM
+parity manifest (630 vm-supported, 45 native-only-justified, 322 gap). The
+release also carries the full mathematics programme and 395 top-level
+machine-checked Lean 4.12.0 theorems across 12 standalone proof files
+(0 `sorry`, 0 custom axioms), plus 86 verified examples.
+
+The remainder of this document is organised as: (1) a recap of features delivered across the shipped lines (`v1.0-foundation`, `v1.1-accelerate`, `v1.2-scale`/`v1.2.1-scale`, the `v1.3-evolve` series, and `v1.4.0-connection`); (2) the forward roadmap for `v1.4.1` and beyond; and (3) long-term vision items that remain research-scope.
 
 ---
 
@@ -145,26 +156,51 @@ The remainder of this document is organised as: (1) a recap of features delivere
 - TCO context preservation across nested `letrec`
 - Test-script grep tightened against `Failed: 0` false positives
 
+### v1.3-evolve series (Q3-Q4 2026, COMPLETE)
+
+The v1.3-evolve line shipped as a sequence of releases through v1.3.6-evolve
+(2026-10-19). Highlights across the series:
+
+- Exact nested AD (vector `gradient` under `gradient`, derivative-tower closure)
+- Region evacuation and release-invariant contracts (ADR-0014)
+- Static callee binding identity and the gradual type relation (ADR-0013, ADR-0015)
+- `with-region` / region diagnostics and runtime resource limits
+- GPU exactness: the Ozaki-scheme SF64 exact tier and its certification gate
+- Release and documentation infrastructure hardening across all platform lanes
+
+### v1.4.0-connection (2026-11-25, RELEASE CANDIDATE)
+
+The systems profile described under [Current Release](#current-release):
+linear networking (TLS, HTTP/1.1, WebSocket, SSE), write-ahead log and atomic
+persistence, collective parallel operations, subprocess sandboxing,
+shared-library tail transfer, WebGPU browser VM dispatch (ADR-0029),
+exact-rational tensors (ADR-0058), the full mathematics programme,
+`core.sblc.relax` relaxation-based gradient estimation (ADR-0017 item 5), and
+395 machine-checked Lean 4.12.0 theorems with 86 verified examples.
+
 ## Forward Roadmap
 
-### v1.3-evolve (target Q3 2026)
+The canonical plan lives in the repo-root [`ROADMAP.md`](../../ROADMAP.md);
+publication order is mandatory: v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0.
 
-**Type system**
-- Effect system for side-effect tracking
-- Row polymorphism for extensible records
-- Refinement / predicate types
-- Type-level computation (type families)
-- Visual debugger UI on top of existing DWARF data
-- Documentation generator from type annotations
+### v1.4.1 — the ABI release (PLANNED)
 
-**Backends and runtime**
-- Profile-guided optimisation (PGO)
-- Whole-program optimisation across modules
-- Vulkan compute shaders for non-NVIDIA / non-Apple GPUs
-- Automatic C-header binding generation
-- Zero-copy bridge surfaces for NumPy and PyTorch
+Stabilises the public C ABI and embedding surfaces on top of the
+v1.4.0-connection systems profile.
 
-**Bytecode VM as transformer (research track)**
+### v1.4.5-accelerate — the device runtime (PLANNED)
+
+The full accelerator story (XLA device runtime); accelerator development may
+run in parallel with v1.4.1 but publishes after it.
+
+### v1.5.0-intelligence (PLANNED)
+
+The intelligence profile. Consciousness Engine v2 and the Eshkol OS track are
+forward work beyond v1.4.0-connection and are not part of the current release.
+
+### Research track
+
+**Bytecode VM as transformer**
 - Stage 3 of the VM memory-ops → weight-matrix programme: lift the remaining 24 of 26 delegated opcodes into analytic weight constructions; raise `d_model` from 128 to 256; add Layers 6/7. See [`VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md`](VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md).
 
 ---

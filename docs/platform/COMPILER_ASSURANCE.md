@@ -67,8 +67,8 @@ policy, not a C++ semantic or data-flow proof: unusual indirect-call spellings
 require extending its recognizer. Its self-tests cover newly introduced source
 files and duplicate dispatcher names as well as missing cases and defaults.
 
-The v1.3.5-evolve release passes this strict policy with zero findings: the
-gate discovers 34 AST operation switches, each exhaustive with no default, and
+The v1.4.0-connection release passes this strict policy with zero findings:
+the gate discovers 42 AST operation sites, each exhaustive with no default, and
 exactly one callable dispatch site, `codegenClosureCall`. The 32 switches with
 omissions or defaults and the seven direct callable consumers outside the
 canonical dispatcher that the gate's first run reported are all routed.
@@ -84,7 +84,8 @@ difference, including a change that keeps the object size, and on a
 layout-level preprocessor conditional it cannot evaluate
 (`codegen_class_layout_unparseable`). Two translation units that disagree on
 the layout of one object would read each other's LLVM state at the wrong
-offsets; the gate turns that into a failed check (since v1.3.5;
+offsets; the gate turns that into a refused check (added in v1.3.5 and
+standing in v1.4.0-connection;
 [ADR 0015](../design/adr/0015-static-callee-binding-identity.md)). Its JSON
 report carries the result under `class_layout`. Run the gate
 to obtain exact paths and line numbers for every discovered site. An
@@ -95,10 +96,10 @@ its remaining cases explicitly.
 the umbrella public header and generates a volatile function-pointer relocation
 for each. The CMake `compiler_public_api_linkage` executable must compile with
 the real header, link the actual compiler archive and dependencies, and execute.
-This currently covers 104 prototypes, including C++ overload/linkage names;
+This currently covers 108 prototypes, including C++ overload/linkage names;
 private backend classes and optional standalone headers are outside this gate.
-A real-linker self-test demonstrates that adding a declared-but-undefined API
-fails, while providing its definition links and executes. No `nm` spelling
+A real-linker self-test demonstrates that a declared-but-undefined API is
+refused, while providing its definition links and executes. No `nm` spelling
 heuristic or phantom-API allowlist substitutes for linking.
 
 The runtime corpus also exports `gate_frame_observations.jsonl` in ICC's stated

@@ -1,7 +1,7 @@
 # Vectors and Tensors in Eshkol
 
-**Status**: v1.2.1-scale - Production-ready
-**Last Updated**: March 2026
+**Status**: Production-ready — current as of v1.4.0-connection
+**Last Updated**: November 2026
 
 > This document describes the **actual implemented** vector and tensor systems based on source code verification.
 
@@ -132,6 +132,12 @@ For numeric computation over the array, use **tensors** instead.
 ---
 
 ## Tensors (Homogeneous Numeric)
+
+> **v1.4.0-connection:** in addition to the double-element tensors described
+> below, tensors of dtype `exact` carry exact rational elements through
+> arithmetic and AD (ADR-0058), extending the numeric tower's exactness
+> guarantees into tensor computation. See
+> [EXACT_ARITHMETIC.md](EXACT_ARITHMETIC.md).
 
 **Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen `tensor_*_codegen.cpp` siblings after the v1.2 split)
 
@@ -310,7 +316,7 @@ Tensor matmul uses a three-tier dispatch hierarchy: **SIMD -> cBLAS -> GPU**. Th
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `blas_peak_gflops` | 1100 | Measured Apple Accelerate AMX throughput on M-series chips |
-| `blas_overhead_ns` | 5000 | Fixed cBLAS dispatch overhead (5 microseconds) |
+| `blas_overhead_ns` | 5000 | Constant cBLAS dispatch overhead (5 microseconds) |
 | `blas_efficiency_scale` | 10000 | Elements needed for cBLAS to reach full efficiency |
 | `gpu_peak_gflops` | 200 | Measured sf64 (softfloat double) throughput on Metal compute shaders |
 | `gpu_overhead_ns` | 200000 | Metal command buffer creation + data transfer overhead (200 microseconds) |

@@ -1,5 +1,9 @@
 # Eshkol Feature Matrix
 
+**Current release:** `v1.4.0-connection` (2026-11-25) — RELEASE CANDIDATE. Final
+publication is bound to fresh exact-commit qualification; see
+[RELEASE_NOTES.md](../RELEASE_NOTES.md) and [ROADMAP.md](../ROADMAP.md).
+
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
@@ -94,7 +98,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | **Exact Arithmetic (v1.1)** |
 | Bignum (arbitrary-precision int) | Yes | Automatic overflow promotion | int64 → bignum |
 | Rational numbers | Yes | Exact fractions (num/den) | HEAP_PTR + header |
-| 128-bit integer (`i128`) | Yes | v1.3.4: fixed-width wrapping signed int off the numeric tower; native + VM | HEAP_SUBTYPE_I128 (25) |
+| 128-bit integer (`i128`) | Yes | v1.3.4: wrapping 128-bit signed int off the numeric tower; native + VM | HEAP_SUBTYPE_I128 (25) |
 | Complex numbers | Yes | `make-rectangular`, `make-polar` | Type tag 7 |
 | `exact?`, `inexact?` | Yes | Exactness predicates | Runtime tags |
 | `exact->inexact`, `inexact->exact` | Yes | Exactness conversion | Type conversion |
@@ -272,7 +276,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
 | HoTT identity types, univalence, HITs | Yes | Cubical kernel (ADR-0043): path types, transp/hcomp, Glue, circle, suspension, truncations | `(hott ...)`, `(hott-eval ...)`; JIT, AOT, VM |
-| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,548 lines |
+| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 46,537 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -362,6 +366,111 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | Pseudo-random | Yes | `random` | drand48 |
 | Quantum random | Yes | `quantum-random` | Classical software PRNG fallback (NOT the ANU QRNG API, NOT real quantum hardware, NOT Bell-verified). Real quantum entropy (Moonlab, Bell-verified) is opt-in via `-DESHKOL_QUANTUM_ENABLED=ON`; see `docs/design/MOONLAB_INTEGRATION.md`. Check the active source at runtime via `eshkol_qrng_source_label()`. |
 | Integer ranges | Yes | `quantum-random-range` | Uniform distribution (same classical-fallback-by-default caveat as above) |
+
+---
+
+## Connection & Systems (v1.4.0-connection)
+
+The connection track makes a socket, a stream and a durable write first-class
+language values with the same accounting discipline the rest of the language
+applies to memory: every handle is tracked, every boundary is declared, and a
+resource that cannot be accounted for is refused rather than silently leaked.
+
+| Feature | Status | API | Notes |
+|---------|--------|-----|-------|
+| **Sockets** |
+| TCP client/listener | Yes | `tcp-connect`, `tcp-listen`, `tcp-accept`, `tcp-read`, `tcp-write`, `tcp-shutdown`, `tcp-close` | `core.net`; buffer-filling variants `tcp-read!` / `tcp-write!` / `tcp-write-all!`, cancellation via `net-cancel!` |
+| UDP datagrams | Yes | `udp-bind`, `udp-sendto`, `udp-recvfrom`, `udp-send-to!`, `udp-receive-from!`, `udp-close` | `core.net` |
+| Unix domain sockets | Yes | `unix-socket-connect` | Local IPC on the same handle model |
+| Socket introspection | Yes | `net-local-address`, `net-peer-address`, `net-local-port`, `net-peer-port`, `net-nonblocking!` | Typed `network-error?` condition with code, operation and reason accessors |
+| Scoped socket leases | Yes | `call-with-tcp-listener`, `call-with-tcp-connection`, `call-with-tcp-accept`, `call-with-udp-socket` | Managed-resource form: the handle is closed on normal exit and on a raise |
+| **TLS** |
+| TLS client/server contexts | Yes | `tls-client-context`, `tls-client-context/options`, `tls-server-context`, `tls-context-close` | `core.tls`, over system libraries; `tls-available?` reports whether the build carries TLS |
+| TLS sessions | Yes | `tls-connect`, `tls-listen`, `tls-accept`, `tls-read`, `tls-write`, `tls-write-all!`, `tls-session-close` | Same error-condition shape as `core.net` (`tls-error?`), same cancellation (`tls-cancel!`) |
+| Scoped TLS leases | Yes | `call-with-tls-client`, `call-with-tls-server`, `call-with-tls-connection`, `call-with-tls-accept` | Closes the session and its context on either exit path |
+| **HTTP** |
+| HTTP/1.1 client | Yes | `http-request`, `http-set-proxy`, `http-set-tls-client-cert` | Native client with proxy and client-certificate configuration |
+| HTTP/1.1 server | Yes | `http-server-create`, `http-server-accept`, `http-server-respond`, `http-server-port`, `http-server-close` | Non-blocking server on the portable event loop; O(1) readiness scaling |
+| Request parsing & routing | Yes | `core.http_server` | Pure-Scheme request accessors, response tuples, routing with `/health`, `/ready`, `/metrics` fallbacks; bounded request bodies (`http-max-request-body-size`) |
+| **Streaming** |
+| WebSocket | Yes | `websocket-connect`, `websocket-send`, `websocket-send-binary`, `websocket-receive`, `websocket-close` | RFC-validated framing, text and binary payloads |
+| Server-Sent Events (SSE) | Yes | `call-with-http-sse-stream`, `sse-admit!`, `sse-send!`, `sse-progress!`, `sse-finish!`, `sse-cancel!` | Bounded native streaming with an admission ticket and a deadline (`sse-deadline-ms`); cleanup is explicit, never implicit |
+| **Durability** |
+| Write-ahead log & atomic persistence | Yes | `core.memory_store`, atomic checkpoint layer (`begin` / `write` / `commit` / `abort`) | A commit either lands whole or leaves the previous state intact; an aborted checkpoint leaves no partial file behind |
+| Merkle-verified records | Yes | `core.merkle` | Content-addressed record verification over the same store |
+| **Parallel & process** |
+| Collective operations | Yes | Native collective layer (`broadcast`, `allreduce`, `allgather`, `reduce-scatter`, `barrier`) over sockets | Deterministic, rank-ordered reduction: the same ranks and the same inputs give the same bits on every run |
+| Subprocess sandboxing | Yes | Subprocess layer with platform confinement | Darwin Seatbelt and Linux seccomp + Landlock confinement; a platform without a confinement mechanism refuses rather than running unconfined |
+| Shared-library tail transfer | Yes | `--shared-lib` export ordering with tail transfer | A tail call crossing a shared-library boundary transfers rather than growing the stack |
+| **Resource accounting** |
+| Linear handle tracking | Yes | `--strict-resources` (ADR-0056) | Sockets, TLS sessions, files and regions are use-exactly-once under the flag: an unclosed or twice-closed handle is a compile-time error |
+| Borrow pattern | Yes | Scoped `call-with-…` forms | Temporary access to a handle without transferring ownership |
+| **Browser dispatch** |
+| WebGPU browser VM dispatch | Yes | ADR-0029 | The bytecode VM dispatches compute work to WebGPU in the browser lane |
+| **Exact tensors** |
+| Exact-rational tensors | Yes | Tensor dtype `exact` (ADR-0058) | Tensor elements are exact rationals end to end, including across the NumPy binding, so no boundary silently demotes to binary64 |
+
+---
+
+## Mathematics Programme & Formal Proofs (v1.4.0-connection)
+
+Eshkol states mathematics the way a mathematician states it — a site, a sheaf,
+a topos, a ring — and decides each claim exactly, by enumeration and exact
+linear algebra, never by sampling. A reader's guide is in
+[docs/guide/MATHEMATICS.md](guide/MATHEMATICS.md).
+
+| Area | Status | Modules | Notes |
+|------|--------|---------|-------|
+| **Grothendieck three-era libraries** |
+| Sites, sieves, topologies, Cech cohomology | Yes | `core.sheaf` | Grothendieck topologies on finite categories; sheaf cohomology by Cech descent |
+| Presheaf topos & internal language | Yes | `core.topos` | Decided by Kripke–Joyal forcing, cross-checked instance by instance against the subobject classifier |
+| Rings as values (functor of points) | Yes | `core.ring`, `core.multimodular` | One program over integers, rationals, binary64, modular arithmetic, Taylor jets, polynomial rings and group rings |
+| Finite category theory | Yes | `core.category`, `core.effective` | Functor categories, adjunctions via comma categories, Kan extensions |
+| Simplicial sets, chain complexes, homology | Yes | `core.simplicial`, `core.homological` | Homology with torsion |
+| Functional analysis; SGA / motives / Grothendieck–Riemann–Roch | Yes | `core.theory`, `core.homological` | Era-one and era-two libraries of the programme |
+| Esquisse, tame topology, perfectoid; stacks and derivators; six operations | Yes | `core.topos`, `core.sheaf`, `core.theory` | Era-three libraries, six-functor formalism |
+| Beyond frontiers | Yes | `core.theory` | Hodge theory and the Weil fourfold, Lie and algebraic groups, representation theory, K-theory |
+| **Probability, measure and stochastics** |
+| Probability sheaves | Yes | `core.sheaf` | `arXiv:2611.30692` |
+| Measure theory, Markov kernels, disintegration | Yes | `core.theory` | Exact kernels and disintegration on finite carriers |
+| Quantitative finance, SDEs, Malliavin calculus | Yes | `core.theory`, `core.manifold` | Exact-coefficient stochastic calculus |
+| **Algebra, geometry, physics** |
+| Operator and C\* algebras | Yes | `core.theory` | |
+| Modal logic | Yes | `core.logic`, `core.topos` | Decided, not sampled |
+| Geometry, discrete exterior calculus, gauge theory, schemes | Yes | `core.manifold`, `core.curvature`, `core.ring` | Signed-curvature unified chart (ADR-0018) |
+| Integrable systems | Yes | `core.theory` | Lax pairs, Hitchin systems, Painlevé, KP hierarchy, quantum integrability |
+| Physics, AQFT, electromagnetism, lattice QFT | Yes | `core.theory`, `core.quantum` | |
+| HEP, Lie theory, scattering amplitudes | Yes | `core.theory`, `core.quantum` | |
+| Set theory, forcing, ordinals | Yes | `core.theory`, `core.topos` | |
+| Higher algebra, DG categories, operads | Yes | `core.homological`, `core.monoidal` | |
+| Cellular and condensed sheaves | Yes | `core.sheaf` | |
+| **Exact linear algebra and solving** |
+| Exact-rational affine solution families | Yes | `core.exact_linalg`, `core.integer_linalg`, `core.exact_psd` | Exact solution families, not a floating-point approximation of one |
+| Gröbner bases, polynomial and extension fields | Yes | `core.groebner`, `core.polynomial_exact`, `core.extension_field`, `core.cyclotomic` | |
+| Work-stealing arena two-cell, costed contracts, stochastic BLC confluence | Yes | `core.blc`, `core.sblc`, arena runtime | Costed evaluation contracts with a confluence argument, verified in Lean |
+| **Formal verification** |
+| Machine-checked theorems | Yes | `verification/` | 395 top-level theorems across 12 standalone proof files — 287 for the mathematics programme and 108 in `EshkolSBLCRelaxation.lean` — with 0 `sorry` and 0 custom axioms, checked in Lean 4.12.0 in CI |
+| Independent proof replay | Yes | Verificatum replay (ADR-0061, ADR-0063) | An independent replay re-checks the proofs rather than trusting a stored verdict |
+| Verified example programs | Yes | `examples/` | 86 verified example programs |
+| nLab conformance read-out | Yes | [NLAB_CONFORMANCE.md](reports/NLAB_CONFORMANCE.md) | 141 claims drawn from 51 nLab pages, turned into finite statements and decided by these libraries |
+
+---
+
+## SBLC & Differentiable Proposals (ADR-0017, v1.4.0-connection)
+
+Stochastic Binary Lambda Calculus gives the language an exact prior over
+programs: a term's weight is exactly `1/2^length` as an Eshkol rational, and
+every claim about the distribution is decided rather than estimated.
+
+| Feature | Status | API / Module | Notes |
+|---------|--------|--------------|-------|
+| Exact rational distribution semantics | Yes | `core.sblc` | Term weights are exact rationals; per-length counts equal the independent recurrence and cumulative mass never exceeds one |
+| Bounded closed enumeration | Yes | `core.sblc` | Structural `(length, bits)` enumeration to L <= 16 bits, depth-aware closedness, no duplicates and no trailing-bit aliases |
+| Resumable checkpoints | Yes | `sblc-search-start`, `sblc-search-resume` | Content-hash checkpoints retain exact unfinished frontiers across a process restart; a corrupted or context-mismatched checkpoint is refused |
+| DBSP Z-set incremental updates | Yes | `core.dbsp` integration | Signed Z-sets publish accepted / rejected / timeout mass deltas; an invalid update raises without publishing a partial successor |
+| VM PRNG parity | Yes | `make-prng`, `prng?`, `prng-random`, `prng-random-integer` | JIT, AOT and VM traces are required to agree |
+| Differentiable proposals | Yes (experimental) | `core.sblc.relax` | Exact finite-logit oracle whose gradients match native AD; Rao-Blackwellized REINFORCE with variance-reduction confidence diagnostics; depth-masked Gumbel-Softmax / Concrete grammar proposals. Every relaxed candidate is projected to a strict closed term and re-verified, and a projection error is refused loudly rather than absorbed. Learned proposal order can never alter completeness, prior weights, fair-choice probabilities or verifier outcomes |
+| Program-capsule hand-off | Yes | ADR-0005 boundary | Exact program bits, semantic version, RNG policy and the verification certificate cross the capsule boundary together |
 
 ---
 
@@ -525,7 +634,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | **Model Operations** |
 | Save/load weights | Yes | v1.2 | Via file I/O; `model_io_test` PASS (`ctest -R model_io_test`) — corrected 2026-08-25 from `WIP`, conformity audit item d4 |
 | Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 969 lines) |
-| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (239 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
+| ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (216 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
 | Lazy loading | Planned | - | Planned |
@@ -729,13 +838,12 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 ## Roadmap
 
 > This section is a historical snapshot and may lag; see the canonical,
-> continuously-updated [ROADMAP.md](../ROADMAP.md) for current status. As of
-> v1.3.4-evolve (shipped 2026-08-19), the entire v1.1-accelerate through
-> v1.3.4-evolve line has shipped. The dates below were re-anchored to
-> measured velocity in the v1.3.5 documentation wave — see ROADMAP.md's
-> "Development workstreams" section for the six workstreams (W1-W6,
-> including distributed computing as a first-class W6 track) every release
-> from v1.3.5 now draws from.
+> continuously-updated [ROADMAP.md](../ROADMAP.md) for current status. The
+> entire v1.1-accelerate through v1.3.6-evolve line has shipped, and
+> `v1.4.0-connection` (2026-11-25) is the current RELEASE CANDIDATE. See
+> ROADMAP.md's "Development workstreams" section for the six workstreams
+> (W1-W6, including distributed computing as a first-class W6 track) every
+> release from v1.3.5 forward draws from.
 
 ### v1.1-accelerate (Q1 2026) — COMPLETED
 
@@ -793,7 +901,7 @@ procedure (ADR-0044). PGO remains a build-time scaffold (workload selection is
 the open gap); whole-program optimization and polyhedral loop optimization
 are not yet scheduled to a specific release.
 
-### v1.3.5 — the consolidation release (target: late Sep 2026)
+### v1.3.5-evolve — the consolidation release — SHIPPED
 
 - **VM region evacuator**: `with-region` reclaims on the bytecode VM
   (flagship item)
@@ -802,14 +910,42 @@ are not yet scheduled to a specific release.
 - **Performance wave 1**: benchmarks on Eshkol's own axes, published and
   reproducible
 
-### v1.4.0-connection (target: Nov 2026)
+### v1.3.6-evolve — runtime updates — SHIPPED (2026-10-19)
 
-- **Networking**: TCP/UDP/TLS sockets, Unix domain sockets, HTTP client/
-  server, WebSocket, with linear resource management
-- **Distributed computing (W6 spike)**: PJRT client spike, XLA multi-device
-  single-host, native collectives over sockets
-- **Interop wave 2**: exactness across the Python/NumPy boundary, silent-
-  demotion CI gate, definition-of-done rule goes live
+- Runtime and documentation wave on the v1.3.5 base; see
+  [ROADMAP.md](../ROADMAP.md) for the shipped item list
+
+### v1.4.0-connection — the systems profile — RELEASE CANDIDATE (2026-11-25)
+
+- **Connection & systems track**: TCP/UDP/TLS sockets, Unix domain sockets,
+  HTTP/1.1 client and server on the portable event loop, WebSocket,
+  Server-Sent Events, write-ahead log and atomic persistence, deterministic
+  socket collectives, subprocess sandboxing (Darwin Seatbelt, Linux seccomp
+  + Landlock), shared-library tail transfer, WebGPU browser VM dispatch
+  (ADR-0029) and exact-rational tensors (ADR-0058) — see
+  [Connection & Systems](#connection--systems-v140-connection)
+- **Linear resource management**: `--strict-resources` (ADR-0056) tracks
+  sockets, TLS sessions, files and regions use-exactly-once, with a borrow
+  pattern for temporary access
+- **Full mathematics programme**: the Grothendieck three-era libraries,
+  measure theory and probability sheaves, operator algebras, integrable
+  systems, geometry and gauge theory, higher algebra — see
+  [Mathematics Programme & Formal Proofs](#mathematics-programme--formal-proofs-v140-connection)
+- **SBLC & differentiable proposals (ADR-0017)**: exact rational
+  distribution semantics, bounded closed enumeration, resumable
+  checkpoints, DBSP Z-set updates, VM PRNG parity and `core.sblc.relax`
+- **Formal verification**: 395 machine-checked Lean 4.12.0 theorems across
+  12 standalone proof files, Verificatum independent proof replay
+  (ADR-0061, ADR-0063), 86 verified example programs
+- **Compiler & AD**: arbitrary-depth nested differentiation (ADR-0057),
+  native cross-entropy reverse gradients, Windows x64 JIT unwind and
+  continuation restoration, Metal FP64 matmul BLAS crossover dispatch
+- **Interop wave 2**: exactness across the Python/NumPy boundary, the
+  silent-demotion CI gate, and the definition-of-done rule in force
+
+> Not in v1.4.0-connection: Consciousness Engine v2 (CE-12) and the Eshkol OS
+> track (K1-K6) remain post-v1.4.0 work, and backend parity remains a
+> documented subset rather than complete parity.
 
 ### v1.5.0-intelligence (target: Q1 2027)
 
@@ -858,7 +994,7 @@ are not yet scheduled to a specific release.
 
 ## Production Readiness
 
-### Production-Ready (v1.1)
+### Production-Ready (v1.4.0-connection)
 
 - Core language (122 special forms, 1,069 builtins — 1,651-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
@@ -878,6 +1014,17 @@ are not yet scheduled to a specific release.
 - call/cc and dynamic-wind
 - Bytevectors
 - LSP server
+- Networking: TCP/UDP/TLS sockets, Unix domain sockets, HTTP/1.1 client and
+  server, WebSocket, Server-Sent Events (v1.4.0-connection)
+- Durable persistence: write-ahead log and atomic checkpoint commit
+  (v1.4.0-connection)
+- Linear resource accounting under `--strict-resources` (ADR-0056)
+- Deterministic socket collectives and sandboxed subprocesses
+  (v1.4.0-connection)
+- Mathematics programme libraries: sheaves, topoi, rings as values, finite
+  category theory, simplicial and homological algebra, exact linear algebra
+  (v1.4.0-connection)
+- Exact-rational tensors, including across the NumPy boundary (ADR-0058)
 
 ### Beta Quality
 
@@ -887,7 +1034,12 @@ are not yet scheduled to a specific release.
 
 ### Not Yet Production
 
-- Distributed computing (W6 spike targeted at v1.4.0; see ROADMAP.md)
+- Distributed computing beyond the v1.4.0-connection socket collectives:
+  multi-host tiers remain W6 work staged at v1.5.0 and later; see ROADMAP.md
+- Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) —
+  post-v1.4.0 work, not shipped in v1.4.0-connection
+- Complete backend parity: VM coverage is a documented subset (997 manifest
+  rows, 322 of them `gap`), never complete parity
 - StableHLO export path specifically (requires MLIR; see "Beta Quality"
   above — separate from raw ONNX tensor export, which is production, see
   below)
@@ -895,8 +1047,8 @@ are not yet scheduled to a specific release.
 
 (**Re-verified 2026-08-25 during rebase onto #464 (docs/conformity-audit-resolution
 vs docs/v135-refresh):** the two PRs disagreed here — #464's merged text put
-"ONNX/StableHLO export" in this list as "ships post-training-win, no fixed
-date"; this branch's own conformity-audit fix (item d4) had instead removed
+"ONNX/StableHLO export" in this list as "ships post-training-win, no scheduled
+date"; this branch's own conformity-audit resolution (item d4) had instead removed
 ONNX specifically, keeping only StableHLO. Re-checked by direct execution
 rather than trusting either prior claim: `eshkol-run -r
 tests/v1_2_edge_cases/onnx_export_test.esk` → 7/7 PASS, and the deeper
@@ -917,8 +1069,8 @@ not-yet-production, and is listed above accordingly.)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. The old standalone hosted compiler snapshot was retired; current VM source uses its own production opcode table; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
-| 741 VM-reachable builtins | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — 741 on the v1.3.5-evolve cut, dispatched through 743 distinct native-call IDs spanning 0–2230 in `lib/backend/vm_native.c`; corrected 2026-08-25 from "694" (conformity audit item d7) and remeasured since |
+| 73-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 73` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes. Remeasured on the v1.4.0-connection cut: the long-closure, secondary-raise, popped-tail-call and coverage opcodes occupy 67-72, with `OP_LANGUAGE_COVERAGE_READ = 72` the highest. `lib/backend/eshkol_benchmark.c` declares its own narrower `OpCode` for benchmarking only, tracked as a separate cleanup item |
+| 800 VM-reachable builtins | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — 800 on the v1.4.0-connection cut, dispatched through the native-call ID table in `lib/backend/vm_native.c`; remeasured on every cut from the generated manifest rather than restated by hand |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | Yes | eshkol_vm.c linked into compiler build |
@@ -930,7 +1082,7 @@ not-yet-production, and is listed above accordingly.)
 | Shortest-round-trip number printing | Yes | v1.3.4: `display`/`write`/`number->string` share one portable-C routine with native, byte-identical output (R7RS 6.2.6) |
 | Reverse-mode `gradient` (`op:GRADIENT`) | Yes | v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across `vm-src`/`vm-eskb`; nested inside or around other differentiation passes through the level carrier of ADR-0027 |
 | Forward-mode `derivative` (`op:DERIVATIVE`) | Yes | Direct `(derivative f x)` and curried `((derivative f) x)` agree exactly with native. Nested and higher-order differentiation (`derivative`, `derivative-n`, `taylor`, `gradient`, `hessian` in any combination, at any depth and order, at real or complex points) runs on the recursive level carrier of ADR-0027 and matches native |
-| R7RS module forms (`op:IMPORT` / `op:PROVIDE` / `op:REQUIRE`) | Yes | v1.3.4-evolve (#402): the VM lane previously knew none of `define-library` / `import` / `export`. All three move to `vm-supported` with no new waivers; three latent VM defects were fixed with them (`provide` emitting nothing via a slot shift, a module-loader POP desync, and a fail-open forward reference now refused) |
+| R7RS module forms (`op:IMPORT` / `op:PROVIDE` / `op:REQUIRE`) | Yes | v1.3.4-evolve (#402): the VM lane previously knew none of `define-library` / `import` / `export`. All three move to `vm-supported` with no new waivers, and three latent VM behaviours were corrected with them: `provide` now emits its slot, the module-loader stack stays in step, and a fail-open forward reference is refused |
 | Portable event loop | Yes | v1.3.4-evolve (ESH-0011): `make-event-loop`, `event-loop-poll`, `event-loop-add-fd!`, `event-loop-remove-fd!`, `event-loop-close`, `event-loop-backend` all `vm-supported` |
 | `with-region` | Yes, including reclamation | `op:WITH_REGION` stays `native-only-justified` for ONE undocumented spelling (`(with-region (quote name))` with no other body), not for reclamation: the Stage-1 VM region evacuator (`lib/backend/vm_region_evac.c`, SW-14) brackets the body with native 2213/2214 and reclaims measurably — flat peak RSS at 26 MB across 1 000/4 000/16 000 iterations against 796 MB with the evacuator disabled. Every documented spelling is value-identical on both substrates |
 | Region handles (`region-open` / `region-close`) | Surface yes, reclamation Stage-2 | `region-open?` is `vm-supported`; `region-open` and `region-close` are `native-only-justified`. The name resolves on both substrates and the handle protocol, its validation and every error message are byte-identical (one shared C implementation), so output parity holds — what is native-only is the reclamation. A handle can be closed out of order, from another dynamic extent, or never, whereas `with-region`'s lexical extent tells the teardown where the region ends; that is why the lexical form landed first. The VM announces the boundary at the point of use |
@@ -944,7 +1096,7 @@ not-yet-production, and is listed above accordingly.)
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (`scripts/run_vm_parity.sh`): <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->. `tests/vm_parity/PARITY.tsv` carries 295 `gap` rows out of 962; the separate `tests/vm_parity/SURFACE_BASELINE.tsv` ratchet has no remaining entries (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (`scripts/run_vm_parity.sh`): <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->. `tests/vm_parity/PARITY.tsv` carries 997 manifest rows on the v1.4.0-connection cut — 630 `vm-supported`, 45 `native-only-justified` (conscious, permanent waivers) and 322 `gap`; the separate `tests/vm_parity/SURFACE_BASELINE.tsv` ratchet has no remaining entries (see [VM_PARITY.md](VM_PARITY.md)). Backend parity is a documented subset, never complete parity |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)

@@ -164,9 +164,12 @@ When every check passes, the job writes a receipt,
 `eshkol.release-readiness.v1`: the commit SHA, the workflow run id and run
 attempt, the `target` supplied through `RELEASE_TARGET`, `status: ready` and
 `score: 100`. The workflow derives that target from the pushed tag or the
-dispatch candidate tag and validates the `v1.3.<5+>-evolve` form; the local
-recipe defaults to `v1.3.6-evolve`. A receipt is only ever written for the
-commit and the run attempt that produced it.
+dispatch candidate tag and binds it to the checked-in project identity through
+`scripts/release_target.py`, which reads the `project("Eshkol" VERSION …)` and
+`ESHKOL_RELEASE_NAME` lines of `CMakeLists.txt`: for this release the tag is
+`v1.4.0-connection` and the readiness target is `v1.4-connection`, and any
+other tag or target is refused. A receipt is only ever written for the commit
+and the run attempt that produced it.
 
 `tests/toolchain/test_release_readiness_guard.py` runs first in the job as the
 negative controls for this logic: a mismatched SHA, a dirty checkout, a score
@@ -226,7 +229,7 @@ selects the standalone measurement-preparation phase.
 | `measurements` | Starts a fresh cohort, runs the same full CTest/VM measurement block, then rechecks the build cohort. It does not run language coverage, mark a normal phase complete, call ICC readiness, or create a ready receipt. |
 | `smoke` | The Taylor monomorphization equivalence gate, the ESKM model-loader fuzz smoke, and the runtime smoke battery `scripts/run_icc_smoke.sh`, which includes the release invariant probes. |
 | `final-evidence` | Refreshes the ICC index, runs `scripts/run_v1_3_release_producers.sh`, verifies the build cohort is unchanged, checks the evidence set with `scripts/verify_v1_3_release_evidence.py`, and only then asks ICC for the architecture grade (`icc architecture-verify` against `.icc/architecture-model.yaml`). |
-| `readiness` | Re-verifies the evidence set and asks ICC for trace-aware readiness of `RELEASE_TARGET` (default `v1.3.6-evolve` locally; the workflow uses its pushed tag or dispatch candidate tag). |
+| `readiness` | Re-verifies the evidence set and asks ICC for trace-aware readiness of `RELEASE_TARGET` (derived from `CMakeLists.txt` by `scripts/release_target.py`, `v1.4-connection` for this release; the workflow uses its pushed tag or dispatch candidate tag and validates it against the same identity). |
 
 The `measurements` phase is standalone and nonqualifying. Its captured producer
 bundle cannot substitute for the ordered baseline/smoke/final-evidence phases.
@@ -320,12 +323,16 @@ compiler-capability runs) are described in
 ### The readiness target
 
 `RELEASE_TARGET` is the validated release tag identity, not a fixed target
-name in the recipe. The local default is `v1.3.6-evolve`; the release
-workflow supplies the pushed tag or dispatch candidate tag and accepts only
-`v1.3.<5+>-evolve`. The matching release-scoped oracle is declared in
-`.icc/completion-oracles.yaml`. For v1.3.6, that target preserves the standing
-ledger, oracle-integrity, freshness and disclosure controls, and adds the
-v1.3.6 release-identity criteria alongside its other declared requirements.
+name in the recipe. `scripts/release_target.py` derives it from the project
+version and release name in `CMakeLists.txt`, so for this release it is
+`v1.4-connection` and the only accepted tag is `v1.4.0-connection`; the release
+workflow supplies the pushed tag or dispatch candidate tag and the script
+refuses anything that does not match the checked-in identity. The matching
+release-scoped oracle is declared in `.icc/completion-oracles.yaml`. For
+v1.4.0-connection, that target preserves the standing ledger,
+oracle-integrity, freshness and disclosure controls, and adds the
+v1.4.0-connection release-identity criteria alongside its other declared
+requirements.
 Review the target's current `requires` entries there for its exact scope; the
 receipt records the same `RELEASE_TARGET` value ICC graded.
 
@@ -344,7 +351,7 @@ facts that many documents restate and no generated manifest carries:
 | `tag` | The release tag. |
 | `previous_tag` | The preceding release tag; the base of the changelog range. |
 | `release_date` | The release date, ISO format. |
-| `status` | The status label, for example `SHIPPED`. |
+| `status` | The status label: `RELEASE CANDIDATE`, `PREPARED FOR PUBLICATION` or `SHIPPED`. The record currently carries `RELEASE CANDIDATE` for `v1.4.0-connection`, release date 2026-11-25. |
 | `ctest_total` | The `N` of CTest's own "100% tests passed ... out of N" line from the full run at the release commit. `null` until recorded. |
 | `vm_parity_total` | The total of the `scripts/run_vm_parity.sh` summary line at the release commit. |
 

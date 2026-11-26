@@ -1,6 +1,6 @@
 # Runtime Configuration
 
-**Status:** Production (v1.3.5-evolve)
+**Status:** Production — current as of v1.4.0-connection
 **Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---
@@ -105,7 +105,7 @@ vm-region-watchdog: 10 passed, 0 failed  -- PASS
 ```
 
 The exact peak-RSS figures move a few megabytes run to run (33-37 MB flat
-rather than a single fixed number); the release notes' own numbers from the
+rather than a single constant number); the release notes' own numbers from the
 same fixture on this cut (33/34/34 MB, 304 MB disabled, 125 MB control) are
 consistent with the run above within that noise band. The 25-27 MB / 793 MB /
 704 MB figures published for v1.3.5's `#461` merge commit were measured before
@@ -165,7 +165,7 @@ Five things follow, and they are the practical limits:
    live is in it *and* nothing anywhere points into it. Safe, but blunt: one
    escaping cons in a block full of garbage keeps the whole block.
 2. **Out-of-line payloads are not copied.** Compaction relocates only the
-   fixed-size heap-object struct, because the object table is the only thing that
+   constant-size heap-object struct, because the object table is the only thing that
    holds its address. A region whose escapees carry payloads therefore retains the
    blocks those payloads sit in. Payload-copying promotion is Stage-2.
 3. **Four heap subtypes pin the whole region** if an instance is region-owned:
@@ -245,7 +245,7 @@ Five things follow, and they are the practical limits:
    live is in it *and* nothing anywhere points into it. Safe, but blunt: one
    escaping cons in a block full of garbage keeps the whole block.
 2. **Out-of-line payloads are not copied.** Compaction relocates only the
-   fixed-size heap-object struct, because the object table is the only thing that
+   constant-size heap-object struct, because the object table is the only thing that
    holds its address. A region whose escapees carry payloads therefore retains the
    blocks those payloads sit in. Payload-copying promotion is Stage-2.
 3. **Four heap subtypes pin the whole region** if an instance is region-owned:

@@ -1,8 +1,8 @@
 # Eshkol Design Document
 
-## v1.3.6-evolve
+## v1.4.0-connection
 
-Eshkol is a compiled programming language for scientific computing, machine learning, and cognitive architectures. It compiles Scheme (R7RS) source through LLVM to native binaries, combining Lisp's homoiconicity with deterministic arena-based memory, compiler-integrated automatic differentiation, and a consciousness engine built on unification, active inference, and global workspace theory.
+Eshkol is a compiled programming language for scientific computing, machine learning, and cognitive architectures. It compiles Scheme (R7RS) source through LLVM to native binaries, combining Lisp's homoiconicity with deterministic arena-based memory, compiler-integrated automatic differentiation, a consciousness engine built on unification, active inference and global workspace theory, a networked systems profile with linearly tracked connections, and a mathematics programme whose libraries are backed by machine-checked proofs.
 
 ---
 
@@ -83,7 +83,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 
 In v1.2 the tensor code generator was split into thirteen per-domain modules, 23,413 lines in total, re-exported through the original dispatcher: `tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp` and `tensorcore_codegen.cpp`, with `tensor_codegen.cpp` as that dispatcher.
 
-Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 220,211 lines indexed.
+Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals 248,072 lines indexed.
 
 ---
 
@@ -169,7 +169,7 @@ Three theoretical frameworks unified as compiler primitives:
 
 **Global Workspace Theory** (Baars, 1988): `make-workspace`, `ws-register!`, `ws-step!`, `workspace?`
 
-Runtime implementation in logic.cpp (1,505 lines), inference.cpp (1,258 lines), workspace.cpp (354 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
+Runtime implementation in logic.cpp (1,505 lines), inference.cpp (1,321 lines), workspace.cpp (393 lines). LLVM codegen dispatches via tagged value calling conventions. Heap subtypes: SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17. Parser supports `?x` syntax for logic variables (R7RS compatible -- `?` is a valid identifier start character).
 
 ### GPU Acceleration
 
@@ -252,9 +252,9 @@ Interactive development via LLVM OrcJIT (4,679 lines). Preloads 237 stdlib funct
 
 Eshkol has two production execution backends serving different purposes:
 
-**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 39 specialized codegen modules totaling 120,420 lines (`find lib -iname '*codegen*.cpp'`, v1.3.6-evolve). This is the default path for `eshkol-run`.
+**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 39 specialized codegen modules totaling 120,420 lines (`find lib -iname '*codegen*.cpp'`). This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 72-opcode register+stack interpreter (`eshkol_vm.c`, 2,906 lines) with a canonical VM surface of 790 registered builtin names and aliases (`tests/coverage/language_surface.json`) — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`. The component-size table below includes the full VM module family.
+**Bytecode VM** (complementary): 73-opcode register+stack interpreter (`eshkol_vm.c`, 3,284 lines) with a canonical VM surface of 800 registered builtin names and aliases (`tests/coverage/language_surface.json`) — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`. The component-size table below includes the full VM module family.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 83 of the 84 enum opcodes in weights (82 of the paper's 83, plus `OP_SWAP=83`); `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (127/127 inline, 124/124 traced, `scripts/paper/run_paper_suite.sh` at `60f345def`). Exports QLMW binary format for qLLM loading.
 
@@ -273,6 +273,12 @@ The LLVM and VM backends share the same language semantics but use independent v
 **HoTT for type foundations.** Mathematical rigor via universe hierarchy. Gradual enforcement preserves Scheme's exploratory model while enabling aggressive optimization when types are known. Compile-time dimension checking for tensors.
 
 **Homoiconicity as optimization target.** S-expressions preserved in closures enable runtime introspection, self-modifying systems, metaprogramming at native speed, and program synthesis.
+
+**Resources are linear, not managed.** A socket, TLS session, file or region is a tracked handle rather than something a collector eventually reclaims. Under `--strict-resources` (ADR-0056) the compiler requires each one to be used exactly once, with scoped `call-with-…` forms as the borrow pattern, so a leaked or doubly-closed connection is a compile-time error instead of a production incident. This is the same accounting discipline the arena applies to memory, extended to the outside world.
+
+**Determinism across machines, not just within one.** Socket collectives reduce in rank order, so the same ranks and the same inputs produce the same bits on every run; a distributed result is reproducible rather than merely close. Durable writes go through a write-ahead log and commit atomically: a checkpoint lands whole or leaves the previous state intact.
+
+**Mathematics decided, not sampled.** The mathematics programme libraries answer by enumeration and exact linear algebra over finite structures, and their key theorems are machine-checked in Lean rather than argued in prose. A claim the system cannot decide exactly is refused rather than approximated silently.
 
 **Pointer consolidation via headers.** Reducing 8 pointer types to 2 supertypes (HEAP_PTR, CALLABLE) with subtype headers traded one pointer dereference for extensible type space -- enabling v1.1's 7 new heap subtypes without exhausting the 8-bit type tag.
 
@@ -297,7 +303,7 @@ The LLVM and VM backends share the same language semantics but use independent v
 | Standard library (.esk, full tree including opt-in modules) | ~17,470 | 96 modules |
 | Test code (.esk) | ~116,600 | 1,812 files |
 
-At v1.2: 37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases, 0 failures; bytecode VM 331/332 tests (99.7%). At v1.3.6-evolve the aggregate runner has 46 suites, publication requires CTest 789/789 and VM parity 405/405 (`tests/coverage/release_record.json`), and the weight matrices verify 127/127 inline + 124/124 traced (3-way).
+At v1.2: 37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases, 0 failures; bytecode VM 331/332 tests (99.7%). At v1.4.0-connection the aggregate runner has 46 suites, publication is bound to the full CTest suite and the VM parity differential qualifying at the exact release commit (the totals are recorded in `tests/coverage/release_record.json` once that run completes), and the weight matrices verify 127/127 inline + 124/124 traced (3-way).
 
 ---
 
@@ -305,10 +311,14 @@ At v1.2: 37 automated test suites, 528 self-reported tests + 87 v1.2 edge cases,
 
 **v1.1.13-accelerate** -- COMPLETE. GPU acceleration, parallel primitives, consciousness engine, exact arithmetic, signal processing, continuations, XLA backend, web platform, REPL JIT, package manager, Windows ARM64, browser AD.
 
-**v1.2.0-scale** -- COMPLETE. Production-readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack, image I/O, plotting stdlib, actionable error markers, JSON Schema validator, R7RS-compliant stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, 62-test edge-case suite, ASan/UBSan CI lane, 7 hardening fixes.
+**v1.2.0-scale** -- COMPLETE. Production-readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack, image I/O, plotting stdlib, actionable error markers, JSON Schema validator, R7RS-compliant stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, 62-test edge-case suite, ASan/UBSan CI lane, 7 hardening items.
 
-**v1.3-evolve** -- COMPLETE through v1.3.5-evolve. Native media (ImageIO/CoreGraphics, system libpng/libjpeg/libwebp, GDI+), AD `input2` plumbing for non-matmul tensor ops, true module-private internals, TSan/MSan CI lanes, spec-doc generator (`eshkol-doc`), R7RS `define-library` / `import` with renaming + prefixing, string interpolation, named keyword arguments, profile-guided optimization. v1.3.5-evolve adds multi-shot re-entrant continuations on every engine, VM region reclamation, compile-time-fatal linear `Qubit` enforcement, exact VM automatic differentiation behind a structural carrier gate, and mutual tail recursion in every tail-position spelling. v1.3.6-evolve (prepared for publication) documents the 46 mathematics examples with the scope of each result, certifies mixed exact/inexact interval conversion, gives the browser host the exact numeric tower, and binds publication to complete source-bound measurements. The forward ladder is [ROADMAP.md](../ROADMAP.md).
+**v1.3-evolve** -- COMPLETE through v1.3.5-evolve. Native media (ImageIO/CoreGraphics, system libpng/libjpeg/libwebp, GDI+), AD `input2` plumbing for non-matmul tensor ops, true module-private internals, TSan/MSan CI lanes, spec-doc generator (`eshkol-doc`), R7RS `define-library` / `import` with renaming + prefixing, string interpolation, named keyword arguments, profile-guided optimization. v1.3.5-evolve adds multi-shot re-entrant continuations on every engine, VM region reclamation, compile-time-fatal linear `Qubit` enforcement, exact VM automatic differentiation behind a structural carrier gate, and mutual tail recursion in every tail-position spelling. v1.3.6-evolve (2026-10-19) documents the 46 mathematics examples with the scope of each result, certifies mixed exact/inexact interval conversion, gives the browser host the exact numeric tower, and binds publication to complete source-bound measurements.
+
+**v1.4.0-connection** (2026-11-25) turns the local production surface into a networked one. The connection track adds TCP/UDP and Unix domain sockets, TLS client and server sessions, a non-blocking HTTP/1.1 client and server on the portable event loop, WebSocket with RFC-validated framing, bounded Server-Sent Events streaming, write-ahead logging with atomic checkpoint commit, deterministic rank-ordered socket collectives, confined subprocesses, shared-library tail transfer, WebGPU browser VM dispatch (ADR-0029) and exact-rational tensors (ADR-0058) — every connection a tracked handle, use-exactly-once under `--strict-resources` (ADR-0056). Alongside it the full mathematics programme lands (sheaves, topoi, rings as values, finite category theory, simplicial and homological algebra, measure theory and probability sheaves, operator algebras, integrable systems, geometry and gauge theory, exact linear algebra and Gröbner bases), with the Stochastic Binary Lambda Calculus slice of ADR-0017 and 395 top-level machine-checked Lean 4.12.0 theorems across 12 standalone proof files, 0 `sorry` and 0 custom axioms, replayed independently (ADR-0061, ADR-0063). Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) remain later work, and backend parity remains a documented subset.
+
+The forward ladder is [ROADMAP.md](../ROADMAP.md).
 
 ---
 
-*Eshkol v1.3.6-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,056 built-in functions across a 1,116-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*
+*Eshkol v1.4.0-connection is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, a linearly tracked connection layer, a machine-checked mathematics programme, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,069 built-in functions across a 1,651-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*

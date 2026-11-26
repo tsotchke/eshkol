@@ -1,42 +1,12 @@
 {
   "schema": "eshkol.changelog-no-user-facing-change.v1",
   "_comment": "Merged pull requests of the release range that deliberately have no CHANGELOG entry. scripts/check_changelog_completeness.py walks <previous_tag>..HEAD (both tags come from tests/coverage/release_record.json), derives every merged pull request number from the commit subjects, and fails unless each one is either referenced as #N in the changelog section for the release (or in [Unreleased]) or listed here. An entry names the pull request, a class from the gate's closed set (ci, test-only, docs-only, release-machinery, build-internal, merge-integration, reverted-or-superseded) and a specific reason a user cannot observe the change. The gate also fails an entry that is stale (not in the range), redundant (also referenced in the changelog: one home per pull request), duplicated, generically worded or out of order. Keep entries sorted by pull request number. A pull request may add its own entry before it merges: CI names it with --pending-pr, so the entry is not graded stale. The ledger is per release: when the release record's tag moves on, set \"release\" to the new tag and delete the entries the gate then reports as stale.",
-  "release": "v1.3.6-evolve",
+  "release": "v1.4.0-connection",
   "entries": [
     {
-      "pr": 734,
-      "class": "ci",
-      "reason": "Raises the ARM64 full-suite CI job timeout and test timeout budgets; the same test command runs and no language, runtime, package or API behavior changes."
-    },
-    {
-      "pr": 735,
-      "class": "test-only",
-      "reason": "Adds the supplied million-iteration guarded tensor-dot fixture and checks its semantic result, peak RSS and arena use in the existing AOT test harness; shipped compiler code and package contents are unchanged."
-    },
-    {
-      "pr": 736,
+      "pr": 957,
       "class": "release-machinery",
-      "reason": "Moves the active release record and accounting boundary to v1.3.6, synchronizes existing release facts and website asset names, and rebuilds the candidate site bundle; the native compiler and language behavior are unchanged, and final qualification remains pending."
-    },
-    {
-      "pr": 738,
-      "class": "release-machinery",
-      "reason": "Synchronizes the final v1.3.6 candidate documentation and site content and wires ICC and tool profiles for release preparation; it adds no product runtime behavior beyond the already-accounted changes in #737."
-    },
-    {
-      "pr": 739,
-      "class": "release-machinery",
-      "reason": "Retains full release-probe output and exit status, uploads phase-owned failure evidence, and adds a nonpublishing workflow mode for the three memory qualification gates; compiler/runtime code, shipped language behavior and package contents are unchanged."
-    },
-    {
-      "pr": 743,
-      "class": "release-machinery",
-      "reason": "Adds a nonpublishing full-measurement preparation path using the same canonical build and CTest/VM producers, and isolates nested readiness self-test evidence after the confirmed inherited-directory collision; compiler/runtime code, language behavior and package contents are unchanged."
-    },
-    {
-      "pr": 773,
-      "class": "test-only",
-      "reason": "Makes the ABI language-selection test independent of an ignored scratch build, uses Scheme vectors in portable generated properties, and recognizes the implemented VM compiler lowering in surface checks; compiler/runtime behavior and divergence baselines are unchanged."
+      "reason": "Moves the active release record and accounting boundary to v1.4.0-connection, synchronizes release-facing documentation, and rebuilds the candidate site content; compiler, runtime, and language behavior are unchanged, and final qualification remains pending."
     }
   ]
 }

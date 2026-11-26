@@ -74,7 +74,7 @@
 ;; subset the verifier evaluates.
 
 ;; BEGIN RELEASE FACTS
-(define release-tag "v1.3.6-evolve")
+(define release-tag "v1.4.0-connection")
 (define release-download-base
   (string-append "https://github.com/tsotchke/eshkol/releases/download/" release-tag "/"))
 (define release-linux-asset
@@ -445,11 +445,11 @@
         (let ((title (create-text "h1" "The derivative is a compiler primitive." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM. Gradient, Jacobian and Hessian are compiler primitives. Native JIT and AOT compose exact derivatives at arbitrary nesting depth and order. The bytecode VM shares the language's hygienic macros, number grammar, and catchable call errors." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM. Gradient, Jacobian and Hessian are compiler primitives, sockets and TLS carry static linear resource leases, and exact rational arithmetic powers a complete computational mathematics programme. Native JIT and AOT compose exact derivatives at arbitrary nesting depth and order; the bytecode VM shares the language's hygienic macros, WebGPU tensor dispatch, and catchable call errors." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Generated surface and ledger counts; runtime behavior is measured by release gates.
-        (let ((proof (create-text "p" "1,118 declared language constructs   ·   8 differential operators   ·   zero GC   ·   962 parity rows" left)))
+        (let ((proof (create-text "p" "1,651 declared language constructs   ·   8 differential operators   ·   zero GC   ·   997 parity rows" left)))
           (style! proof "color" "#a78bfa")
           (style! proof "fontSize" "0.82rem")
           (style! proof "fontFamily" "JetBrains Mono,monospace")
@@ -550,7 +550,7 @@
 
     (let ((tbl (web-create-element "table")))
       (web-add-class tbl "comparison-table")
-      (web-set-inner-html tbl "<thead><tr><th>Feature</th><th><strong>Eshkol</strong></th><th>Python / JAX</th><th>Julia</th><th>C++ / Eigen</th></tr></thead><tbody><tr><td>Automatic Differentiation</td><td><strong>Compiler-native (8 ops)</strong></td><td>Library (JAX)</td><td>Library (Zygote)</td><td>Library (Adept)</td></tr><tr><td>Memory Model</td><td><strong>Arena (zero GC)</strong></td><td>GC (refcount)</td><td>GC (generational)</td><td>Manual / RAII</td></tr><tr><td>GPU Acceleration</td><td><strong>Metal + CUDA + XLA</strong></td><td>CUDA / TPU</td><td>CUDA</td><td>CUDA</td></tr><tr><td>Compilation</td><td><strong>AOT (LLVM)</strong></td><td>JIT (XLA)</td><td>JIT (LLVM)</td><td>AOT</td></tr><tr><td>Numeric Tower</td><td><strong>int / bignum / rational / double / complex</strong></td><td>int / float</td><td>Extensive</td><td>int / float</td></tr><tr><td>First-Class Continuations</td><td><strong>Yes (call/cc)</strong></td><td>No</td><td>No</td><td>No</td></tr><tr><td>Logic Programming</td><td><strong>Built-in (KB + unification)</strong></td><td>No</td><td>No</td><td>No</td></tr><tr><td>WASM Target</td><td><strong>Yes</strong></td><td>Pyodide</td><td>No</td><td>Emscripten</td></tr></tbody>")
+      (web-set-inner-html tbl "<thead><tr><th>Feature</th><th><strong>Eshkol</strong></th><th>Python / JAX</th><th>Julia</th><th>C++ / Eigen</th></tr></thead><tbody><tr><td>Automatic Differentiation</td><td><strong>Compiler-native (8 ops)</strong></td><td>Library (JAX)</td><td>Library (Zygote)</td><td>Library (Adept)</td></tr><tr><td>Memory Model</td><td><strong>Arena (zero GC)</strong></td><td>GC (refcount)</td><td>GC (generational)</td><td>Manual / RAII</td></tr><tr><td>Systems &amp; Networking</td><td><strong>Linear sockets, TLS, HTTP/WS, WAL</strong></td><td>Runtime libs</td><td>Runtime libs</td><td>Manual / RAII</td></tr><tr><td>GPU Acceleration</td><td><strong>Metal + CUDA + XLA + WebGPU</strong></td><td>CUDA / TPU</td><td>CUDA</td><td>CUDA</td></tr><tr><td>Compilation</td><td><strong>AOT (LLVM)</strong></td><td>JIT (XLA)</td><td>JIT (LLVM)</td><td>AOT</td></tr><tr><td>Numeric Tower</td><td><strong>int / bignum / rational / double / complex</strong></td><td>int / float</td><td>Extensive</td><td>int / float</td></tr><tr><td>First-Class Continuations</td><td><strong>Yes (call/cc)</strong></td><td>No</td><td>No</td><td>No</td></tr><tr><td>Logic Programming</td><td><strong>Built-in (KB + unification)</strong></td><td>No</td><td>No</td><td>No</td></tr><tr><td>WASM Target</td><td><strong>Yes (site + VM + WebGPU)</strong></td><td>Pyodide</td><td>No</td><td>Emscripten</td></tr></tbody>")
       (web-append-child section tbl))
 
     section))
@@ -645,27 +645,27 @@
 (define (render-whats-new parent)
   (let ((section (create-section parent)))
     (section-heading section release-whats-new-heading)
-    (body-html section "<strong style='color:#a78bfa'>Published mathematics, checked exactly.</strong> Mathematics that machines discovered, reproduced in Eshkol and checked with exact integer and rational arithmetic. Each program rebuilds a public witness and verifies it completely: every pair of points, every pair of matrix units, every point of a degree-bounded grid. The example catalogue now describes every program, mathematics included, with its algorithm, arithmetic, checks, and limits. Publication is pending final-source qualification.")
+    (body-html section "<strong style='color:#a78bfa'>Linear systems, networking, and the full Mathematics Programme.</strong> Connect Eshkol programs to the outside world under the same static linear resource discipline that protects quantum handles — TCP/UDP sockets, Unix domain sockets, OpenSSL TLS, and HTTP/WebSocket on the shipped event loop — paired with durable write-ahead-logged agent memory, browser WebGPU tensor dispatch, exact-rational tensors, and a complete computational mathematics stack spanning Grothendieck three-era libraries, Beyond Frontiers, probability sheaves, and independent Lean formal verification. Publication is pending final-source qualification.")
+    (let ((conn-grid (create-grid-3 section)))
+      (render-feature-card conn-grid
+        "Linear networking, TLS, and HTTP/WS"
+        "TCP/UDP sockets, Unix domain sockets, OpenSSL TLS on Linux and macOS, and HTTP/WebSocket client and server run on the shipped event loop. Every handle carries linear resource ownership, enforced statically and closed deterministically at scope boundaries.")
+      (render-feature-card conn-grid
+        "Agent runtime SSE, subprocesses, and WAL"
+        "Bounded native HTTP Server-Sent Events streams, structured subprocess execution with explicit ownership cleanup, durable write-ahead-logged agent memory, plus PJRT CPU execution and socket-collective foundations.")
+      (render-feature-card conn-grid
+        "Exact-rational tensors and browser WebGPU"
+        "Exact-rational tensors execute on native JIT and AOT alongside recursive Taylor and ring differentiation carriers. In the browser, the bytecode VM routes tensor work through WebGPU with transparent CPU fallback and exact browser numerics."))
     (let ((math-grid (create-grid-3 section)))
       (render-feature-card math-grid
-        "The FunSearch cap set"
-        "The explicit cap set in the eight-dimensional affine space over the field of three elements is rebuilt from its construction classes. Every unordered pair of its points is checked against the third point on their affine line. Exact integers throughout, and no third point is ever in the set.")
+        "Grothendieck three-era mathematics"
+        "Finite sites, sheaves, Cech and derived cohomology, topos internal logic with Kripke-Joyal forcing, schemes, derived categories, six-functor formalism, and Kan extensions — all computed in exact integer and rational arithmetic.")
       (render-feature-card math-grid
-        "AlphaTensor decompositions over F₂"
-        "The published three-by-three and four-by-four matrix multiplication factorizations are contracted as exact bit masks. The map is bilinear, so expanding every pair of matrix units is a complete check of each factorization, not a sample of it.")
+        "Beyond Frontiers and probability sheaves"
+        "Hodge theory, Lie and algebraic groups, integrable systems, representation theory, K-theory, sheafified conditional probability, signed-curvature stereographic geometry, and Stochastic Binary Lambda Calculus.")
       (render-feature-card math-grid
-        "A Jacobian-conjecture counterexample map"
-        "Checked through its rational preimages, its fiber-count cases, reverse-mode gradients through a nested closure factory, and an exact determinant identity evaluated on a grid larger than the determinant's degree in every variable."))
-    (let ((patch-grid (create-grid-3 section)))
-      (render-feature-card patch-grid
-        "Rigorous intervals across exactness"
-        "Mixed exact and inexact interval endpoints are converted outward until exact comparisons certify containment before arithmetic. Indeterminate non-finite endpoint cases fail closed.")
-      (render-feature-card patch-grid
-        "Exact numbers in the browser"
-        "The browser LLVM host keeps finite doubles as their exact integer or rational values through arithmetic, comparisons, rounding, roots, and formatting, so the example guides start and run on this site.")
-      (render-feature-card patch-grid
-        "AOT loops that give memory back"
-        "Per-iteration memory in natively compiled loops stays bounded for named-let exit, discarded numeric tensors, and direct literal tensor-dot. Broader loop forms and platforms carry their own evidence."))
+        "Certified transcripts and formal replay"
+        "Content-addressed certified transcripts pair with an independent Lean proof checker and machine-checked theorem suites across the expanded exact mathematics catalogue, including verified AI-discovered witnesses such as FunSearch cap sets, AlphaTensor factorizations, and Jacobian counterexamples."))
     (section-subheading section "Capabilities carried forward")
     (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Parsing, type synthesis, and lowering use explicit continuations through JIT and AOT under an 8 MiB stack limit. The gate compiles 16,000 levels. Recursive Taylor levels compose exact derivatives at arbitrary nesting depth and order. Hygienic macros, one R7RS number grammar, dense tensor gradients, multi-shot continuations, and VM region reclamation complete the language contract.")
 
@@ -735,7 +735,7 @@
 
       (render-feature-card grid
         "Declared language surface"
-        "The generated language-surface manifest declares 1,118 constructs. Required execution-backed coverage is 1,118/1,118 declared constructs at the final release commit; the candidate verification remains pending.")
+        "The generated language-surface manifest declares 1,651 constructs. Required execution-backed coverage is 1,651/1,651 declared constructs at the final release commit; the candidate verification remains pending.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -748,7 +748,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "962 parity rows: 622 vm-supported, 45 native-only-justified, 295 gap. The candidate VM parity differential count remains pending; differential gates compare each release with its reference engines.")
+        "997 parity rows: 630 vm-supported, 45 native-only-justified, 322 gap. The candidate VM parity differential count remains pending; differential gates compare each release with its reference engines.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -1117,7 +1117,7 @@
 
 (define (render-examples-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM. The repository ships 66 examples in examples/: 20 general-purpose programs (gradient descent, Newton's method, parallel Monte Carlo, neural-network XOR, Bayesian diagnosis, differentiable physics, and more — see the [examples README](https://github.com/tsotchke/eshkol/tree/master/examples) for the full list) and 46 advanced mathematics programs, grouped and linked below. The 10 cards below are the general-purpose subset that fits inside a browser tab.")
+    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM. The repository ships 86 runnable examples in examples/ covering general-purpose computing (gradient descent, Newton's method, parallel Monte Carlo, neural-network XOR, Bayesian diagnosis, differentiable physics) and the complete exact Mathematics Programme (Navier-Stokes residuals, Grothendieck three-era libraries, Beyond Frontiers, probability sheaves, and verified AI-discovered witnesses). The 10 cards below are the interactive browser-VM subset.")
 
     (let ((grid (create-grid-2 page)))
 
@@ -1491,12 +1491,12 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "354KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "476KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "1354KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "1762KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))

@@ -1,7 +1,7 @@
 # Eshkol API Reference
 
-**Version**: 1.3.5
-**Last Updated**: 2026-09-14
+**Version**: 1.4.0-connection (RELEASE CANDIDATE, 2026-11-25)
+**Last Updated**: 2026-11-26
 **Audience**: Scientific Computing & AI Systems Programming
 
 This reference documents Eshkol's language surface and implementation contracts.
@@ -51,6 +51,10 @@ implemented operations, engine-specific restrictions, and measured parity.
 28. [Web Platform (WASM)](#web-platform-wasm) (v1.1)
 29. [Thread Pool & Promise Builtins](#thread-pool--promise-builtins) (v1.1)
 30. [Command-Line Tools](#command-line-tools)
+31. [Sockets & TLS](#sockets--tls) (v1.4.0-connection)
+32. [HTTP, WebSocket & Server-Sent Events](#http-websocket--server-sent-events) (v1.4.0-connection)
+33. [Durability, Collectives & Sandboxing](#durability-collectives--sandboxing) (v1.4.0-connection)
+34. [Mathematics Programme & SBLC](#mathematics-programme--sblc) (v1.4.0-connection)
 
 ---
 
@@ -3547,7 +3551,7 @@ Mean Squared Error: L = (1/n) Σ_i (ŷ_i - y_i)².
 **Gradient:** ∂L/∂ŷ_i = (2/n)(ŷ_i - y_i). Linear gradient — penalizes large errors quadratically.
 
 **Probabilistic interpretation:** Maximizing the log-likelihood under a Gaussian noise model
-N(y | ŷ, σ²) with fixed σ.
+N(y | ŷ, σ²) with constant σ.
 
 **Use case:** Regression tasks with Gaussian-distributed residuals.
 
@@ -3878,7 +3882,7 @@ G_t = G_{t-1} + g_t²
 
 **Properties:** The effective learning rate monotonically decreases over training. This makes
 Adagrad well-suited for sparse features (common in NLP) but may cause premature convergence
-for dense features. RMSprop was developed as a fix for this issue.
+for dense features. RMSprop was developed to address this.
 
 **Implementation:** `adagradStep` in [lib/backend/tensor_training_codegen.cpp](../lib/backend/tensor_training_codegen.cpp).
 
@@ -4092,7 +4096,7 @@ Continuous exponential decay — more aggressive than step decay as it reduces e
 > arriving as a user function's parameter is not read the way a literal is.
 > `lr-schedule` above therefore prints `0` for both warmup queries on this
 > build. Call the scheduler with the step expression written at the call site,
-> or bind it to a top-level value, until the operand handling is fixed.
+> or bind it to a top-level value, until the operand handling is extended.
 
 ### Convolutional Neural Networks
 
@@ -5600,7 +5604,7 @@ Returns `#t` if |x| < tolerance.
 
 ## ODE Solvers
 
-Numerical methods for solving ordinary differential equations of the form dy/dt = f(t, y). All solvers support both scalar states (y is a number) and vector states (y is a Scheme vector). Fixed-step methods return a trajectory as a list of `(t y)` pairs; adaptive methods adjust step size to meet a specified tolerance.
+Numerical methods for solving ordinary differential equations of the form dy/dt = f(t, y). All solvers support both scalar states (y is a number) and vector states (y is a Scheme vector). Constant-step methods return a trajectory as a list of `(t y)` pairs; adaptive methods adjust step size to meet a specified tolerance.
 
 **Module**: `lib/math/ode.esk`
 **Import**: `(require "math/ode")`
@@ -5716,7 +5720,7 @@ Solves an ODE using the classical fourth-order Runge-Kutta method. The update ru
     k4 = f(t + h, y + h*k3)
     y_{n+1} = y_n + (h/6) * (k1 + 2*k2 + 2*k3 + k4)
 
-Fourth-order accurate (global error O(h^4)). The workhorse of fixed-step ODE integration, requiring four function evaluations per step.
+Fourth-order accurate (global error O(h^4)). The workhorse of constant-step ODE integration, requiring four function evaluations per step.
 
 **Examples**:
 ```scheme
@@ -5796,7 +5800,7 @@ Solves an ODE using the implicit (backward) Euler method with Newton iteration. 
 
     y_{n+1} = y_n + h * f(t_{n+1}, y_{n+1})
 
-Newton iteration (scalar case) or fixed-point iteration (vector case) is used to solve for y_{n+1}. The implicit method is unconditionally A-stable, making it suitable for stiff systems where explicit methods require impractically small step sizes. Uses up to 10 Newton iterations with tolerance 1e-10.
+Newton iteration (scalar case) or successive-substitution iteration (vector case) is used to solve for y_{n+1}. The implicit method is unconditionally A-stable, making it suitable for stiff systems where explicit methods require impractically small step sizes. Uses up to 10 Newton iterations with tolerance 1e-10.
 
 **Examples**:
 ```scheme
@@ -6890,13 +6894,13 @@ with it. Do not dlopen a `--shared-lib -c` object and call it from C.
 
 ### `eshkol-repl` -- Interactive REPL
 
-A visual live coding environment with JIT compilation, tab completion, and crash recovery.
+A visual live coding environment with JIT compilation, tab completion, and fault recovery.
 
 **Features**:
 - JIT compilation via LLVM ORC (expressions compiled and executed immediately)
-- Tab completion for all builtins (1,042) and user-defined symbols
+- Tab completion for all builtins (1,069) and user-defined symbols
 - Readline integration with persistent history (`~/.eshkol_history`)
-- Crash recovery: segfaults during JIT execution are caught and reported without terminating the session
+- Fault recovery: a memory fault during JIT execution is caught and reported without terminating the session
 - Multi-line input with automatic bracket balancing
 
 **REPL Commands**:
@@ -7366,6 +7370,208 @@ for composability and custom pipelines.
 (clip #(1.0 5.0 10.0) 2.0 8.0)
 ;; => #(2.0 5.0 8.0)
 ```
+
+---
+
+## Sockets & TLS
+
+*(v1.4.0-connection)* `(require core.net)` for sockets, `(require core.tls)` for
+TLS. Every handle is tracked; under `--strict-resources` (ADR-0056) a socket or
+TLS session must be used exactly once, so an unclosed or twice-closed handle is
+a compile-time error.
+
+### TCP
+
+| Procedure | Signature | Description |
+|-----------|-----------|-------------|
+| `(tcp-listen host port)` | String × Integer → Socket | Bind and listen |
+| `(tcp-connect host port)` | String × Integer → Socket | Connect to a peer |
+| `(tcp-accept listener)` | Socket → Socket | Accept one connection |
+| `(tcp-read sock n)` | Socket × Integer → String | Read up to `n` bytes |
+| `(tcp-read! sock buf)` | Socket × Bytevector → Integer | Fill a caller-owned buffer |
+| `(tcp-write sock data)` | Socket × String → Integer | Write, returning bytes written |
+| `(tcp-write! sock buf)` | Socket × Bytevector → Integer | Write from a buffer |
+| `(tcp-write-all! sock buf)` | Socket × Bytevector → Integer | Write the whole buffer or raise |
+| `(tcp-shutdown sock how)` | Socket × Symbol → Unspecified | Half-close a direction |
+| `(tcp-close sock)` | Socket → Unspecified | Close the handle |
+
+### UDP
+
+| Procedure | Signature | Description |
+|-----------|-----------|-------------|
+| `(udp-bind host port)` | String × Integer → Socket | Bind a datagram socket |
+| `(udp-sendto sock host port data)` | Socket × String × Integer × String → Integer | Send a datagram |
+| `(udp-recvfrom sock n)` | Socket × Integer → List | Receive a datagram with its origin |
+| `(udp-send-to! sock host port buf)` | Socket × String × Integer × Bytevector → Integer | Buffer-based send |
+| `(udp-receive-from! sock buf)` | Socket × Bytevector → List | Buffer-based receive |
+| `(udp-close sock)` | Socket → Unspecified | Close the handle |
+
+### Unix domain sockets, introspection and errors
+
+| Procedure | Signature | Description |
+|-----------|-----------|-------------|
+| `(unix-socket-connect path)` | String → Socket | Connect over a filesystem path |
+| `(net-local-address sock)` / `(net-peer-address sock)` | Socket → String | Local / peer address |
+| `(net-local-port sock)` / `(net-peer-port sock)` | Socket → Integer | Local / peer port |
+| `(net-nonblocking! sock flag)` | Socket × Boolean → Unspecified | Select blocking mode |
+| `(net-cancel! sock)` | Socket → Unspecified | Cancel an in-flight operation |
+| `(network-error? obj)` | Any → Boolean | Condition predicate |
+| `(network-error-code e)` / `(network-error-operation e)` / `(network-error-reason e)` | Condition → Value | Structured failure detail |
+
+### Scoped socket forms
+
+| Procedure | Description |
+|-----------|-------------|
+| `(call-with-tcp-listener host port proc)` | Listener closed on normal return and on a raise |
+| `(call-with-tcp-connection host port proc)` | Connection closed on either exit path |
+| `(call-with-tcp-accept listener proc)` | Accepted connection closed on either exit path |
+| `(call-with-udp-socket host port proc)` | Datagram socket closed on either exit path |
+
+```scheme
+(require core.net)
+(call-with-tcp-connection "127.0.0.1" 8080
+  (lambda (sock)
+    (tcp-write sock "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    (display (tcp-read sock 1024))))
+```
+
+### TLS
+
+| Procedure | Description |
+|-----------|-------------|
+| `(tls-available?)` | Whether this build carries TLS — check it rather than assuming |
+| `(tls-client-context)` / `(tls-client-context/options opts)` | Client context, optionally configured |
+| `(tls-server-context cert key)` | Server context from a certificate and key |
+| `(tls-context-close ctx)` | Release a context |
+| `(tls-connect ctx host port)` | Client session |
+| `(tls-listen ctx host port)` / `(tls-listener-port l)` / `(tls-accept l)` | Server listener and sessions |
+| `(tls-read s n)` / `(tls-read! s buf)` | Read from a session |
+| `(tls-write s data)` / `(tls-write! s buf)` / `(tls-write-all! s buf)` | Write to a session |
+| `(tls-cancel! s)` | Cancel an in-flight operation |
+| `(tls-session-close s)` / `(tls-listener-close l)` | Close a session / listener |
+| `(tls-error? obj)`, `(tls-error-code e)`, `(tls-error-operation e)`, `(tls-error-reason e)` | Structured failures |
+| `(call-with-tls-client …)`, `(call-with-tls-server …)`, `(call-with-tls-connection …)`, `(call-with-tls-accept …)` | Scoped forms closing session and context |
+
+---
+
+## HTTP, WebSocket & Server-Sent Events
+
+*(v1.4.0-connection)*
+
+### HTTP client
+
+| Procedure | Description |
+|-----------|-------------|
+| `(http-request …)` | Perform an HTTP/1.1 request |
+| `(http-set-proxy url)` | Configure the proxy for subsequent requests |
+| `(http-set-tls-client-cert cert key)` | Present a client certificate |
+
+### HTTP server
+
+| Procedure | Description |
+|-----------|-------------|
+| `(http-server-create port)` | Non-blocking server on the portable event loop |
+| `(http-server-port server)` | The bound port (useful when binding port 0) |
+| `(http-server-accept server)` | Accept a pending request |
+| `(http-server-respond conn status content-type body)` | Send a response |
+| `(http-server-close server)` | Close the server |
+
+### Request parsing and routing (`core.http_server`)
+
+`(require core.http_server)` — not auto-loaded. A response is
+`(status content-type body)`; a route is `(method path handler)`.
+
+| Procedure | Description |
+|-----------|-------------|
+| `(http-request-line req)` | The request line verbatim |
+| `(http-request-method req)` | Method token, or `""` |
+| `(http-request-target req)` | Target including the query |
+| `(http-request-path req)` | Target with the query stripped |
+| `(http-request-query req)` | Query string after `?`, or `""` |
+| `(http-request-version req)` | e.g. `"HTTP/1.1"` |
+| `(http-request-header req name)` | Header by case-insensitive name, or `#f` |
+| `(http-request-content-length req)` | Numeric `Content-Length`, or `#f` |
+| `(http-request-body req)` | Body text, or `""` |
+| `(http-request-body-too-large? req)` | Whether the body exceeds `http-max-request-body-size` |
+
+`/health`, `/ready` and `/metrics` have built-in fallbacks.
+
+### WebSocket
+
+| Procedure | Description |
+|-----------|-------------|
+| `(websocket-connect url)` | Open a connection, performing the upgrade handshake |
+| `(websocket-send ws text)` | Send a text frame |
+| `(websocket-send-binary ws bytes)` | Send a binary frame |
+| `(websocket-receive ws)` | Receive the next frame |
+| `(websocket-close ws)` | Close the connection |
+
+Framing is RFC-validated: a malformed frame is refused rather than
+reinterpreted.
+
+### Server-Sent Events
+
+| Procedure | Description |
+|-----------|-------------|
+| `(call-with-http-sse-stream conn proc)` | Bracket an SSE stream |
+| `(sse-admit! …)` | Take an admission ticket, bounding concurrent streams |
+| `(sse-send! stream event)` | Emit an event |
+| `(sse-progress! stream …)` | Emit a progress event |
+| `(sse-finish! stream)` / `(sse-cancel! stream)` | End the stream |
+| `(sse-deadline-ms stream)` | The stream's deadline, so an abandoned client cannot hold it open |
+| `(sse-cleanup-ticket …)` | Explicit ticket cleanup |
+
+---
+
+## Durability, Collectives & Sandboxing
+
+*(v1.4.0-connection)*
+
+- **Write-ahead log and atomic persistence** — `core.memory_store` writes
+  through a write-ahead log; the atomic checkpoint layer brackets a durable
+  write as begin / write / commit / abort. A commit either lands whole or
+  leaves the previous state intact, and an aborted checkpoint leaves no partial
+  file behind. `core.merkle` verifies content-addressed records over the same
+  store.
+- **Collective operations** — broadcast, all-reduce, all-gather,
+  reduce-scatter and barrier over sockets, with rank-ordered reduction: the
+  same ranks and the same inputs give the same bits on every run.
+- **Subprocess sandboxing** — subprocesses run confined under Darwin Seatbelt
+  or Linux seccomp with Landlock. A platform with no confinement mechanism
+  refuses to launch rather than running unconfined.
+- **Shared-library tail transfer** — a tail call crossing a `--shared-lib`
+  boundary transfers control instead of growing the stack.
+- **Exact-rational tensors** — tensors of dtype `exact` (ADR-0058) keep exact
+  rational elements end to end, including across the NumPy binding.
+- **WebGPU browser dispatch** — the bytecode VM dispatches compute work to
+  WebGPU in the browser lane (ADR-0029).
+
+---
+
+## Mathematics Programme & SBLC
+
+*(v1.4.0-connection)* Each module below decides its claims exactly, by
+enumeration and exact linear algebra, never by sampling. A reader's guide is in
+[guide/MATHEMATICS.md](guide/MATHEMATICS.md).
+
+| Module | Surface |
+|--------|---------|
+| `core.sheaf` | Sites, sieves, Grothendieck topologies, Cech cohomology, cellular and condensed sheaves, probability sheaves |
+| `core.topos` | Presheaf topos internal language, Kripke–Joyal forcing, subobject classifier, modal logic, forcing and ordinals |
+| `core.ring`, `core.multimodular` | Rings as values (functor of points) over integers, rationals, binary64, modular arithmetic, Taylor jets, polynomial and group rings |
+| `core.category`, `core.effective`, `core.monoidal` | Finite category theory, functor categories, adjunctions via comma categories, Kan extensions, monoidal structure |
+| `core.simplicial`, `core.homological` | Simplicial sets, chain complexes, homology with torsion, DG categories, operads |
+| `core.theory` | Functional analysis, SGA/motives/Grothendieck–Riemann–Roch, esquisse and tame topology, stacks and derivators, six operations, Hodge and Weil, Lie and algebraic groups, integrable systems, AQFT and lattice QFT, measure theory and Markov disintegration, operator and C\* algebras, stochastic calculus and Malliavin derivatives |
+| `core.manifold`, `core.curvature` | Geometry, discrete exterior calculus, gauge theory, signed-curvature unified chart (ADR-0018) |
+| `core.exact_linalg`, `core.integer_linalg`, `core.exact_psd`, `core.groebner`, `core.polynomial_exact`, `core.extension_field`, `core.cyclotomic` | Exact-rational affine solution families, Gröbner bases, exact polynomial and field arithmetic |
+| `core.blc`, `core.sblc` | Binary lambda calculus with lexical environments; Stochastic BLC with exact rational term weights (`1/2^length`), bounded closed enumeration to L <= 16 bits, resumable checkpoints (`sblc-search-start`, `sblc-search-resume`), DBSP Z-set incremental updates, and VM PRNG parity (`make-prng`, `prng?`, `prng-random`, `prng-random-integer`) |
+| `core.sblc.relax` | Differentiable proposals (experimental): exact finite-logit oracle matching native AD, Rao-Blackwellized REINFORCE with variance-reduction confidence diagnostics, depth-masked Gumbel-Softmax / Concrete grammar proposals. Every relaxed candidate is projected to a strict closed term and re-verified; a projection error is refused loudly. Proposal order can never change completeness, prior weights, fair-choice probabilities or verifier outcomes |
+
+Formal verification: 395 top-level machine-checked theorems across 12
+standalone proof files (287 for the mathematics programme, 108 in
+`EshkolSBLCRelaxation.lean`), with 0 `sorry` and 0 custom axioms, checked in
+Lean 4.12.0 in CI, plus independent Verificatum proof replay (ADR-0061,
+ADR-0063) and 86 verified example programs.
 
 ---
 

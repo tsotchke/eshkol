@@ -171,7 +171,7 @@ Two questions decide whether a compiled binary links the agent C runtime:
    archive, not `eshkol-agent-ffi`. They are linked into **every** AOT/`-r`
    binary unconditionally — independent of `ESHKOL_BUILD_AGENT_FFI` and
    independent of whether `requires_agent_ffi`'s `(require agent.…)` scan
-   fires. This was a deliberate fix (Noesis bug report #2, 2026-07-04): these
+   fires. This was a deliberate change (Noesis report #2, 2026-07-04): these
    four symbols previously lived in the much larger, more frequently rebuilt
    `eshkol-agent-ffi` archive and were only linked in when the scan detected
    `agent.crypto` usage (directly or transitively, e.g. via `core.memory`). A
@@ -179,7 +179,7 @@ Two questions decide whether a compiled binary links the agent C runtime:
    rebuild of `libeshkol-agent-ffi.a` (e.g. another terminal running
    `cmake --build`) could see a partially-written archive and fail with
    `Undefined symbols: _eshkol_hmac_sha256` etc — indistinguishable from a
-   real missing-symbol bug from the caller's side, even though the finished
+   genuinely missing symbol from the caller's side, even though the finished
    archive had the symbols all along. Moving crypto to the always-linked core
    runtime removes the race entirely rather than papering over it.
    See `lib/core/crypto_primitives.c` and the "Crypto system libs" comments in
@@ -246,7 +246,7 @@ merely including the header does not create the reference.
 Change the layout and the symbol's name changes with it, so every artifact built
 against the old one stops linking. That is the intended experience: the alternative
 is two halves of a build agreeing to disagree about where an object's subtype byte
-lives, which is a silently wrong read, not a crash.
+lives, which is a silently wrong read rather than an abrupt stop.
 
 ### The four causes
 
@@ -260,7 +260,7 @@ An undefined `eshkol_object_abi_*` means one of:
 4. a **`--shared-lib` artifact built by an older compiler** — the same problem,
    one indirection out.
 
-The fix in every case is to rebuild the stale half. There is no flag that makes
+The remedy in every case is to rebuild the stale half. There is no flag that makes
 the link proceed; a link that proceeds is the failure this guard exists to prevent.
 
 ### Diagnosing it
@@ -321,9 +321,9 @@ test checks what the *runtime archive* actually does.
 
 ## FFI marshalling gotchas
 
-Established behaviors worth knowing before you hit them the hard way. None of
-these are bugs in the sense of "will be changed" — they're documented here so
-they're an informed choice instead of a debugging session.
+Established behaviors worth knowing before you meet them the hard way. None of
+these are defects in the sense of "will be changed" — they're documented here so
+they're an informed choice instead of a diagnostic session.
 
 ### `fwrite`/byte-oriented C calls want BYTES, not codepoints
 
@@ -346,7 +346,7 @@ truncate if you pass `string-length` to a byte-counted C call:
 `(string-length "café")` is `4`. This bit a real deployment: `core.memory`'s
 durable append-only log (`lib/core/memory_store.esk`) used `string-length`
 with `fwrite` and lost the tail of any line containing multibyte UTF-8 — see
-`ms-append-fsync!` there for the fixed call site.
+`ms-append-fsync!` there for the corrected call site.
 
 ### C `NULL` arrives in Scheme as `()`, not `0` or `#f`
 
@@ -388,23 +388,23 @@ therefore preserves embedded NUL bytes; `ptr->string` intentionally uses
 raises an Eshkol error, while a null pointer or zero length produces the empty
 string.
 
-### Variadic `extern`s corrupt arguments on arm64 — fixed-arity only
+### Variadic `extern`s corrupt arguments on arm64 — non-variadic only
 
 Declaring a variadic C function directly, e.g. `(extern void printf char*
 ...)`, is unsafe on arm64: the AAPCS64 calling convention passes/spills
 named vs. variadic arguments differently (variadic args go through the
 stack-based register save area), but Eshkol's codegen emits a call as if the
-callee were an ordinary fixed-arity function. Arguments after the fixed
+callee were an ordinary non-variadic function. Arguments after the named
 prefix arrive corrupted. This was hit for real: `open(path, mode)`'s libc
 signature is actually variadic (`open(const char*, int, ...)` for the
 optional file-creation `mode`), and declaring it directly made `mode` arrive
 as garbage, creating unreadable files — see the header comment in
 `lib/core/memory_store.esk`, which works around it by declaring only
 `fopen`/`fwrite`/`fflush`/`fileno`/`fsync`/`fclose` (all genuinely
-fixed-arity in libc) and avoiding `open` entirely.
+non-variadic in libc) and avoiding `open` entirely.
 
-**Only fixed-arity `extern`s are portable.** If you need a variadic C
-function, wrap it behind a small fixed-arity C shim (a real function taking
+**Only non-variadic `extern`s are portable.** If you need a variadic C
+function, wrap it behind a small non-variadic C shim (a real function taking
 concrete arguments that internally calls the variadic one) and declare
 *that* as the `extern` instead. As of 2026-07, declaring a variadic `extern`
 (any parameter list ending in `...`) emits a compile-time WARNING pointing
@@ -421,11 +421,11 @@ fixed-arity C shim instead.
 
 ## `agent.subprocess` arities — `cwd` is positional and required
 
-The spawn family's signatures are fixed-arity with `cwd` in the **second**
+The spawn family's signatures are non-variadic with `cwd` in the **second**
 position. There is no optional tail and no default: omitting `cwd` is an arity
-error, and passing a timeout in its place is a type error. Both are reported now;
-before v1.3.4 the first bound the result to null and kept running, and the second
-dereferenced the timeout as an address.
+error, and passing a timeout in its place is a type error. Both have been
+reported since v1.3.4; before that release the first bound the result to null
+and kept running, and the second dereferenced the timeout as an address.
 
 | Procedure | Arity | Positions |
 |-----------|-------|-----------|
@@ -461,7 +461,7 @@ timeout is always the THIRD argument:
 (run-argv-capture (list "/bin/echo" "hi") "." 5000)
 ```
 
-And the fixed-arity spawns require `cwd`:
+And the non-variadic spawns require `cwd`:
 
 ```scheme
 ;; WRONG — arity error at compile time:

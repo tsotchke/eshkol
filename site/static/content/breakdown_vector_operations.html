@@ -1,5 +1,5 @@
 <h1 id="vectors-and-tensors-in-eshkol">Vectors and Tensors in Eshkol</h1>
-<p><strong>Status</strong>: v1.2.1-scale - Production-ready <strong>Last Updated</strong>: March 2026</p>
+<p><strong>Status</strong>: Production-ready — current as of v1.4.0-connection <strong>Last Updated</strong>: November 2026</p>
 <blockquote>
 <p>This document describes the <strong>actual implemented</strong> vector and tensor systems based on source code verification.</p>
 </blockquote>
@@ -139,6 +139,9 @@
 <p>For numeric computation over the array, use <strong>tensors</strong> instead.</p>
 <hr />
 <h2 id="tensors-homogeneous-numeric">Tensors (Homogeneous Numeric)</h2>
+<blockquote>
+<p><strong>v1.4.0-connection:</strong> in addition to the double-element tensors described below, tensors of dtype <code>exact</code> carry exact rational elements through arithmetic and AD (ADR-0058), extending the numeric tower’s exactness guarantees into tensor computation. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/EXACT_ARITHMETIC.md" target="_blank" rel="noopener noreferrer">EXACT_ARITHMETIC.md</a>.</p>
+</blockquote>
 <p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/tensor_codegen.cpp</code></a> (2,012-line dispatcher; thirteen <code>tensor_*_codegen.cpp</code> siblings after the v1.2 split)</p>
 <p>Tensors are <strong>N-dimensional numeric arrays</strong> optimized for scientific computing:</p>
 <h3 id="creation-1">Creation</h3>
@@ -281,7 +284,7 @@ Row-major (C-style) ordering for cache efficiency</code></pre>
 <tr>
 <td><code>blas_overhead_ns</code></td>
 <td>5000</td>
-<td>Fixed cBLAS dispatch overhead (5 microseconds)</td>
+<td>Constant cBLAS dispatch overhead (5 microseconds)</td>
 </tr>
 <tr>
 <td><code>blas_efficiency_scale</code></td>

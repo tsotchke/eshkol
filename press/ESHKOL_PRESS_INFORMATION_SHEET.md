@@ -1,15 +1,28 @@
-# Eshkol v1.3.6-evolve — Press Information Sheet
+# Eshkol v1.4.0-connection — Press Information Sheet
 
-For trade-press and academic readers preparing coverage of the v1.3 release
-line — arbitrary-order automatic differentiation, full R7RS conformance,
-resident/daemon-workload robustness, opt-in differentiable quantum computing
-with post-quantum cryptography; as of v1.3.5-evolve, multi-shot re-entrant
-continuations on every engine, region reclamation on the bytecode VM, constant
-stack space for mutual tail recursion in every tail-position spelling, and
-differentiation dispatch the compiler proves exhaustive; as of v1.3.6-evolve,
-exact reproduction of published results of AI-driven mathematical discovery and
-a documented catalogue of every example program, 46 of them mathematics — and
-the SDNC paper artefact it carries.
+For trade-press and academic readers preparing coverage of the v1.4 release
+line — building on v1.3's arbitrary-order automatic differentiation, full R7RS
+conformance, opt-in differentiable quantum computing, multi-shot re-entrant
+continuations, VM region reclamation, and exact machine-discovered mathematics
+witnesses — v1.4.0-connection introduces the resource-sound systems profile and
+the full Mathematics Programme: managed TCP/UDP/TLS leases (ADR-0055),
+compile-time linear handle tracking (`--strict-resources`, ADR-0056), O(1)
+event-loop HTTP/WebSocket and bounded SSE streaming, unified capability
+policies with Darwin Seatbelt and Linux seccomp/Landlock subprocess sandboxing,
+arbitrary-depth nested differentiation (ADR-0057), exact-rational tensors
+(ADR-0058), Grothendieck three-era libraries (`core.sheaf`/`topos`/`ring`/
+`category`/`monoidal`/`effective`, schemes, derived categories, six-functor
+formalism), Beyond Frontiers (Hodge theory, Lie/algebraic groups, integrable
+systems, representation theory, K-theory), Probability Sheaves
+(`arXiv:2611.30692`), Stochastic Binary Lambda Calculus with differentiable
+search proposals (`core.sblc.relax`, ADR-0017 item 5: an exact finite-logit
+oracle, Rao-Blackwellized REINFORCE with exact rational inner coins and
+variance-reduction confidence diagnostics, and strict-projected
+Gumbel-Softmax/Concrete grammar proposals, each relaxed candidate re-verified
+exactly), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
+395 machine-checked Lean 4.12.0 theorems across 12 standalone proof files (287
+for the mathematics programme, 108 in `EshkolSBLCRelaxation.lean`), 86 verified
+examples, built-in image codecs, and the SDNC paper artefact.
 
 ---
 
@@ -18,10 +31,10 @@ the SDNC paper artefact it carries.
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.6-evolve |
-| Release status | Prepared for publication (release record, `tests/coverage/release_record.json`) |
-| Intended release date | 15 October 2026 |
-| Builds on | v1.3.5-evolve (22 September 2026), v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
+| Version | v1.4.0-connection |
+| Release status | Release candidate (release record, `tests/coverage/release_record.json`) |
+| Planned release date | 25 November 2026 |
+| Builds on | v1.3.6-evolve (19 October 2026), v1.3.5-evolve (22 September 2026), v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -31,6 +44,16 @@ the SDNC paper artefact it carries.
 ---
 
 ## Headline
+
+In v1.4.0-connection, Eshkol combines a resource-sound systems profile (linear
+TCP/UDP/TLS/UDS handles, O(1) event-loop HTTP/WebSocket/SSE, Darwin Seatbelt
+and Linux seccomp/Landlock sandboxing, browser WebGPU) with its full exact
+Mathematics Programme: Grothendieck three-era libraries, Beyond Frontiers
+(Hodge theory, Lie/algebraic groups, integrable systems, representation theory,
+K-theory), Probability Sheaves (`arXiv:2611.30692`), exact-rational tensors,
+arbitrary-depth nested differentiation, differentiable SBLC search proposals
+(`core.sblc.relax`), 395 machine-checked Lean 4.12.0 theorems
+(ADR-0061, ADR-0063), and 86 verified example programs.
 
 In v1.3.6-evolve Eshkol checks mathematics that machines discovered. That is
 not a metaphor. Three published results of AI-driven discovery — the FunSearch
@@ -210,7 +233,7 @@ every runtime change is pinned by the gate its pull request added.
 - **Bounded per-iteration memory in compiled loops.** Native AOT reclamation
   covers named-let exit, a discarded numeric tensor and direct literal
   `tensor-dot`; the original million-iteration report is retained as a
-  regression fixture. It does not establish flat RSS for every loop or
+  permanent guard fixture. It does not establish flat RSS for every loop or
   platform. (#729, #735)
 - **Allocation-checked constructors and handlers.** Generated cons, vector and
   closure construction, selected collection, parallel and FFT paths, captured
@@ -244,7 +267,7 @@ every runtime change is pinned by the gate its pull request added.
 - **Publication requires complete, source-bound measurements.** The release
   gate validates the full configured CTest and VM parity results against
   committed metadata and the exact source, workflow run and build cohort; the
-  final contract is <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record --> with no failed, skipped
+  final contract is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> with no failed, skipped
   or infrastructure-only checks. [Source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38161249190) passed all 819 configured
   CTest cases and all 411 VM parity cases. (#742, #747, #749)
 
@@ -816,7 +839,7 @@ consists of:
   checks this is derived from the source rather than from a hand-typed list,
   resolved through a libclang semantic index of the real case arms.
   `ESHKOL_ARENA_POISON=1` poisons `arena_destroy`'d memory so any gap in that
-  coverage crashes loudly instead of corrupting silently. See
+  coverage halts loudly instead of corrupting silently. See
   *lib/core/runtime_regions.cpp* and
   *tests/memory/region_evac_taylor_exact_test.esk*.
 - **Region reclamation on the bytecode VM** (Stage 1, v1.3.5-evolve).
@@ -1178,8 +1201,8 @@ SHA-256  opcode-coverage.json      152a4bacc483d8985abeb08bc0d44112144f536ed6632
 ```
 
 The transformer trace and the VM trace share a hash because they agree
-bitwise. Platform divergence is treated as a bug; issue reports should
-include the CPU, libc, and floating-point environment.
+bitwise. Platform divergence violates the artefact's contract; issue reports
+should include the CPU, libc, and floating-point environment.
 
 Implementation note: the paper proves the gated indicator function is exact
 in float32 for any scale S > 33.2; the artefact ships with S = 300 (rather
@@ -1213,11 +1236,10 @@ C.
 
 Measured 4–12× speed-up of `parallel-map` on 24 cores
 (*docs/breakdown/ROADMAP.md §1.1-accelerate completed*; the underlying
-root-cause fix is recorded in project memory as the parallel-map
-flags-byte fix: worker tagged-value flags were hardcoded to zero, which
-mis-dispatched into the bignum path; packing `{type, flags}` into
-`item_type:i64` with the default flipped on restored real parallelism
-across both AOT and JIT paths). `eshkol_runtime_shutdown()` stops and joins the global parallel thread pool
+root-cause correction is the parallel-map flags-byte change: worker
+tagged-value flags were hardcoded to zero, which mis-dispatched into the
+bignum path; packing `{type, flags}` into `item_type:i64` with the default
+flipped on restored real parallelism across both AOT and JIT paths). `eshkol_runtime_shutdown()` stops and joins the global parallel thread pool
 before running shutdown hooks, so a graceful `SIGTERM` tears the pool down in a
 defined order.
 
@@ -1705,4 +1727,5 @@ Press, programme committees, and academic correspondence:
 **team@tsotchke.org**.
 Security disclosures: **security@eshkol.ai** (see *SECURITY.md* for the
 disclosure process and the supported-version table; initial response within
-3 business days, fix-or-mitigation plan within 14 days for HIGH and CRITICAL).
+3 business days, remediation-or-mitigation plan within 14 days for HIGH and
+CRITICAL).

@@ -1,9 +1,15 @@
 # Eshkol: Purpose and Vision
 
-> **Status at v1.3.6-evolve (2026-10-09).** This page describes the v1.0
-> baseline as extended through v1.2.1-scale. The current release is
-> v1.3.6-evolve (prepared for publication; v1.3.5-evolve is the latest shipped
-> tag), and several items listed below as next steps have shipped since; their
+> **Status at v1.4.0-connection (2026-11-25, release candidate).** This page
+> describes the v1.0 baseline as extended through v1.2.1-scale. The current
+> release is v1.4.0-connection (release candidate; v1.3.6-evolve, shipped
+> 2026-10-19, is the latest published tag) — it adds the resource-sound systems
+> profile (linear TCP/UDP/TLS handles, O(1) event-loop HTTP/WebSocket/SSE,
+> write-ahead-logged agent memory, socket collectives), WebGPU browser VM
+> dispatch, exact-rational tensors, the Full Mathematics Programme with
+> differentiable SBLC search proposals (`core.sblc.relax`), and 395
+> machine-checked Lean 4.12.0 theorems. Several items listed below as next
+> steps have shipped since this page's baseline; their
 > status is recorded under "The Path Forward". The
 > [README](../../README.md) describes the current language, and the
 > [white paper](TECHNICAL_WHITE_PAPER.md#implementation-status-v136) carries a
@@ -11,7 +17,7 @@
 
 ## Mission Statement
 
-Eshkol delivers a **production-ready programming language** for gradient-based optimisation, neural-network development, and scientific computing. Built on an LLVM-21 compiler with a Scheme front end, Eshkol combines homoiconic syntax with compiler-integrated automatic differentiation, deterministic arena memory, an exact numeric tower (bignum / rational / complex), GPU acceleration (Metal + CUDA + XLA), parallel work-stealing primitives, and a neuro-symbolic stack delivered as compiler builtins. The current production line is **v1.2.1-scale**.
+Eshkol delivers a **production-ready programming language** for gradient-based optimisation, neural-network development, and scientific computing. Built on an LLVM-21 compiler with a Scheme front end, Eshkol combines homoiconic syntax with compiler-integrated automatic differentiation, deterministic arena memory, an exact numeric tower (bignum / rational / complex), GPU acceleration (Metal + CUDA + XLA), parallel work-stealing primitives, and a neuro-symbolic stack delivered as compiler builtins. The current release line is **v1.4.0-connection** (release candidate); this page's architectural baseline is **v1.2.1-scale**.
 
 ## What Eshkol Actually Is (v1.0 baseline, extended through v1.2.1)
 
@@ -325,7 +331,7 @@ struct eshkol_closure_env {
 
 ## The Path Forward
 
-Eshkol's v1.0-foundation established the architectural baseline that v1.1-accelerate and v1.2-scale built on; this page was last revised against **v1.2.1-scale**, and the current release is **v1.3.6-evolve**:
+Eshkol's v1.0-foundation established the architectural baseline that v1.1-accelerate and v1.2-scale built on; this page was last revised against **v1.2.1-scale**, and the current release is **v1.4.0-connection** (release candidate):
 
 **Current State (v1.0-foundation baseline):**
 - Production compiler with comprehensive test suite
@@ -337,22 +343,25 @@ Eshkol's v1.0-foundation established the architectural baseline that v1.1-accele
 - Exception handling
 - Hash tables and data structures
 
-**Immediate Next Steps (Post-v1.0)** — status at v1.3.6:
+**Immediate Next Steps (Post-v1.0)** — status at v1.4.0-connection:
 - GPU acceleration for tensor operations — SHIPPED (Metal and CUDA, v1.1)
 - Quantum computing integration — SHIPPED in part (opt-in differentiable
   Moonlab VQE/CHSH, v1.3.3; linear `Qubit`, v1.3.4); circuit compilation is
   v2.0-starlight
 - Multi-threading primitives — SHIPPED (`parallel-map`, `future`/`force` on a
   work-stealing pool, v1.1; channels, mutexes and condition variables)
-- Distributed computing support — Planned (workstream W6, v1.4.0-connection
-  spike through v2.0-starlight gates)
+- Distributed computing support — foundations SHIPPED at v1.4.0-connection
+  (workstream W6: PJRT CPU plugin and socket-backed collectives); the full
+  accelerator device runtime is v1.4.5-accelerate, native-mesh gates through
+  v2.0-starlight
 - Performance profiling tools — Planned (AD-aware debugger/profiler, v1.9.1)
-- Expanded standard library — SHIPPED and continuing (1,056 builtins on a
-  1,116-construct canonical surface)
+- Expanded standard library — SHIPPED and continuing (1,069 builtins on a
+  1,651-construct canonical surface)
 
 **Medium-Term Vision (v1.5+):**
 - Advanced type system features (dependent types, linear types) — linear
-  `Qubit` shipped in v1.3.4, linear handles are v1.4.0-connection, dependent
+  `Qubit` shipped in v1.3.4, linear resource handles shipped in
+  v1.4.0-connection (`--strict-resources`, ADR-0056), dependent
   types are v1.9.0-types
 - Hardware-specific optimizations — the v1.4.5-accelerate device runtime
 - Domain-specific embedded languages
@@ -378,4 +387,4 @@ See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for detailed development plans.
 
 ---
 
-*Eshkol's v1.0-foundation established a complete, working compiler that integrates automatic differentiation, deterministic arena memory management, and homoiconic closures while maintaining R7RS compatibility. The v1.2.1-scale line this page was last revised against builds on that baseline with the exact-numeric tower, GPU dispatch, the agent FFI surface, and the v1.2.1 hardening fixes.*
+*Eshkol's v1.0-foundation established a complete, working compiler that integrates automatic differentiation, deterministic arena memory management, and homoiconic closures while maintaining R7RS compatibility. The v1.2.1-scale line this page was last revised against builds on that baseline with the exact-numeric tower, GPU dispatch, the agent FFI surface, and the v1.2.1 hardening pass. The v1.4.0-connection line extends it to the networked outside world under the same deterministic discipline.*
