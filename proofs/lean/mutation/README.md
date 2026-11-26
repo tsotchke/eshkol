@@ -45,7 +45,9 @@ removed after classification; set `KEEP_MUTANTS=1` to keep them.
 `example : ¬ type_of% @<refutes> := <witness_name>`. A witness counts only if that line
 elaborates. This binds the counterexample to the exact statement of the theorem it claims to
 contradict, not merely to its name. `#print axioms` confirms that the witness does not depend
-on the (possibly broken) proof.
+on the (possibly broken) proof. The runner reads only the witness's own axiom report. Other
+`#print axioms` output in the target is ignored, such as a report on a theorem whose proof the
+mutation broke. A witness whose report is missing is not counted.
 
 ## Verification of the runner
 
@@ -56,6 +58,11 @@ that must not count as refutations:
 - a witness that borrows a broken proof;
 - a witness naming a theorem the target does not have;
 - a witness that is true but is not the negation of the theorem it names.
+
+The fixture also prints its own axiom report for `double_even`. In `expect-refuted`, the
+mutation breaks that proof, so the report names `sorryAx`, and the valid witness must still
+count as a refutation. An earlier runner scanned the whole compiler output for `sorryAx`.
+It classified this case `PROOF_BROKEN`.
 
 ## Manifests (Lean 4.12.0)
 

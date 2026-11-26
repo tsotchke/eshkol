@@ -143,6 +143,18 @@ def compile (leanBin dir file : String) : IO String := do
   let r ← IO.Process.output { cmd := leanBin, args := #[file], cwd := some dir }
   return r.stdout ++ r.stderr
 
+/-- The axiom list Lean printed for `#print axioms <name>`, or none if no such message is
+    present. Only that message is read: other `#print axioms` output in the file, such as
+    the target's own report on an obligation whose proof the mutation broke, is ignored. -/
+def printedAxioms (output name : String) : Option String :=
+  let isNameStart (before : String) := before.endsWith "'" || before.endsWith "."
+  let after (marker : String) : Option String :=
+    let parts := output.splitOn marker
+    ((parts.zip parts.tail).find? fun (before, _) => isNameStart before).map (·.2)
+  match after (name ++ "' depends on axioms: [") with
+  | some rest => some ((rest.splitOn "]").headD "")
+  | none => (after (name ++ "' does not depend on any axioms")).map fun _ => ""
+
 /-- Insert `block` before the last top-level `end ` line, or append it. -/
 def insertBeforeFinalEnd (source block : String) : String × Nat :=
   let lines := (source.splitOn "\n").toArray
@@ -204,7 +216,10 @@ def classify (leanBin dir targetBase original : String) (m : Mutant) : IO Result
     IO.FS.writeFile (dir ++ "/" ++ witnessFile) withWitness
     let wout ← compile leanBin dir witnessFile
     let werrs := (errorLines witnessFile wout).filter fun n => n ≥ startLine && n < startLine + blockLines
-    let sorryDependent := (wout.splitOn "sorryAx").length > 1
+    -- A witness whose axiom report is missing cannot be shown free of sorryAx.
+    let sorryDependent := match printedAxioms wout wn with
+      | some axioms => (axioms.splitOn "sorryAx").length > 1
+      | none => true
     if werrs.isEmpty && !sorryDependent then
       return { id := m.id, outcome := "REFUTED",
                detail := s!"witness {wn} holds on the mutant; contradicts {m.refutes.getD "?"}" ++
