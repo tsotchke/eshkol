@@ -3,8 +3,8 @@
 ## v1.3.6-evolve final-source qualification contract
 
 Publication requires
-<!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and
-<!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->
+<!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and
+<!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->
 at the final source commit, with independent exact-commit evidence and an
 ICC ready/100 verdict.
 
@@ -109,7 +109,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | <!-- release-record:ctest-cell -->823/823 tests<!-- /release-record --> required | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | <!-- release-record:ctest-cell -->every registered test<!-- /release-record --> required | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash

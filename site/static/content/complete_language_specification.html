@@ -607,16 +607,8 @@ x  ; =&gt; 20</code></pre>
 <h4 id="366-checked-ascription--the-type-expr">3.6.6 Checked Ascription — <code>(the &lt;type&gt; expr)</code></h4>
 <p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; <type>/expr are metavariables --></p>
 <pre class="scheme"><code>(the &lt;type&gt; expr)</code></pre>
-<p>Asserts to the type checker that <code>expr</code> has type <code>&lt;type&gt;</code>. It is a <strong>trusted assertion</strong>: the checker adopts <code>&lt;type&gt;</code> as the type of the whole form and does not re-derive it from <code>expr</code>. It is a pure <strong>runtime no-op</strong> — the emitted IR is byte-identical to <code>expr</code> alone (no runtime tag check, no cost), so <code>(the &lt;type&gt; expr)</code> evaluates to exactly the same value as <code>expr</code>.</p>
-<p>Trusted does not mean unexamined. The checker still synthesizes <code>expr</code>, and if the type it finds is <strong>provably disjoint</strong> from <code>&lt;type&gt;</code> — no value inhabits both — it reports the ascription rather than adopting it. That is a compile-time diagnostic only: a warning under gradual typing, fatal under <code>--strict-types</code> (§ <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-run.md" target="_blank" rel="noopener noreferrer"><code>--strict-types</code></a>), and in neither case does it add anything to the emitted code.</p>
-<p>The check is deliberately narrow, so the form stays useful:</p>
-<ul>
-<li><strong>Narrowing is always accepted</strong> — the primary use. <code>(the integer (car xs))</code> over a dynamically-typed container is exactly what the form is for.</li>
-<li><strong>Widening is always accepted</strong>: <code>(the number 1)</code>.</li>
-<li>Anything whose type the checker does not know (the dynamic <code>any</code>/<code>value</code> root, an unresolved name) is trusted, not questioned.</li>
-<li><strong>Numeric-tower ascriptions are always accepted.</strong> <code>integer</code>, <code>rational</code>, <code>real</code> and <code>complex</code> are siblings under <code>number</code> in this type graph rather than a chain, so no subtyping relation holds between them in either direction; <code>(the real 1)</code> and <code>(the float64 (+ 1 2))</code> are ordinary.</li>
-</ul>
-<p>Only a genuine contradiction is reported:</p>
+<p>The checker assigns the ascribed type to the expression. At runtime the engine evaluates the operand once and checks its tag, including when the ascription appears in operator position. A match yields that same value. A mismatch raises a condition that <code>guard</code> can catch. The runtime check also applies under <code>--unsafe</code>.</p>
+<p>When the static checker can prove the inferred and ascribed types are disjoint, gradual mode issues a diagnostic and <code>--strict-types</code> refuses compilation. A dynamically typed operand receives the same runtime check.</p>
 <!-- doc-example: skip fragment: `mixed-list` and `xs` are assumed bindings illustrating the ascription rules -->
 <pre class="scheme"><code>(the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)
@@ -900,16 +892,16 @@ use-exactly-once is NOT enforced for it</code></pre>
 <p><strong>Tensor Support:</strong> Element-wise for vectors/tensors. The element-wise contract is BINARY: both operands must be vectors/tensors of matching shape. A vector or tensor against a SCALAR is a type error, in either operand order — scalar broadcast is a separate, explicitly named operator (<code>tensor-scale</code>), not an overload of the arithmetic operators. A vector and a rank-1 tensor are two spellings of one value, so a mixed pair is the element-wise result. Element-wise results are computed in f64, as tensor arithmetic is, so the elements of <code>(* (vector 1 2) (vector 3 4))</code> are the inexact 3.0 and 8.0: the result is <code>equal?</code> to <code>(vector 3.0 8.0)</code>, not to <code>(vector 3 8)</code>.</p>
 <p>Shapes broadcast NumPy-style, so “matching shape” means broadcast-compatible rather than identical; a pair that cannot be broadcast is a catchable error naming both shapes.</p>
 <!-- doc-example: skip pseudo-code: demonstrates both successful broadcasts and the intentional errors in the trailing comments; the error lines terminate the program before later lines run -->
-<pre class="scheme"><code>(* #(1 2) #(3 4))         ; =&gt; #(3 8)
-(* #(2.0) #(1.0 2.0 3.0)) ; =&gt; #(2 4 6)      (a dimension of 1 broadcasts)
+<pre class="scheme"><code>(* #(1 2) #(3 4))         ; =&gt; #(3.0 8.0)
+(* #(2.0) #(1.0 2.0 3.0)) ; =&gt; #(2.0 4.0 6.0)  (a dimension of 1 broadcasts)
 (* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
 (* 2 #(1 2))              ; ERROR: the same error, same wording
 (* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
                           ;        are not broadcast-compatible</code></pre>
 <p><strong>Examples:</strong></p>
 <pre class="scheme"><code>(+ 1 2)        ; =&gt; 3
-(+ 1.5 2.5)    ; =&gt; 4    (inexact; a double with no fractional part prints
-               ;          without a decimal point — see 3.1 Numeric Tower)
+(+ 1.5 2.5)    ; =&gt; 4.0  (inexact; a double with no fractional part prints
+               ;          with its decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; =&gt; 15</code></pre>
 <h4 id="412-----subtractionnegation">4.1.2 <code>-</code> - Subtraction/Negation</h4>
 <p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; num/num1/num2 are metavariables --></p>
@@ -1601,6 +1593,7 @@ use-exactly-once is NOT enforced for it</code></pre>
   (define data (iota 1000))
   (process data))
 ; native: data&#39;s memory freed here; bytecode VM: same value, not yet freed</code></pre>
+<p>JIT, AOT, the REPL and the hosted bytecode compiler apply ownership checks by default, with one verdict function, before any code is generated. For every accepted program no owned value is read or moved through any name after it has been moved: through the owner, another binding built from it, a closure or procedure that names it, a lambda parameter or loop variable it is passed to. A value that refers to an owner may not reach a place the checker cannot follow: <code>set!</code>, an argument a procedure keeps past the call, a procedure the checker cannot resolve, or a form it does not model. The complete rules are in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/ownership.md" target="_blank" rel="noopener noreferrer">ownership</a>. Use <code>--unsafe</code> to run legacy code with static ownership and type checking disabled. The native <code>--strict-resources</code> profile additionally checks the acquisition and closing contracts of resource APIs.</p>
 <h4 id="622-owned---mark-ownership">6.2.2 <code>owned</code> - Mark Ownership</h4>
 <p><strong>Syntax:</strong> <code>(owned expr)</code></p>
 <p><strong>Semantics:</strong> Value must be consumed before scope exit</p>
@@ -1610,7 +1603,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <h4 id="623-move---transfer-ownership">6.2.3 <code>move</code> - Transfer Ownership</h4>
 <p><strong>Syntax:</strong> <code>(move variable)</code></p>
 <p><strong>Semantics:</strong> Transfers ownership, marks original as moved</p>
-<p><strong>Compile-Time Checks:</strong> - Cannot use after move - Cannot move while borrowed</p>
+<p><strong>Compile-Time Checks:</strong> - Cannot use after move, through the owner or any alias, closure or loop variable that refers to the moved value - Cannot move twice, or move while borrowed - Cannot move an owner bound outside a procedure or loop body from inside it</p>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(define x (owned (list 1 2 3)))
 (define y (move x))
@@ -1867,7 +1860,7 @@ use-exactly-once is NOT enforced for it</code></pre>
           (* (vref v 0) (sin (vref v 1)))))
 
 (display (jacobian polar-to-cartesian (vector 1.0 0.0)))
-; =&gt; #((1 0) (0 1))   (the Jacobian at r=1, θ=0)</code></pre>
+; =&gt; #((1.0 0.0) (0.0 1.0))   (the Jacobian at r=1, θ=0)</code></pre>
 <h4 id="832-hessian---hessian-matrix">8.3.2 <code>hessian</code> - Hessian Matrix</h4>
 <p><strong>Syntax:</strong> <code>(hessian function point)</code></p>
 <p><strong>Domain:</strong> Scalar field ℝⁿ → ℝ</p>
@@ -1878,7 +1871,7 @@ use-exactly-once is NOT enforced for it</code></pre>
      (* (vref v 1) (vref v 1))))
 
 (hessian f (vector 1.0 1.0))
-; =&gt; #((2 0) (0 2))  [constant Hessian for quadratic]</code></pre>
+; =&gt; #((2.0 0.0) (0.0 2.0))  [constant Hessian for quadratic]</code></pre>
 <h4 id="833-divergence---vector-field-divergence">8.3.3 <code>divergence</code> - Vector Field Divergence</h4>
 <p><strong>Syntax:</strong> <code>(divergence function point)</code></p>
 <p><strong>Domain:</strong> Vector field ℝⁿ → ℝⁿ</p>
@@ -1888,7 +1881,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <pre class="scheme"><code>(define (radial v)
   (vector (vref v 0) (vref v 1)))  ; F(x,y) = (x, y)
 
-(divergence radial (vector 1.0 1.0))  ; =&gt; 2</code></pre>
+(divergence radial (vector 1.0 1.0))  ; =&gt; 2.0</code></pre>
 <h4 id="834-curl---vector-field-curl">8.3.4 <code>curl</code> - Vector Field Curl</h4>
 <p><strong>Syntax:</strong> <code>(curl function point)</code></p>
 <p><strong>Domain:</strong> 3D vector field ℝ³ → ℝ³</p>
@@ -1900,7 +1893,7 @@ use-exactly-once is NOT enforced for it</code></pre>
           (vref v 0)             ; x
           0.0))                  ; 0
 
-(curl rotating (vector 1.0 1.0 0.0))  ; =&gt; #(0 0 2)</code></pre>
+(curl rotating (vector 1.0 1.0 0.0))  ; =&gt; #(0.0 0.0 2.0)</code></pre>
 <h4 id="835-laplacian---scalar-field-laplacian">8.3.5 <code>laplacian</code> - Scalar Field Laplacian</h4>
 <p><strong>Syntax:</strong> <code>(laplacian function point)</code></p>
 <p><strong>Domain:</strong> Scalar field ℝⁿ → ℝ</p>
@@ -1911,7 +1904,7 @@ use-exactly-once is NOT enforced for it</code></pre>
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1))))  ; x² + y²
 
-(laplacian harmonic (vector 1.0 1.0))  ; =&gt; 4</code></pre>
+(laplacian harmonic (vector 1.0 1.0))  ; =&gt; 4.0</code></pre>
 <h4 id="836-directional-derivative---directional-derivative">8.3.6 <code>directional-derivative</code> - Directional Derivative</h4>
 <p><strong>Syntax:</strong> <code>(directional-derivative function point direction)</code></p>
 <p><strong>Formula:</strong> D_v f(p) = ∇f(p) · v</p>
@@ -1949,7 +1942,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 ; =&gt; (1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
 ;    (approximately 1.64872, 1.64872, 0.824361, 0.274787, 0.0686967)
 
-(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; =&gt; 27  (f&#39;(x) = 3x^2 at x=3)</code></pre>
+(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; =&gt; 27.0  (f&#39;(x) = 3x^2 at x=3)</code></pre>
 <h4 id="852-coreadguw--arbitrary-order-multivariate-mixed-partials">8.5.2 <code>core.ad.guw</code> — Arbitrary-Order Multivariate Mixed Partials</h4>
 <p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`point`/etc. are metavariables --></p>
 <pre class="scheme"><code>(require core.ad.guw)
@@ -2241,7 +2234,7 @@ LLVM IR → Object File (.o) → Executable</code></pre>
   (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
   (tensor-data t))
 
-(display (outer))                    ; =&gt; #(1 2)</code></pre>
+(display (outer))                    ; =&gt; #(1.0 2.0)</code></pre>
 <p>Reading a value define’s variable <strong>before</strong> its source position yields the unset slot rather than the eventual value; as in Racket and R6RS, that is a program error, not a supported forward reference.</p>
 <hr />
 <h2 id="13-runtime-architecture">13. Runtime Architecture</h2>
@@ -3088,4 +3081,4 @@ tests/                   # Test suites
 <hr />
 <h2 id="conclusion">Conclusion</h2>
 <p>This document provides a <strong>complete</strong> specification of the Eshkol programming language, documenting <strong>every</strong> feature, function, operator, and capability found in the implementation.</p>
-<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,067 built-in functions (1,470 declared constructs in total) - 790 registered VM builtin names and aliases (the manifest’s <code>builtins_in_vm_table</code> count) - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>
+<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,069 built-in functions (1,470 declared constructs in total) - 790 registered VM builtin names and aliases (the manifest’s <code>builtins_in_vm_table</code> count) - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>

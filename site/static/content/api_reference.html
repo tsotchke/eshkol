@@ -2,7 +2,7 @@
 <p><strong>Version</strong>: 1.3.5 <strong>Last Updated</strong>: 2026-09-14 <strong>Audience</strong>: Scientific Computing &amp; AI Systems Programming</p>
 <p>This reference documents Eshkol’s language surface and implementation contracts. The generated language-surface inventory and the AD support matrix distinguish implemented operations, engine-specific restrictions, and measured parity.</p>
 <blockquote>
-<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>, and an inexact value is written with its <code>.0</code> (<code>6.0</code>) where that is what makes the example clear. What the compiler <strong>prints</strong> for an integral double omits the decimal point — <code>(derivative (lambda (x) (* x x)) 3.0)</code> displays <code>6</code>, not <code>6.0</code>, and it is still inexact. The one exception is <code>-0.0</code>, which prints in full because reading <code>-0</code> back would lose both the inexactness and the sign. Output shown inside a fenced result block is always the exact printed text. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
+<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>, and an inexact value is written with its <code>.0</code> (<code>6.0</code>). That is also what the compiler <strong>prints</strong> for an integral double — <code>(derivative (lambda (x) (* x x)) 3.0)</code> displays <code>6.0</code> — so printed text reads back inexact; <code>-0.0</code> likewise prints in full, keeping its sign. Output shown inside a fenced result block is always the exact printed text. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
 </blockquote>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
@@ -390,7 +390,7 @@
 <h4 id="stop-gradient"><code>stop-gradient</code></h4>
 <p><strong>Syntax:</strong> <code>(stop-gradient x)</code> → the value of <code>x</code></p>
 <p>Returns <code>x</code> with every derivative carrier removed, so every enclosing <code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, <code>gradient</code> or <code>jacobian</code> pass treats the result as a constant. A non-carrier is returned unchanged; an exact primal stays exact. The straight-through identity <code>(+ s (stop-gradient (- h s)))</code> has the value <code>h</code> and the derivative of <code>s</code>.</p>
-<pre class="scheme"><code>(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; =&gt; 3
+<pre class="scheme"><code>(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; =&gt; 3.0
 (derivative (lambda (x) (* x (stop-gradient x))) 1/3)   ; =&gt; 1/3</code></pre>
 <p><strong>Implementation:</strong> <code>eshkol_stop_gradient_tagged</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_taylor.c" target="_blank" rel="noopener noreferrer">lib/core/runtime_taylor.c</a>; VM native id 2252. Design: <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0049-neuro-symbolic-bridge.md" target="_blank" rel="noopener noreferrer">ADR-0049</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
@@ -499,9 +499,9 @@
 <p>N-dimensional tensor indexing with slicing support.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(define M #(#(1 2 3) #(4 5 6)))
-(tensor-get M 0 1)   ; =&gt; 2 (scalar element)
-(tensor-get M 1)     ; =&gt; #(4 5 6) (row slice)
-(vref #(10 20 30) 1) ; =&gt; 20 (1D shorthand)</code></pre>
+(tensor-get M 0 1)   ; =&gt; 2.0 (scalar element)
+(tensor-get M 1)     ; =&gt; #(4.0 5.0 6.0) (row slice)
+(vref #(10 20 30) 1) ; =&gt; 20.0 (1D shorthand)</code></pre>
 <p><strong>Type</strong>: Tensor indexing<br />
 <strong>Slicing</strong>: Partial indexing returns view tensor (zero-copy)<br />
 <strong>AD-Aware</strong>: Preserves AD node pointers during gradient computation<br />
@@ -520,7 +520,7 @@
 <p><strong>Syntax</strong>: <code>(transpose matrix)</code></p>
 <p>Transposes 2D matrix (swaps rows and columns).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(transpose #(#(1 2 3) #(4 5 6)))  ; =&gt; #((1 4) (2 5) (3 6))</code></pre>
+<pre class="scheme"><code>(transpose #(#(1 2 3) #(4 5 6)))  ; =&gt; #((1.0 4.0) (2.0 5.0) (3.0 6.0))</code></pre>
 <p><strong>Type</strong>: Matrix transformation<br />
 <strong>Complexity</strong>: O(mn) time, O(mn) space<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>transpose()</code></a></p>
@@ -529,8 +529,8 @@
 <p><strong>Syntax</strong>: <code>(reshape tensor dim...)</code> or <code>(reshape tensor dims-list)</code></p>
 <p>Changes tensor shape (zero-copy view).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(reshape #(1 2 3 4 5 6) 2 3)  ; =&gt; #((1 2 3) (4 5 6))
-(reshape #(1 2 3 4 5 6) &#39;(3 2))  ; =&gt; #((1 2) (3 4) (5 6))</code></pre>
+<pre class="scheme"><code>(reshape #(1 2 3 4 5 6) 2 3)  ; =&gt; #((1.0 2.0 3.0) (4.0 5.0 6.0))
+(reshape #(1 2 3 4 5 6) &#39;(3 2))  ; =&gt; #((1.0 2.0) (3.0 4.0) (5.0 6.0))</code></pre>
 <p><strong>Type</strong>: Shape transformation<br />
 <strong>Constraint</strong>: Total elements must match<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>reshape()</code></a></p>
@@ -539,7 +539,7 @@
 <p><strong>Syntax</strong>: <code>(flatten tensor)</code></p>
 <p>Flattens N-dimensional tensor to 1D (zero-copy view).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(flatten #(#(1 2) #(3 4)))  ; =&gt; #(1 2 3 4)</code></pre>
+<pre class="scheme"><code>(flatten #(#(1 2) #(3 4)))  ; =&gt; #(1.0 2.0 3.0 4.0)</code></pre>
 <p><strong>Type</strong>: Dimensionality reduction<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenFlatten()</code></a></p>
 <hr />
@@ -564,7 +564,7 @@
 <p><strong>Syntax</strong>: <code>(tensor-load path)</code></p>
 <p>Loads a tensor checkpoint from disk.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-load &quot;/tmp/tensor.em&quot;)  ; =&gt; #(1 2 3)</code></pre>
+<pre class="scheme"><code>(tensor-load &quot;/tmp/tensor.em&quot;)  ; =&gt; #(1.0 2.0 3.0)</code></pre>
 <p><strong>Type</strong>: Serialization<br />
 <strong>Returns</strong>: Tensor on success, <code>()</code>/null-equivalent on failure. The ESKM magic, version, shape, payload size, complete record boundary, and CRC-32 are validated before the tensor is materialized; invalid or missing files emit an <code>ERROR</code> diagnostic.</p>
 <hr />
@@ -589,8 +589,8 @@
 <p><strong>Syntax</strong>: <code>(tensor-add A B)</code>, etc.</p>
 <p>Element-wise arithmetic operations. Supports both tensors and Scheme vectors.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5 7 9)
-(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; =&gt; #((2 4) (6 8))</code></pre>
+<pre class="scheme"><code>(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5.0 7.0 9.0)
+(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; =&gt; #((2.0 4.0) (6.0 8.0))</code></pre>
 <p><strong>Type</strong>: Element-wise binary operations<br />
 <strong>Constraint</strong>: Operands must have same shape<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorArithmetic()</code></a></p>
@@ -600,10 +600,10 @@
 <p>Matrix multiplication for 2D, dot product for 1D.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>; 1D vectors: dot product
-(tensor-dot #(1 2 3) #(4 5 6))  ; =&gt; 32
+(tensor-dot #(1 2 3) #(4 5 6))  ; =&gt; 32.0
 
 ; 2D matrices: matmul
-(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; =&gt; #((19 22) (43 50))</code></pre>
+(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; =&gt; #((19.0 22.0) (43.0 50.0))</code></pre>
 <p><strong>Type</strong>: Linear algebra operation<br />
 <strong>Complexity</strong>: O(mnk) for m×k @ k×n matrices<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorDot()</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenMatmul()</code></a></p>
@@ -612,7 +612,7 @@
 <p><strong>Syntax</strong>: <code>(trace matrix)</code></p>
 <p>Sum of diagonal elements.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(trace #(#(1 2) #(3 4)))  ; =&gt; 5</code></pre>
+<pre class="scheme"><code>(trace #(#(1 2) #(3 4)))  ; =&gt; 5.0</code></pre>
 <p><strong>Type</strong>: Matrix invariant<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenTrace()</code></a></p>
 <hr />
@@ -628,7 +628,7 @@
 <p><strong>Syntax</strong>: <code>(outer u v)</code></p>
 <p>Outer product of vectors: <code>(u ⊗ v)[i,j] = uᵢ vⱼ</code></p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(outer #(1 2) #(3 4 5))  ; =&gt; #((3 4 5) (6 8 10))</code></pre>
+<pre class="scheme"><code>(outer #(1 2) #(3 4 5))  ; =&gt; #((3.0 4.0 5.0) (6.0 8.0 10.0))</code></pre>
 <p><strong>Type</strong>: Tensor product<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenOuterProduct()</code></a></p>
 <hr />
@@ -655,7 +655,7 @@
 <p><strong>Syntax</strong>: <code>(tensor-apply tensor func)</code></p>
 <p>Maps function over tensor elements.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; =&gt; #(1 4 9)</code></pre>
+<pre class="scheme"><code>(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; =&gt; #(1.0 4.0 9.0)</code></pre>
 <p><strong>Type</strong>: Element-wise map <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorApply()</code></a></p>
 <hr />
 <h3 id="broadcasting-rules">Broadcasting Rules</h3>
@@ -796,7 +796,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(car &#39;(1 2 3))   ; =&gt; 1
 (cdr &#39;(1 2 3))   ; =&gt; (2 3)
-(car #(10 20 30)) ; =&gt; 10 (vector support)</code></pre>
+(car #(10 20 30)) ; =&gt; 10.0 (vector support)</code></pre>
 <p><strong>Type</strong>: Pair accessors<br />
 <strong>Returns</strong>: Tagged value (preserves type of stored element)<br />
 <strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>car()</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>cdr()</code></a></p>
@@ -890,7 +890,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (- 10 3)        ; =&gt; 7
 (- 5)           ; =&gt; -5 (unary negation)
 (* 2 3 4)       ; =&gt; 24
-(/ 10 2)        ; =&gt; 5.0 (always returns double)</code></pre>
+(/ 10 2)        ; =&gt; 5 (always returns double)</code></pre>
 <p><strong>Type Promotion</strong>: - Int64 + Int64 = Int64 (exact) - Int64 + Double = Double (inexact) - Double + Double = Double (inexact)</p>
 <p><strong>AD Support</strong>: - Dual numbers: Automatic derivative propagation - AD nodes: Computational graph construction</p>
 <p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>polymorphicAdd()</code></a>, etc.</p>
@@ -1034,7 +1034,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <pre class="scheme"><code>(number-&gt;string 42)         ; =&gt; &quot;42&quot;
 (string-&gt;number &quot;3.14&quot;)     ; =&gt; 3.14
 (number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;
-(number-&gt;string 3.0)        ; =&gt; &quot;3&quot;      (integral double, still inexact)
+(number-&gt;string 3.0)        ; =&gt; &quot;3.0&quot;    (integral double, reads back inexact)
 (number-&gt;string -0.0)       ; =&gt; &quot;-0.0&quot;   (sign and inexactness both survive)</code></pre>
 <hr />
 <h2 id="file--io">File &amp; I/O</h2>
@@ -1297,10 +1297,10 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (expt (make-rectangular 0.0 1.0)
       (make-rectangular 0.0 1.0))     ; =&gt; 0.20787957635076193 (i^i)</code></pre>
 <pre class="scheme"><code>(define z1 (make-rectangular 3.0 4.0))
-(magnitude z1)      ; =&gt; 5
+(magnitude z1)      ; =&gt; 5.0
 (angle z1)          ; =&gt; 0.9272952180016122 (atan(4/3))
-(+ z1 z1)           ; =&gt; 6+8i
-(* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4+3i</code></pre>
+(+ z1 z1)           ; =&gt; 6.0+8.0i
+(* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4.0+3.0i</code></pre>
 <hr />
 <h2 id="continuations--control-flow">Continuations &amp; Control Flow</h2>
 <p>Eshkol implements full R7RS continuations with <code>call/cc</code>, <code>dynamic-wind</code>, and structured exception handling via <code>guard</code>/<code>raise</code>. Continuations are first-class values that capture the “rest of the computation” — invoking a continuation abandons the current computation and resumes from the captured point.</p>
@@ -1614,6 +1614,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p>Creates a factor graph with <code>n-vars</code> variable nodes. The second argument <code>dims-tensor</code> is a tensor specifying the number of discrete states for each variable: <code>dims-tensor[i]</code> = |S_i|.</p>
 <p><strong>Note:</strong> The second argument is a <strong>tensor of per-variable state counts</strong>, not a scalar. This allows heterogeneous state spaces (e.g., one binary variable and one ternary variable).</p>
 <p><strong>Returns:</strong> A <code>FactorGraph</code> (heap subtype 16) with no factors attached.</p>
+<p><strong>Admission:</strong> <code>n-vars</code> must be a positive integer, and <code>dims-tensor</code> must supply a positive integer state count for every variable (a bare number gives every variable that many states). Any other argument raises a catchable error. Domains are not capped: the compiled engines and the bytecode VM size their message storage from the widest domain in the graph.</p>
 <p><strong>Implementation:</strong> <code>LogicWorkspaceCodegen::codegenMakeFactorGraph</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>, runtime <code>eshkol_make_factor_graph_tagged</code>.</p>
 <pre class="scheme"><code>;; Two binary variables (each with 2 states)
 (define fg (make-factor-graph 2 #(2 2)))
@@ -1624,6 +1625,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Syntax:</strong> <code>(fg-add-factor! fg var-indices cpt)</code> → void</p>
 <p>Adds a factor node to the graph. <code>var-indices</code> is a tensor of variable indices specifying which variables are in this factor’s scope. <code>cpt</code> is a flat tensor of <strong>log-probabilities</strong> indexed by the joint state assignment of the scoped variables.</p>
 <p><strong>CPT Layout:</strong> For a factor over variables v_a and v_b with |S_a| and |S_b| states respectively, the CPT has |S_a| × |S_b| entries. Entry at index <code>i * |S_b| + j</code> corresponds to log P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i), depending on the model structure).</p>
+<p><strong>Admission:</strong> a factor connects at most 32 variables, and each index must be an integer naming a variable of <code>fg</code>. Any other index list raises a catchable error and adds no factor.</p>
 <p><strong>Implementation:</strong> <code>LogicWorkspaceCodegen::codegenFGAddFactor</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>, runtime <code>eshkol_fg_add_factor_tagged</code>.</p>
 <pre class="scheme"><code>;; Unary factor: prior over variable 0 (binary)
 ;; P(sunny) = 0.7, P(rainy) = 0.3
@@ -1969,17 +1971,17 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Implementation:</strong> <code>tensorDropout</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="activation-function-examples">Activation Function Examples</h4>
 <pre class="scheme"><code>(define x #(-2.0 -1.0 0.0 1.0 2.0))
-(relu x)               ; =&gt; #(0 0 0 1 2)
+(relu x)               ; =&gt; #(0.0 0.0 0.0 1.0 2.0)
 (sigmoid x)            ; =&gt; #(0.11920292202211755 0.2689414213699951 0.5 0.7310585786300049 0.8807970779778823)
 (softmax x)            ; =&gt; #(0.011656230956039605 0.03168492079612427 0.0861285444362687 0.23412165725273662 0.6364086465588308)
-(gelu x)               ; =&gt; #(-0.04540230591222494 -0.15880800939172324 0 0.8411919906082768 1.954597694087775)
-(leaky-relu x)         ; =&gt; #(-0.02 -0.01 0 1 2)
-(silu x)               ; =&gt; #(-0.2384058440442351 -0.2689414213699951 0 0.7310585786300049 1.7615941559557646)
-(elu x)                ; =&gt; #(-0.8646647167633873 -0.6321205588285577 0 1 2)
-(mish x)               ; =&gt; #(-0.2525014826957091 -0.30340146137410895 0 0.8650983882673103 1.9439589595339946)
+(gelu x)               ; =&gt; #(-0.04540230591222494 -0.15880800939172324 0.0 0.8411919906082768 1.954597694087775)
+(leaky-relu x)         ; =&gt; #(-0.02 -0.01 0.0 1.0 2.0)
+(silu x)               ; =&gt; #(-0.2384058440442351 -0.2689414213699951 0.0 0.7310585786300049 1.7615941559557646)
+(elu x)                ; =&gt; #(-0.8646647167633873 -0.6321205588285577 0.0 1.0 2.0)
+(mish x)               ; =&gt; #(-0.2525014826957091 -0.30340146137410895 0.0 0.8650983882673103 1.9439589595339946)
 (dropout x 0.5 #t)     ; =&gt; #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; =&gt; #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)</code></pre>
-<p>(An integral double prints without a decimal point — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">the numeric tower</a>. <code>#(0 0 0 1 2)</code> above is five inexact values, not five exact integers.)</p>
+<p>(An integral double prints with its decimal point — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">the numeric tower</a>. <code>#(0.0 0.0 0.0 1.0 2.0)</code> above is five inexact values.)</p>
 <blockquote>
 <p><strong>Known limitation — <code>leaky-relu</code>’s α argument is ignored (build item).</strong> <code>(leaky-relu x 0.1)</code> and <code>(leaky-relu x 0.5)</code> both answer <code>#(-0.02 -0.01 0 1 2)</code>: the documented α is accepted and then not applied, so the negative slope is always the default 0.01. The signature and semantics above are the contract; the codegen does not yet honour the second operand. Until it does, use <code>(leaky-relu x)</code> for the default slope, or scale explicitly.</p>
 </blockquote>
@@ -2016,7 +2018,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <h4 id="bce-loss"><code>bce-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(bce-loss pred target)</code> → Number</p>
 <p>Binary Cross-Entropy: L = -(1/n) Σ_i [y_i · log(ŷ_i) + (1 - y_i) · log(1 - ŷ_i)].</p>
-<p>Predictions must be in (0, 1) — typically the output of a sigmoid layer. Internally clamped to [ε, 1-ε] for numerical stability.</p>
+<p>Both spellings clamp predicted probabilities to <code>[1e-7, 1 - 1e-7]</code> before evaluating the logarithms.</p>
 <p><strong>Use case:</strong> Binary classification, multi-label classification.</p>
 <p><strong>Implementation:</strong> <code>bceLoss</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="binary-cross-entropy-loss"><code>binary-cross-entropy-loss</code></h4>
@@ -2089,7 +2091,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 (define anchor #(1.0 0.0 0.0))
 (define positive #(0.9 0.1 0.0))
 (define negative #(0.0 1.0 0.0))
-(triplet-loss anchor positive negative 1.0) ; =&gt; 0
+(triplet-loss anchor positive negative 1.0) ; =&gt; 0.0
 ;; = max(d(a,p) - d(a,n) + 1, 0) = max(0.1414 - 1.4142 + 1, 0) = 0 — an easy
 ;; triplet, already satisfying the margin, so no gradient signal.</code></pre>
 <h3 id="optimizers">Optimizers</h3>
@@ -2267,12 +2269,12 @@ v̂_t = v_t / (1 - β₂^t)                         (bias correction)
     (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
 ;; called directly, each scheduler follows its documented curve:
-(linear-warmup-lr    0.001 0    1000)  ; =&gt; 0
+(linear-warmup-lr    0.001 0    1000)  ; =&gt; 0.0
 (linear-warmup-lr    0.001 500  1000)  ; =&gt; 5e-04
 (linear-warmup-lr    0.001 1000 1000)  ; =&gt; 0.001
 (cosine-annealing-lr 0.001 0.0 0    9000)  ; =&gt; 0.001
 (cosine-annealing-lr 0.001 0.0 4500 9000)  ; =&gt; 5e-04
-(cosine-annealing-lr 0.001 0.0 9000 9000)  ; =&gt; 0</code></pre>
+(cosine-annealing-lr 0.001 0.0 9000 9000)  ; =&gt; 0.0</code></pre>
 <blockquote>
 <p><strong>Known limitation — a scheduler called through a user function’s parameter answers 0 (build item).</strong> The composition above is the intended shape, and the direct calls show the intended values. But <code>(define (w s) (linear-warmup-lr 0.001 s 1000))</code> makes <code>(w 500)</code> answer <code>0</code> where <code>(linear-warmup-lr 0.001 500 1000)</code> answers <code>5e-04</code>: the <code>step</code> operand arriving as a user function’s parameter is not read the way a literal is. <code>lr-schedule</code> above therefore prints <code>0</code> for both warmup queries on this build. Call the scheduler with the step expression written at the call site, or bind it to a top-level value, until the operand handling is fixed.</p>
 </blockquote>
@@ -2368,7 +2370,7 @@ PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))</code></pre>
 <p><strong>Implementation:</strong> <code>causalMask</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="padding-mask"><code>padding-mask</code></h4>
 <p><strong>Syntax:</strong> <code>(padding-mask lengths max-len)</code> → Tensor</p>
-<p>Creates a padding mask for variable-length sequences. Marks valid positions as 0 and padding positions as -∞. Shape: (batch, max-len).</p>
+<p>Creates a padding mask for variable-length sequences. Marks valid positions as 0 and padding positions as -∞. The shape <code>(batch, 1, max-len)</code> applies the same key mask to every query within a batch in scaled dot-product and multi-head attention.</p>
 <p><code>lengths</code> is a tensor of actual sequence lengths for each batch element.</p>
 <p><strong>Implementation:</strong> <code>paddingMask</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="feed-forward"><code>feed-forward</code></h4>
@@ -4772,7 +4774,7 @@ math-utils = &quot;1.0.0&quot;</code></pre>
   (sqrt (+ (expt (- (point-x p1) (point-x p2)) 2)
            (expt (- (point-y p1) (point-y p2)) 2))))
 
-(distance (make-point 0 0) (make-point 3 4))   ; =&gt; 5.0</code></pre>
+(distance (make-point 0 0) (make-point 3 4))   ; =&gt; 5</code></pre>
 <hr />
 <h2 id="ml-standard-library">ML Standard Library</h2>
 <p>The ML standard library provides high-level optimization algorithms and utility functions implemented in Eshkol. These are stdlib functions (compiled to <code>stdlib.o</code>), distinct from the compiler-level ML builtins documented in <a href="/docs#page=api_reference&amp;machine-learning--neural-networks" data-url="/content/api_reference.html">Machine Learning &amp; Neural Networks</a>.</p>

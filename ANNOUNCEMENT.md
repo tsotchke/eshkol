@@ -1,6 +1,6 @@
-# Eshkol v1.3.6-evolve — published mathematics, checked exactly
+# Eshkol v1.4.0-connection — systems profile, exact mathematics, and verified execution
 
-Prepared for publication. Intended release date: Thursday, October 15, 2026.
+Release candidate. Planned release date: Wednesday, November 25, 2026.
 Eshkol compiles R7RS Scheme through LLVM and runs the same language on its
 bytecode VM and in the browser.
 
@@ -78,7 +78,7 @@ or without a line editor, and every release build carries native image I/O.
 ESKM v2 model files are available as a doubly gated experiment; default saves
 remain byte-identical v1.
 
-The final publication contract is <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->,
+The final publication contract is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->,
 with no failed, skipped or infrastructure-only checks, bound to the exact
 release commit. [Source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38657799489) passed all 823 configured CTest cases and
 all 411 VM parity cases.
