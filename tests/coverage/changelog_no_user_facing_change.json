@@ -2,5 +2,11 @@
   "schema": "eshkol.changelog-no-user-facing-change.v1",
   "_comment": "Merged pull requests of the release range that deliberately have no CHANGELOG entry. scripts/check_changelog_completeness.py walks <previous_tag>..HEAD (both tags come from tests/coverage/release_record.json), derives every merged pull request number from the commit subjects, and fails unless each one is either referenced as #N in the changelog section for the release (or in [Unreleased]) or listed here. An entry names the pull request, a class from the gate's closed set (ci, test-only, docs-only, release-machinery, build-internal, merge-integration, reverted-or-superseded) and a specific reason a user cannot observe the change. The gate also fails an entry that is stale (not in the range), redundant (also referenced in the changelog: one home per pull request), duplicated, generically worded or out of order. Keep entries sorted by pull request number. A pull request may add its own entry before it merges: CI names it with --pending-pr, so the entry is not graded stale. The ledger is per release: when the release record's tag moves on, set \"release\" to the new tag and delete the entries the gate then reports as stale.",
   "release": "v1.4.0-connection",
-  "entries": []
+  "entries": [
+    {
+      "pr": 957,
+      "class": "release-machinery",
+      "reason": "Moves the active release record and accounting boundary to v1.4.0-connection, synchronizes release-facing documentation, and rebuilds the candidate site content; compiler, runtime, and language behavior are unchanged, and final qualification remains pending."
+    }
+  ]
 }
