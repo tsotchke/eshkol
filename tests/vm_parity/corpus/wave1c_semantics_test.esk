@@ -1,0 +1,116 @@
+;;; Wave 1C: Core semantics, behavioral parity, and control/binding forms
+;;; Exercises: eq?, eqv?, force, do (nested/parallel/consecutive/define-after),
+;;; dynamic-wind (normal/nested/escape/reentry), unquote-splicing (start/mid/end/nested),
+;;; compose, let*-values, make-parameter, parameterize.
+
+;; 1. eq? / eqv? / equal?
+(display "eq-sym:") (display (eq? 'alpha 'alpha)) (newline)
+(display "eq-sym-diff:") (display (eq? 'alpha 'beta)) (newline)
+(display "eq-int:") (display (eq? 42 42)) (newline)
+(display "eq-bool:") (display (eq? #t #t)) (newline)
+(display "eq-nil:") (display (eq? '() '())) (newline)
+(let ((p (cons 1 2))
+      (q (cons 1 2)))
+  (display "eq-pair-same:") (display (eq? p p)) (newline)
+  (display "eq-pair-diff:") (display (eq? p q)) (newline)
+  (display "equal-pair:") (display (equal? p q)) (newline))
+(display "eqv-int-int:") (display (eqv? 7 7)) (newline)
+(display "eqv-int-flt:") (display (eqv? 1 1.0)) (newline)
+(display "eqv-char:") (display (eqv? #\a #\a)) (newline)
+(display "eqv-char-diff:") (display (eqv? #\a #\b)) (newline)
+
+;; 2. force / delay / make-promise (including memoization & first-class force)
+(let ((count 0))
+  (let ((p (delay (begin (set! count (+ count 1)) (* 6 7)))))
+    (display "force-1:") (display (force p)) (newline)
+    (display "force-2:") (display (force p)) (newline)
+    (display "force-count:") (display count) (newline)))
+(display "force-val:") (display (force 99)) (newline)
+(display "force-first-class:")
+(display (map force (list (delay (+ 1 2)) (delay (+ 3 4)))))
+(newline)
+
+;; 3. do (flat, nested, parallel step, consecutive, define-after-do)
+(display "do-flat:")
+(display (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) s)))
+(newline)
+
+(display "do-parallel:")
+(display (do ((a 1 b) (b 2 (+ a b)) (n 0 (+ n 1))) ((= n 5) (list a b))))
+(newline)
+
+(display "do-nested:")
+(display
+  (do ((i 0 (+ i 1))
+       (acc 0 (+ acc (do ((j 0 (+ j 1)) (inner 0 (+ inner 1)))
+                         ((= j 3) inner)))))
+      ((= i 4) acc)))
+(newline)
+
+(display "do-consec-1:")
+(display (do ((k 0 (+ k 1)) (r 0 (+ r k))) ((= k 4) r)))
+(newline)
+(display "do-consec-2:")
+(display (do ((k 1 (+ k 1)) (r 1 (* r k))) ((= k 5) r)))
+(newline)
+
+(define after-do-val 12345)
+(display "define-after-do:") (display after-do-val) (newline)
+
+;; 4. dynamic-wind (normal, nested, escape via call/cc)
+(let ((log '()))
+  (let ((res (dynamic-wind
+               (lambda () (set! log (cons 'before log)))
+               (lambda () (set! log (cons 'body log)) 'ok)
+               (lambda () (set! log (cons 'after log))))))
+    (display "dw-normal:") (display res) (display ":") (display (reverse log)) (newline)))
+
+(let ((log '()))
+  (let ((res (call/cc
+               (lambda (k)
+                 (dynamic-wind
+                   (lambda () (set! log (cons 'in log)))
+                   (lambda () (set! log (cons 'work log)) (k 'escaped))
+                   (lambda () (set! log (cons 'out log))))))))
+    (display "dw-escape:") (display res) (display ":") (display (reverse log)) (newline)))
+
+;; 5. unquote-splicing (start, middle, end, empty, multiple)
+(let ((xs '(2 3))
+      (ys '(5 6)))
+  (display "splice-start:") (display `(,@xs 4)) (newline)
+  (display "splice-mid:") (display `(1 ,@xs 4)) (newline)
+  (display "splice-end:") (display `(1 ,@xs)) (newline)
+  (display "splice-empty:") (display `(1 ,@'() 2)) (newline)
+  (display "splice-multi:") (display `(0 ,@xs 4 ,@ys 7)) (newline))
+
+;; 6. compose
+(let ((add1 (lambda (x) (+ x 1)))
+      (dbl (lambda (x) (* x 2))))
+  (display "compose-bin:") (display ((compose add1 dbl) 5)) (newline)
+  (display "compose-rev:") (display ((compose dbl add1) 5)) (newline))
+
+;; 7. let*-values (sequential multi-value destructuring + tail position)
+(display "let*-values-seq:")
+(display
+  (let*-values (((a b) (values 3 4))
+                ((c d) (values (+ a b) (* a b))))
+    (list a b c d)))
+(newline)
+
+(display "let*-values-rest:")
+(display
+  (let*-values (((x . rest) (values 10 20 30))
+                ((y) (values (+ x (car rest)))))
+    (list x rest y)))
+(newline)
+
+;; 8. make-parameter & parameterize (with and without converter, nested)
+(let ((p (make-parameter 10))
+      (q (make-parameter 5 (lambda (x) (* x 2)))))
+  (display "param-init:") (display (list (p) (q))) (newline)
+  (parameterize ((p 20) (q 7))
+    (display "param-inner:") (display (list (p) (q))) (newline)
+    (parameterize ((p 30))
+      (display "param-nested:") (display (list (p) (q))) (newline))
+    (display "param-unwind1:") (display (list (p) (q))) (newline))
+  (display "param-unwind0:") (display (list (p) (q))) (newline))

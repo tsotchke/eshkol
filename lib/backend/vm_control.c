@@ -22,6 +22,19 @@ static int vm_continuation_stack_span(const VM* vm) {
     return span > 0 ? span : 0;
 }
 
+/* The same parameter may have multiple active bindings. Its innermost
+ * binding is current; each enclosing value sits in the parameter's stack. */
+static int vm_wind_parameter_offset(const VM* vm, int wind) {
+    int offset = 0;
+    Value parameter = vm->wind_stack[wind].after;
+    for (int i = wind + 1; i < vm->n_winds; i++) {
+        Value after = vm->wind_stack[i].after;
+        if (after.type == VAL_PARAMETER_OBJ && after.as.ptr == parameter.as.ptr)
+            offset++;
+    }
+    return offset;
+}
+
 static size_t vm_continuation_allocation_size(const VM* vm) {
     size_t handler_values = 0;
     for (int i = 0; i < vm->n_handlers; i++) {
@@ -126,16 +139,21 @@ static int vm_capture_continuation_dynamic_state(VM* vm,
     cursor += (size_t)cont->n_parameter_bindings * sizeof(Value);
     cont->saved_parameter_values = (Value*)cursor;
 
+    int binding = 0;
     for (int i = 0; i < cont->n_winds; i++) {
+        Value after = vm->wind_stack[i].after;
         cont->saved_wind_befores[i] = vm->wind_stack[i].before;
-        cont->saved_wind_afters[i] = vm->wind_stack[i].after;
-    }
-    for (int i = 0; i < cont->n_parameter_bindings; i++) {
-        Value parameter_value = vm->parameter_bindings[i];
-        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
-        cont->saved_parameter_bindings[i] = parameter_value;
-        if (parameter) vm_param_ref(parameter, &cont->saved_parameter_values[i]);
-        else cont->saved_parameter_values[i] = NIL_VAL;
+        cont->saved_wind_afters[i] = after;
+        if (after.type == VAL_PARAMETER_OBJ) {
+            VmParameter* parameter = vm_parameter_from_value(vm, after);
+            int offset = vm_wind_parameter_offset(vm, i);
+            uint64_t id = vm_param_binding_id(parameter, offset);
+            if (!id) return 0;
+            cont->saved_wind_befores[i] = INT_VAL((int64_t)id);
+            cont->saved_parameter_bindings[binding] = after;
+            vm_param_binding_ref(parameter, offset, &cont->saved_parameter_values[binding]);
+            binding++;
+        }
     }
     return 1;
 }
@@ -188,92 +206,56 @@ static int vm_wind_value_same(Value a, Value b) {
     return a.as.i == b.as.i;
 }
 
-/**
- * @brief Move the wind stack to the continuation's saved extent, running the
- *        thunks the transfer crosses (R7RS 6.10 rerooting).
- *
- * Unwinding alone is only correct for an escape, where the target extent is an
- * ancestor of the current one. Re-entering a continuation captured inside a
- * `dynamic-wind` whose extent has since been left has to run that extent's
- * `before` thunk again on the way back in, or the body resumes with its setup
- * undone. Wind entries are pushed in dynamic order, so a shared prefix of the
- * two stacks is a shared dynamic extent and nothing there needs to run.
- */
-static void vm_reroot_winds(VM* vm, const VmContinuation* cont) {
+/* Leave inner extents first, then enter outer extents first. Parameter
+ * bindings participate in the same order as procedure callbacks. */
+static int vm_reroot_winds(VM* vm, const VmContinuation* cont) {
     int limit = vm->n_winds < cont->n_winds ? vm->n_winds : cont->n_winds;
     int common = 0;
-    while (common < limit
-           && vm_wind_value_same(vm->wind_stack[common].before,
-                                 cont->saved_wind_befores[common])
-           && vm_wind_value_same(vm->wind_stack[common].after,
-                                 cont->saved_wind_afters[common])) {
-        common++;
-    }
-
-    /* Leave: innermost `after` first. */
-    while (vm->n_winds > common) {
-        vm->n_winds--;
-        vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after);
-    }
-    /* Enter: outermost `before` first. Publish each entry before running its
-     * thunk so a continuation captured inside a `before` sees a coherent
-     * stack. Parameter objects are re-established by the parameter-binding
-     * replay in vm_restore_continuation_dynamic_state(), not here. */
-    for (int i = common; i < cont->n_winds; i++) {
-        vm->wind_stack[i].before = cont->saved_wind_befores[i];
-        vm->wind_stack[i].after  = cont->saved_wind_afters[i];
-        vm->n_winds = i + 1;
-        if (cont->saved_wind_befores[i].type == VAL_CLOSURE)
-            vm_run_wind_after(vm, cont->saved_wind_befores[i]);
-    }
-    vm->n_winds = cont->n_winds;
-}
-
-static void vm_restore_continuation_dynamic_state(VM* vm,
-                                                  const VmContinuation* cont) {
-    /* Parameter values live outside the VM execution stack.  Rebuild their
-     * dynamic stacks from the continuation snapshot before resuming code;
-     * merely restoring a binding depth would otherwise leave captured
-     * parameterize extents pointing at the values of the abandoned path. */
-    vm_unwind_parameter_bindings(vm, 0);
-
-    /* Stage-1 evacuator: close every `with-region` the transfer is jumping out
-     * of, the counterpart of native's eshkol_region_unwind_for_continuation().
-     * The regions are pinned first, so nothing the abandoned path allocated is
-     * freed — the continuation's value may live anywhere in it and, unlike a
-     * raise, there is no single in-flight slot to promote. */
-    if (!vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets)) {
-        vm->error = 1;
-        return;
-    }
-
-    for (int i = 0; i < cont->n_winds; i++) {
-        vm->wind_stack[i].before = cont->saved_wind_befores[i];
-        vm->wind_stack[i].after = cont->saved_wind_afters[i];
-    }
-    vm->n_winds = cont->n_winds;
-
-    for (int i = 0; i < cont->n_parameter_bindings; i++) {
-        Value parameter_value = cont->saved_parameter_bindings[i];
-        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
-        if (!parameter) {
-            vm->error = 1;
-            return;
+    int binding = 0;
+    for (; common < limit; common++) {
+        Value after = vm->wind_stack[common].after;
+        if (!vm_wind_value_same(after, cont->saved_wind_afters[common])) break;
+        if (after.type == VAL_PARAMETER_OBJ) {
+            VmParameter* parameter = vm_parameter_from_value(vm, after);
+            int offset = vm_wind_parameter_offset(vm, common);
+            uint64_t id = vm_param_binding_id(parameter, offset);
+            if (id != (uint64_t)cont->saved_wind_befores[common].as.i) break;
+            binding++;
+        } else if (!vm_wind_value_same(vm->wind_stack[common].before,
+                                       cont->saved_wind_befores[common])) {
+            break;
         }
-        vm_param_push(&vm->heap.regions, parameter,
-                      &cont->saved_parameter_values[i]);
-        if (!vm_record_parameter_binding(vm, parameter_value)) return;
     }
+
+    while (vm->n_winds > common) {
+        vm_run_wind_after(vm, vm->wind_stack[--vm->n_winds].after);
+        if (vm->error) return 0;
+    }
+    for (int i = common; i < cont->n_winds; i++) {
+        Value before = cont->saved_wind_befores[i];
+        Value after = cont->saved_wind_afters[i];
+        if (after.type == VAL_PARAMETER_OBJ) {
+            VmParameter* parameter = vm_parameter_from_value(vm, after);
+            if (!vm_param_reenter(&vm->heap.regions, parameter,
+                                  &cont->saved_parameter_values[binding++],
+                                  (uint64_t)before.as.i)) return 0;
+            if (!vm_record_parameter_binding(vm, after)) {
+                vm_param_pop(parameter);
+                return 0;
+            }
+            before = NIL_VAL;
+        } else {
+            /* The before callback runs outside the extent it is entering. */
+            vm_run_wind_after(vm, before);
+            if (vm->error) return 0;
+        }
+        vm->wind_stack[i].before = before;
+        vm->wind_stack[i].after = after;
+        vm->n_winds++;
+    }
+    return 1;
 }
 
-/* Resume a captured continuation with @p val: reroot the wind stack, unwind
- * the promise/parameter/region state the transfer leaves, put the saved
- * control state back, and escape any native C frames the invoke crossed.
- *
- * This body used to be copied four times — OP_CALL, OP_TAIL_CALL and
- * OP_INVOKE_CC, each once per dispatch mechanism. Failure is reported the way
- * it always was: vm->error is set and the caller's next dispatch step leaves
- * the loop. */
 /* Build the value frame delivered by a continuation invocation before the
  * saved control stack is restored. The argument slots belong to the active
  * invocation and vm_restore_continuation_stack() may overwrite them. */
@@ -302,12 +284,15 @@ static int vm_continuation_result(VM* vm, const Value* args, int argc,
 }
 
 static void vm_continuation_resume(VM* vm, VmContinuation* cont, Value val) {
-    vm_reroot_winds(vm, cont);
+    if (!vm_reroot_winds(vm, cont)) { vm->error = 1; return; }
     vm_promise_eval_unwind_to(vm, cont->promise_mark);
     if (cont->sp > STACK_SIZE ||
         !vm_ensure_frame_capacity(vm, cont->frame_count)) { vm->error = 1; return; }
-    vm_restore_continuation_dynamic_state(vm, cont);
-    if (vm->error) return;
+    /* Captured region brackets are pinned before a transfer closes them. */
+    if (!vm_region_bracket_unwind_pinned(vm, cont->n_region_brackets)) {
+        vm->error = 1;
+        return;
+    }
     vm_restore_continuation_handlers(vm, cont);
     if (vm->error) return;
     if (!vm_restore_continuation_stack(vm, cont)) return;
