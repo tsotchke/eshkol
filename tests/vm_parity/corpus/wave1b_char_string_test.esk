@@ -1,0 +1,141 @@
+; ADR-0064 Wave 1B — extended character operations, extended string
+; operations, and the SRFI-69 hash-table-ref lookup spelling.
+;
+; Every line prints a deterministic value, so the engines can be compared
+; line for line. The expected output is listed at the foot of this file.
+
+; ── Extended character comparison (R7RS 6.6) ─────────────────────────────
+(display (char<=? #\a #\a)) (newline)
+(display (char<=? #\a #\b #\c)) (newline)
+(display (char>=? #\c #\b #\a)) (newline)
+(display (char>=? #\a #\b)) (newline)
+
+(display (char-ci=? #\A #\a)) (newline)
+(display (char-ci=? #\A #\a #\A)) (newline)
+(display (char-ci=? #\A #\b)) (newline)
+(display (char-ci<? #\a #\B)) (newline)
+(display (char-ci<? #\B #\a)) (newline)
+(display (char-ci<=? #\A #\a #\b)) (newline)
+(display (char-ci>? #\B #\a)) (newline)
+(display (char-ci>=? #\b #\B #\a)) (newline)
+
+; ── char-foldcase ────────────────────────────────────────────────────────
+(display (char-foldcase #\A)) (newline)
+(display (char-foldcase #\z)) (newline)
+(display (char-foldcase #\5)) (newline)
+(display (char->integer (char-foldcase #\Q))) (newline)
+
+; ── digit-value ──────────────────────────────────────────────────────────
+(display (digit-value #\0)) (newline)
+(display (digit-value #\7)) (newline)
+(display (digit-value #\9)) (newline)
+(display (digit-value #\a)) (newline)
+(display (digit-value #\space)) (newline)
+
+; ── char-ready? ──────────────────────────────────────────────────────────
+(display (char-ready?)) (newline)
+
+; ── Extended string comparison ───────────────────────────────────────────
+(display (string<=? "abc" "abc")) (newline)
+(display (string<=? "abc" "abd")) (newline)
+(display (string<=? "abd" "abc")) (newline)
+(display (string>=? "abd" "abc")) (newline)
+(display (string>? "abd" "abc")) (newline)
+(display (string>? "abc" "abc")) (newline)
+(display (string<=? "ab" "abc")) (newline)
+(display (string>? "abc" "ab")) (newline)
+; Native lowers the string comparisons in CALL position at exactly two
+; arguments; the two-or-more shape is the VALUE form, covered by the chain
+; the prelude installs, so the corpus keeps to the binary calls here.
+
+; ── Case-folded string comparison ────────────────────────────────────────
+(display (string-ci=? "AbC" "aBc")) (newline)
+(display (string-ci<? "abc" "ABD")) (newline)
+(display (string-ci<=? "ABC" "abc")) (newline)
+(display (string-ci>? "ABD" "abc")) (newline)
+(display (string-ci>=? "ABC" "abc")) (newline)
+(display (string-ci<? "ABD" "abc")) (newline)
+
+; ── string-foldcase ──────────────────────────────────────────────────────
+(display (string-foldcase "AbC-Z9")) (newline)
+(display (string-foldcase "")) (newline)
+(display (string-length (string-foldcase "HELLO"))) (newline)
+
+; ── string constructor (variadic, multi-byte aware) ──────────────────────
+(display (string #\a #\b #\c)) (newline)
+(display (string-length (string #\a #\b #\c))) (newline)
+
+; ── string-contains? and string-index ────────────────────────────────────
+(display (string-contains? "hello world" "lo w")) (newline)
+(display (string-contains? "hello world" "zz")) (newline)
+(display (string-contains? "hello" "")) (newline)
+(display (string-index "hello world" "world")) (newline)
+(display (string-index "hello world" "h")) (newline)
+(display (string-index "hello world" "zz")) (newline)
+
+; ── string-set! — in place, including an encoded-width change ────────────
+(define s1 (string-copy "abcde"))
+(string-set! s1 0 #\X)
+(display s1) (newline)
+(string-set! s1 4 #\Z)
+(display s1) (newline)
+(display (string-length s1)) (newline)
+(display (string-ref s1 0)) (newline)
+
+; ── string-copy! — per R7RS 6.7, including the overlapping case ──────────
+(define s2 (string-copy "abcde"))
+(string-copy! s2 1 "XY")
+(display s2) (newline)
+(display (string-length s2)) (newline)
+
+(define s3 (string-copy "0123456789"))
+(string-copy! s3 0 "abcdef" 2 5)
+(display s3) (newline)
+
+(define s4 (string-copy "abcdef"))
+(string-copy! s4 3 s4 0 3)
+(display s4) (newline)
+
+(define s5 (string-copy "abcdef"))
+(string-copy! s5 0 s5 2 5)
+(display s5) (newline)
+
+; ── string-port? ─────────────────────────────────────────────────────────
+(display (string-port? (open-input-string "abc"))) (newline)
+(display (string-port? 42)) (newline)
+
+; ── string-map / string-for-each (prelude-defined) ───────────────────────
+(display (string-map char-foldcase "ABC")) (newline)
+(string-for-each (lambda (c) (display (digit-value c))) "123")
+(newline)
+
+; ── hash-table-ref ───────────────────────────────────────────────────────
+(define h (make-hash-table))
+(hash-table-set! h "one" 1)
+(hash-table-set! h "two" 2)
+(display (hash-table-ref h "one")) (newline)
+(display (hash-table-ref h "two")) (newline)
+(display (hash-table-ref h "three")) (newline)
+(display (hash-table-ref h "three" 0)) (newline)
+(display (hash-table-ref h "one" 99)) (newline)
+
+; Expected output, one value per line:
+;   #t #t #t #f
+;   #t #t #f #t #f #t #t #t
+;   a z 5 113
+;   0 7 9 #f #f
+;   #t
+;   #t #t #f #t #t #f #t #t
+;   #t #t #t #t #t #f
+;   abc-z9 (empty) 5
+;   abc 3
+;   #t #f #t 6 0 -1
+;   Xbcde XbcdZ 5 X
+;   aXYde 5
+;   cde3456789
+;   abcabc
+;   cdedef
+;   #t #f
+;   abc
+;   123
+;   1 2 #f 0 1
