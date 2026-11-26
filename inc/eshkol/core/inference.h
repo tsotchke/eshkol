@@ -122,6 +122,17 @@ double eshkol_free_energy(const eshkol_factor_graph_t* fg,
     const double* observations, uint32_t num_obs);
 
 /*
+ * Bethe Free Energy:
+ *   F_Bethe = sum_a (E_{b_a}[-ln f_a(x_a)] - H(b_a)) + sum_v (d_v - 1) H(b_v)
+ *
+ * Uses factor joint beliefs b_a(x_a) proportional to f_a(x_a) * prod_{v in a} m_{v->a}(x_v)
+ * when belief propagation messages are present, falling back to current marginals otherwise.
+ * Exact (-ln Z) on tree-structured factor graphs after BP convergence.
+ */
+double eshkol_free_energy_bethe(const eshkol_factor_graph_t* fg,
+    const double* observations, uint32_t num_obs);
+
+/*
  * Expected Free Energy: G(a) = E_q(o,s|a)[ln q(s|a) - ln p(o,s)]
  *
  * Decomposes into:
@@ -218,6 +229,18 @@ void eshkol_fg_infer_tagged(arena_t* arena,
  * @param[out] result Destination tagged DOUBLE holding the free-energy value.
  */
 void eshkol_free_energy_tagged(
+    const eshkol_tagged_value_t* fg_tv,
+    const eshkol_tagged_value_t* observations_tensor,
+    eshkol_tagged_value_t* result);
+
+/**
+ * @brief Tagged-value entry point for eshkol_free_energy_bethe().
+ *
+ * Extracts observation pairs identically to eshkol_free_energy_tagged() and
+ * evaluates the Bethe free energy of @p fg_tv. @p result is always a tagged
+ * inexact DOUBLE.
+ */
+void eshkol_free_energy_bethe_tagged(
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* observations_tensor,
     eshkol_tagged_value_t* result);

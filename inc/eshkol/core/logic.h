@@ -29,18 +29,31 @@ typedef struct arena arena_t;
 #define LOGIC_VAR_MAX 65536
 
 /*
+ * Persistent 32-way salted HAMT node for large immutable substitutions.
+ * bitmap == 0 marks a leaf/collision bucket holding leaf_ids[count] and
+ * leaf_terms[count]; bitmap != 0 marks an internal radix node whose children[]
+ * array has popcount(bitmap) pointers indexed by 5-bit salted hash chunks.
+ */
+typedef struct eshkol_subst_hamt_node {
+    uint32_t bitmap;
+    uint32_t count;
+    uint64_t* leaf_ids;
+    eshkol_tagged_value_t* leaf_terms;
+    struct eshkol_subst_hamt_node** children;
+} eshkol_subst_hamt_node_t;
+
+/*
  * Substitution: immutable mapping from var_ids to terms.
- * Stored as parallel arrays for cache-friendly access.
- * Layout: [eshkol_object_header_t][eshkol_substitution_t][var_ids...][terms...]
- *
- * Immutability means copy-on-extend: each extend creates a new substitution
- * containing all old bindings plus the new one. This enables backtracking
- * without undo (just discard the extended substitution).
+ * Small substitutions (hamt_root == NULL) store inline parallel arrays:
+ *   Layout: [eshkol_object_header_t][eshkol_substitution_t][var_ids...][terms...]
+ * Larger substitutions promote to a persistent 32-way salted HAMT (hamt_root != NULL,
+ * capacity == 0) providing O(log_32 N) worst-case lookup and O(log_32 N) path-copy extend.
  */
 typedef struct eshkol_substitution {
     uint32_t num_bindings;
     uint32_t capacity;
-    /* Followed by: uint64_t var_ids[capacity] */
+    eshkol_subst_hamt_node_t* hamt_root;
+    /* When hamt_root == NULL, followed by: uint64_t var_ids[capacity] */
     /* Followed by: eshkol_tagged_value_t terms[capacity] */
 } eshkol_substitution_t;
 
@@ -68,16 +81,41 @@ typedef struct eshkol_fact {
 #define FACT_ARGS(f) ((eshkol_tagged_value_t*)((uint8_t*)(f) + sizeof(eshkol_fact_t)))
 
 /*
- * Knowledge base: growable array of fact pointers.
+ * Rule (HEAP_SUBTYPE_RULE = 14): Horn / weighted / guarded rule.
+ * All variable-length components (body[], name) are arena-allocated with
+ * no fixed stack cap or silent truncation.
+ */
+typedef enum eshkol_rule_flags {
+    ESHKOL_RULE_FLAG_NONE       = 0,
+    ESHKOL_RULE_FLAG_TABLED     = 1u << 0, /* SLG tabling eligible */
+    ESHKOL_RULE_FLAG_WEIGHTED   = 1u << 1, /* Semiring / probabilistic weight active */
+    ESHKOL_RULE_FLAG_NARS_TRUTH = 1u << 2, /* (frequency, confidence) NARS truth active */
+    ESHKOL_RULE_FLAG_STRATIFIED = 1u << 3  /* Stratified / incrementalizable */
+} eshkol_rule_flags_t;
+
+typedef struct eshkol_rule {
+    eshkol_fact_t* head;              /* Consequent fact (arena-allocated) */
+    eshkol_fact_t** body;             /* Antecedent goals: arena array [num_body] */
+    uint32_t num_body;                /* Unbounded number of antecedent goals */
+    uint32_t flags;                   /* eshkol_rule_flags_t bitmask */
+    eshkol_tagged_value_t guard;      /* Optional guard value (ESHKOL_VALUE_NULL if absent) */
+    double weight;                    /* Rule weight / log-prob / NARS frequency */
+    double confidence;                /* NARS confidence / provenance strength */
+    const char* name;                 /* Optional unbounded arena-allocated rule name */
+} eshkol_rule_t;
+
+/*
+ * Knowledge base: growable array of fact pointers plus optional arena-backed
+ * predicate hash index (populated once num_facts reaches the index threshold).
  * Layout: [eshkol_object_header_t][eshkol_knowledge_base_t]
  *
- * Uses arena allocation — when full, allocates new larger array and copies.
- * v1.2 will add predicate indexing for O(1) lookup.
+ * num_facts stays at offset 0 for direct runtime inspection.
  */
 typedef struct eshkol_knowledge_base {
     uint32_t num_facts;
     uint32_t capacity;
     eshkol_fact_t** facts;    /* Arena-allocated array of fact pointers */
+    void* pred_index;         /* Optional arena-allocated predicate index (NULL when small/evacuated) */
 } eshkol_knowledge_base_t;
 
 #ifdef __cplusplus
@@ -212,6 +250,38 @@ eshkol_substitution_t* eshkol_unify(arena_t* arena,
  */
 eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
     const eshkol_tagged_value_t* args, uint32_t arity);
+
+/* ===== Rules (HEAP_SUBTYPE_RULE = 14) ===== */
+
+/*
+ * Create a Horn/weighted/guarded rule allocated with HEAP_SUBTYPE_RULE.
+ * Copies body[0..num_body-1] and full-length name into @p arena with no
+ * fixed cap or silent truncation. Returns NULL if arena or head is NULL,
+ * or if num_body > 0 and body is NULL.
+ */
+eshkol_rule_t* eshkol_make_rule(arena_t* arena,
+    eshkol_fact_t* head,
+    eshkol_fact_t* const* body,
+    uint32_t num_body,
+    const eshkol_tagged_value_t* guard,
+    double weight,
+    double confidence,
+    uint32_t flags,
+    const char* name);
+
+/*
+ * Apply @p rule for one forward-chaining step over @p kb starting from
+ * @p initial_subst (or empty substitution if NULL). Matches every body
+ * goal via eshkol_kb_query() and instantiates @p rule->head via
+ * eshkol_walk_deep(), returning a cons list of derived HEAP_PTR facts.
+ */
+eshkol_tagged_value_t eshkol_rule_apply(arena_t* arena,
+    const eshkol_rule_t* rule,
+    const eshkol_knowledge_base_t* kb,
+    const eshkol_substitution_t* initial_subst);
+
+/* Print a rule as (rule <head> :- <body1>, ...) */
+void eshkol_display_rule(const eshkol_rule_t* r, void* file);
 
 /* ===== Knowledge Base ===== */
 

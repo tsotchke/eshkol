@@ -63,6 +63,7 @@ extern "C" {
     X(LOGIC_VAR,       "logic-var")               \
     X(SUBSTITUTION,    "substitution")            \
     X(FACT,            "fact")                    \
+    X(RULE,            "rule")                    \
     X(KNOWLEDGE_BASE,  "knowledge-base")          \
     X(FACTOR_GRAPH,    "factor-graph")            \
     X(WORKSPACE,       "workspace")               \

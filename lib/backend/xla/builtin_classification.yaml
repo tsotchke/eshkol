@@ -1209,6 +1209,9 @@ builtins:
   "free-energy":
     label: host
     rationale: "Operates on a consciousness-engine value (knowledge base, factor graph, workspace, substitution), excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
+  "free-energy-bethe":
+    label: host
+    rationale: "Operates on a consciousness-engine value (knowledge base, factor graph, workspace, substitution), excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
   "fs-unwatch":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."

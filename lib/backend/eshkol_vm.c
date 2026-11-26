@@ -741,7 +741,7 @@ static const BuiltinDef BUILTINS[] = {
     {"fg-add-factor!", 522, 3}, {"fg-infer!", 523, 3},
     {"fg-update-cpt!", 524, 3},
     {"free-energy", 525, 2}, {"expected-free-energy", 526, 3},
-    {"fg-observe!", 527, 3},
+    {"fg-observe!", 527, 3}, {"free-energy-bethe", 528, 2},
     {"make-workspace", 540, 2}, {"workspace?", 541, 1},
     {"ws-register!", 542, 3}, {"ws-step!", 543, 1},
     {"ws-get-content", 544, 1}, {"ws-set-content!", 545, 2},

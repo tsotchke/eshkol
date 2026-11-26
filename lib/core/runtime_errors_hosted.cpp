@@ -355,6 +355,7 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
                 case HEAP_SUBTYPE_BIGNUM:         return "bignum";
                 case HEAP_SUBTYPE_SUBSTITUTION:   return "substitution";
                 case HEAP_SUBTYPE_FACT:           return "fact";
+                case HEAP_SUBTYPE_RULE:           return "rule";
                 case HEAP_SUBTYPE_KNOWLEDGE_BASE: return "knowledge-base";
                 case HEAP_SUBTYPE_FACTOR_GRAPH:   return "factor-graph";
                 case HEAP_SUBTYPE_WORKSPACE:      return "workspace";
