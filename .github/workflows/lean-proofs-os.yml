@@ -5,12 +5,20 @@ on:
     paths:
       - 'proofs/lean/**'
       - 'scripts/check_os_proof_axioms.lean'
+      - 'tests/kernel/compositor_correspondence/**'
+      - 'tests/kernel/frame_pool_correspondence/**'
+      - 'lib/core/os_k5_k6_services.c'
+      - 'lib/kernel/k2_mmu_frames.c'
       - '.github/workflows/lean-proofs-os.yml'
   push:
     branches: [master]
     paths:
       - 'proofs/lean/**'
       - 'scripts/check_os_proof_axioms.lean'
+      - 'tests/kernel/compositor_correspondence/**'
+      - 'tests/kernel/frame_pool_correspondence/**'
+      - 'lib/core/os_k5_k6_services.c'
+      - 'lib/kernel/k2_mmu_frames.c'
       - '.github/workflows/lean-proofs-os.yml'
   merge_group:
   workflow_dispatch:
@@ -21,7 +29,7 @@ permissions:
 jobs:
   kernel-proofs:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - name: Install Lean 4.12.0
@@ -43,3 +51,12 @@ jobs:
             modules+=("$module")
           done
           lean -DwarningAsError=true --run scripts/check_os_proof_axioms.lean "${modules[@]}"
+      - name: Run Lean specification mutation manifests
+        shell: bash
+        run: bash proofs/lean/mutation/run_mutation_manifests.sh
+      - name: Run native compositor and frame-pool correspondence suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/kernel/compositor_correspondence/run_compositor_correspondence.sh
+          bash tests/kernel/frame_pool_correspondence/run_frame_pool_correspondence.sh

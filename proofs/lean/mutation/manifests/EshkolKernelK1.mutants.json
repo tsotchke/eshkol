@@ -1,0 +1,32 @@
+{
+ "target": "../../EshkolKernelK1.lean",
+ "mutants": [
+  {
+   "id": "timer-irq-allocates",
+   "description": "the timer IRQ path allocates on the heap",
+   "old": "        fuel := f\n        irqRing := st.irqRing.push irqEv }",
+   "new": "        fuel := f\n        heapAllocs := st.heapAllocs + 1\n        irqRing := st.irqRing.push irqEv }",
+   "witness": "theorem witness_timer_allocates : \u00ac type_of% @step_preserves_no_alloc := by\n  intro h\n  have h0 := h ({ isa := .x86_64, fuel := 1, heapAllocs := 0, kernelCtx := \u27e80, 0, [], 0, 0\u27e9, irqRing := IrqRing.init 4, tasks := fun _ => \u27e80, .runnable, .none\u27e9 } : KernelState) (.timerIrq \u27e80, 0, 0\u27e9)\n  revert h0\n  decide",
+   "witness_name": "witness_timer_allocates",
+   "refutes": "step_preserves_no_alloc",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "syscall-clobbers-kernel-context",
+   "description": "the syscall path overwrites the kernel canary",
+   "old": "          tasks := updateTask st.tasks tid { cur with lastTrap := .syscall } }",
+   "new": "          kernelCtx := { st.kernelCtx with canaryLo := st.kernelCtx.canaryLo + 1 }\n          tasks := updateTask st.tasks tid { cur with lastTrap := .syscall } }",
+   "witness": "theorem witness_syscall_clobbers : \u00ac type_of% @step_preserves_kernel_context := by\n  intro h\n  have h0 := h ({ isa := .x86_64, fuel := 1, heapAllocs := 0, kernelCtx := \u27e80, 0, [], 0, 0\u27e9, irqRing := IrqRing.init 4, tasks := fun _ => \u27e80, .runnable, .none\u27e9 } : KernelState) (.userSyscall 0)\n  revert h0\n  decide",
+   "witness_name": "witness_syscall_clobbers",
+   "refutes": "step_preserves_kernel_context",
+   "expect": "REFUTED"
+  },
+  {
+   "id": "irq-ring-drops-modulus",
+   "description": "push advances tail without wrapping",
+   "old": "      tail := (r.tail + 1) % r.cap",
+   "new": "      tail := r.tail + 1",
+   "expect": "PROOF_BROKEN"
+  }
+ ]
+}
