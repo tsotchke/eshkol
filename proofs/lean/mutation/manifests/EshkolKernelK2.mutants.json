@@ -37,8 +37,8 @@
   {
    "id": "alloc-skips-free-check",
    "description": "allocation accepts a frame that is already owned",
-   "old": "    if idx < p.totalFrames \u2227 p.owners idx = .free \u2227 0 < p.freeCount then",
-   "new": "    if idx < p.totalFrames \u2227 0 < p.freeCount then",
+   "old": "  | .allocUser idx =>\n    if idx < p.totalFrames \u2227 p.owners idx = .free \u2227 0 < p.freeCount then",
+   "new": "  | .allocUser idx =>\n    if idx < p.totalFrames \u2227 0 < p.freeCount then",
    "witness": "theorem witness_double_alloc : \u00ac type_of% @pool_step_preserves_accounted := by\n  intro h\n  have h0 := h ({ totalFrames := 2, freeCount := 1, allocatedCount := 1, owners := fun i => if i = 0 then .user else .free, generations := fun _ => 1 } : FramePool) (.allocUser 0) (by unfold FramePool.Accounted; decide)\n  revert h0\n  unfold FramePool.Accounted\n  decide",
    "witness_name": "witness_double_alloc",
    "refutes": "pool_step_preserves_accounted",

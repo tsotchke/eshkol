@@ -6,15 +6,11 @@
   Interface: lean --run FramePoolCorrespondence.lean <trace file>
     with EshkolKernelK2.olean on LEAN_PATH.
   Checks after every operation:
-    OPERATION  for operations inside the model's domain (alloc_user, free), the
-               model's state after the corresponding step equals the native state
-               (free count, allocated count, owner and generation of every frame);
-               a refused alloc_user corresponds to no index being accepted.
-    INVARIANT  for every operation, including alloc_kernel, the native state
-               satisfies Conserved, Accounted, and native's own
+    OPERATION  the model's state after the corresponding step equals the native
+               state (free count, allocated count, owner and generation of every
+               frame); a refused allocation corresponds to no index being accepted.
+    INVARIANT  the native state satisfies Conserved, Accounted, and native's own
                k2_frame_pool_invariants_hold.
-  An alloc_kernel ends the OPERATION comparison for its trace (no model operation),
-  but INVARIANT checking continues.
   This is finite trace agreement, not a refinement proof.
 -/
 import EshkolKernelK2
@@ -57,12 +53,10 @@ def accounted (total : Nat) (n : NativeState) : Bool :=
 structure Replay where
   trace : String := ""
   pool : FramePool := ⟨0, 0, 0, fun _ => .free, fun _ => 1⟩
-  inDomain : Bool := true
   diverged : Bool := false
   traces : Nat := 0
   operations : Nat := 0
   operationDivergedTraces : Nat := 0
-  leftDomainTraces : Nat := 0
   invariantChecks : Nat := 0
   invariantFailures : Nat := 0
   messages : List String := []
@@ -80,7 +74,7 @@ def step (r : Replay) (line : String) : Replay :=
     match (line.splitOn " ") with
     | [_, _, "total", t, "reserved", k] =>
       let total := t.toNat!; let kRes := k.toNat!
-      { r with trace := line, inDomain := true, diverged := false, traces := r.traces + 1,
+      { r with trace := line, diverged := false, traces := r.traces + 1,
                pool := { totalFrames := total, freeCount := total - kRes, allocatedCount := kRes,
                          owners := fun i => if i < kRes then .kernel else .free,
                          generations := fun _ => 1 } }
@@ -100,16 +94,17 @@ def step (r : Replay) (line : String) : Replay :=
           let invOk := accounted r.pool.totalFrames n && n.invariants
           let r := if invOk then r else
             note { r with invariantFailures := r.invariantFailures + 1 } s!"INVARIANT {r.trace} | {line}"
-          if !r.inDomain || r.diverged then r
+          if r.diverged then r
           else
             let modelNext : Option FramePool :=
               match (op.splitOn " ").filter (· ≠ ""), (result.splitOn " ").filter (· ≠ "") with
-              | ["alloc_user"], ["OK", idx] =>
+              | [alloc], ["OK", idx] =>
                 let i := idx.toNat!
                 -- The model must accept the index native chose.
                 if i < r.pool.totalFrames ∧ r.pool.owners i = .free ∧ 0 < r.pool.freeCount then
-                  some (r.pool.step (.allocUser i)) else none
-              | ["alloc_user"], _ =>
+                  some (r.pool.step (if alloc == "alloc_kernel" then .allocKernel i else .allocUser i))
+                else none
+              | [_], _ =>
                 -- A refusal corresponds to no index being accepted.
                 if (List.range r.pool.totalFrames).any (fun i =>
                     decide (r.pool.owners i = .free ∧ 0 < r.pool.freeCount)) then none
@@ -118,17 +113,14 @@ def step (r : Replay) (line : String) : Replay :=
                 let i := if physOk == "1" then idx.toNat! else r.pool.totalFrames
                 some (r.pool.step (.freeUser i gen.toNat!))
               | _, _ => some r.pool
-            if opName == "alloc_kernel" then
-              { r with inDomain := false, leftDomainTraces := r.leftDomainTraces + 1 }
-            else
-              let r := { r with operations := r.operations + 1 }
-              match modelNext with
-              | some p' =>
-                if stateAgrees p' n then { r with pool := p' }
-                else note { r with diverged := true, operationDivergedTraces := r.operationDivergedTraces + 1 }
-                  s!"OPERATION {r.trace} | {line}"
-              | none => note { r with diverged := true, operationDivergedTraces := r.operationDivergedTraces + 1 }
-                  s!"OPERATION (model refuses native's choice) {r.trace} | {line}"
+            let r := { r with operations := r.operations + 1 }
+            match modelNext with
+            | some p' =>
+              if stateAgrees p' n then { r with pool := p' }
+              else note { r with diverged := true, operationDivergedTraces := r.operationDivergedTraces + 1 }
+                s!"OPERATION {r.trace} | {line}"
+            | none => note { r with diverged := true, operationDivergedTraces := r.operationDivergedTraces + 1 }
+                s!"OPERATION (model refuses native's choice) {r.trace} | {line}"
       | _ => note r s!"PARSE {line}"
     | _ => note r s!"PARSE {line}"
 
@@ -137,8 +129,8 @@ def main (args : List String) : IO UInt32 := do
   | [path] =>
     let lines := (← IO.FS.readFile path).splitOn "\n" |>.filter (· ≠ "")
     let r := lines.foldl step {}
-    IO.println s!"traces {r.traces}; operation comparison diverged in {r.operationDivergedTraces}; left the model's domain (alloc_kernel) {r.leftDomainTraces}"
-    IO.println s!"in-domain operations compared {r.operations}; invariant checks {r.invariantChecks}; invariant failures {r.invariantFailures}"
+    IO.println s!"traces {r.traces}; operation comparison diverged in {r.operationDivergedTraces}"
+    IO.println s!"operations compared {r.operations}; invariant checks {r.invariantChecks}; invariant failures {r.invariantFailures}"
     for (k, n) in r.statuses.toArray.qsort (fun a b => a.1 < b.1) do IO.println s!"  {n}\t{k}"
     for m in (r.messages.reverse.take 6) do IO.println s!"{m.take 400}"
     let parse := r.messages.any (·.startsWith "PARSE")

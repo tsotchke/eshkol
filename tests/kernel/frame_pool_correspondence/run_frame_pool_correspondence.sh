@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Correspondence between the native frame allocator (lib/kernel/k2_mmu_frames.c) and
-# FramePool in proofs/lean/EshkolKernelK2.lean. For each seed, runs traces without
-# k2_frame_alloc_kernel (operation and invariant comparison) and with it (invariant
-# comparison continues after the trace leaves the model's domain).
+# FramePool in proofs/lean/EshkolKernelK2.lean. For each seed, runs traces without and
+# with k2_frame_alloc_kernel; both are compared operation by operation and checked for
+# the invariants.
 # Exit status 0 if and only if no comparison fails.
 # Usage: run_frame_pool_correspondence.sh [seed ...]   (default seeds: 1 20261126 777)
 # Requires a C11 compiler (CC, default cc) and Lean 4.12.0 (LEAN_BIN, default lean).
