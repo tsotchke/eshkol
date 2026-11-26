@@ -142,12 +142,6 @@ theorem arakelov_northcott_p1_height_1_2_4 :
     p1NorthcottCount 1 = 4 ∧ p1NorthcottCount 2 = 8 ∧ p1NorthcottCount 4 = 24 := by
   decide
 
-theorem arakelov_product_formula_witnesses :
-    (2 ^ 1 = 2 ∧ 3 ^ 1 = 3) ∧
-    (5 ^ 1 * 7 ^ 1 = 35 ∧ 2 ^ 2 * 3 ^ 1 = 12) ∧
-    (2 ^ 3 * 3 ^ 2 = 72 ∧ 5 ^ 3 = 125) := by
-  decide
-
 /-! ## 4. Exact Reyssat abc Triple Verification -/
 
 def reyssatA : Nat := 2
@@ -167,10 +161,277 @@ theorem reyssat_abc_triple_exact :
     reyssatRad ^ 16 < reyssatC ^ 10 := by
   decide
 
-/-! ## 5. F_1 Tits Specialization Witnesses -/
+/-! ## 6. q-factorials, q-binomial specialization, and cancellation -/
 
-theorem f1_tits_specialization_witnesses :
-    (4 + 1 = 5) ∧ (chooseNat 5 2 = 10) ∧ (factNat 4 = 24) := by
-  decide
+def qNumber (q : Nat) : Nat → Nat
+  | 0 => 0
+  | k + 1 => qNumber q k + q ^ k
+
+def qFactorial (q : Nat) : Nat → Nat
+  | 0 => 1
+  | k + 1 => qFactorial q k * qNumber q (k + 1)
+
+theorem qNumber_one (n : Nat) : qNumber 1 n = n := by
+  induction n with
+  | zero => rfl
+  | succ n ih => simp [qNumber, ih, Nat.add_assoc]
+
+theorem qFactorial_one (n : Nat) : qFactorial 1 n = factNat n := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+      have hn : qNumber 1 (n + 1) = n + 1 := qNumber_one (n + 1)
+      simp [qFactorial, factNat, ih, hn, Nat.mul_comm]
+
+def qBinom (q n k : Nat) : Nat :=
+  match n, k with
+  | _, 0 => 1
+  | 0, _ + 1 => 0
+  | n + 1, k + 1 => qBinom q n k + q ^ (k + 1) * qBinom q n (k + 1)
+
+theorem qBinom_one (n k : Nat) : qBinom 1 n k = chooseNat n k := by
+  induction n generalizing k with
+  | zero => cases k <;> rfl
+  | succ n ih =>
+      cases k with
+      | zero => rfl
+      | succ k => simp [qBinom, chooseNat, ih]
+
+/-- An irreducible natural number. -/
+def Prime (p : Nat) := 1 < p ∧ ∀ d, d ∣ p → d = 1 ∨ d = p
+
+inductive FactorTree : Nat → Type where
+  | unit : FactorTree 1
+  | prime {p} : Prime p → FactorTree p
+  | mul {a b} : FactorTree a → FactorTree b → FactorTree (a*b)
+
+/-- Strong induction constructs a prime factorization for every positive integer. -/
+theorem factor_exists (n : Nat) (hn : 0 < n) : Nonempty (FactorTree n) := by
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    by_cases h : n = 1
+    · exact h ▸ ⟨.unit⟩
+    by_cases hp : Prime n
+    · exact ⟨.prime hp⟩
+    have hsplit : ∃ d, d ∣ n ∧ d ≠ 1 ∧ d ≠ n := by
+      apply Classical.byContradiction
+      intro hc
+      apply hp
+      refine ⟨by omega, fun d hd => ?_⟩
+      by_cases he : d = 1
+      · exact Or.inl he
+      · exact Or.inr (Classical.byContradiction fun hne => hc ⟨d, hd, he, hne⟩)
+    obtain ⟨d, hd, h1, h2⟩ := hsplit
+    have hpos := Nat.pos_of_dvd_of_pos hd hn
+    have hle := Nat.le_of_dvd hn hd
+    have hq := Nat.mul_div_cancel' hd
+    have hqpos : 0 < n / d := by
+      apply Classical.byContradiction
+      intro hz
+      have hz' := Nat.eq_zero_of_not_pos hz
+      simp [hz'] at hq
+      omega
+    obtain ⟨a⟩ := ih d (by omega) hpos
+    obtain ⟨b⟩ := ih (n/d) (Nat.div_lt_self hn (by omega)) hqpos
+    exact hq ▸ ⟨a.mul b⟩
+
+def FactorTree.ord {n : Nat} : FactorTree n → Nat → Nat
+  | .unit, _ => 0
+  | .prime (p := q) _, p => if p = q then 1 else 0
+  | .mul a b, p => a.ord p + b.ord p
+
+def placeProduct (f : Nat → Nat) : Nat → Nat
+  | 0 => 1
+  | b+1 => placeProduct f b * f (b+1)
+
+private theorem placeProduct_mul (f g : Nat → Nat) (b : Nat) :
+    placeProduct (fun p => f p * g p) b = placeProduct f b * placeProduct g b := by
+  induction b with
+  | zero => rfl
+  | succ b ih => simp only [placeProduct, ih]; ac_rfl
+
+private theorem placeProduct_unit (b : Nat) : placeProduct (fun p => p ^ 0) b = 1 := by
+  induction b with
+  | zero => rfl
+  | succ b ih => rw [placeProduct, ih, Nat.pow_zero, Nat.mul_one]
+
+private theorem placeProduct_single (p b : Nat) (hp : 0 < p) :
+    placeProduct (fun q => q ^ (if q = p then 1 else 0)) b = (if p ≤ b then p else 1) := by
+  induction b with
+  | zero => simp [placeProduct, Nat.not_le.mpr hp]
+  | succ b ih =>
+    simp only [placeProduct, ih]
+    by_cases he : b+1 = p
+    · subst p; simp [Nat.not_succ_le_self]
+    · by_cases h : p ≤ b
+      · simp [he, h, Nat.le_step h]
+      · have h' : ¬p ≤ b+1 := by omega
+        simp [he, h, h']
+
+theorem FactorTree.positive {n} (t : FactorTree n) : 0 < n := by
+  induction t with
+  | unit => decide
+  | prime hp => exact Nat.lt_trans (by decide) hp.1
+  | mul _ _ a b => exact Nat.mul_pos a b
+
+theorem FactorTree.reconstruct {n} (t : FactorTree n) (B : Nat) (h : n ≤ B) :
+    placeProduct (fun p => p ^ t.ord p) B = n := by
+  induction t with
+  | unit => exact placeProduct_unit B
+  | prime hp => simpa [ord, h] using placeProduct_single _ B (Nat.lt_trans (by decide) hp.1)
+  | @mul a b x y ihx ihy =>
+    have hab := Nat.mul_pos x.positive y.positive
+    have hx := ihx (Nat.le_trans (Nat.le_of_dvd hab (Nat.dvd_mul_right a b)) h)
+    have hy := ihy (Nat.le_trans (Nat.le_of_dvd hab (Nat.dvd_mul_left b a)) h)
+    simp only [ord, Nat.pow_add, placeProduct_mul, hx, hy]
+
+theorem FactorTree.trivial_place {n} (t : FactorTree n) {p} (h : ¬ Prime p ∨ n < p) :
+    t.ord p = 0 := by
+  induction t with
+  | unit => rfl
+  | @prime q hq =>
+    have hne : p ≠ q := by rintro rfl; rcases h with hn | hn <;> simp_all
+    simp [ord, hne]
+  | @mul a b x y hx hy =>
+    have hab := Nat.mul_pos x.positive y.positive
+    have ha := Nat.le_of_dvd hab (Nat.dvd_mul_right a b)
+    have hb := Nat.le_of_dvd hab (Nat.dvd_mul_left b a)
+    rw [ord, hx (h.imp_right (fun hh => by omega)), hy (h.imp_right (fun hh => by omega))]
+
+theorem prime_divides_product {p : Nat} (hp : Prime p) {a b : Nat} (h : p ∣ a*b) :
+    p ∣ a ∨ p ∣ b := by
+  have cop (x : Nat) (hn : ¬p ∣ x) : p.gcd x = 1 := by
+    rcases hp.2 _ (Nat.gcd_dvd_left p x) with he | he
+    · exact he
+    · exact False.elim (hn (he ▸ Nat.gcd_dvd_right p x))
+  by_cases ha : p ∣ a
+  · exact Or.inl ha
+  by_cases hb : p ∣ b
+  · exact Or.inr hb
+  have he := Nat.gcd_mul_dvd_mul_gcd p a b
+  rw [Nat.gcd_eq_left h, cop a ha, cop b hb, Nat.one_mul] at he
+  have := Nat.eq_one_of_dvd_one he
+  have := hp.1
+  omega
+
+theorem FactorTree.local_unit {n} (t : FactorTree n) {p} (hp : Prime p) :
+    ∃ u, n = p ^ t.ord p * u ∧ ¬p ∣ u := by
+  have h1 : ¬p ∣ 1 := fun h => (Nat.ne_of_gt hp.1) (Nat.eq_one_of_dvd_one h)
+  induction t with
+  | unit => exact ⟨1, rfl, h1⟩
+  | @prime q hq =>
+    by_cases he : p = q
+    · subst q; exact ⟨1, by simp [ord], h1⟩
+    · refine ⟨q, by simp [ord, he], fun hd => ?_⟩
+      rcases hq.2 p hd with h | h
+      · exact Nat.ne_of_gt hp.1 h
+      · exact he h
+  | @mul a b x y hx hy =>
+    obtain ⟨u, hu, hpu⟩ := hx
+    obtain ⟨v, hv, hpv⟩ := hy
+    refine ⟨u*v, ?_, fun h => (prime_divides_product hp h).elim hpu hpv⟩
+    simp only [ord, Nat.pow_add]
+    calc a*b = (p ^ x.ord p * u) * (p ^ y.ord p * v) := (congrArg (fun z => z*b) hu).trans (congrArg (fun z => (p^x.ord p*u)*z) hv)
+         _ = _ := by ac_rfl
+
+/-- The multiplicity is characterized independently of the factor tree. -/
+theorem FactorTree.power_dvd {n} (t : FactorTree n) {p} (hp : Prime p) (k : Nat) :
+    p^k ∣ n ↔ k ≤ t.ord p := by
+  obtain ⟨u, hu, hpu⟩ := t.local_unit hp
+  constructor
+  · intro h
+    apply Nat.le_of_not_gt
+    intro hgt
+    have hd := Nat.dvd_trans (Nat.pow_dvd_pow p hgt) h
+    have hd' : p ^ (t.ord p + 1) ∣ p ^ t.ord p * u := Eq.mp (congrArg (fun z => p^(t.ord p+1) ∣ z) hu) hd
+    rw [Nat.pow_succ] at hd'
+    exact hpu (Nat.dvd_of_mul_dvd_mul_left (Nat.pow_pos (Nat.lt_trans (by decide) hp.1)) hd')
+  · intro h
+    exact Nat.dvd_trans (Nat.pow_dvd_pow p h) ⟨u, hu⟩
+
+theorem FactorTree.ord_unique {m n} (s : FactorTree m) (t : FactorTree n) (h : m=n)
+    {p} (hp : Prime p) : s.ord p = t.ord p := by
+  subst n
+  apply Nat.le_antisymm
+  · exact (t.power_dvd hp _).1 ((s.power_dvd hp _).2 (Nat.le_refl _))
+  · exact (s.power_dvd hp _).1 ((t.power_dvd hp _).2 (Nat.le_refl _))
+
+/-- Positive ratios use cross multiplication for equality, allowing unreduced fractions. -/
+structure NonzeroRational where
+  num : Int
+  den : Nat
+  nonzero : num ≠ 0
+  positive : 0 < den
+
+noncomputable def factorization (n : Nat) (h : 0 < n) := Classical.choice (factor_exists n h)
+
+namespace NonzeroRational
+def num_pos (r : NonzeroRational) : 0 < r.num.natAbs :=
+  Nat.pos_of_ne_zero (Int.natAbs_ne_zero.mpr r.nonzero)
+noncomputable def numFactors (r : NonzeroRational) := factorization _ r.num_pos
+noncomputable def denFactors (r : NonzeroRational) := factorization _ r.positive
+noncomputable def valuation (r : NonzeroRational) (p : Nat) : Int :=
+  (r.numFactors.ord p : Int) - r.denFactors.ord p
+
+/-- The p-adic absolute value is represented by p^v(den) / p^v(|num|). -/
+noncomputable def localAbs (r : NonzeroRational) (p : Nat) : Nat × Nat :=
+  (p ^ r.denFactors.ord p, p ^ r.numFactors.ord p)
+
+/-- Equivalent signed fractions induce the same valuation at every prime. -/
+theorem valuation_respects_fraction (r s : NonzeroRational)
+    (h : r.num*(s.den : Int) = s.num*(r.den : Int)) {p : Nat} (hp : Prime p) :
+    r.valuation p = s.valuation p := by
+  have h' := congrArg Int.natAbs h
+  simp only [Int.natAbs_mul, Int.natAbs_ofNat] at h'
+  have hv := (r.numFactors.mul s.denFactors).ord_unique (s.numFactors.mul r.denFactors) h' hp
+  simp only [FactorTree.ord] at hv
+  unfold valuation
+  omega
+
+theorem localAbs_exponent (r : NonzeroRational) (p : Nat) :
+    (r.localAbs p).1 * p^(r.valuation p).toNat =
+      (r.localAbs p).2 * p^(-r.valuation p).toNat := by
+  simp only [localAbs, valuation, ← Nat.pow_add, Int.neg_sub, Int.toNat_sub]
+  congr 1
+  omega
+
+theorem outside_support (r : NonzeroRational) (p : Nat)
+    (h : ¬ Prime p ∨ max r.num.natAbs r.den < p) : r.localAbs p = (1,1) := by
+  have hn : ¬ Prime p ∨ r.num.natAbs < p := h.imp_right (Nat.lt_of_le_of_lt (Nat.le_max_left ..))
+  have hd : ¬ Prime p ∨ r.den < p := h.imp_right (Nat.lt_of_le_of_lt (Nat.le_max_right ..))
+  simp [localAbs, r.numFactors.trivial_place hn, r.denFactors.trivial_place hd]
+
+/-- |num|/den times the product of all finite absolute values is one.
+    All factors above any stated bound are one by outside_support. -/
+theorem product_formula (r : NonzeroRational) (B : Nat) (hB : max r.num.natAbs r.den ≤ B) :
+    r.num.natAbs * placeProduct (fun p => (r.localAbs p).1) B =
+      r.den * placeProduct (fun p => (r.localAbs p).2) B := by
+  rw [show placeProduct (fun p => (r.localAbs p).1) B = r.den from
+        r.denFactors.reconstruct B (Nat.le_trans (Nat.le_max_right ..) hB),
+      show placeProduct (fun p => (r.localAbs p).2) B = r.num.natAbs from
+        r.numFactors.reconstruct B (Nat.le_trans (Nat.le_max_left ..) hB), Nat.mul_comm]
+
+end NonzeroRational
+
+/-- Cells have identities independent of dimension. A Boolean predicate selects
+    a union of cells from the common finite decomposition. -/
+structure CellComplex (Cell : Type u) where
+  cells : List Cell
+  distinct : cells.Nodup
+  dimension : Cell → Nat
+
+def eulerOn {Cell : Type u} (dim : Cell → Nat) (a : Cell → Bool) : List Cell → Int
+  | [] => 0
+  | c :: cs => (if a c then (-1 : Int) ^ dim c else 0) + eulerOn dim a cs
+
+def CellComplex.euler {Cell : Type u} (X : CellComplex Cell) (a : Cell → Bool) :=
+  eulerOn X.dimension a X.cells
+
+theorem cell_euler_inclusion_exclusion {Cell : Type u} (X : CellComplex Cell) (a b : Cell → Bool) :
+    X.euler (fun c => a c || b c) + X.euler (fun c => a c && b c) = X.euler a + X.euler b := by
+  unfold CellComplex.euler
+  induction X.cells with
+  | nil => rfl
+  | cons c cs ih => cases ha : a c <;> cases hb : b c <;> simp [eulerOn, ha, hb] <;> omega
 
 end EshkolGrothendieckBeyondFrontiers

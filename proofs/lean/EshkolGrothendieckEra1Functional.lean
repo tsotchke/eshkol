@@ -1,22 +1,4 @@
-/-
-  EshkolGrothendieckEra1Functional.lean
-
-  Formal Lean 4.12.0 verification for Grothendieck Era 1 (1949-1955):
-    - Exhaustive Bell-CHSH classical bound over all 16 sign assignments
-      |x1*y1 + x1*y2 + x2*y1 - x2*y2| <= 2 and exact attainment of 2
-    - Strict Tsirelson quantum/Hilbert separation (2*sqrt(2))^2 = 8 > 4 = 2^2
-      and rational Krivine upper-bound containment (2 * 17822 / 10000)^2 > 8
-    - Exhaustive 3x3 frustrated 6-cycle classical bound over all 64 sign
-      assignments (<= 4) with Hilbert separation (3*sqrt(3))^2 = 27 > 16
-    - Formal non-nuclearity of infinite-dimensional l^2:
-      for all n >= 2, trace(I_n) = n > 1 = ||I_n||_inf, and unbounded ratio
-    - Exact Schatten norm chain ||D||_inf^2 <= ||D||_2^2 <= ||D||_1^2 for all
-      finite diagonal operators
-    - Exact rank-1 l_1 cross-norm coincidence ||u (x) v||_pi = ||u||_1 * ||v||_1
-
-  Standalone Lean 4.12.0 core proof with complete kernel-checked terms
-  and no external library imports.
--/
+/-! # Sign bounds, explicit planar witnesses, and finite diagonal Schatten inequalities -/
 
 namespace EshkolGrothendieckEra1Functional
 
@@ -56,17 +38,38 @@ theorem chsh_classical_max_attained :
     ∃ x1 x2 y1 y2 : Sign, chshEval x1 x2 y1 y2 = 2 := by
   exact ⟨.pos, .pos, .pos, .neg, rfl⟩
 
-/-- Tsirelson Hilbert value 2*sqrt(2) strictly exceeds the classical bound 2
-    (squared: 8 > 4) and stays strictly inside Krivine's rational bound
-    17822/10000 < pi / (2 * ln(1 + sqrt(2))): (2 * 17822)^2 > 8 * 10000^2. -/
-theorem chsh_tsirelson_strictly_exceeds_classical :
-    (2 : Int) ^ 2 < 8 ∧ (8 : Int) * 10000 ^ 2 < (2 * 17822) ^ 2 := by
-  decide
+/-- Test vectors (a,b) in the square lattice or in the triangular lattice.
+    The latter pairing is twice the Euclidean dot product in a basis at 60°. -/
+abbrev Plane := Int × Int
+def dot (u v : Plane) := u.1*v.1 + u.2*v.2
+def triangularDot (u v : Plane) := 2*dot u v + u.1*v.2 + u.2*v.1
+def vadd (u v : Plane) : Plane := (u.1+v.1,u.2+v.2)
+def vsub (u v : Plane) : Plane := (u.1-v.1,u.2-v.2)
 
-/-- Grothendieck ratio for CHSH satisfies 1 < sqrt(2) < 17822/10000 (squared). -/
-theorem chsh_ratio_within_krivine_rational :
-    (10000 : Int) ^ 2 < 2 * 10000 ^ 2 ∧ (2 : Int) * 10000 ^ 2 < 17822 ^ 2 := by
-  decide
+def chshNumerator (u v : Plane) :=
+  dot (vadd u v) u + dot (vadd u v) v + dot (vsub u v) u - dot (vsub u v) v
+
+private theorem square_bound {x b : Int} (lo : -b ≤ x) (hi : x ≤ b) : x*x ≤ b*b := by
+  have h := Int.mul_nonneg (show 0 ≤ b-x by omega) (show 0 ≤ b+x by omega)
+  rw [Int.sub_mul, Int.mul_add, Int.mul_add, Int.mul_comm x b] at h
+  omega
+
+/-- The two column vectors are orthonormal. The two optimal row directions
+    before normalization have squared norm two. The score comparison clears
+    these common norms; every sign assignment is strictly below the witness. -/
+theorem chsh_hilbert_separation (x₁ x₂ y₁ y₂ : Sign) :
+    let u : Plane := (1,0)
+    let v : Plane := (0,1)
+    let s := chshEval x₁ x₂ y₁ y₂
+    dot u u = 1 ∧ dot v v = 1 ∧ dot u v = 0 ∧
+    dot (vadd u v) (vadd u v) = 2 ∧ dot (vsub u v) (vsub u v) = 2 ∧
+    2*(s*s) < (chshNumerator u v)^2 ∧
+    (chshNumerator u v)^2 * 10000^2 < 2 * (2*17822)^2 := by
+  have h := chsh_classical_bound_signs x₁ x₂ y₁ y₂
+  have hs := square_bound h.1 h.2
+  refine ⟨rfl, rfl, rfl, rfl, rfl, ?_, by decide⟩
+  change 2 * (_ * _) < (16 : Int)
+  omega
 
 /-- 3x3 frustrated 6-cycle bilinear form B_3:
     x0*y0 + x0*y1 + x1*y0 + x1*y2 + x2*y1 - x2*y2. -/
@@ -80,12 +83,28 @@ theorem frustrated_c6_classical_bound_all_64 (x0 x1 x2 y0 y1 y2 : Sign) :
     -4 ≤ c6Eval x0 x1 x2 y0 y1 y2 ∧ c6Eval x0 x1 x2 y0 y1 y2 ≤ 4 := by
   cases x0 <;> cases x1 <;> cases x2 <;> cases y0 <;> cases y1 <;> cases y2 <;> decide
 
-/-- Exact attainment of classical maximum 4 for B_3, and Hilbert separation
-    (3*sqrt(3))^2 = 27 > 16 = 4^2 inside Krivine's bound. -/
-theorem frustrated_c6_separation :
-    (∃ x0 x1 x2 y0 y1 y2 : Sign, c6Eval x0 x1 x2 y0 y1 y2 = 4) ∧
-    (4 : Int) ^ 2 < 27 ∧ (27 : Int) * 10000 ^ 2 < (4 * 17822) ^ 2 := by
-  refine ⟨⟨.pos, .pos, .pos, .pos, .pos, .pos, rfl⟩, ?_, ?_⟩ <;> decide
+def c6Numerator (u v w : Plane) :=
+  triangularDot (vadd u v) u + triangularDot (vadd u v) v +
+  triangularDot (vadd u w) u + triangularDot (vadd u w) w +
+  triangularDot (vsub v w) v - triangularDot (vsub v w) w
+
+/-- Squaring the normalized triangular-lattice score gives 18²/(6·2)=27. -/
+theorem frustrated_c6_separation (x₀ x₁ x₂ y₀ y₁ y₂ : Sign) :
+    let u : Plane := (1,0)
+    let v : Plane := (0,1)
+    let w : Plane := (1,-1)
+    let s := c6Eval x₀ x₁ x₂ y₀ y₁ y₂
+    triangularDot u u = 2 ∧ triangularDot v v = 2 ∧ triangularDot w w = 2 ∧
+    triangularDot (vadd u v) (vadd u v) = 6 ∧ triangularDot (vadd u w) (vadd u w) = 6 ∧
+    triangularDot (vsub v w) (vsub v w) = 6 ∧
+    c6Eval .pos .pos .pos .pos .pos .pos = 4 ∧
+    12 * (s*s) < (c6Numerator u v w)^2 ∧
+    (c6Numerator u v w)^2 * 10000^2 < 12 * (4*17822)^2 := by
+  have h := frustrated_c6_classical_bound_all_64 x₀ x₁ x₂ y₀ y₁ y₂
+  have hs := square_bound h.1 h.2
+  refine ⟨rfl,rfl,rfl,rfl,rfl,rfl,rfl,?_,by decide⟩
+  change 12 * (_ * _) < (324 : Int)
+  omega
 
 /-- Diagonal operator Schatten 1-norm (trace norm) for nonnegative diagonal entries. -/
 def diagTraceNorm : List Nat → Nat
@@ -129,7 +148,7 @@ theorem identity_op_norm_eq (n : Nat) (hn : n ≥ 1) :
       simp [identityDiag, List.replicate, diagOpNorm] at hsub ⊢
       omega
 
-/-- Formal non-nuclearity witness for l^2:
+/-- Finite-dimensional identity compressions:
     for every dimension n >= 2, trace(I_n) = n > 1 = ||I_n||_inf. -/
 theorem identity_trace_norm_diverges_over_op_norm (n : Nat) (hn : n ≥ 2) :
     diagTraceNorm (identityDiag n) > diagOpNorm (identityDiag n) := by
@@ -137,9 +156,9 @@ theorem identity_trace_norm_diverges_over_op_norm (n : Nat) (hn : n ≥ 2) :
   have hop : diagOpNorm (identityDiag n) = 1 := identity_op_norm_eq n (by omega)
   omega
 
-/-- Unbounded divergence of trace norm over operator norm on I_n (Dvoretzky-Rogers):
+/-- Unbounded divergence of trace norm over operator norm on I_n:
     for every M : Nat, there exists n >= 1 with ||I_n||_1 > M * ||I_n||_inf. -/
-theorem identity_non_nuclearity_unbounded (M : Nat) :
+theorem identity_trace_to_operator_ratio_unbounded (M : Nat) :
     ∃ n : Nat, n ≥ 1 ∧ diagTraceNorm (identityDiag n) > M * diagOpNorm (identityDiag n) := by
   refine ⟨M + 1, by omega, ?_⟩
   rw [identity_trace_norm_eq (M + 1), identity_op_norm_eq (M + 1) (by omega)]
@@ -211,8 +230,7 @@ private theorem listSum_map_mul (a : Nat) (bs : List Nat) :
   | cons b rest ih =>
     simp [listSum, ih, Nat.mul_add]
 
-/-- Exact rank-1 cross-norm coincidence on l_1 (x) l_1:
-    ||u (x) v||_pi = sum_{i,j} |u_i| |v_j| = ||u||_1 * ||v||_1 = ||u (x) v||_eps. -/
+/-- The entrywise ℓ¹ norm of a nonnegative rank-one matrix factors. -/
 theorem rank_one_crossnorm_equality (u v : List Nat) :
     outerProductSum u v = listSum u * listSum v := by
   induction u with

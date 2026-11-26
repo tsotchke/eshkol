@@ -1,31 +1,17 @@
 /-
-  EshkolStochasticBLCConfluence.lean
-  Standalone Lean 4.12.0 formal verification of:
-    1. Naive racing-cell publication bias (`naive_race_publishes_one_quarter`):
-       when two fair workers independently sample a bit with latency(0) = 1
-       and latency(1) = 2 and the earliest finisher publishes to a single-write
-       cell, P(published = 1) = 1/4 != 1/2.
-    2. Logical DrawId Oracle pathwise schedule independence
-       (`draw_id_oracle_pathwise_confluent`, `draw_id_fresh_pair_pathwise_confluent`,
-       `draw_id_speculative_budget_isolated`):
-       for any given oracle `omega : DrawId -> Bool` and any two schedules `s1, s2`,
-       forcing a shared DrawId or fresh DrawIds produces identical contracted
-       observations and logical beta-step budgets.
-    3. Exact shared marginal (`draw_id_shared_marginal_exact_half`):
-       over all 2 fair outcomes of `omega d0`, exactly 1 of 2 publishes `true`
-       under every schedule.
-    4. Exact uniform fresh-pair distribution (`draw_id_fresh_pairs_uniform_quarter`):
-       over all 4 fair outcomes of `(omega d1, omega d2)` with `d1 != d2`,
-       every ordered pair in `Bool x Bool` occurs in exactly 1 of 4 outcomes
-       under every schedule.
-    5. Scoped receipt-conflict reconciliation (`receipt_reconcile_dispute_symmetric_and_fail_closed`,
-       `receipt_reconcile_symmetric`, `disputed_iff_no_compatible_world`,
-       `disputed_withholds_all_reports`, `single_use_ticket_no_replay`,
-       `stale_generation_refused`):
-       distinct digests for the same request ID always yield `Verdict.disputed`
-       regardless of arrival order and justify no historical assertion.
+  Logical draw publication, exact finite marginals and scoped receipt reconciliation.
 
-  Zero external dependencies, zero `sorry`, zero custom axioms.
+  Model-to-Implementation Correspondence
+  In lib/core/blc/stochastic_blc.esk, sblc-st-run-control1-shared-draw writes a
+  memo cell once, and sblc-st-run-control2-fresh-draws writes distinct slots in
+  scheduler order. Here a memo key is a logical draw ID. The trace theorem
+  compares completed publications for a common oracle. The same module supplies
+  sblc-st-reconcile-one and sblc-st-consume-ticket. The ticket model projects
+  one selected ticket and action. tests/stdlib/esa_stochastic_blc_reconciliation_test.esk
+  enumerates schedule and oracle controls and checks conflicts and replay.
+  Sequential sampling in lib/core/sblc.esk uses sblc-coins-from-prng with
+  eshkol_prng_random_integer in lib/core/prng.cpp. A pathwise comparison
+  assumes the draw-ID assignment has already been supplied.
 -/
 
 namespace EshkolStochasticBLCConfluence
@@ -74,24 +60,60 @@ structure Schedule where
   specTicks : Nat
   deriving DecidableEq, Repr
 
-/-- Single-write memoized evaluation of shared thunk `let x = flip(d) in (x, x)`
-    under schedule `s` and logical DrawId oracle `ω`. -/
-def evalSharedDraw (s : Schedule) (ω : Oracle) (d : DrawId) : Bool × Bool :=
-  let b := ω d
-  let t0 := s.w0Lag + bitLatency b
-  let t1 := s.w1Lag + bitLatency b
-  let w0Wins := (t0 < t1) || (t0 == t1 && s.order == WorkerOrder.w0First)
-  let published := if w0Wins then b else b
-  (published, published)
+abbrev Memo := DrawId → Option Bool
 
-/-- Pathwise schedule independence for Control 1 (shared dynamic draw):
-    for any given oracle `ω`, any two schedules `s₁, s₂`, and any logical DrawId `d`,
-    evaluation yields the exact same ordered pair `(ω d, ω d)`. -/
+/-- A worker publishes the oracle value only if its logical cell is empty. -/
+def publish (ω : Oracle) (m : Memo) (d : DrawId) : Memo :=
+  fun k => if k = d then (m k).orElse (fun _ => some (ω d)) else m k
+
+def publishTrace (ω : Oracle) (m : Memo) : List DrawId → Memo
+  | [] => m
+  | d :: ds => publishTrace ω (publish ω m d) ds
+
+/-- A pre-existing value survives every publication. An empty cell fills
+    precisely when its key occurs in the trace. -/
+theorem publishTrace_lookup (ω : Oracle) (m : Memo) (ds : List DrawId) (k : DrawId) :
+    publishTrace ω m ds k =
+      if k ∈ ds then (m k).orElse (fun _ => some (ω k)) else m k := by
+  induction ds generalizing m with
+  | nil => simp [publishTrace]
+  | cons d ds ih =>
+    rw [publishTrace, ih]
+    by_cases hd : k = d
+    · subst d
+      by_cases hs : k ∈ ds <;> cases h : m k <;> simp [publish, hs, h, Option.orElse]
+    · simp [publish, hd, List.mem_cons]
+
+/-- Reordering, retrying or duplicating publications gives the same final
+    memo whenever both traces visit the same set of logical cells. -/
+theorem published_traces_confluent (ω : Oracle) (m : Memo) (xs ys : List DrawId)
+    (sameKeys : ∀ k, k ∈ xs ↔ k ∈ ys) : publishTrace ω m xs = publishTrace ω m ys := by
+  funext k
+  simp only [publishTrace_lookup, sameKeys k]
+
+def scheduledDraws (s : Schedule) (ω : Oracle) (a b : DrawId) : List DrawId :=
+  let t0 := s.w0Lag + bitLatency (ω a)
+  let t1 := s.w1Lag + bitLatency (ω b)
+  if t0 < t1 || (t0 == t1 && s.order == WorkerOrder.w0First) then [a, b] else [b, a]
+
+/-- Observe the two requested slots after both workers have published. -/
+def evalFreshPair (s : Schedule) (ω : Oracle) (a b : DrawId) : Bool × Bool :=
+  let m := publishTrace ω (fun _ => none) (scheduledDraws s ω a b)
+  ((m a).getD false, (m b).getD false)
+
+theorem scheduled_pair_observation (s : Schedule) (ω : Oracle) (a b : DrawId) :
+    evalFreshPair s ω a b = (ω a, ω b) := by
+  simp only [evalFreshPair, scheduledDraws]
+  split <;> simp [publishTrace_lookup, Option.orElse]
+
+def evalSharedDraw (s : Schedule) (ω : Oracle) (d : DrawId) : Bool × Bool :=
+  evalFreshPair s ω d d
+
+/-- Shared-cell observations agree for any two worker schedules. -/
 theorem draw_id_oracle_pathwise_confluent
     (s₁ s₂ : Schedule) (ω : Oracle) (d : DrawId) :
     evalSharedDraw s₁ ω d = evalSharedDraw s₂ ω d := by
-  unfold evalSharedDraw
-  simp
+  simp [evalSharedDraw, scheduled_pair_observation]
 
 /-- Exact fair marginal for Control 1:
     over the 2 fair outcomes of `ω d₀`, for ANY schedule `s`, exactly `1` of `2`
@@ -104,28 +126,18 @@ theorem draw_id_shared_marginal_exact_half (s : Schedule) (d₀ : DrawId) :
     (published.filter (fun b => b)).length = 1 ∧
     2 * (published.filter (fun b => b)).length = outcomes.length := by
   have h0 : (evalSharedDraw s (fun _ => false) d₀).1 = false := by
-    unfold evalSharedDraw; simp
+    exact congrArg Prod.fst (scheduled_pair_observation s _ d₀ d₀)
   have h1 : (evalSharedDraw s (fun _ => true) d₀).1 = true := by
-    unfold evalSharedDraw; simp
+    exact congrArg Prod.fst (scheduled_pair_observation s _ d₀ d₀)
   simp [h0, h1]
 
 /-! ## 3. Fresh Dynamic Draws `(flip(d₁), flip(d₂))` (Control 2) -/
 
-/-- Concurrent evaluation of two fresh draws with distinct logical DrawIds `d₁, d₂`. -/
-def evalFreshPair (s : Schedule) (ω : Oracle) (d₁ d₂ : DrawId) : Bool × Bool :=
-  let b1 := ω d₁
-  let b2 := ω d₂
-  let t0 := s.w0Lag + bitLatency b1
-  let t1 := s.w1Lag + bitLatency b2
-  let w0Wins := (t0 < t1) || (t0 == t1 && s.order == WorkerOrder.w0First)
-  if w0Wins then (b1, b2) else (b1, b2)
-
-/-- Pathwise schedule independence for Control 2 (fresh dynamic draws). -/
+/-- Observing the same two logical slots under either worker schedule gives equal pairs. -/
 theorem draw_id_fresh_pair_pathwise_confluent
     (s₁ s₂ : Schedule) (ω : Oracle) (d₁ d₂ : DrawId) :
     evalFreshPair s₁ ω d₁ d₂ = evalFreshPair s₂ ω d₁ d₂ := by
-  unfold evalFreshPair
-  simp
+  simp only [scheduled_pair_observation]
 
 /-- Oracle assigning `p.1` to `d₁` and `p.2` to every other DrawId (including `d₂` when `d₁ ≠ d₂`). -/
 def pairOracle (d₁ : DrawId) (p : Bool × Bool) : Oracle :=
@@ -142,7 +154,8 @@ theorem draw_id_fresh_pairs_uniform_quarter
     (results.filter (fun r => r == target)).length = 1 := by
   have heval : ∀ p : Bool × Bool, evalFreshPair s (pairOracle d₁ p) d₁ d₂ = p := by
     intro p
-    unfold evalFreshPair pairOracle
+    rw [scheduled_pair_observation]
+    unfold pairOracle
     have hneq : (d₂ == d₁) = false := beq_false_of_ne hne.symm
     simp [hneq]
   cases target with
@@ -157,20 +170,32 @@ structure Control3Obs where
   demandedDrawIds : List DrawId
   deriving DecidableEq, Repr
 
-/-- Evaluates demanded shared draw `d₀` alongside an unused diverging branch
-    stepped speculatively for `s.specTicks` physical ticks. -/
-def evalWithSpeculation (s : Schedule) (ω : Oracle) (d₀ : DrawId) : Control3Obs :=
-  { value := evalSharedDraw s ω d₀
-    logicalBetaSteps := 4
-    demandedDrawIds := [d₀] }
+structure SpecRun where
+  logical : Control3Obs
+  physicalTicks : Nat
 
-/-- Speculating an unused diverging branch for arbitrarily many physical ticks
-    never perturbs the demanded value, demanded DrawIds, or caller logical beta-step budget. -/
+/-- Control 3 charges the demanded computation four logical steps. Its
+    physical counter also includes latency, worker lag and private ticks. -/
+def runWithSpeculation (s : Schedule) (ω : Oracle) (d : DrawId) : SpecRun :=
+  { logical := ⟨evalSharedDraw s ω d, 4, [d]⟩
+    physicalTicks := bitLatency (ω d) + s.w0Lag + s.specTicks }
+
+def evalWithSpeculation (s : Schedule) (ω : Oracle) (d : DrawId) : Control3Obs :=
+  (runWithSpeculation s ω d).logical
+
+/-- The caller projection agrees across all schedules and speculative tick counts. -/
 theorem draw_id_speculative_budget_isolated
-    (s₁ s₂ : Schedule) (ω : Oracle) (d₀ : DrawId) :
-    evalWithSpeculation s₁ ω d₀ = evalWithSpeculation s₂ ω d₀ := by
-  unfold evalWithSpeculation
-  rw [draw_id_oracle_pathwise_confluent s₁ s₂ ω d₀]
+    (s₁ s₂ : Schedule) (ω : Oracle) (d : DrawId) :
+    evalWithSpeculation s₁ ω d = evalWithSpeculation s₂ ω d := by
+  simp only [evalWithSpeculation, runWithSpeculation, evalSharedDraw, scheduled_pair_observation]
+
+/-- Additional private ticks appear exactly in physical work, with the entire
+    logical observation preserved. -/
+theorem speculative_ticks_cost (s : Schedule) (ω : Oracle) (d : DrawId) (extra : Nat) :
+    let more := { s with specTicks := s.specTicks + extra }
+    (runWithSpeculation more ω d).physicalTicks = (runWithSpeculation s ω d).physicalTicks + extra ∧
+      (runWithSpeculation more ω d).logical = (runWithSpeculation s ω d).logical := by
+  exact ⟨(Nat.add_assoc _ _ _).symm, draw_id_speculative_budget_isolated _ _ ω d⟩
 
 /-! ## 5. Scoped Receipt-Conflict Reconciliation & Single-Use Authorization Tickets -/
 
@@ -356,7 +381,7 @@ theorem single_use_ticket_no_replay
     · cases hauth
   · simp [hu] at hauth
 
-/-- Advancing the policy generation invalidates any older ticket. -/
+/-- A generation mismatch refuses consumption. -/
 theorem stale_generation_refused
     (curGen reqId : Nat) (digest : String) (t : AuthTicket)
     (hstale : t.generation ≠ curGen) :
@@ -365,13 +390,16 @@ theorem stale_generation_refused
   unfold consumeTicket
   simp [hbeq]
 
-/-! ## Axiom Cleanliness Audit -/
-
 #print axioms naive_race_publishes_one_quarter
+#print axioms publishTrace_lookup
+#print axioms published_traces_confluent
+#print axioms scheduled_pair_observation
 #print axioms draw_id_oracle_pathwise_confluent
 #print axioms draw_id_shared_marginal_exact_half
+#print axioms draw_id_fresh_pair_pathwise_confluent
 #print axioms draw_id_fresh_pairs_uniform_quarter
 #print axioms draw_id_speculative_budget_isolated
+#print axioms speculative_ticks_cost
 #print axioms receipt_reconcile_symmetric
 #print axioms receipt_reconcile_dispute_symmetric_and_fail_closed
 #print axioms disputed_iff_no_compatible_world

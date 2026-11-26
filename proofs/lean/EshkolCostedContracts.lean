@@ -1,33 +1,14 @@
 /-
-  EshkolCostedContracts.lean
-  Standalone Lean 4.12.0 formalization of BLC Costed Updates 002, 003, and 004:
-    1. Update 002: Tariff breakeven threshold (`tariff_breakeven_240_vs_241`)
-       and strategy-dependent beta cost divergence (`strategy_cost_2_vs_72`).
-    2. Update 003:
-       - `convex_dominated_never_minimizes_expected_work`: general theorem that
-         if `den * c_i > num * a_i + (den - num) * b_i` for every request `i`
-         (with `0 ≤ num ≤ den`, `den > 0`), then for EVERY non-negative workload
-         distribution `w` with positive total weight, `min(E_w[a], E_w[b]) < E_w[c]`,
-         so `c` can NEVER minimize expected work under any workload distribution!
-       - `pareto_convex_dominated_wins_minimax`: concrete Pareto-efficient
-         candidate `(116, 116)` strictly convex-dominated by `(80, 150)` and
-         `(150, 80)` that uniquely minimizes worst excess (`16 < 50`).
-       - `lowest_id_tie_dedup_sound`: keeping the lowest-ID row per feature
-         preserves exact tie-broken nearest-row selection.
-    3. Update 004:
-       - `shadowed_param_lowers_to_four_bit_identity` & `setf_refused_in_pure_frontend`
-       - `sparse_hessian_incomplete_mask_corrupts_diagonal` &
-         `sparse_hessian_complete_mask_exact` (for f(x,y) = (x+y)^2/2)
-       - `lazy_affine_bank_work_equals_final_use` (exact general induction theorem
-         that a bank's cumulative deferred catch-up steps equal its final demanded
-         timestep, for ANY monotone demand history!)
-       - `lazy_affine_four_schedules_exact_counts` (`128, 484, 192, 128` vs `512`)
-       - `bb5_macro_cost_additive`
-       - `nonvacuous_claim_distinguishes_targets` (anti-vacuity audit catching
-         `true = true` proof bridges)
+  Finite workloads, strategy-dependent beta costs, selector objectives and
+  deferred-update work laws.
 
-  Zero external dependencies (pure Lean 4.12.0 Prelude), zero `sorry`,
-  zero custom axioms.
+  Model-to-Implementation Correspondence
+  lib/core/blc/costed_contracts.esk computes share-first and duplicate-first
+  costs in blc-at-verify-strategy-cost-divergence and compares selector rows
+  in blc-at-convex-dominated-2?. tests/stdlib/esa_costed_contracts_test.esk
+  checks these witnesses. The unit of work here is a contraction. In
+  lib/core/sblc.esk, sblc-run-loop records beta contractions and coin draws
+  separately. tests/stdlib/sblc_resource_test.esk checks both counters.
 -/
 
 namespace EshkolCostedContracts
@@ -38,89 +19,145 @@ theorem tariff_breakeven_240_vs_241 :
     240 * 17 < 4096 ∧ 241 * 17 > 4096 := by
   decide
 
-theorem strategy_cost_2_vs_72 :
-    (1 + 1 = 2) ∧ (1 + 71 * 1 = 72) ∧ (2 + 72 = 74) := by
-  decide
+/-- Numerator of expected work. Each row carries an integer mass, and the
+    common denominator for comparing costs is the sum of the masses. -/
+def weightedWork {R : Type} (cost : R → Nat) : List (R × Nat) → Nat
+  | [] => 0
+  | (r, w) :: rest => w * cost r + weightedWork cost rest
 
-/-! ## 2. Update 003: Convex Domination vs. Minimax Objective -/
+theorem weightedWork_mono {R : Type} (a b : R → Nat) (rows : List (R × Nat))
+    (hle : ∀ row ∈ rows, a row.1 ≤ b row.1) : weightedWork a rows ≤ weightedWork b rows := by
+  induction rows with
+  | nil => exact Nat.le_refl _
+  | cons row rest ih =>
+    exact Nat.add_le_add (Nat.mul_le_mul_left _ (hle row (by simp)))
+      (ih (fun r hr => hle r (List.mem_cons_of_mem _ hr)))
 
-/-- General Theorem (Update 003): if a candidate's 2-request cost `(c0, c1)`
-    is strictly above a convex combination `(num/den) * a + ((den-num)/den) * b`
-    on BOTH requests, then for EVERY workload weight pair `(w0, w1)` with
-    `w0 + w1 > 0`, at least one of `a` or `b` has strictly smaller expected
-    cost than `c`. Hence `c` can NEVER minimize expected work. -/
-theorem convex_dominated_never_minimizes_expected_work
-    (c0 c1 a0 a1 b0 b1 num den w0 w1 : Nat)
-    (hnum : num ≤ den)
-    (hw : 0 < w0 + w1)
-    (h0 : num * a0 + (den - num) * b0 < den * c0)
-    (h1 : num * a1 + (den - num) * b1 < den * c1) :
-    w0 * a0 + w1 * a1 < w0 * c0 + w1 * c1 ∨
-    w0 * b0 + w1 * b1 < w0 * c0 + w1 * c1 := by
-  by_cases ha_lt : w0 * a0 + w1 * a1 < w0 * c0 + w1 * c1
-  · exact Or.inl ha_lt
-  by_cases hb_lt : w0 * b0 + w1 * b1 < w0 * c0 + w1 * c1
-  · exact Or.inr hb_lt
-  exfalso
-  have ha : w0 * c0 + w1 * c1 ≤ w0 * a0 + w1 * a1 := by omega
-  have hb : w0 * c0 + w1 * c1 ≤ w0 * b0 + w1 * b1 := by omega
-  -- Multiply ha by num and hb by (den - num) and sum:
-  have hna : num * (w0 * c0 + w1 * c1) ≤ num * (w0 * a0 + w1 * a1) :=
-    Nat.mul_le_mul_left num ha
-  have hnb : (den - num) * (w0 * c0 + w1 * c1) ≤ (den - num) * (w0 * b0 + w1 * b1) :=
-    Nat.mul_le_mul_left (den - num) hb
-  have hsum_ge :
-      den * (w0 * c0 + w1 * c1) ≤
-        num * (w0 * a0 + w1 * a1) + (den - num) * (w0 * b0 + w1 * b1) := by
-    have hd : den * (w0 * c0 + w1 * c1) =
-        num * (w0 * c0 + w1 * c1) + (den - num) * (w0 * c0 + w1 * c1) := by
-      rw [← Nat.add_mul, Nat.add_sub_of_le hnum]
-    rw [hd]
-    exact Nat.add_le_add hna hnb
-  -- On the other hand, weighting h0 by w0 and h1 by w1 gives strict <:
-  have hstrict :
-      w0 * (num * a0 + (den - num) * b0) + w1 * (num * a1 + (den - num) * b1) <
-        w0 * (den * c0) + w1 * (den * c1) := by
-    by_cases hw0 : w0 = 0
-    · subst hw0
-      have hw1 : 0 < w1 := by omega
-      simp only [Nat.zero_mul, Nat.zero_add]
-      exact Nat.mul_lt_mul_of_pos_left h1 hw1
-    · have hw0p : 0 < w0 := by omega
-      have lt0 : w0 * (num * a0 + (den - num) * b0) < w0 * (den * c0) :=
-        Nat.mul_lt_mul_of_pos_left h0 hw0p
-      have le1 : w1 * (num * a1 + (den - num) * b1) ≤ w1 * (den * c1) :=
-        Nat.mul_le_mul_left w1 (Nat.le_of_lt h1)
-      exact Nat.add_lt_add_of_lt_of_le lt0 le1
-  -- Match the two algebraically identical sides:
-  have hlhs :
-      w0 * (num * a0 + (den - num) * b0) + w1 * (num * a1 + (den - num) * b1) =
-        num * (w0 * a0 + w1 * a1) + (den - num) * (w0 * b0 + w1 * b1) := by
-    simp only [Nat.mul_add]
-    have t1 : w0 * (num * a0) = num * (w0 * a0) := by
-      rw [← Nat.mul_assoc, Nat.mul_comm w0 num, Nat.mul_assoc]
-    have t2 : w0 * ((den - num) * b0) = (den - num) * (w0 * b0) := by
-      rw [← Nat.mul_assoc, Nat.mul_comm w0 (den - num), Nat.mul_assoc]
-    have t3 : w1 * (num * a1) = num * (w1 * a1) := by
-      rw [← Nat.mul_assoc, Nat.mul_comm w1 num, Nat.mul_assoc]
-    have t4 : w1 * ((den - num) * b1) = (den - num) * (w1 * b1) := by
-      rw [← Nat.mul_assoc, Nat.mul_comm w1 (den - num), Nat.mul_assoc]
+/-- Equal or empty rows may occur anywhere. One strict improvement carrying
+    positive mass suffices for strict expected-cost dominance. -/
+theorem weightedWork_lt_of_supported_gain {R : Type} (a b : R → Nat) (rows : List (R × Nat))
+    (hle : ∀ row ∈ rows, a row.1 ≤ b row.1)
+    (gain : ∃ row ∈ rows, 0 < row.2 ∧ a row.1 < b row.1) :
+    weightedWork a rows < weightedWork b rows := by
+  induction rows with
+  | nil => simp at gain
+  | cons row rest ih =>
+    have tailLe := fun r (hr : r ∈ rest) => hle r (List.mem_cons_of_mem _ hr)
+    obtain ⟨r, hr, hw, hlt⟩ := gain
+    rcases List.mem_cons.mp hr with h | ht
+    · subst r
+      exact Nat.add_lt_add_of_lt_of_le (Nat.mul_lt_mul_of_pos_left hlt hw)
+        (weightedWork_mono a b rest tailLe)
+    · exact Nat.add_lt_add_of_le_of_lt (Nat.mul_le_mul_left _ (hle row (by simp)))
+        (ih tailLe ⟨r, ht, hw, hlt⟩)
+
+/-- A request selects a path through a finite strategy. A leaf charges for
+    its copies of a computation. Each visited decision charges its own toll. -/
+inductive Strategy (R : Type) where
+  | leaf (overhead copies work : Nat)
+  | branch (test : R → Bool) (toll : Nat) (yes no : Strategy R)
+
+def Strategy.cost {R : Type} : Strategy R → R → Nat
+  | .leaf overhead copies work, _ => overhead + copies * work
+  | .branch test toll yes no, r => toll + (if test r then yes.cost r else no.cost r)
+
+/-- For arbitrary decision trees, pathwise savings on the workload support
+    carry through to expected work, even when the trees branch differently. -/
+theorem strategy_expected_cost_dominance {R : Type} (a b : Strategy R) (rows : List (R × Nat))
+    (hle : ∀ row ∈ rows, a.cost row.1 ≤ b.cost row.1)
+    (gain : ∃ row ∈ rows, 0 < row.2 ∧ a.cost row.1 < b.cost row.1) :
+    weightedWork a.cost rows < weightedWork b.cost rows :=
+  weightedWork_lt_of_supported_gain _ _ rows hle gain
+
+/-- Sharing preserves all decisions and reduces a demanded leaf just once. -/
+def Strategy.share {R : Type} : Strategy R → Strategy R
+  | .leaf overhead copies work => .leaf overhead (min copies 1) work
+  | .branch test toll yes no => .branch test toll yes.share no.share
+
+def Strategy.savedWork {R : Type} : Strategy R → R → Nat
+  | .leaf _ copies work, _ => (copies - 1) * work
+  | .branch test _ yes no, r => if test r then yes.savedWork r else no.savedWork r
+
+theorem strategy_sharing_cost_decomposition {R : Type} (s : Strategy R) (r : R) :
+    s.cost r = s.share.cost r + s.savedWork r := by
+  induction s with
+  | leaf overhead copies work =>
+    cases copies <;> simp [Strategy.cost, Strategy.share, Strategy.savedWork, Nat.succ_mul,
+      Nat.min_eq_right (Nat.succ_pos _),
+      Nat.add_assoc, Nat.add_comm, Nat.add_left_comm]
+  | branch test toll yes no hy hn =>
+    cases h : test r <;> simp [Strategy.cost, Strategy.share, Strategy.savedWork, h,
+      hy, hn, Nat.add_assoc]
+
+theorem sharing_strictly_lowers_expected_work {R : Type} (s : Strategy R) (rows : List (R × Nat))
+    (gain : ∃ row ∈ rows, 0 < row.2 ∧ 0 < s.savedWork row.1) :
+    weightedWork s.share.cost rows < weightedWork s.cost rows := by
+  apply strategy_expected_cost_dominance
+  · intro row _
+    rw [strategy_sharing_cost_decomposition s]
+    exact Nat.le_add_right _ _
+  · obtain ⟨row, hr, hw, hs⟩ := gain
+    refine ⟨row, hr, hw, ?_⟩
+    rw [strategy_sharing_cost_decomposition s]
     omega
-  have hrhs :
-      w0 * (den * c0) + w1 * (den * c1) = den * (w0 * c0 + w1 * c1) := by
-    rw [Nat.mul_add]
-    have r1 : w0 * (den * c0) = den * (w0 * c0) := by
-      rw [← Nat.mul_assoc, Nat.mul_comm w0 den, Nat.mul_assoc]
-    have r2 : w1 * (den * c1) = den * (w1 * c1) := by
-      rw [← Nat.mul_assoc, Nat.mul_comm w1 den, Nat.mul_assoc]
-    omega
-  rw [hlhs, hrhs] at hstrict
-  omega
+
+/-- Reduce once before duplication versus reduce each copy on the same demand. -/
+theorem share_before_duplication (overhead copies work : Nat) (hc : 1 < copies) (hw : 0 < work) :
+    let a : Strategy Unit := .leaf overhead 1 work
+    let b : Strategy Unit := .leaf overhead copies work
+    weightedWork a.cost [((), 1)] < weightedWork b.cost [((), 1)] := by
+  intro a b
+  have gain : 0 < b.savedWork () := Nat.mul_pos (by omega : 0 < copies - 1) hw
+  have dom := sharing_strictly_lowers_expected_work b [((), 1)]
+    ⟨((), 1), by simp, by decide, gain⟩
+  simpa [a, b, Strategy.share, Nat.min_eq_right (by omega : 1 ≤ copies)] using dom
+
+theorem strategy_cost_2_vs_72_concrete_witness :
+    let a : Strategy Unit := .leaf 1 1 1
+    let b : Strategy Unit := .leaf 1 71 1
+    let costs := (weightedWork a.cost [((), 1)], weightedWork b.cost [((), 1)])
+    costs = (2, 72) ∧ costs.1 < costs.2 ∧ costs.1 + costs.2 = 74 :=
+  ⟨rfl, share_before_duplication 1 71 1 (by decide) (by decide), rfl⟩
+
+/-! ## 2. Convex dominance over finite workloads -/
+
+theorem weightedWork_linear {R : Type} (rows : List (R × Nat)) (a b : R → Nat) (m n : Nat) :
+    weightedWork (fun r => m * a r + n * b r) rows =
+      m * weightedWork a rows + n * weightedWork b rows := by
+  induction rows with
+  | nil => simp [weightedWork]
+  | cons row rest ih =>
+    simp only [weightedWork, ih, Nat.mul_add]
+    simp only [Nat.mul_left_comm row.2, Nat.add_assoc, Nat.add_left_comm, Nat.add_comm]
+
+/-- A convex mixture may tie the candidate on some requests. If it improves
+    on one request of positive mass and never costs more on the workload,
+    one of its two component strategies has strictly smaller expected cost. -/
+theorem convex_dominated_never_minimizes_expected_work {R : Type} (rows : List (R × Nat))
+    (a b c : R → Nat) (num den : Nat) (hnum : num ≤ den)
+    (hle : ∀ row ∈ rows, num * a row.1 + (den - num) * b row.1 ≤ den * c row.1)
+    (gain : ∃ row ∈ rows, 0 < row.2 ∧ num * a row.1 + (den - num) * b row.1 < den * c row.1) :
+    weightedWork a rows < weightedWork c rows ∨ weightedWork b rows < weightedWork c rows := by
+  have h := weightedWork_lt_of_supported_gain
+    (fun r => num * a r + (den - num) * b r) (fun r => den * c r) rows hle gain
+  have scale := weightedWork_linear rows c c den 0
+  simp only [Nat.zero_mul, Nat.add_zero] at scale
+  rw [weightedWork_linear, scale] at h
+  by_cases ha : weightedWork a rows < weightedWork c rows
+  · exact Or.inl ha
+  · right
+    apply Nat.lt_of_not_ge
+    intro hb
+    have bound := Nat.add_le_add (Nat.mul_le_mul_left num (Nat.le_of_not_gt ha))
+      (Nat.mul_le_mul_left (den - num) hb)
+    rw [← Nat.add_mul, Nat.add_sub_of_le hnum] at bound
+    exact (Nat.not_lt_of_ge bound) h
 
 /-- Concrete Update 003 witness: `(116, 116)` is Pareto efficient against
     `(80, 150)` and `(150, 80)`, strictly convex-dominated (`230 < 232`),
     yet uniquely wins minimax excess above baseline `(100, 100)` (`16 < 50`). -/
 theorem pareto_convex_dominated_wins_minimax :
+    ¬ (80 ≤ 116 ∧ 150 ≤ 116) ∧ ¬ (150 ≤ 116 ∧ 80 ≤ 116) ∧
     (1 * 80 + 1 * 150 < 2 * 116) ∧
     (1 * 150 + 1 * 80 < 2 * 116) ∧
     (max (116 - 100) (116 - 100) = 16) ∧
@@ -156,28 +193,44 @@ def lowerPure (env : List String) : PureLisp → Option BLCTerm
   | .defun1 _ param body => (lowerPure (param :: env) body).map BLCTerm.lam
   | .setf _ _ => none
 
-/-- `(defun f (f) f)` lowers directly to `λx.x` = 4-bit `"0010"`, while `setf`
-    is explicitly refused (`none`). -/
+/-- A parameter shadows the function name and lowers to the four-bit identity. -/
 theorem shadowed_param_lowers_to_four_bit_identity :
     (lowerPure [] (.defun1 "f" "f" (.sym "f"))).map encodeBLC = some "0010" := by
   decide
 
-theorem setf_refused_in_pure_frontend :
-    lowerPure [] (.defun1 "bad" "x" (.setf "x" 1)) = none := by
-  decide
+theorem setf_refused_in_pure_frontend (env : List String) (name param cell : String) (v : Nat) :
+    lowerPure env (.defun1 name param (.setf cell v)) = none := rfl
 
 /-! ## 4. Update 004: Sparse-Hessian Undeclared Dependency-Mask Counterexample -/
 
-/-- Exact Hessian-vector product of `f(x, y) = (x + y)^2 / 2` is `(v0 + v1, v0 + v1)`. -/
+/-- Hessian-vector product for (x + y)^2 / 2 on natural-valued seeds. -/
 def hvpHalfSumSq (v0 v1 : Nat) : Nat × Nat := (v0 + v1, v0 + v1)
 
+abbrev Matrix2 := (Nat × Nat) × (Nat × Nat)
+
+/-- Recover the columns of a two-dimensional HVP using orthogonal seeds. -/
+def recoverColumns (hvp : Nat → Nat → Nat × Nat) : Matrix2 :=
+  let x := hvp 1 0
+  let y := hvp 0 1
+  ((x.1, y.1), (x.2, y.2))
+
+/-- With a diagonal-only mask both columns share one seed. -/
+def recoverDiagonal (hvp : Nat → Nat → Nat × Nat) : Matrix2 :=
+  let xy := hvp 1 1
+  ((xy.1, 0), (0, xy.2))
+
+theorem recoverColumns_of_matrix (m : Matrix2) :
+    recoverColumns (fun x y => (m.1.1 * x + m.1.2 * y, m.2.1 * x + m.2.2 * y)) = m := by
+  simp [recoverColumns]
+
 theorem sparse_hessian_incomplete_mask_corrupts_diagonal :
-    let hv := hvpHalfSumSq 1 1
-    hv.1 = 2 ∧ hv.2 = 2 ∧ hv.1 ≠ 1 ∧ hv.2 ≠ 1 := by
+    recoverDiagonal hvpHalfSumSq = ((2, 0), (0, 2)) ∧
+      (recoverDiagonal hvpHalfSumSq).1.1 ≠ (recoverColumns hvpHalfSumSq).1.1 ∧
+      (recoverDiagonal hvpHalfSumSq).2.2 ≠ (recoverColumns hvpHalfSumSq).2.2 := by
   decide
 
 theorem sparse_hessian_complete_mask_exact :
-    hvpHalfSumSq 1 0 = (1, 1) ∧ hvpHalfSumSq 0 1 = (1, 1) := by
+    recoverColumns hvpHalfSumSq = ((1, 1), (1, 1)) := by
   decide
 
 /-! ## 5. Update 004: Deferred Affine Updates Exact Work Law -/
@@ -219,17 +272,19 @@ theorem lazy_affine_bank_work_equals_final_use (ts : List Nat) :
   have h := lazy_affine_bank_work_conservation 0 ts
   omega
 
-/-- Exact schedule counts across 8 banks x 64 steps (`dense = 512`):
-    - STABLE-SUBSET (banks 0, 1): 64 + 64 = 128
-    - ROUND-ROBIN-TOP1: 57 + 58 + 59 + 60 + 61 + 62 + 63 + 64 = 484
-    - PERMANENT-RETIREMENT: 64 + 64 + 32 + 32 = 192
-    - LATE-REVIVAL (bank 0 every step, bank 7 at step 64): 64 + 64 = 128 -/
+/-- Sum the actual catch-up work for the demand history of each bank. -/
+def scheduleWork (banks steps : Nat) (demanded : Nat → Nat → Bool) : Nat :=
+  let times := (List.range steps).map (· + 1)
+  (List.range banks).foldl (fun total b => total + bankLazyWork 0 (times.filter (demanded b))) 0
+
+/-- The four demand policies of blc-at-run-affine-schedule on eight banks
+    and 64 timesteps, together with their dense baseline. -/
 theorem lazy_affine_four_schedules_exact_counts :
-    (64 + 64 = 128) ∧
-    (57 + 58 + 59 + 60 + 61 + 62 + 63 + 64 = 484) ∧
-    (64 + 64 + 32 + 32 = 192) ∧
-    (64 + 0 + 0 + 0 + 0 + 0 + 0 + 64 = 128) ∧
-    (8 * 64 = 512) := by
+    scheduleWork 8 64 (fun b _ => b < 2) = 128 ∧
+    scheduleWork 8 64 (fun b t => (t - 1) % 8 == b) = 484 ∧
+    scheduleWork 8 64 (fun b t => b < 2 || (b < 4 && t ≤ 32)) = 192 ∧
+    scheduleWork 8 64 (fun b t => b == 0 || (b == 7 && t == 64)) = 128 ∧
+    8 * 64 = 512 := by
   decide
 
 /-! ## 6. Macro-Rule Cost Composition & Non-Vacuous Claim Binding -/
@@ -249,26 +304,33 @@ theorem macro_cost_append (xs ys : List (Nat × Nat)) :
         (cnt * step + macroTotalCost rest) + macroTotalCost ys
       rw [ih, Nat.add_assoc]
 
-/-- Anti-vacuity theorem-binding control (rsh Showpiece #6):
-    an injective claim encoder distinguishes `1+1=2` from `3*4=12`, whereas a
-    constant vacuous bridge collapses both to identical output. -/
+/-- The two arithmetic targets have distinct operand-result pairs and the
+    same image under a constant Boolean report. -/
 theorem nonvacuous_claim_distinguishes_targets :
     ((1 + 1, 2) ≠ (3 * 4, 12)) ∧
     ((fun _ : Nat × Nat => true) (1 + 1, 2) = (fun _ : Nat × Nat => true) (3 * 4, 12)) := by
   decide
 
-end EshkolCostedContracts
+#print axioms tariff_breakeven_240_vs_241
+#print axioms weightedWork_mono
+#print axioms weightedWork_lt_of_supported_gain
+#print axioms strategy_expected_cost_dominance
+#print axioms strategy_sharing_cost_decomposition
+#print axioms sharing_strictly_lowers_expected_work
+#print axioms share_before_duplication
+#print axioms strategy_cost_2_vs_72_concrete_witness
+#print axioms weightedWork_linear
+#print axioms convex_dominated_never_minimizes_expected_work
+#print axioms pareto_convex_dominated_wins_minimax
+#print axioms shadowed_param_lowers_to_four_bit_identity
+#print axioms setf_refused_in_pure_frontend
+#print axioms recoverColumns_of_matrix
+#print axioms sparse_hessian_incomplete_mask_corrupts_diagonal
+#print axioms sparse_hessian_complete_mask_exact
+#print axioms lazy_affine_bank_work_conservation
+#print axioms lazy_affine_bank_work_equals_final_use
+#print axioms lazy_affine_four_schedules_exact_counts
+#print axioms macro_cost_append
+#print axioms nonvacuous_claim_distinguishes_targets
 
-#print axioms EshkolCostedContracts.tariff_breakeven_240_vs_241
-#print axioms EshkolCostedContracts.strategy_cost_2_vs_72
-#print axioms EshkolCostedContracts.convex_dominated_never_minimizes_expected_work
-#print axioms EshkolCostedContracts.pareto_convex_dominated_wins_minimax
-#print axioms EshkolCostedContracts.shadowed_param_lowers_to_four_bit_identity
-#print axioms EshkolCostedContracts.setf_refused_in_pure_frontend
-#print axioms EshkolCostedContracts.sparse_hessian_incomplete_mask_corrupts_diagonal
-#print axioms EshkolCostedContracts.sparse_hessian_complete_mask_exact
-#print axioms EshkolCostedContracts.lazy_affine_bank_work_conservation
-#print axioms EshkolCostedContracts.lazy_affine_bank_work_equals_final_use
-#print axioms EshkolCostedContracts.lazy_affine_four_schedules_exact_counts
-#print axioms EshkolCostedContracts.macro_cost_append
-#print axioms EshkolCostedContracts.nonvacuous_claim_distinguishes_targets
+end EshkolCostedContracts
