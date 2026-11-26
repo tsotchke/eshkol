@@ -13812,24 +13812,24 @@
     }
   },
   "counts": {
-    "builtins_total": 1069,
+    "builtins_total": 1081,
     "builtins_in_vm_table": 800,
-    "builtins_in_llvm_aot_dispatch": 811,
-    "builtins_aot_only": 247,
+    "builtins_in_llvm_aot_dispatch": 823,
+    "builtins_aot_only": 259,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 122,
     "ast_ops": 114,
     "prelude": 637
   },
   "builtins_by_category": {
-    "ffi_system": 302,
+    "ffi_system": 304,
     "tensor_ad": 227,
     "numeric": 90,
     "predicate": 76,
     "geometry": 56,
+    "misc": 55,
     "list_pair": 53,
     "io_port": 52,
-    "misc": 45,
     "string_char": 42,
     "consciousness": 35,
     "vector": 24,
@@ -15042,6 +15042,16 @@
       "category": "ffi_system"
     },
     {
+      "name": "alignof",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "allow-sleep",
       "ids": [
         1953
@@ -15457,6 +15467,16 @@
         "native_llvm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "bit-offset",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "bit-shift-left",
@@ -17159,6 +17179,16 @@
       "category": "ffi_system"
     },
     {
+      "name": "define-layout",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "deflate",
       "ids": [
         2018
@@ -18258,6 +18288,36 @@
         "vm"
       ],
       "category": "consciousness"
+    },
+    {
+      "name": "field-addr",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "field-ref",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "field-set!",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "file-atime",
@@ -21685,6 +21745,16 @@
       "category": "ffi_system"
     },
     {
+      "name": "offsetof",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "on!",
       "ids": [
         1998
@@ -23488,6 +23558,16 @@
       "category": "numeric"
     },
     {
+      "name": "sizeof",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "sleep",
       "ids": [],
       "arity": null,
@@ -23766,6 +23846,16 @@
         "native_llvm"
       ],
       "category": "tensor_ad"
+    },
+    {
+      "name": "static-assert",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "step-decay-lr",
@@ -25747,6 +25837,16 @@
       "category": "ffi_system"
     },
     {
+      "name": "unsafe-asm",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "unsetenv",
       "ids": [
         1713
@@ -26042,6 +26142,26 @@
         "native_llvm"
       ],
       "category": "misc_core"
+    },
+    {
+      "name": "volatile-field-ref",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "ffi_system"
+    },
+    {
+      "name": "volatile-field-set!",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "ffi_system"
     },
     {
       "name": "volatile-load",

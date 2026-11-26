@@ -689,7 +689,7 @@
 <h3 id="global-prng-drand48-compatible">Global PRNG (drand48-compatible)</h3>
 <p>The codegen for <code>(random)</code> calls libc’s <code>drand48</code>. On Linux/macOS this is the system implementation; on Windows it routes through the <code>eshkol</code>-shipped shim in <code>platform_runtime.cpp</code> (<code>prng.cpp</code>).</p>
 <h4 id="set-random-seed-seed--unspecified"><code>(set-random-seed! seed)</code> → unspecified</h4>
-<p>Seed the global PRNG. The codegen for <code>set-random-seed!</code> also flips a <code>__random_seeded__</code> marker so the runtime’s auto-seed-from-time path (which fires on first <code>(random)</code> of a program) is suppressed (<code>prng.cpp</code>).</p>
+<p>Seed the global PRNG with the low 32 bits of the integer argument. Repeating the seed replays the same sequence. On the first draw without an explicit seed, the runtime initializes the 48-bit state from operating-system entropy.</p>
 <h4 id="random--real-in-00-10"><code>(random)</code> → real in <code>[0.0, 1.0)</code></h4>
 <p>Standard drand48-style uniform sample. Mutex-protected on the global state.</p>
 <h3 id="per-stream-isolated-prng">Per-stream isolated PRNG</h3>

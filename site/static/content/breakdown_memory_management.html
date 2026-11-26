@@ -824,27 +824,14 @@ Check g_buffer_pool[bucket] for available buffer
 <p><strong>Important lifetime note:</strong> The arena tensor’s memory outlives the GPU buffer. The GPU buffer is a transient wrapper. The arena tensor persists until arena reset/destroy. There is no risk of use-after-free because <code>eshkol_gpu_free</code> on a wrapped buffer only releases the MTLBuffer, not the underlying arena-owned memory.</p>
 <hr />
 <h2 id="platform-specific-abi-considerations">Platform-Specific ABI Considerations</h2>
-<p>Eshkol’s runtime passes <code>eshkol_tagged_value_t</code> (a 16-byte struct) across function boundaries in several places. Platform ABIs differ in how they handle 16-byte aggregate return values and aggregate parameters, which required explicit platform dispatch in two functions.</p>
-<h3 id="arm64-thunk-calling-convention-call_thunk_closure">ARM64 Thunk Calling Convention (<code>call_thunk_closure</code>)</h3>
-<p><strong>File:</strong> <code>lib/core/runtime_continuations.cpp</code></p>
-<p>Dynamic-wind and <code>call/cc</code> thunks are zero-argument closures invoked through a trampoline (<code>call_thunk_closure</code>). The trampoline bridges a typed function pointer (stored as <code>void*</code> in the closure) back to a call returning <code>eshkol_tagged_value_t</code>.</p>
-<p>The problem: the two dominant ABI families handle 16-byte aggregate return differently. - <strong>x86-64 (System V) and Windows x64</strong>: The caller passes a hidden first argument — a pointer to the caller’s return slot. The function writes the return value there and returns <code>void</code>. - <strong>AArch64</strong>: Returns the 16-byte struct directly in register pairs (<code>x0:x1</code>). No hidden buffer is passed.</p>
-<p>Without the fix, ARM64 would treat the caller-provided hidden buffer pointer as the first data argument, shifting all real arguments by one slot and corrupting the return value.</p>
-<p>The fix introduces a compile-time branch:</p>
-<pre class="c"><code>#if defined(__aarch64__) || defined(_M_ARM64)
-    // ARM64: direct return in registers — no hidden buffer
-    typedef eshkol_tagged_value_t (*fn0_t)(void);
-    typedef eshkol_tagged_value_t (*fn1_t)(void*);
-    // ... (fn2_t through fn4_t follow the same pattern)
-    result = ((fn0_t)(uintptr_t)closure-&gt;func_ptr)();
-#else
-    // x86/Windows: hidden return buffer as first parameter
-    typedef void (*fn0_t)(eshkol_tagged_value_t*);
-    typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
-    // ... (fn2_t through fn4_t follow the same pattern)
-    ((fn0_t)(uintptr_t)closure-&gt;func_ptr)(&amp;result);
-#endif</code></pre>
-<p><code>call_thunk_closure</code> is used by <code>call_thunk_from_tagged</code> (line ~3975) which is called during <code>call/cc</code> continuation unwinding and dynamic-wind before/after thunk invocation. See also <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">CONTINUATIONS.md</a> for the call/cc and dynamic-wind implementation that depends on this trampoline.</p>
+<p>Eshkol’s runtime passes <code>eshkol_tagged_value_t</code> (a 16-byte struct) across function boundaries in several places. Platform ABIs differ in how they handle 16-byte aggregate return values and aggregate parameters, which the runtime handles by passing such values by pointer at the boundaries described below.</p>
+<h3 id="thunk-calls-from-the-runtime">Thunk Calls From the Runtime</h3>
+<p><strong>Files:</strong> <code>lib/core/runtime_continuations.cpp</code>, <code>lib/backend/llvm_codegen.cpp</code></p>
+<p>Dynamic-wind before/after thunks are zero-argument procedures that the runtime has to run when a continuation or a raise crosses their extent. The two dominant ABI families return a 16-byte aggregate differently: - <strong>x86-64 (System V) and Windows x64</strong>: through a hidden first argument that points at the caller’s return slot. - <strong>AArch64</strong>: directly in register pairs (<code>x0:x1</code>).</p>
+<p>The runtime is independent of both, and of how a procedure receives its captured variables. Each wind entry stores a thunk caller emitted by the compiler:</p>
+<pre class="c"><code>typedef void (*eshkol_thunk_caller_t)(const eshkol_tagged_value_t* thunk,
+                                      eshkol_tagged_value_t* result);</code></pre>
+<p><code>call_wind_thunk</code> passes the thunk by address and receives its value through an out-pointer. The generated caller (<code>__eshkol_call_thunk</code>) performs an ordinary closure call, so the aggregate return, the passing of capture-slot addresses, rest parameters and the arity check are all handled by generated code — the same protocol as any other procedure call. See also <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">CONTINUATIONS.md</a> for the call/cc and dynamic-wind implementation built on it.</p>
 <h3 id="windows-x64-struct-by-value-parameter-fix-region_escape_tagged_value_into">Windows x64 Struct-by-Value Parameter Fix (<code>region_escape_tagged_value_into</code>)</h3>
 <p><strong>File:</strong> <code>lib/core/runtime_regions_evacuation.cpp</code></p>
 <p>The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. <code>region_escape_tagged_value_into</code> previously took <code>eshkol_tagged_value_t val</code> by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.</p>

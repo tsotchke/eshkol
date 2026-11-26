@@ -17,9 +17,9 @@
 <h2 id="element-access-and-mutation">Element Access and Mutation</h2>
 <pre class="scheme"><code>(define v #(10 20 30 40 50))
 
-(display (vector-ref v 2))    ;; =&gt; 30
+(display (vector-ref v 2))    ;; =&gt; 30.0
 (vector-set! v 0 99)
-(display v)                   ;; =&gt; #(99 20 30 40 50)
+(display v)                   ;; =&gt; #(99.0 20.0 30.0 40.0 50.0)
 (display (vector-length v))   ;; =&gt; 5</code></pre>
 <hr />
 <h2 id="reshaping">Reshaping</h2>
@@ -48,13 +48,13 @@
 <hr />
 <h2 id="linear-algebra">Linear Algebra</h2>
 <pre class="scheme"><code>;; Dot product
-(display (tensor-dot #(1 2 3) #(4 5 6)))  ;; =&gt; 32
+(display (tensor-dot #(1 2 3) #(4 5 6)))  ;; =&gt; 32.0
 
 ;; Matrix multiplication — auto-dispatches SIMD -&gt; BLAS -&gt; GPU
 (define A (reshape #(1 2 3 4) 2 2))
 (define B (reshape #(5 6 7 8) 2 2))
 (define C (matmul A B))
-(display C)  ;; =&gt; #((19 22) (43 50))
+(display C)  ;; =&gt; #((19.0 22.0) (43.0 50.0))
 
 ;; Transpose
 (display (transpose A))
@@ -64,7 +64,7 @@
 (display (trace (eye 4)))     ;; =&gt; 4.0
 
 ;; Outer product
-(display (outer #(1 2) #(3 4)))  ;; =&gt; #((3 4) (6 8))</code></pre>
+(display (outer #(1 2) #(3 4)))  ;; =&gt; #((3.0 4.0) (6.0 8.0))</code></pre>
 <hr />
 <h2 id="gpu-acceleration">GPU Acceleration</h2>
 <p>When tensor sizes exceed a threshold, operations automatically dispatch to GPU (Metal on macOS, CUDA on Linux/Windows):</p>
