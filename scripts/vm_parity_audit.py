@@ -74,6 +74,9 @@ CODEGEN_NAME_DENYLIST = {
     "__eshkol_parameter_convert",
     "__eshkol_parameter_push",
     "__eshkol_parameter_pop",
+    # The parser lowers delay and delay-force to these thunk constructors.
+    "%make-lazy-promise",
+    "%make-lazy-promise-force",
 }
 
 # Alternate spellings that dispatch to the exact same codegen path as another
