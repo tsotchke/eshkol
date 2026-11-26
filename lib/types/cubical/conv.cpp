@@ -18,6 +18,10 @@
 #include "cubical_internal.h"
 
 #include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace eshkol::hott::cubical {
 
@@ -106,24 +110,194 @@ static bool convGlueSys(const V& A, const VSys& s1, const VSys& s2) {
 
 static V convNe(const V& a, const V& b);
 
+// ---------------------------------------------------------------------------
+// Structural equality of semantic values
+//
+// A conservative sufficient condition for definitional equality, used where
+// conversion must compare values that carry no type (the captured environment
+// of a split). Two values are structurally equal when they have the same kind
+// and every field agrees: atoms (variable id, dimension, formula, level, term
+// and declaration identity, constructor index, binder and origin names)
+// exactly, and every sub-value, closure and environment recursively.
+//
+// Why this suffices: evaluation, application and every elimination read a
+// value only through these fields, and the environment is looked up by name,
+// so names are part of the structure. Structurally equal values therefore
+// denote the same value. The converse does not hold: values that are
+// convertible but built differently (alpha-variant closures, eta-variants,
+// distinct fresh binder dimensions) are refused. That loses completeness, not
+// soundness.
+//
+// The comparison is a conjunction over pairs of sub-values and is evaluated
+// with an explicit worklist, so its stack use does not grow with the depth of
+// the values. A pair already scheduled is not scheduled again; this bounds the
+// work by the number of distinct pairs and terminates without relying on the
+// value graph being acyclic. A step budget bounds it absolutely: exhausting the
+// budget raises a KernelError that states that equality was not established,
+// which the caller reports as a refusal, never as an equality or an inequality.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+#ifdef ESHKOL_CUBICAL_STRUCTURAL_STEP_BUDGET
+constexpr size_t kStructuralStepBudget = ESHKOL_CUBICAL_STRUCTURAL_STEP_BUDGET;
+#else
+constexpr size_t kStructuralStepBudget = size_t{1} << 20;
+#endif
+
+class StructuralEquality {
+public:
+    /// True when A and B are structurally equal. The caller keeps A and B
+    /// alive for the duration of the call; sub-values are reached through them.
+    bool values(const V& a, const V& b) {
+        schedule(a.get(), b.get());
+        while (!pending_.empty()) {
+            auto [x, y] = pending_.back();
+            pending_.pop_back();
+            if (!fields(*x, *y)) {
+                // Pairs scheduled by this call are no longer known to hold.
+                pending_.clear();
+                scheduled_.clear();
+                scheduledEnvironments_.clear();
+                return false;
+            }
+        }
+        return true;
+    }
+
+private:
+    std::vector<std::pair<const Val*, const Val*>> pending_;
+    std::set<std::pair<const Val*, const Val*>> scheduled_;
+    std::set<std::pair<const Env*, const Env*>> scheduledEnvironments_;
+    size_t steps_ = 0;
+
+    void step() {
+        if (++steps_ > kStructuralStepBudget)
+            throw KernelError("conversion: structural comparison of captured values exceeded its budget of " +
+                              std::to_string(kStructuralStepBudget) + " steps; equality not established");
+    }
+
+    /// False when exactly one of A, B is null; otherwise the pair is scheduled.
+    bool schedule(const Val* a, const Val* b) {
+        if (a == b) return true;
+        if (!a || !b) return false;
+        if (scheduled_.insert({a, b}).second) {
+            step();
+            pending_.push_back({a, b});
+        }
+        return true;
+    }
+
+    bool environment(const Env* a, const Env* b) {
+        while (a && b) {
+            if (a == b) return true;
+            if (!scheduledEnvironments_.insert({a, b}).second) return true;
+            step();
+            if (a->kind != b->kind || a->name != b->name) return false;
+            switch (a->kind) {
+                case Env::Kind::Value:
+                    if (!schedule(a->v.get(), b->v.get())) return false;
+                    break;
+                case Env::Kind::Dim:
+                    if (a->f != b->f) return false;
+                    break;
+                case Env::Kind::Level:
+                    if (!(a->l == b->l)) return false;
+                    break;
+            }
+            a = a->next.get();
+            b = b->next.get();
+        }
+        return !a && !b;
+    }
+
+    bool closure(const Clo& a, const Clo& b) {
+        return a.body == b.body && a.x == b.x && environment(a.env.get(), b.env.get());
+    }
+
+    bool sequence(const std::vector<V>& a, const std::vector<V>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (!schedule(a[i].get(), b[i].get())) return false;
+        return true;
+    }
+
+    static bool levels(const std::vector<Level>& a, const std::vector<Level>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (!(a[i] == b[i])) return false;
+        return true;
+    }
+
+    bool system(const VSys& a, const VSys& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i].face != b[i].face || !schedule(a[i].v.get(), b[i].v.get()) ||
+                !schedule(a[i].v2.get(), b[i].v2.get()))
+                return false;
+        return true;
+    }
+
+    bool fields(const Val& a, const Val& b) {
+        if (a.k != b.k || a.id != b.id || a.name != b.name || a.dim != b.dim || a.f != b.f ||
+            a.data != b.data || a.con != b.con || a.split != b.split || !(a.level == b.level))
+            return false;
+        if (a.dims != b.dims || !levels(a.levels, b.levels)) return false;
+        return schedule(a.a.get(), b.a.get()) && schedule(a.b.get(), b.b.get()) &&
+               schedule(a.c.get(), b.c.get()) && closure(a.clo, b.clo) && system(a.sys, b.sys) &&
+               sequence(a.params, b.params) && sequence(a.args, b.args);
+    }
+};
+
+/// The level each name denotes inside a closure over E: the innermost binding,
+/// or, for a name with no binding, the rigid level variable of that name
+/// (evalLevel's rule).
+Level effectiveLevel(const Env* e, const std::string& name) {
+    for (; e; e = e->next.get())
+        if (e->kind == Env::Kind::Level && e->name == name) return e->l;
+    return Level::var(name);
+}
+
+/// True when closures over A and B see the same level for every level name
+/// either binds. Elaboration leaves a definition's levels rigid (no binding)
+/// while an instantiated global binds them, possibly to the same rigid
+/// variables; comparing effective levels accepts that case and refuses
+/// different instantiations.
+bool sameEffectiveLevels(const Env* a, const Env* b) {
+    std::set<std::string> names;
+    for (const Env* e = a; e; e = e->next.get())
+        if (e->kind == Env::Kind::Level) names.insert(e->name);
+    for (const Env* e = b; e; e = e->next.get())
+        if (e->kind == Env::Kind::Level) names.insert(e->name);
+    for (const auto& n : names)
+        if (!(effectiveLevel(a, n) == effectiveLevel(b, n))) return false;
+    return true;
+}
+
+}  // namespace
+
 static bool sameSplit(const V& s1, const V& s2) {
     if (s1 == s2) return true;
     if (s1->split != s2->split) return false;
-    // Same split term: compare the captured environments as normal forms.
-    // Level bindings are skipped: elaboration leaves levels rigid (no
-    // binding) while an instantiated global binds them; the comparison is
-    // typed by the caller, which already determines the levels.
+    // Same split term: the two values are equal when their captured
+    // environments are. Level bindings form their own namespace (lookup is by
+    // kind and name), so they are compared as an assignment, not by position.
+    if (!sameEffectiveLevels(s1->clo.env.get(), s2->clo.env.get())) return false;
     auto skipLevels = [](const Env* e) {
         while (e && e->kind == Env::Kind::Level) e = e->next.get();
         return e;
     };
     const Env* e1 = skipLevels(s1->clo.env.get());
     const Env* e2 = skipLevels(s2->clo.env.get());
+    // Captured values are compared structurally (StructuralEquality, above),
+    // never by their printed quotation: quote() is a diagnostic read-back and
+    // is not injective (every split value prints as #<split>, and a neutral
+    // variable prints by name without its id), so printed equality does not
+    // establish definitional equality.
+    StructuralEquality same;
     while (e1 && e2) {
         if (e1->kind != e2->kind || e1->name != e2->name) return false;
-        if (e1->kind == Env::Kind::Value && e1->v != e2->v &&
-            printSx(quote(e1->v)) != printSx(quote(e2->v)))
-            return false;
+        if (e1->kind == Env::Kind::Value && !same.values(e1->v, e2->v)) return false;
         if (e1->kind == Env::Kind::Dim && e1->f != e2->f) return false;
         e1 = skipLevels(e1->next.get());
         e2 = skipLevels(e2->next.get());
