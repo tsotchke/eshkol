@@ -108,6 +108,11 @@ Definitionally (by evaluation):
 - `(happly (funExt h))` is `h`; eliminators of higher inductive types on points, paths and compositions;
 - J on `refl` when the motive is an inductive type.
 
+Two values of one `split` are definitionally equal when their captured
+environments are structurally identical: the same variables, constructor
+values and definitions, at the same universe levels. Captured functions
+written separately are not identified, even with the same text.
+
 As terms (proofs): `J-refl` in general, `ua-beta` in general, the groupoid laws,
 `iso-to-equiv`, `decodeEncode`, and the equivalence of the loop space of the
 circle with the integers.
