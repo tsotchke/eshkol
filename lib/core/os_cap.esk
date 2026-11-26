@@ -1,0 +1,78 @@
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+;;;
+;;; core.os_cap — Tier 2 (`os-userspace-oalr`) native capability syscall wrappers.
+;;;
+;;; Provides typed Eshkol userspace wrappers over `eshkol_os_syscall6` matching
+;;; `inc/eshkol/core/os_syscall_abi.h`. Zero POSIX or libc symbols.
+;;; Admitted under `--profile eshkol-os-user`; rejected fail-closed under
+;;; `freestanding-kernel-native` and `freestanding-mcu-native`.
+
+(provide
+  os-cap-right-read
+  os-cap-right-write
+  os-cap-right-exec
+  os-cap-right-send
+  os-cap-right-recv
+  os-cap-right-grant
+  os-cap-right-revoke
+  os-cap-derive
+  os-cap-revoke
+  os-cap-drop
+  os-ipc-submit
+  os-ipc-complete
+  os-ipc-wait
+  os-page-map
+  os-page-unmap
+  os-task-yield
+  os-task-exit
+  os-console-write)
+
+(extern i64 eshkol_os_syscall6 u64 u64 u64 u64 u64 u64 u64)
+
+;; Capability rights bitmask helpers matching ESHKOL_CAP_RIGHT_*
+(define (os-cap-right-read) : u64 1)
+(define (os-cap-right-write) : u64 2)
+(define (os-cap-right-exec) : u64 4)
+(define (os-cap-right-send) : u64 8)
+(define (os-cap-right-recv) : u64 16)
+(define (os-cap-right-grant) : u64 32)
+(define (os-cap-right-revoke) : u64 64)
+
+;; Capability lifecycle syscalls (ESHKOL_SYS_CAP_* = 1..3)
+(define (os-cap-derive (parent-cap : u64) (rights-mask : u64) (badge : u64)) : i64
+  (eshkol_os_syscall6 1 parent-cap rights-mask badge 0 0 0))
+
+(define (os-cap-revoke (cap : u64)) : i64
+  (eshkol_os_syscall6 2 cap 0 0 0 0 0))
+
+(define (os-cap-drop (cap : u64)) : i64
+  (eshkol_os_syscall6 3 cap 0 0 0 0 0))
+
+;; Zero-copy IPC ring syscalls (ESHKOL_SYS_IPC_* = 10..12)
+(define (os-ipc-submit (ring-cap : u64) (sqe-addr : u64) (count : u64) (flags : u64)) : i64
+  (eshkol_os_syscall6 10 ring-cap sqe-addr count flags 0 0))
+
+(define (os-ipc-complete (ring-cap : u64) (cqe-addr : u64) (max-count : u64) (flags : u64)) : i64
+  (eshkol_os_syscall6 11 ring-cap cqe-addr max-count flags 0 0))
+
+(define (os-ipc-wait (ring-cap : u64) (min-complete : u64) (timeout-ns : u64)) : i64
+  (eshkol_os_syscall6 12 ring-cap min-complete timeout-ns 0 0 0))
+
+;; Userspace page mapping syscalls (ESHKOL_SYS_PAGE_* = 20..21)
+(define (os-page-map (space-cap : u64) (vaddr : u64) (num-pages : u64) (flags : u64)) : i64
+  (eshkol_os_syscall6 20 space-cap vaddr num-pages flags 0 0))
+
+(define (os-page-unmap (space-cap : u64) (vaddr : u64) (num-pages : u64)) : i64
+  (eshkol_os_syscall6 21 space-cap vaddr num-pages 0 0 0))
+
+;; Task scheduling and exit syscalls (ESHKOL_SYS_TASK_* = 30..31)
+(define (os-task-yield) : i64
+  (eshkol_os_syscall6 30 0 0 0 0 0 0))
+
+(define (os-task-exit (exit-code : u64)) : i64
+  (eshkol_os_syscall6 31 exit-code 0 0 0 0 0))
+
+;; Capability-gated console write syscall (ESHKOL_SYS_CONSOLE_WRITE = 40)
+(define (os-console-write (console-cap : u64) (buf-addr : u64) (len : u64)) : i64
+  (eshkol_os_syscall6 40 console-cap buf-addr len 0 0 0))

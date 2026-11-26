@@ -3080,6 +3080,11 @@ typedef struct eshkol_operation {
             uint8_t export_symbol;    // Force public/exported linkage for the definition
             char *export_name;        // Optional emitted symbol name
             uint8_t is_no_return;     // Function never returns normally
+            uint8_t is_naked;         // Emit LLVM naked attribute (no prologue/epilogue)
+            uint8_t is_interrupt;     // Interrupt service routine entry point
+            uint8_t is_arch_hal;      // Quarantined HAL function permitted to emit unsafe-asm
+            uint8_t is_no_alloc;      // Statically enforced zero-allocation function
+            uint8_t is_fpu_safe;      // Explicit opt-in allowing FP instructions in ISR/kernel
         } define_op;
         struct {
             struct eshkol_ast *expressions;
@@ -3093,6 +3098,7 @@ typedef struct eshkol_operation {
             uint64_t num_params;
             uint8_t is_weak;          // Imported function may be absent at link/load time
             uint8_t is_no_return;     // Imported function never returns normally
+            uint8_t is_no_alloc;      // Imported function is statically declared NoAlloc/InterruptSafe
         } extern_op;
         struct {
             char *name;

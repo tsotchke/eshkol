@@ -12,12 +12,13 @@ namespace eshkol::profile {
 
 namespace {
 
-constexpr std::array<Info, 7> kProfiles = {{
+constexpr std::array<Info, 8> kProfiles = {{
     {ExecutionProfile::HostedNative, "hosted-native", Backend::Native, true, false, false, false, false, nullptr},
     {ExecutionProfile::HostedWasm, "hosted-wasm", Backend::Wasm, true, false, false, false, false, "wasm32-unknown-unknown"},
     {ExecutionProfile::HostedVm, "hosted-vm", Backend::Vm, true, false, true, false, false, nullptr},
     {ExecutionProfile::FreestandingKernelNative, "freestanding-kernel-native", Backend::Native, false, true, true, true, true, nullptr},
     {ExecutionProfile::FreestandingMcuNative, "freestanding-mcu-native", Backend::Native, false, true, true, true, true, nullptr},
+    {ExecutionProfile::EshkolOsUser, "eshkol-os-user", Backend::Native, false, true, true, true, true, nullptr},
     {ExecutionProfile::FreestandingVm, "freestanding-vm", Backend::Vm, false, true, true, false, true, nullptr},
     {ExecutionProfile::EmbeddedVm, "embedded-vm", Backend::Vm, false, true, true, false, true, nullptr},
 }};
@@ -146,6 +147,7 @@ Resolution resolve(const Selection& selection) {
 
     case ExecutionProfile::FreestandingKernelNative:
     case ExecutionProfile::FreestandingMcuNative:
+    case ExecutionProfile::EshkolOsUser:
         if (selection.eval_mode || selection.run_mode) {
             resolved.error = "--profile ";
             resolved.error += resolved.profile->name;
@@ -261,8 +263,10 @@ constexpr const char* kRv32imacFeatures = "+m,+a,+c,+zmmul,+zaamo,+zalrsc,+zca,+
 constexpr const char* kRv64imacFeatures = "+m,+a,+c,+zmmul,+zaamo,+zalrsc,+zca,+relax";
 constexpr const char* kRv64gcFeatures =
     "+m,+a,+f,+d,+c,+zicsr,+zifencei,+zmmul,+zaamo,+zalrsc,+zca,+zcd,+relax";
+constexpr const char* kX86_64KernelFeatures =
+    "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,+soft-float";
 
-constexpr std::array<EmbeddedTarget, 12> kEmbeddedTargets = {{
+constexpr std::array<EmbeddedTarget, 14> kEmbeddedTargets = {{
     // ARM Cortex-M4 (ARMv7E-M, Thumb-2), software floating point.
     {"thumbv7em-none-eabi", "thumbv7em-unknown-none-eabi", "cortex-m4",
      kCortexM4SoftFeatures, "aapcs", FloatAbi::Soft, CodeModel::Default, "armv7e-m"},
@@ -293,6 +297,11 @@ constexpr std::array<EmbeddedTarget, 12> kEmbeddedTargets = {{
     // RISC-V 64-bit without hardware floating point: RV64IMAC, lp64.
     {"riscv64imac-unknown-none-elf", "riscv64-unknown-none-elf", "generic-rv64",
      kRv64imacFeatures, "lp64", FloatAbi::Default, CodeModel::Medium, "rv64imac"},
+    // x86-64 bare-metal kernel profile: soft-float, SIMD/x87 disabled, small code model (default).
+    {"x86_64-unknown-none", "x86_64-unknown-none-elf", "x86-64",
+     kX86_64KernelFeatures, "", FloatAbi::Soft, CodeModel::Default, "x86-64"},
+    {"x86_64-unknown-none-elf", "x86_64-unknown-none-elf", "x86-64",
+     kX86_64KernelFeatures, "", FloatAbi::Soft, CodeModel::Default, "x86-64"},
 }};
 
 }  // namespace

@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../../inc/eshkol/core/object_limits.h"
+#include "../../inc/eshkol/core/os_page_hooks.h"
 
 // Include main Eshkol header for tagged data types
 #include "../../inc/eshkol/eshkol.h"
@@ -42,6 +43,9 @@ struct arena_block {
     size_t size;           // Total block size
     size_t used;           // Used bytes in this block
     arena_block_t* next;   // Next block in chain
+    void* backing_base;    // OS page-hook base address (NULL when malloc-backed)
+    size_t backing_pages;  // Number of OS pages owned by backing_base
+    bool page_backed;      // True when allocated through eshkol_os_page_hooks_t
 };
 
 // Arena scope for nested allocation contexts
@@ -76,6 +80,12 @@ struct arena {
     arena_t* first_tape_child;     // Tape arenas owned by this arena.
     arena_t* next_tape_sibling;    // Next child in tape_parent's list.
     bool is_tape_arena;            // Child arena used exclusively by one tape.
+    void* arena_backing_base;      // OS page-hook base for arena control page
+    size_t arena_backing_pages;    // Page count for arena_backing_base
+    arena_scope_t* inline_scopes;  // Inline scope slots inside arena control page
+    size_t inline_scope_capacity;  // Number of inline scope slots available
+    size_t inline_scope_used;      // Active LIFO inline scope count
+    bool page_backed;              // True when arena control page uses OS page hooks
 };
 
 // Arena management functions

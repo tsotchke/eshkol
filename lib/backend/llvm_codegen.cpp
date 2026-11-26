@@ -117,6 +117,7 @@ bool eshkol_lld_on_path() {
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 #include <eshkol/backend/llvm_codegen.h>
 #include <eshkol/util/continuation_task.h>
+#include <llvm/IR/InlineAsm.h>
 
 namespace {
 
@@ -1387,6 +1388,7 @@ namespace {
     std::string g_cached_cpu_name;
     std::string g_cached_features;
     bool g_freestanding_codegen = false;
+    bool g_freestanding_kernel_codegen = false;
 
     /* SHARED-LIBRARY EXPORT ABI (--shared-lib, linked-library flavour)
      *
@@ -1460,6 +1462,8 @@ namespace {
     // model from that row, so instruction selection, the data layout, ELF
     // e_flags and ARM build attributes always agree.
     constexpr const char* kEmbeddedTargetModuleFlag = "eshkol.embedded-target";
+    constexpr const char* kFreestandingKernelModuleFlag = "eshkol.freestanding-kernel";
+    constexpr const char* kX86_64UserspaceFeatures = "+sse,+sse2";
 
     const eshkol::profile::EmbeddedTarget* embeddedTargetForModule(const Module& m) {
         if (auto* name = dyn_cast_or_null<MDString>(m.getModuleFlag(kEmbeddedTargetModuleFlag))) {
@@ -1468,17 +1472,43 @@ namespace {
         return nullptr;
     }
 
+    bool moduleIsFreestandingKernel(const Module& m) {
+        if (auto* flag = mdconst::dyn_extract_or_null<ConstantInt>(
+                m.getModuleFlag(kFreestandingKernelModuleFlag))) {
+            return !flag->isZero();
+        }
+        return false;
+    }
+
+    bool usesX86_64UserspaceFeatures(const eshkol::profile::EmbeddedTarget& target,
+                                     bool is_kernel) {
+        return !is_kernel &&
+               target.float_abi == eshkol::profile::FloatAbi::Soft &&
+               std::string_view(target.isa) == "x86-64";
+    }
+
+    std::string effectiveEmbeddedTargetFeatures(const eshkol::profile::EmbeddedTarget& target,
+                                                bool is_kernel) {
+        if (usesX86_64UserspaceFeatures(target, is_kernel)) {
+            return kX86_64UserspaceFeatures;
+        }
+        return target.features ? std::string(target.features) : std::string();
+    }
+
     void applyEmbeddedTargetOptions(const eshkol::profile::EmbeddedTarget& target,
-                                    TargetOptions& options) {
-        switch (target.float_abi) {
-            case eshkol::profile::FloatAbi::Soft:
-                options.FloatABIType = FloatABI::Soft;
-                break;
-            case eshkol::profile::FloatAbi::Hard:
-                options.FloatABIType = FloatABI::Hard;
-                break;
-            case eshkol::profile::FloatAbi::Default:
-                break;
+                                    TargetOptions& options,
+                                    bool is_kernel) {
+        if (!usesX86_64UserspaceFeatures(target, is_kernel)) {
+            switch (target.float_abi) {
+                case eshkol::profile::FloatAbi::Soft:
+                    options.FloatABIType = FloatABI::Soft;
+                    break;
+                case eshkol::profile::FloatAbi::Hard:
+                    options.FloatABIType = FloatABI::Hard;
+                    break;
+                case eshkol::profile::FloatAbi::Default:
+                    break;
+            }
         }
         if (target.abi && target.abi[0] != '\0') {
             options.MCOptions.ABIName = target.abi;
@@ -1757,6 +1787,29 @@ void EshkolLLVMCodeGen::applyDefineFunctionAttributes(const decltype(((eshkol_op
         if (def.is_no_return) {
             function->addFnAttr(Attribute::NoReturn);
         }
+        if (def.is_naked) {
+            function->addFnAttr(Attribute::Naked);
+            naked_functions_.insert(function);
+        }
+        if (def.is_interrupt) {
+            function->addFnAttr(Attribute::NoRedZone);
+            function->addFnAttr(Attribute::NoImplicitFloat);
+            function->addFnAttr("eshkol.interrupt", "true");
+            interrupt_functions_.insert(function);
+            no_alloc_functions_.insert(function);
+        }
+        if (def.is_no_alloc) {
+            function->addFnAttr("eshkol.no-alloc", "true");
+            no_alloc_functions_.insert(function);
+        }
+        if (def.is_arch_hal) {
+            function->addFnAttr("eshkol.arch-hal", "true");
+            arch_hal_functions_.insert(function);
+        }
+        if (def.is_fpu_safe) {
+            function->addFnAttr("eshkol.fpu-safe", "true");
+            fpu_safe_functions_.insert(function);
+        }
     }
 
 void EshkolLLVMCodeGen::applyExternFunctionAttributes(const decltype(((eshkol_operations_t*)nullptr)->extern_op)& ext,
@@ -1767,6 +1820,10 @@ void EshkolLLVMCodeGen::applyExternFunctionAttributes(const decltype(((eshkol_op
         }
         if (ext.is_no_return) {
             function->addFnAttr(Attribute::NoReturn);
+        }
+        if (ext.is_no_alloc) {
+            function->addFnAttr("eshkol.no-alloc", "true");
+            no_alloc_functions_.insert(function);
         }
     }
 
@@ -1784,12 +1841,14 @@ void EshkolLLVMCodeGen::markFatalCodegenError() {
 
 EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mode,
                        const char* target_triple,
-                       bool is_freestanding_codegen) {
+                       bool is_freestanding_codegen,
+                       bool is_freestanding_kernel_codegen) {
         // Determine target BEFORE any type initialization
         bool is_wasm32 = target_triple &&
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
         freestanding_codegen_ = is_freestanding_codegen;
+        freestanding_kernel_codegen_ = is_freestanding_kernel_codegen;
         shared_library_exports_ = is_library_mode && g_shared_library_exports;
         wasm_codegen_ = is_wasm32;
         fatal_codegen_error_ = false;
@@ -1855,6 +1914,9 @@ EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mo
         Triple target_triple_obj(target_triple_str);
         module->setTargetTriple(target_triple_str);
 #endif
+        if (freestanding_kernel_codegen_) {
+            module->addModuleFlag(Module::Error, kFreestandingKernelModuleFlag, 1u);
+        }
         if (embedded_target) {
             module->addModuleFlag(Module::Error, kEmbeddedTargetModuleFlag,
                                   MDString::get(*context, embedded_target->name));
@@ -1889,8 +1951,8 @@ EshkolLLVMCodeGen::EshkolLLVMCodeGen(const char* module_name, bool is_library_mo
             std::string feature_string;
             if (embedded_target) {
                 cpu_name = embedded_target->cpu;
-                feature_string = embedded_target->features;
-                applyEmbeddedTargetOptions(*embedded_target, options);
+                feature_string = effectiveEmbeddedTargetFeatures(*embedded_target, freestanding_kernel_codegen_);
+                applyEmbeddedTargetOptions(*embedded_target, options, freestanding_kernel_codegen_);
             } else if (target_triple_str == g_cached_target_triple) {
                 cpu_name = g_cached_cpu_name;
                 feature_string = g_cached_features;
@@ -2712,6 +2774,16 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
             preGenerateTopLevelLambdas(asts_to_use, num_asts_to_use);
             eshkol_debug("Pre-generated all top-level lambdas");
 
+            // Step 1.85: Register declarative hardware layouts (`define-layout`)
+            // and evaluate top-level `static-assert` directives BEFORE external
+            // declarations and function bodies so `sizeof`/`alignof`/`offsetof`/
+            // `bit-offset`/`volatile-field-*` resolve across the whole module.
+            registerHardwareLayoutsAndStaticAsserts(asts_to_use, num_asts_to_use);
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
+                eshkol_error("Failed hardware layout registration or static-assert verification");
+                return std::make_pair(nullptr, nullptr);
+            }
+
             // Step 1.9: Process external declarations BEFORE function bodies.
             // This ensures extern functions and variables are registered before
             // user functions reference them.
@@ -3230,6 +3302,11 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
 
             pruneUnusedFreestandingDeclarations();
             markFreestandingNoUnwind();
+            verifyFreestandingKernelSafety();
+            if (fatal_codegen_error_ || (ctx_ && ctx_->hasFatalCodegenError())) {
+                eshkol_error("Failed freestanding kernel/interrupt safety verification");
+                return std::make_pair(nullptr, nullptr);
+            }
 
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
@@ -4523,6 +4600,95 @@ void EshkolLLVMCodeGen::emitFreestandingScalarExportWrappers(const eshkol_ast_t*
             if (def.is_used) markGlobalValueUsed(thunk);
             thunk->addFnAttr(Attribute::NoUnwind);
 
+            if (def.is_no_alloc) {
+                thunk->addFnAttr("eshkol.no-alloc", "true");
+                no_alloc_functions_.insert(thunk);
+            }
+            if (def.is_arch_hal) {
+                thunk->addFnAttr("eshkol.arch-hal", "true");
+                arch_hal_functions_.insert(thunk);
+            }
+            if (def.is_fpu_safe) {
+                thunk->addFnAttr("eshkol.fpu-safe", "true");
+                fpu_safe_functions_.insert(thunk);
+            }
+
+            if (def.is_naked) {
+                if (def.num_params != 0 || !native_ret->isVoidTy()) {
+                    eshkol_error("freestanding :naked export '%s' must take 0 parameters and return null",
+                                 symbol.c_str());
+                    thunk->eraseFromParent();
+                    markFatalCodegenError();
+                    return;
+                }
+                thunk->addFnAttr(Attribute::Naked);
+                thunk->addFnAttr(Attribute::NoRedZone);
+                thunk->addFnAttr(Attribute::NoImplicitFloat);
+                naked_functions_.insert(thunk);
+                if (def.is_no_alloc || freestanding_kernel_codegen_) {
+                    no_alloc_functions_.insert(thunk);
+                }
+
+                IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+                DebugLoc saved_loc = builder->getCurrentDebugLocation();
+                builder->SetCurrentDebugLocation(DebugLoc());
+                builder->SetInsertPoint(BasicBlock::Create(*context, "entry", thunk));
+
+                bool has_asm = false;
+                for (BasicBlock& bb : *impl) {
+                    for (Instruction& inst : bb) {
+                        if (auto* cb = dyn_cast<CallBase>(&inst)) {
+                            if (cb->isInlineAsm() && cb->arg_size() == 0 && cb->getType()->isVoidTy()) {
+                                builder->CreateCall(cb->getFunctionType(), cb->getCalledOperand());
+                                has_asm = true;
+                                continue;
+                            }
+                            eshkol_error(":naked function '%s' may only contain 0-arg void unsafe-asm or target-intrinsic instructions",
+                                         symbol.c_str());
+                            markFatalCodegenError();
+                            builder->restoreIP(saved_point);
+                            builder->SetCurrentDebugLocation(saved_loc);
+                            return;
+                        }
+                    }
+                }
+                if (!has_asm) {
+                    eshkol_error(":naked function '%s' must emit at least one unsafe-asm or target-intrinsic instruction",
+                                 symbol.c_str());
+                    markFatalCodegenError();
+                }
+                if (def.is_no_return) {
+                    builder->CreateUnreachable();
+                } else {
+                    builder->CreateRetVoid();
+                }
+                builder->restoreIP(saved_point);
+                builder->SetCurrentDebugLocation(saved_loc);
+                impl->eraseFromParent();
+                continue;
+            }
+
+            if (def.is_interrupt) {
+                thunk->addFnAttr(Attribute::NoRedZone);
+                thunk->addFnAttr(Attribute::NoImplicitFloat);
+                thunk->addFnAttr("eshkol.interrupt", "true");
+                impl->addFnAttr(Attribute::NoRedZone);
+                impl->addFnAttr(Attribute::NoImplicitFloat);
+                impl->addFnAttr(Attribute::AlwaysInline);
+                interrupt_functions_.insert(thunk);
+                no_alloc_functions_.insert(thunk);
+                const Triple triple(module->getTargetTriple());
+                if (triple.isX86() && native_ret->isVoidTy() &&
+                    def.num_params == 1 && native_params[0]->isPointerTy()) {
+                    thunk->setCallingConv(CallingConv::X86_INTR);
+                    StructType* frame_ty = StructType::get(
+                        *context, {int64_type, int64_type, int64_type, int64_type, int64_type});
+                    thunk->addParamAttr(0, Attribute::getWithByValType(*context, frame_ty));
+                } else if (triple.isRISCV() && native_ret->isVoidTy() && def.num_params == 0) {
+                    thunk->addFnAttr("interrupt", "machine");
+                }
+            }
+
             IRBuilderBase::InsertPoint saved_point = builder->saveIP();
             DebugLoc saved_loc = builder->getCurrentDebugLocation();
             builder->SetCurrentDebugLocation(DebugLoc());
@@ -4758,7 +4924,147 @@ void EshkolLLVMCodeGen::emitSharedLibraryExportWrappers(const eshkol_ast_t* asts
 void EshkolLLVMCodeGen::markFreestandingNoUnwind() {
         if (!freestanding_codegen_) return;
         for (Function& function : *module) {
-            if (!function.isDeclaration()) function.addFnAttr(Attribute::NoUnwind);
+            if (function.isDeclaration()) continue;
+            function.addFnAttr(Attribute::NoUnwind);
+            if (freestanding_kernel_codegen_) {
+                function.addFnAttr(Attribute::NoRedZone);
+                function.addFnAttr(Attribute::NoImplicitFloat);
+            }
+        }
+    }
+
+void EshkolLLVMCodeGen::verifyFreestandingKernelSafety() {
+        if (!freestanding_codegen_ && no_alloc_functions_.empty() && interrupt_functions_.empty()) {
+            return;
+        }
+
+        auto isForbiddenOalrOrHostedAllocator = [](StringRef name) -> bool {
+            return name == "eshkol_os_alloc_pages" ||
+                   name == "eshkol_os_free_pages" ||
+                   name == "eshkol_os_install_page_hooks" ||
+                   name.starts_with("eshkol_os_oalr_") ||
+                   name.starts_with("arena_") ||
+                   name.starts_with("region_") ||
+                   name.starts_with("eshkol_region_") ||
+                   name == "malloc" || name == "calloc" ||
+                   name == "realloc" || name == "free";
+        };
+
+        auto isAllowedNoAllocExternal = [&](const Function* callee) -> bool {
+            if (!callee) return false;
+            const StringRef name = callee->getName();
+            if (isForbiddenOalrOrHostedAllocator(name)) return false;
+            if (no_alloc_functions_.count(const_cast<Function*>(callee))) return true;
+            if (callee->hasFnAttribute("eshkol.no-alloc")) return true;
+            if (name.starts_with("llvm.")) return true;
+            if (name.starts_with("eshkol_board_")) return true;
+            if (name == "memcpy" || name == "memmove" || name == "memset" || name == "memcmp") {
+                return true;
+            }
+            return false;
+        };
+
+        auto isFloatingPointInstruction = [](const Instruction& inst) -> bool {
+            switch (inst.getOpcode()) {
+                case Instruction::FAdd:
+                case Instruction::FSub:
+                case Instruction::FMul:
+                case Instruction::FDiv:
+                case Instruction::FRem:
+                case Instruction::FNeg:
+                case Instruction::FCmp:
+                case Instruction::SIToFP:
+                case Instruction::UIToFP:
+                case Instruction::FPToSI:
+                case Instruction::FPToUI:
+                case Instruction::FPExt:
+                case Instruction::FPTrunc:
+                    return true;
+                default:
+                    return inst.getType() && inst.getType()->isFPOrFPVectorTy();
+            }
+        };
+
+        for (Function& function : *module) {
+            if (function.isDeclaration()) continue;
+            const bool is_isr = interrupt_functions_.count(&function) != 0;
+            const bool is_no_alloc = freestanding_kernel_codegen_ || is_isr ||
+                                     no_alloc_functions_.count(&function) != 0;
+            if (!is_no_alloc) continue;
+
+            const bool is_fpu_safe = fpu_safe_functions_.count(&function) != 0;
+            const bool require_no_fpu = (freestanding_kernel_codegen_ || is_isr) && !is_fpu_safe;
+            const bool is_hal = arch_hal_functions_.count(&function) != 0;
+            const std::string fn_name = function.getName().str();
+
+            for (BasicBlock& bb : function) {
+                for (Instruction& inst : bb) {
+                    if (require_no_fpu && isFloatingPointInstruction(inst)) {
+                        eshkol_error("kernel/interrupt function '%s' uses floating-point operation '%s' without :fpu-safe",
+                                     fn_name.c_str(), inst.getOpcodeName());
+                        markFatalCodegenError();
+                    }
+
+                    auto* cb = dyn_cast<CallBase>(&inst);
+                    if (!cb) continue;
+                    if (cb->isInlineAsm()) continue;
+
+                    Function* callee = cb->getCalledFunction();
+                    if (!callee) {
+                        if (!is_hal) {
+                            eshkol_error("NoAlloc/interrupt function '%s' performs unverified indirect call (only permitted in :arch-hal)",
+                                         fn_name.c_str());
+                            markFatalCodegenError();
+                        }
+                        continue;
+                    }
+
+                    if (callee->getName().starts_with("llvm.")) {
+                        if (require_no_fpu) {
+                            bool touches_fp = callee->getReturnType()->isFPOrFPVectorTy();
+                            for (const Value* arg : cb->args()) {
+                                if (arg->getType()->isFPOrFPVectorTy()) touches_fp = true;
+                            }
+                            if (touches_fp) {
+                                eshkol_error("kernel/interrupt function '%s' calls floating-point intrinsic '%s' without :fpu-safe",
+                                             fn_name.c_str(), callee->getName().str().c_str());
+                                markFatalCodegenError();
+                            }
+                        }
+                        continue;
+                    }
+
+                    if (callee->isDeclaration()) {
+                        if (isForbiddenOalrOrHostedAllocator(callee->getName())) {
+                            eshkol_error("NoAlloc/interrupt function '%s' calls forbidden allocating or unverified external symbol '%s' (OALR/page-allocator absolute region isolation)",
+                                         fn_name.c_str(), callee->getName().str().c_str());
+                            markFatalCodegenError();
+                            continue;
+                        }
+                        if (!isAllowedNoAllocExternal(callee)) {
+                            eshkol_error("NoAlloc/interrupt function '%s' calls forbidden allocating or unverified external symbol '%s'",
+                                         fn_name.c_str(), callee->getName().str().c_str());
+                            markFatalCodegenError();
+                        }
+                        continue;
+                    }
+
+                    const bool callee_no_alloc =
+                        freestanding_kernel_codegen_ ||
+                        no_alloc_functions_.count(callee) != 0 ||
+                        interrupt_functions_.count(callee) != 0;
+                    if (!callee_no_alloc) {
+                        eshkol_error("NoAlloc/interrupt function '%s' calls non-NoAlloc function '%s'",
+                                     fn_name.c_str(), callee->getName().str().c_str());
+                        markFatalCodegenError();
+                    }
+                    if (is_isr && !is_fpu_safe && fpu_safe_functions_.count(callee) != 0) {
+                        eshkol_error("interrupt function '%s' calls :fpu-safe function '%s' without :fpu-safe",
+                                     fn_name.c_str(), callee->getName().str().c_str());
+                        markFatalCodegenError();
+                    }
+                }
+            }
         }
     }
 
@@ -5790,6 +6096,43 @@ ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenTypedASTTask(const eshkol
                         Value* val = (co_await codegenASTTask(ast));
                         if (!val) co_return TypedValue();
                         co_return makeLowLevelTypedValue(val, intrinsic_info->return_type);
+                    }
+                    if (func_name == "unsafe-asm") {
+                        auto asm_info = resolveUnsafeAsmCall(
+                            &ast->operation, "unsafe-asm");
+                        if (!asm_info) {
+                            co_return TypedValue();
+                        }
+
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, asm_info->return_type);
+                    }
+                    if (func_name == "sizeof" || func_name == "alignof" ||
+                        func_name == "offsetof" || func_name == "bit-offset") {
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_INT64,
+                                         eshkol::hott::BuiltinTypes::USize, true);
+                    }
+                    if (func_name == "field-addr") {
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val) co_return TypedValue();
+                        co_return TypedValue(val, ESHKOL_VALUE_HEAP_PTR,
+                                         eshkol::hott::BuiltinTypes::Pointer, true);
+                    }
+                    if (func_name == "field-ref" || func_name == "volatile-field-ref") {
+                        if (ast->operation.call_op.num_vars < 3) {
+                            co_return TypedValue();
+                        }
+                        const HardwareLayoutDef* layout = nullptr;
+                        const HardwareLayoutField* field = lookupLayoutField(
+                            &ast->operation.call_op.variables[0],
+                            &ast->operation.call_op.variables[2],
+                            &layout, func_name.c_str());
+                        Value* val = (co_await codegenASTTask(ast));
+                        if (!val || !field) co_return TypedValue();
+                        co_return makeLowLevelTypedValue(val, field->scalar_info);
                     }
                     if (func_name == "addr-of") {
                         // SINGLE-EVAL FIX (ESH-0098): recover pointee type without
@@ -8042,6 +8385,257 @@ std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::res
         }
 
         const std::string intrinsic_name = name_ast.str_val.ptr;
+
+        // Typed privileged CPU intrinsics (`eshkol.cpu.*`): architecture-validated,
+        // type-checked lowering to privileged ISA instructions without exposing raw
+        // inline assembly outside `:arch-hal`.
+        if (intrinsic_name.rfind("eshkol.cpu.", 0) == 0) {
+            std::vector<LowLevelValueTypeInfo> arg_types;
+            for (size_t i = 2; i + 1 < op->call_op.num_vars; i += 2) {
+                auto arg_type = resolveLowLevelTypeInfo(
+                    &op->call_op.variables[i], builtin_name, "argument", false);
+                if (!arg_type) {
+                    return std::nullopt;
+                }
+                arg_types.push_back(*arg_type);
+            }
+
+            const Triple triple(module->getTargetTriple());
+            const bool is_x86_64 = triple.isX86() && triple.isArch64Bit();
+            const bool is_aarch64 = triple.isAArch64();
+            const bool is_arm = triple.isARM() || triple.isThumb();
+            const bool is_riscv = triple.isRISCV();
+
+            auto is_u8  = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(8); };
+            auto is_u16 = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(16); };
+            auto is_u32 = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(32); };
+            auto is_u64 = [](const LowLevelValueTypeInfo& t) { return !t.is_null && !t.is_pointer && !t.is_signed_integer && t.llvm_type->isIntegerTy(64); };
+            auto is_usize_or_u64 = [](const LowLevelValueTypeInfo& t) {
+                return !t.is_null && !t.is_pointer && !t.is_signed_integer &&
+                       (t.llvm_type->isIntegerTy(32) || t.llvm_type->isIntegerTy(64));
+            };
+
+            TargetIntrinsicCallInfo info;
+            info.return_type = *return_type;
+            info.arg_types = std::move(arg_types);
+            info.is_inline_asm = true;
+            info.asm_has_side_effects = true;
+
+            if (intrinsic_name == "eshkol.cpu.wfi" || intrinsic_name == "eshkol.cpu.hlt") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "hlt";
+                    info.asm_constraints = "~{memory}";
+                } else if (is_aarch64 || is_arm || is_riscv) {
+                    info.asm_template = "wfi";
+                    info.asm_constraints = "~{memory}";
+                } else {
+                    eshkol_error("%s '%s' is not supported on target '%s'", builtin_name, intrinsic_name.c_str(), triple.str().c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.pause") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "pause";
+                } else if (is_aarch64 || is_arm) {
+                    info.asm_template = "yield";
+                } else if (is_riscv) {
+                    info.asm_template = "nop";
+                } else {
+                    info.asm_template = "";
+                }
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.irq-disable" || intrinsic_name == "eshkol.cpu.cli") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "cli";
+                } else if (is_aarch64) {
+                    info.asm_template = "msr daifset, #2";
+                } else if (is_arm) {
+                    info.asm_template = "cpsid i";
+                } else if (is_riscv) {
+                    info.asm_template = "csrci mstatus, 8";
+                } else {
+                    eshkol_error("%s '%s' is not supported on target '%s'", builtin_name, intrinsic_name.c_str(), triple.str().c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.irq-enable" || intrinsic_name == "eshkol.cpu.sti") {
+                if (!return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                if (is_x86_64) {
+                    info.asm_template = "sti";
+                } else if (is_aarch64) {
+                    info.asm_template = "msr daifclr, #2";
+                } else if (is_arm) {
+                    info.asm_template = "cpsie i";
+                } else if (is_riscv) {
+                    info.asm_template = "csrsi mstatus, 8";
+                } else {
+                    eshkol_error("%s '%s' is not supported on target '%s'", builtin_name, intrinsic_name.c_str(), triple.str().c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.inb" || intrinsic_name == "eshkol.cpu.inw" || intrinsic_name == "eshkol.cpu.inl") {
+                if (!is_x86_64) {
+                    eshkol_error("%s '%s' is only valid on x86_64 targets", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const bool ok_ret = (intrinsic_name == "eshkol.cpu.inb" && is_u8(*return_type)) ||
+                                    (intrinsic_name == "eshkol.cpu.inw" && is_u16(*return_type)) ||
+                                    (intrinsic_name == "eshkol.cpu.inl" && is_u32(*return_type));
+                if (!ok_ret || info.arg_types.size() != 1 || !is_u16(info.arg_types[0])) {
+                    eshkol_error("%s '%s' requires port u16 and matching scalar return type", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.inb") ? "inb $1, $0"
+                                  : (intrinsic_name == "eshkol.cpu.inw") ? "inw $1, $0"
+                                                                         : "inl $1, $0";
+                info.asm_constraints = "={ax},N{dx},~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.outb" || intrinsic_name == "eshkol.cpu.outw" || intrinsic_name == "eshkol.cpu.outl") {
+                if (!is_x86_64) {
+                    eshkol_error("%s '%s' is only valid on x86_64 targets", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const bool ok_val = info.arg_types.size() == 2 && is_u16(info.arg_types[0]) &&
+                                    ((intrinsic_name == "eshkol.cpu.outb" && is_u8(info.arg_types[1])) ||
+                                     (intrinsic_name == "eshkol.cpu.outw" && is_u16(info.arg_types[1])) ||
+                                     (intrinsic_name == "eshkol.cpu.outl" && is_u32(info.arg_types[1])));
+                if (!return_type->is_null || !ok_val) {
+                    eshkol_error("%s '%s' requires signature (null u16 <val>)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.outb") ? "outb $1, $0"
+                                  : (intrinsic_name == "eshkol.cpu.outw") ? "outw $1, $0"
+                                                                          : "outl $1, $0";
+                info.asm_constraints = "N{dx},{ax},~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.read-cr0" || intrinsic_name == "eshkol.cpu.read-cr2" || intrinsic_name == "eshkol.cpu.read-cr3") {
+                if (!is_x86_64 || !is_u64(*return_type) || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires x86_64 target and signature (u64)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const char* cr = (intrinsic_name == "eshkol.cpu.read-cr0") ? "%cr0"
+                               : (intrinsic_name == "eshkol.cpu.read-cr2") ? "%cr2" : "%cr3";
+                info.asm_template = std::string("movq ") + cr + ", $0";
+                info.asm_constraints = "=r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.write-cr3") {
+                if (!is_x86_64 || !return_type->is_null || info.arg_types.size() != 1 || !is_u64(info.arg_types[0])) {
+                    eshkol_error("%s 'eshkol.cpu.write-cr3' requires x86_64 target and signature (null u64)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "movq $0, %cr3";
+                info.asm_constraints = "r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.invlpg") {
+                if (!is_x86_64 || !return_type->is_null || info.arg_types.size() != 1 || !info.arg_types[0].is_pointer) {
+                    eshkol_error("%s 'eshkol.cpu.invlpg' requires x86_64 target and signature (null ptr)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "invlpg ($0)";
+                info.asm_constraints = "r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.csrr-mstatus" || intrinsic_name == "eshkol.cpu.csrr-mcause" || intrinsic_name == "eshkol.cpu.csrr-mepc") {
+                if (!is_riscv || !is_usize_or_u64(*return_type) || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires RISC-V target and unsigned integer return", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                const char* csr = (intrinsic_name == "eshkol.cpu.csrr-mstatus") ? "mstatus"
+                                : (intrinsic_name == "eshkol.cpu.csrr-mcause")  ? "mcause" : "mepc";
+                info.asm_template = std::string("csrr $0, ") + csr;
+                info.asm_constraints = "=r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.csrw-mstatus") {
+                if (!is_riscv || !return_type->is_null || info.arg_types.size() != 1 || !is_usize_or_u64(info.arg_types[0])) {
+                    eshkol_error("%s 'eshkol.cpu.csrw-mstatus' requires RISC-V target and signature (null u32/u64)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "csrw mstatus, $0";
+                info.asm_constraints = "r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.sfence-vma") {
+                if (!is_riscv || !return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s 'eshkol.cpu.sfence-vma' requires RISC-V target and signature (null)", builtin_name);
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = "sfence.vma zero, zero";
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.mrs-currentel" || intrinsic_name == "eshkol.cpu.mrs-cntpct") {
+                if (!is_aarch64 || !is_u64(*return_type) || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires AArch64 target and signature (u64)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.mrs-currentel")
+                    ? "mrs $0, CurrentEL" : "mrs $0, cntpct_el0";
+                info.asm_constraints = "=r,~{memory}";
+                return info;
+            }
+            if (intrinsic_name == "eshkol.cpu.tlbi-vmalle1" || intrinsic_name == "eshkol.cpu.dsb-sy" || intrinsic_name == "eshkol.cpu.isb") {
+                if (!(is_aarch64 || (is_arm && intrinsic_name != "eshkol.cpu.tlbi-vmalle1")) ||
+                    !return_type->is_null || !info.arg_types.empty()) {
+                    eshkol_error("%s '%s' requires ARM/AArch64 target and signature (null)", builtin_name, intrinsic_name.c_str());
+                    markFatalCodegenError();
+                    return std::nullopt;
+                }
+                info.asm_template = (intrinsic_name == "eshkol.cpu.tlbi-vmalle1") ? "tlbi vmalle1"
+                                  : (intrinsic_name == "eshkol.cpu.dsb-sy")       ? "dsb sy" : "isb";
+                info.asm_constraints = "~{memory}";
+                return info;
+            }
+
+            eshkol_error("%s received unknown privileged CPU intrinsic '%s'", builtin_name, intrinsic_name.c_str());
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
         Intrinsic::ID intrinsic_id = Intrinsic::lookupIntrinsicID(intrinsic_name);
         if (intrinsic_id == Intrinsic::not_intrinsic) {
             eshkol_error("%s received unknown LLVM intrinsic '%s'",
@@ -8092,7 +8686,731 @@ std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::res
             return std::nullopt;
         }
 
-        return TargetIntrinsicCallInfo{*return_type, std::move(arg_types), declaration};
+        return TargetIntrinsicCallInfo{*return_type, std::move(arg_types), declaration, false, "", "", true};
+    }
+
+std::optional<EshkolLLVMCodeGen::TargetIntrinsicCallInfo> EshkolLLVMCodeGen::resolveUnsafeAsmCall(
+        const eshkol_operations_t* op, const char* builtin_name) {
+        if (!current_function_is_arch_hal_) {
+            const std::string owner = current_function ? current_function->getName().str() : "<top-level>";
+            eshkol_error("%s is restricted to :arch-hal functions (rejected in '%s')",
+                         builtin_name, owner.c_str());
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        if (!op || op->call_op.num_vars < 3) {
+            eshkol_error("%s requires a return type, assembly template string, constraints string, and zero or more typed arguments",
+                         builtin_name);
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        if (((op->call_op.num_vars - 3) % 2) != 0) {
+            eshkol_error("%s requires argument type/value pairs after the constraints string",
+                         builtin_name);
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        auto return_type = resolveLowLevelTypeInfo(
+            &op->call_op.variables[0], builtin_name, "return", true);
+        if (!return_type) {
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        const eshkol_ast_t& tmpl_ast = op->call_op.variables[1];
+        const eshkol_ast_t& cons_ast = op->call_op.variables[2];
+        if (tmpl_ast.type != ESHKOL_STRING || !tmpl_ast.str_val.ptr ||
+            cons_ast.type != ESHKOL_STRING || !cons_ast.str_val.ptr) {
+            eshkol_error("%s expects string literals for assembly template and constraints",
+                         builtin_name);
+            markFatalCodegenError();
+            return std::nullopt;
+        }
+
+        std::vector<LowLevelValueTypeInfo> arg_types;
+        for (size_t i = 3; i + 1 < op->call_op.num_vars; i += 2) {
+            auto arg_type = resolveLowLevelTypeInfo(
+                &op->call_op.variables[i], builtin_name, "argument", false);
+            if (!arg_type) {
+                markFatalCodegenError();
+                return std::nullopt;
+            }
+            arg_types.push_back(*arg_type);
+        }
+
+        TargetIntrinsicCallInfo info;
+        info.return_type = *return_type;
+        info.arg_types = std::move(arg_types);
+        info.declaration = nullptr;
+        info.is_inline_asm = true;
+        info.asm_template = tmpl_ast.str_val.ptr;
+        info.asm_constraints = cons_ast.str_val.ptr;
+        info.asm_has_side_effects = true;
+        return info;
+    }
+
+CallInst* EshkolLLVMCodeGen::emitLowLevelInlineAsmCall(
+        const TargetIntrinsicCallInfo& info,
+        ArrayRef<Type*> arg_types,
+        ArrayRef<Value*> args,
+        const char* name) {
+        FunctionType* asm_fn_type = FunctionType::get(
+            info.return_type.llvm_type, arg_types, false);
+        InlineAsm* ia = InlineAsm::get(
+            asm_fn_type,
+            info.asm_template,
+            info.asm_constraints,
+            info.asm_has_side_effects);
+        return builder->CreateCall(asm_fn_type, ia, args, name);
+    }
+
+void EshkolLLVMCodeGen::registerHardwareLayoutsAndStaticAsserts(
+        const eshkol_ast_t* asts, size_t num_asts) {
+        if (!asts) return;
+        for (size_t i = 0; i < num_asts; ++i) {
+            if (asts[i].type != ESHKOL_OP || asts[i].operation.op != ESHKOL_CALL_OP) continue;
+            const eshkol_operations_t* op = &asts[i].operation;
+            if (!op->call_op.func || op->call_op.func->type != ESHKOL_VAR ||
+                !op->call_op.func->variable.id) {
+                continue;
+            }
+            const std::string fn = op->call_op.func->variable.id;
+            if (fn == "define-layout") {
+                registerHardwareLayout(op);
+            } else if (fn == "static-assert") {
+                evaluateStaticAssert(op);
+            }
+        }
+    }
+
+bool EshkolLLVMCodeGen::resolveLayoutTypeMetrics(
+        const eshkol_ast_t* type_ast,
+        uint64_t& out_size,
+        uint64_t& out_align,
+        const char* who) const {
+        if (!type_ast) return false;
+        const DataLayout& dl = module->getDataLayout();
+
+        // Fixed inline array: (array <elem-type> <count>)
+        if (type_ast->type == ESHKOL_OP && type_ast->operation.op == ESHKOL_CALL_OP &&
+            type_ast->operation.call_op.func &&
+            type_ast->operation.call_op.func->type == ESHKOL_VAR &&
+            type_ast->operation.call_op.func->variable.id &&
+            std::strcmp(type_ast->operation.call_op.func->variable.id, "array") == 0) {
+            if (type_ast->operation.call_op.num_vars != 2) {
+                eshkol_error("%s: (array <elem-type> <count>) requires 2 arguments", who);
+                return false;
+            }
+            auto count_opt = evaluateConstLayoutExpr(&type_ast->operation.call_op.variables[1], who);
+            if (!count_opt || *count_opt <= 0) {
+                eshkol_error("%s: array count must be a positive compile-time integer", who);
+                return false;
+            }
+            uint64_t elem_size = 0, elem_align = 1;
+            if (!resolveLayoutTypeMetrics(&type_ast->operation.call_op.variables[0],
+                                          elem_size, elem_align, who)) {
+                return false;
+            }
+            out_size = elem_size * static_cast<uint64_t>(*count_opt);
+            out_align = elem_align;
+            return true;
+        }
+
+        if (type_ast->type != ESHKOL_VAR || !type_ast->variable.id) {
+            eshkol_error("%s: expected a machine scalar type, layout name, or (array T N)", who);
+            return false;
+        }
+
+        const std::string tname = type_ast->variable.id;
+        auto it = hardware_layouts_.find(tname);
+        if (it != hardware_layouts_.end()) {
+            out_size = it->second.size;
+            out_align = it->second.alignment;
+            return true;
+        }
+
+        auto scalar = resolveLowLevelTypeInfo(type_ast, who, "layout", false);
+        if (!scalar) return false;
+        if (tname == "usize" || tname == "isize" || scalar->is_pointer) {
+            const uint64_t ptr_sz = dl.getPointerSize();
+            out_size = ptr_sz;
+            out_align = ptr_sz;
+        } else {
+            out_size = dl.getTypeAllocSize(scalar->llvm_type);
+            out_align = dl.getABITypeAlign(scalar->llvm_type).value();
+        }
+        return true;
+    }
+
+bool EshkolLLVMCodeGen::registerHardwareLayout(const eshkol_operations_t* op) {
+        if (!op || op->call_op.num_vars < 2) {
+            eshkol_error("define-layout requires a layout name and at least one field");
+            markFatalCodegenError();
+            return false;
+        }
+        const eshkol_ast_t& name_ast = op->call_op.variables[0];
+        if (name_ast.type != ESHKOL_VAR || !name_ast.variable.id) {
+            eshkol_error("define-layout expects a symbol name as its first argument");
+            markFatalCodegenError();
+            return false;
+        }
+
+        const std::string layout_name = name_ast.variable.id;
+        if (hardware_layouts_.count(layout_name)) {
+            return true; // already registered in Pass 0
+        }
+
+        HardwareLayoutDef def;
+        def.name = layout_name;
+
+        const DataLayout& dl = module->getDataLayout();
+        auto align_up = [](uint64_t v, uint64_t a) -> uint64_t {
+            if (a <= 1) return v;
+            return (v + a - 1) & ~(a - 1);
+        };
+
+        // Parse optional layout modifiers before field descriptors
+        size_t idx = 1;
+        while (idx < op->call_op.num_vars &&
+               op->call_op.variables[idx].type == ESHKOL_VAR &&
+               op->call_op.variables[idx].variable.id &&
+               op->call_op.variables[idx].variable.id[0] == ':') {
+            const std::string mod = op->call_op.variables[idx].variable.id;
+            if (mod == ":repr-c") {
+                idx++;
+            } else if (mod == ":packed") {
+                def.is_packed = true;
+                idx++;
+            } else if (mod == ":side-effect-free-read") {
+                def.side_effect_free_read = true;
+                idx++;
+            } else if (mod == ":align") {
+                if (idx + 1 >= op->call_op.num_vars) {
+                    eshkol_error("define-layout '%s': :align requires a power-of-two integer",
+                                 layout_name.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                auto a_opt = evaluateConstLayoutExpr(&op->call_op.variables[idx + 1], "define-layout");
+                if (!a_opt || *a_opt <= 0 || ((*a_opt & (*a_opt - 1)) != 0)) {
+                    eshkol_error("define-layout '%s': :align must be a positive power-of-two integer",
+                                 layout_name.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                def.explicit_align = static_cast<uint64_t>(*a_opt);
+                idx += 2;
+            } else {
+                eshkol_error("define-layout '%s': unsupported layout modifier '%s'",
+                             layout_name.c_str(), mod.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+        }
+
+        uint64_t cur_offset = 0;
+        uint64_t max_align = 1;
+        bool in_bf = false;
+        uint64_t bf_unit_offset = 0;
+        uint64_t bf_unit_size = 0;
+        uint32_t bf_unit_bits = 0;
+        uint32_t bf_next_bit = 0;
+
+        for (; idx < op->call_op.num_vars; ++idx) {
+            const eshkol_ast_t& f_ast = op->call_op.variables[idx];
+            if (f_ast.type != ESHKOL_OP || f_ast.operation.op != ESHKOL_CALL_OP ||
+                !f_ast.operation.call_op.func ||
+                f_ast.operation.call_op.func->type != ESHKOL_VAR ||
+                !f_ast.operation.call_op.func->variable.id ||
+                f_ast.operation.call_op.num_vars < 1) {
+                eshkol_error("define-layout '%s': each field must be (<name> <type> [:bits N])",
+                             layout_name.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+
+            const std::string fname = f_ast.operation.call_op.func->variable.id;
+            if (def.field_index.count(fname)) {
+                eshkol_error("define-layout '%s': duplicate field '%s'",
+                             layout_name.c_str(), fname.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+
+            HardwareLayoutField field;
+            field.name = fname;
+            const eshkol_ast_t* ftype_ast = &f_ast.operation.call_op.variables[0];
+
+            // Optional `:bits N`
+            if (f_ast.operation.call_op.num_vars == 3) {
+                const eshkol_ast_t& bmod = f_ast.operation.call_op.variables[1];
+                if (bmod.type != ESHKOL_VAR || !bmod.variable.id ||
+                    std::strcmp(bmod.variable.id, ":bits") != 0) {
+                    eshkol_error("define-layout '%s' field '%s': expected ':bits <width>'",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                auto bw_opt = evaluateConstLayoutExpr(&f_ast.operation.call_op.variables[2], "define-layout");
+                if (!bw_opt || *bw_opt <= 0) {
+                    eshkol_error("define-layout '%s' field '%s': :bits width must be a positive integer",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                field.is_bitfield = true;
+                field.bit_width = static_cast<uint32_t>(*bw_opt);
+            } else if (f_ast.operation.call_op.num_vars != 1) {
+                eshkol_error("define-layout '%s' field '%s': invalid field descriptor",
+                             layout_name.c_str(), fname.c_str());
+                markFatalCodegenError();
+                return false;
+            }
+
+            if (field.is_bitfield) {
+                if (ftype_ast->type != ESHKOL_VAR || !ftype_ast->variable.id) {
+                    eshkol_error("define-layout '%s' bitfield '%s' requires an unsigned scalar integer type",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                const std::string tname = ftype_ast->variable.id;
+                auto scalar = resolveLowLevelTypeInfo(ftype_ast, "define-layout", "bitfield", false);
+                if (!scalar || scalar->is_pointer || scalar->is_signed_integer || scalar->is_null) {
+                    eshkol_error("define-layout '%s' bitfield '%s' requires an unsigned integer base type (signed bitfields are rejected for cross-ISA ABI safety)",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                const uint64_t unit_size = (tname == "usize")
+                    ? dl.getPointerSize()
+                    : dl.getTypeAllocSize(scalar->llvm_type);
+                const uint64_t unit_align = (tname == "usize")
+                    ? dl.getPointerSize()
+                    : dl.getABITypeAlign(scalar->llvm_type).value();
+                const uint32_t unit_bits = static_cast<uint32_t>(unit_size * 8);
+                if (field.bit_width > unit_bits) {
+                    eshkol_error("define-layout '%s' bitfield '%s': width %u exceeds storage unit '%s' (%u bits)",
+                                 layout_name.c_str(), fname.c_str(), field.bit_width,
+                                 tname.c_str(), unit_bits);
+                    markFatalCodegenError();
+                    return false;
+                }
+
+                field.type_name = tname;
+                field.scalar_info = *scalar;
+                if (tname == "usize") {
+                    field.scalar_info.llvm_type = dl.getIntPtrType(*context);
+                }
+                field.elem_size = unit_size;
+                field.total_size = unit_size;
+                field.alignment = def.is_packed ? 1 : unit_align;
+
+                if (in_bf && bf_unit_size == unit_size && (bf_next_bit + field.bit_width <= bf_unit_bits)) {
+                    field.byte_offset = bf_unit_offset;
+                    field.bit_offset = bf_next_bit;
+                    bf_next_bit += field.bit_width;
+                } else {
+                    const uint64_t eff_align = def.is_packed ? 1 : unit_align;
+                    bf_unit_offset = align_up(cur_offset, eff_align);
+                    cur_offset = bf_unit_offset + unit_size;
+                    max_align = std::max(max_align, eff_align);
+                    bf_unit_size = unit_size;
+                    bf_unit_bits = unit_bits;
+                    bf_next_bit = field.bit_width;
+                    in_bf = true;
+                    field.byte_offset = bf_unit_offset;
+                    field.bit_offset = 0;
+                }
+            } else {
+                in_bf = false;
+                const eshkol_ast_t* elem_ast = ftype_ast;
+                if (ftype_ast->type == ESHKOL_OP && ftype_ast->operation.op == ESHKOL_CALL_OP &&
+                    ftype_ast->operation.call_op.func &&
+                    ftype_ast->operation.call_op.func->type == ESHKOL_VAR &&
+                    ftype_ast->operation.call_op.func->variable.id &&
+                    std::strcmp(ftype_ast->operation.call_op.func->variable.id, "array") == 0) {
+                    if (ftype_ast->operation.call_op.num_vars != 2) {
+                        eshkol_error("define-layout '%s' field '%s': (array T N) requires 2 arguments",
+                                     layout_name.c_str(), fname.c_str());
+                        markFatalCodegenError();
+                        return false;
+                    }
+                    auto cnt_opt = evaluateConstLayoutExpr(&ftype_ast->operation.call_op.variables[1], "define-layout");
+                    if (!cnt_opt || *cnt_opt <= 0) {
+                        eshkol_error("define-layout '%s' field '%s': array length must be a positive integer",
+                                     layout_name.c_str(), fname.c_str());
+                        markFatalCodegenError();
+                        return false;
+                    }
+                    field.is_array = true;
+                    field.array_count = static_cast<uint64_t>(*cnt_opt);
+                    elem_ast = &ftype_ast->operation.call_op.variables[0];
+                }
+
+                if (elem_ast->type != ESHKOL_VAR || !elem_ast->variable.id) {
+                    eshkol_error("define-layout '%s' field '%s': invalid element type",
+                                 layout_name.c_str(), fname.c_str());
+                    markFatalCodegenError();
+                    return false;
+                }
+                const std::string tname = elem_ast->variable.id;
+                field.type_name = tname;
+
+                uint64_t elem_size = 0, elem_align = 1;
+                auto nested_it = hardware_layouts_.find(tname);
+                if (nested_it != hardware_layouts_.end()) {
+                    field.is_nested_layout = true;
+                    elem_size = nested_it->second.size;
+                    elem_align = nested_it->second.alignment;
+                } else {
+                    auto scalar = resolveLowLevelTypeInfo(elem_ast, "define-layout", "field", false);
+                    if (!scalar) {
+                        markFatalCodegenError();
+                        return false;
+                    }
+                    field.scalar_info = *scalar;
+                    if (tname == "usize" || tname == "isize" || scalar->is_pointer) {
+                        elem_size = dl.getPointerSize();
+                        elem_align = dl.getPointerSize();
+                        if (!scalar->is_pointer) {
+                            field.scalar_info.llvm_type = dl.getIntPtrType(*context);
+                        }
+                    } else {
+                        elem_size = dl.getTypeAllocSize(scalar->llvm_type);
+                        elem_align = dl.getABITypeAlign(scalar->llvm_type).value();
+                    }
+                }
+
+                const uint64_t eff_align = def.is_packed ? 1 : elem_align;
+                cur_offset = align_up(cur_offset, eff_align);
+                field.byte_offset = cur_offset;
+                field.elem_size = elem_size;
+                field.total_size = elem_size * field.array_count;
+                field.alignment = eff_align;
+                cur_offset += field.total_size;
+                max_align = std::max(max_align, eff_align);
+            }
+
+            def.field_index[fname] = def.fields.size();
+            def.fields.push_back(std::move(field));
+        }
+
+        def.alignment = def.is_packed ? 1 : max_align;
+        if (def.explicit_align > 0) {
+            def.alignment = std::max(def.alignment, def.explicit_align);
+        }
+        def.size = align_up(cur_offset, def.alignment);
+        hardware_layouts_[layout_name] = std::move(def);
+        return true;
+    }
+
+std::optional<int64_t> EshkolLLVMCodeGen::evaluateConstLayoutExpr(
+        const eshkol_ast_t* expr, const char* who) const {
+        if (!expr) return std::nullopt;
+        if (expr->type == ESHKOL_INT64) return expr->int64_val;
+        if (expr->type == ESHKOL_BOOL) return expr->int64_val ? 1 : 0;
+
+        if (expr->type != ESHKOL_OP) {
+            eshkol_error("%s: non-constant expression in compile-time layout evaluation", who);
+            return std::nullopt;
+        }
+        const eshkol_operations_t& op = expr->operation;
+
+        if (op.op == ESHKOL_ADD_OP || op.op == ESHKOL_SUB_OP ||
+            op.op == ESHKOL_MUL_OP || op.op == ESHKOL_DIV_OP) {
+            // Legacy binary AST nodes if emitted
+            return std::nullopt;
+        }
+        if (op.op == ESHKOL_AND_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i) {
+                auto v = evaluateConstLayoutExpr(&op.sequence_op.expressions[i], who);
+                if (!v) return std::nullopt;
+                if (*v == 0) return 0;
+            }
+            return 1;
+        }
+        if (op.op == ESHKOL_OR_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i) {
+                auto v = evaluateConstLayoutExpr(&op.sequence_op.expressions[i], who);
+                if (!v) return std::nullopt;
+                if (*v != 0) return 1;
+            }
+            return 0;
+        }
+
+        if (op.op != ESHKOL_CALL_OP || !op.call_op.func ||
+            op.call_op.func->type != ESHKOL_VAR || !op.call_op.func->variable.id) {
+            eshkol_error("%s: unsupported expression in compile-time layout evaluation", who);
+            return std::nullopt;
+        }
+
+        const std::string fn = op.call_op.func->variable.id;
+        if (fn == "sizeof" || fn == "alignof") {
+            if (op.call_op.num_vars != 1) {
+                eshkol_error("%s: %s requires exactly 1 type/layout argument", who, fn.c_str());
+                return std::nullopt;
+            }
+            uint64_t sz = 0, al = 1;
+            if (!resolveLayoutTypeMetrics(&op.call_op.variables[0], sz, al, fn.c_str())) {
+                return std::nullopt;
+            }
+            return static_cast<int64_t>(fn == "sizeof" ? sz : al);
+        }
+        if (fn == "offsetof" || fn == "bit-offset") {
+            if (op.call_op.num_vars != 2 ||
+                op.call_op.variables[0].type != ESHKOL_VAR || !op.call_op.variables[0].variable.id ||
+                op.call_op.variables[1].type != ESHKOL_VAR || !op.call_op.variables[1].variable.id) {
+                eshkol_error("%s: %s requires (<layout> <field>)", who, fn.c_str());
+                return std::nullopt;
+            }
+            auto lit = hardware_layouts_.find(op.call_op.variables[0].variable.id);
+            if (lit == hardware_layouts_.end()) {
+                eshkol_error("%s: unknown layout '%s'", who, op.call_op.variables[0].variable.id);
+                return std::nullopt;
+            }
+            auto fit = lit->second.field_index.find(op.call_op.variables[1].variable.id);
+            if (fit == lit->second.field_index.end()) {
+                eshkol_error("%s: layout '%s' has no field '%s'",
+                             who, op.call_op.variables[0].variable.id,
+                             op.call_op.variables[1].variable.id);
+                return std::nullopt;
+            }
+            const HardwareLayoutField& f = lit->second.fields[fit->second];
+            return static_cast<int64_t>(fn == "offsetof" ? f.byte_offset : f.bit_offset);
+        }
+        if (fn == "not" && op.call_op.num_vars == 1) {
+            auto a = evaluateConstLayoutExpr(&op.call_op.variables[0], who);
+            if (!a) return std::nullopt;
+            return (*a == 0) ? 1 : 0;
+        }
+        if (op.call_op.num_vars == 2) {
+            auto a = evaluateConstLayoutExpr(&op.call_op.variables[0], who);
+            auto b = evaluateConstLayoutExpr(&op.call_op.variables[1], who);
+            if (!a || !b) return std::nullopt;
+            if (fn == "+") return *a + *b;
+            if (fn == "-") return *a - *b;
+            if (fn == "*") return *a * *b;
+            if (fn == "quotient" && *b != 0) return *a / *b;
+            if (fn == "remainder" && *b != 0) return *a % *b;
+            if (fn == "=") return (*a == *b) ? 1 : 0;
+            if (fn == "<") return (*a < *b) ? 1 : 0;
+            if (fn == "<=") return (*a <= *b) ? 1 : 0;
+            if (fn == ">") return (*a > *b) ? 1 : 0;
+            if (fn == ">=") return (*a >= *b) ? 1 : 0;
+        }
+
+        eshkol_error("%s: unsupported compile-time operator '%s'", who, fn.c_str());
+        return std::nullopt;
+    }
+
+bool EshkolLLVMCodeGen::evaluateStaticAssert(const eshkol_operations_t* op) {
+        if (!op || op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+            eshkol_error("static-assert requires 1 boolean condition and optional message string");
+            markFatalCodegenError();
+            return false;
+        }
+        const char* msg = "assertion condition evaluated to false";
+        if (op->call_op.num_vars == 2 &&
+            op->call_op.variables[1].type == ESHKOL_STRING &&
+            op->call_op.variables[1].str_val.ptr) {
+            msg = op->call_op.variables[1].str_val.ptr;
+        }
+        auto val = evaluateConstLayoutExpr(&op->call_op.variables[0], "static-assert");
+        if (!val) {
+            markFatalCodegenError();
+            return false;
+        }
+        if (*val == 0) {
+            eshkol_error("static-assert failed: %s", msg);
+            markFatalCodegenError();
+            return false;
+        }
+        return true;
+    }
+
+const EshkolLLVMCodeGen::HardwareLayoutField* EshkolLLVMCodeGen::lookupLayoutField(
+        const eshkol_ast_t* layout_ast,
+        const eshkol_ast_t* field_ast,
+        const HardwareLayoutDef** out_layout,
+        const char* who) {
+        if (!layout_ast || layout_ast->type != ESHKOL_VAR || !layout_ast->variable.id ||
+            !field_ast || field_ast->type != ESHKOL_VAR || !field_ast->variable.id) {
+            eshkol_error("%s requires symbol names for layout and field", who);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        auto lit = hardware_layouts_.find(layout_ast->variable.id);
+        if (lit == hardware_layouts_.end()) {
+            eshkol_error("%s: unknown layout '%s'", who, layout_ast->variable.id);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        auto fit = lit->second.field_index.find(field_ast->variable.id);
+        if (fit == lit->second.field_index.end()) {
+            eshkol_error("%s: layout '%s' has no field '%s'",
+                         who, layout_ast->variable.id, field_ast->variable.id);
+            markFatalCodegenError();
+            return nullptr;
+        }
+        if (out_layout) *out_layout = &lit->second;
+        return &lit->second.fields[fit->second];
+    }
+
+Value* EshkolLLVMCodeGen::emitLayoutFieldAccess(
+        const eshkol_operations_t* op,
+        bool is_set,
+        bool is_volatile,
+        bool is_addr,
+        const char* who) {
+        if (!op || op->call_op.num_vars < 3) {
+            eshkol_error("%s requires (<layout> <ptr> <field> ...)", who);
+            markFatalCodegenError();
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+        const HardwareLayoutDef* layout = nullptr;
+        const HardwareLayoutField* field = lookupLayoutField(
+            &op->call_op.variables[0], &op->call_op.variables[2], &layout, who);
+        if (!layout || !field) {
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+
+        // Validate arity for array vs non-array
+        const uint64_t expected_vars = is_set
+            ? (field->is_array ? 5 : 4)
+            : (field->is_array ? (is_addr ? 4 : 4) : 3);
+        const bool allow_array_base_addr = is_addr && field->is_array && op->call_op.num_vars == 3;
+        if (op->call_op.num_vars != expected_vars && !allow_array_base_addr) {
+            eshkol_error("%s: wrong argument count for field '%s.%s'",
+                         who, layout->name.c_str(), field->name.c_str());
+            markFatalCodegenError();
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+
+        if (!is_addr && field->is_nested_layout) {
+            eshkol_error("%s: nested layout field '%s.%s' must be addressed with field-addr",
+                         who, layout->name.c_str(), field->name.c_str());
+            markFatalCodegenError();
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+
+        // Tsotchke-chan Invariant #2: volatile RMW on bitfield requires :side-effect-free-read
+        if (is_set && is_volatile && field->is_bitfield && !layout->side_effect_free_read) {
+            eshkol_error("%s on bitfield '%s.%s' requires :side-effect-free-read on layout '%s' "
+                         "(read-modify-write on volatile bitfield may clear read-sensitive hardware flags)",
+                         who, layout->name.c_str(), field->name.c_str(), layout->name.c_str());
+            markFatalCodegenError();
+            return packNullToTaggedValue();
+        }
+
+        // Evaluate base pointer
+        TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[1]);
+        if (!ptr_tv.llvm_value) {
+            return is_set ? packNullToTaggedValue() : nullptr;
+        }
+        Value* base_ptr = ptr_tv.llvm_value;
+        if (base_ptr->getType() == tagged_value_type) {
+            Value* raw_i64 = unpackInt64FromTaggedValue(base_ptr);
+            base_ptr = builder->CreateIntToPtr(toIntPtr(raw_i64), ptr_type);
+        } else if (base_ptr->getType()->isIntegerTy()) {
+            base_ptr = builder->CreateIntToPtr(toIntPtr(base_ptr), ptr_type);
+        }
+
+        // Compute exact byte offset (plus index * elem_size for array fields)
+        Type* idx_ty = module->getDataLayout().getIntPtrType(*context);
+        Value* byte_off = ConstantInt::get(idx_ty, field->byte_offset);
+        if (field->is_array && !allow_array_base_addr) {
+            TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[3]);
+            if (!idx_tv.llvm_value) return is_set ? packNullToTaggedValue() : nullptr;
+            Value* raw_idx = idx_tv.llvm_value;
+            if (raw_idx->getType() == tagged_value_type) {
+                raw_idx = unpackInt64FromTaggedValue(raw_idx);
+            }
+            if (raw_idx->getType() != idx_ty) {
+                raw_idx = builder->CreateIntCast(raw_idx, idx_ty, false);
+            }
+            Value* stride = ConstantInt::get(idx_ty, field->elem_size);
+            byte_off = builder->CreateAdd(byte_off, builder->CreateMul(raw_idx, stride));
+        }
+
+        Value* field_ptr = builder->CreateGEP(int8_type, base_ptr, byte_off,
+                                              layout->name + "_" + field->name + "_ptr");
+        if (is_addr) {
+            return field_ptr;
+        }
+
+        Type* scalar_ty = field->scalar_info.llvm_type;
+        const uint64_t access_align_val = layout->is_packed
+            ? 1
+            : std::min<uint64_t>(layout->alignment, std::max<uint64_t>(1, field->alignment));
+        const Align access_align(access_align_val);
+
+        if (!is_set) {
+            LoadInst* loaded = builder->CreateAlignedLoad(
+                scalar_ty, field_ptr, access_align, is_volatile,
+                field->name + "_load");
+            Value* result = loaded;
+            if (field->is_bitfield) {
+                const uint32_t unit_bits = static_cast<uint32_t>(field->elem_size * 8);
+                if (field->bit_offset > 0) {
+                    result = builder->CreateLShr(
+                        result, ConstantInt::get(scalar_ty, field->bit_offset),
+                        field->name + "_shr");
+                }
+                if (field->bit_width < unit_bits) {
+                    const uint64_t mask = (uint64_t{1} << field->bit_width) - 1;
+                    result = builder->CreateAnd(
+                        result, ConstantInt::get(scalar_ty, mask),
+                        field->name + "_mask");
+                }
+            }
+            if (field->scalar_info.is_pointer) {
+                return result;
+            }
+            if (!result->getType()->isIntegerTy(64)) {
+                return builder->CreateIntCast(
+                    result, int64_type, field->scalar_info.is_signed_integer,
+                    field->name + "_ext");
+            }
+            return result;
+        }
+
+        // Field write
+        const size_t val_idx = field->is_array ? 4 : 3;
+        TypedValue val_tv = codegenTypedAST(&op->call_op.variables[val_idx]);
+        if (!val_tv.llvm_value) return packNullToTaggedValue();
+        Value* raw_val = coerceValueToLowLevelScalar(val_tv, field->scalar_info, who);
+        if (!raw_val) return packNullToTaggedValue();
+
+        if (!field->is_bitfield) {
+            builder->CreateAlignedStore(raw_val, field_ptr, access_align, is_volatile);
+            return packNullToTaggedValue();
+        }
+
+        // Bitfield read-modify-write over enclosing unsigned storage unit
+        const uint32_t unit_bits = static_cast<uint32_t>(field->elem_size * 8);
+        const uint64_t mask = (field->bit_width >= 64)
+            ? ~uint64_t{0}
+            : ((uint64_t{1} << field->bit_width) - 1);
+        const uint64_t clear_mask = ~(mask << field->bit_offset);
+        LoadInst* cur_word = builder->CreateAlignedLoad(
+            scalar_ty, field_ptr, access_align, is_volatile,
+            field->name + "_rmw_load");
+        Value* cleared = builder->CreateAnd(
+            cur_word, ConstantInt::get(scalar_ty, clear_mask),
+            field->name + "_rmw_clear");
+        Value* masked_new = (field->bit_width < unit_bits)
+            ? builder->CreateAnd(raw_val, ConstantInt::get(scalar_ty, mask))
+            : raw_val;
+        Value* shifted_new = (field->bit_offset > 0)
+            ? builder->CreateShl(masked_new, ConstantInt::get(scalar_ty, field->bit_offset))
+            : masked_new;
+        Value* updated = builder->CreateOr(cleared, shifted_new, field->name + "_rmw_or");
+        builder->CreateAlignedStore(updated, field_ptr, access_align, is_volatile);
+        return packNullToTaggedValue();
     }
 
 std::optional<AtomicOrdering> EshkolLLVMCodeGen::resolveFenceOrdering(const eshkol_ast_t* ordering_ast,
@@ -11289,7 +12607,11 @@ Value* EshkolLLVMCodeGen::codegenFunctionDefinition(const eshkol_ast_t* ast) {
 
         // Set current function
         Function* prev_function = current_function;
+        bool prev_arch_hal = current_function_is_arch_hal_;
+        bool prev_naked = current_function_is_naked_;
         current_function = function;
+        current_function_is_arch_hal_ = (op->define_op.is_arch_hal != 0);
+        current_function_is_naked_ = (op->define_op.is_naked != 0);
         
         // GLOBAL ARENA FIX: No per-function arena initialization needed
         // All functions share the global arena initialized in main
@@ -11754,6 +13076,8 @@ Value* EshkolLLVMCodeGen::codegenFunctionDefinition(const eshkol_ast_t* ast) {
         symbol_table[std::string(func_name) + "_func"] = function;
         
         current_function = prev_function;
+        current_function_is_arch_hal_ = prev_arch_hal;
+        current_function_is_naked_ = prev_naked;
 
         // Record the AST->name memoization unconditionally: it pins nothing
         // (a plain std::map used for AD/gradient name resolution) and must be
@@ -13863,30 +15187,43 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
             rmw->setName(result_name);
             co_return rmw;
         }
-        if (func_name == "target-intrinsic") {
-            auto intrinsic_info = resolveTargetIntrinsicCall(op, "target-intrinsic");
+        if (func_name == "target-intrinsic" || func_name == "unsafe-asm") {
+            const bool is_unsafe_asm = (func_name == "unsafe-asm");
+            auto intrinsic_info = is_unsafe_asm
+                ? resolveUnsafeAsmCall(op, "unsafe-asm")
+                : resolveTargetIntrinsicCall(op, "target-intrinsic");
             if (!intrinsic_info) {
                 co_return nullptr;
             }
 
+            const size_t first_arg_val_idx = is_unsafe_asm ? 4 : 3;
             SmallVector<Value*, 8> call_args;
+            SmallVector<Type*, 8> call_arg_types;
             for (size_t i = 0; i < intrinsic_info->arg_types.size(); ++i) {
-                TypedValue arg_tv = (co_await codegenTypedASTTask(&op->call_op.variables[3 + (i * 2)]));
+                TypedValue arg_tv = (co_await codegenTypedASTTask(&op->call_op.variables[first_arg_val_idx + (i * 2)]));
                 if (!arg_tv.llvm_value) {
                     co_return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
                 }
 
                 Value* raw_arg = coerceValueToLowLevelScalar(
-                    arg_tv, intrinsic_info->arg_types[i], "target-intrinsic");
+                    arg_tv, intrinsic_info->arg_types[i], func_name.c_str());
                 if (!raw_arg) {
                     co_return intrinsic_info->return_type.is_null ? packNullToTaggedValue() : nullptr;
                 }
                 call_args.push_back(raw_arg);
+                call_arg_types.push_back(intrinsic_info->arg_types[i].llvm_type);
             }
 
-            CallInst* call = builder->CreateCall(
-                intrinsic_info->declaration, call_args,
-                intrinsic_info->return_type.is_null ? "" : "target_intrinsic");
+            CallInst* call = nullptr;
+            if (intrinsic_info->is_inline_asm) {
+                call = emitLowLevelInlineAsmCall(
+                    *intrinsic_info, call_arg_types, call_args,
+                    intrinsic_info->return_type.is_null ? "" : (is_unsafe_asm ? "unsafe_asm" : "cpu_intrinsic"));
+            } else {
+                call = builder->CreateCall(
+                    intrinsic_info->declaration, call_args,
+                    intrinsic_info->return_type.is_null ? "" : "target_intrinsic");
+            }
 
             if (intrinsic_info->return_type.is_null) {
                 co_return packNullToTaggedValue();
@@ -13897,9 +15234,59 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
             if (!call->getType()->isIntegerTy(64)) {
                 co_return builder->CreateIntCast(
                     call, int64_type, intrinsic_info->return_type.is_signed_integer,
-                    "target_intrinsic_value");
+                    is_unsafe_asm ? "unsafe_asm_value" : "target_intrinsic_value");
             }
             co_return call;
+        }
+        if (func_name == "define-layout") {
+            registerHardwareLayout(op);
+            co_return packNullToTaggedValue();
+        }
+        if (func_name == "static-assert") {
+            evaluateStaticAssert(op);
+            co_return packNullToTaggedValue();
+        }
+        if (func_name == "sizeof" || func_name == "alignof" ||
+            func_name == "offsetof" || func_name == "bit-offset") {
+            if (func_name == "sizeof" || func_name == "alignof") {
+                if (op->call_op.num_vars != 1) {
+                    eshkol_error("%s requires 1 type/layout argument", func_name.c_str());
+                    markFatalCodegenError();
+                    co_return nullptr;
+                }
+                uint64_t sz = 0, al = 1;
+                if (!resolveLayoutTypeMetrics(&op->call_op.variables[0], sz, al, func_name.c_str())) {
+                    markFatalCodegenError();
+                    co_return nullptr;
+                }
+                co_return ConstantInt::get(int64_type, func_name == "sizeof" ? sz : al);
+            }
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("%s requires (<layout> <field>)", func_name.c_str());
+                markFatalCodegenError();
+                co_return nullptr;
+            }
+            const HardwareLayoutDef* layout = nullptr;
+            const HardwareLayoutField* field = lookupLayoutField(
+                &op->call_op.variables[0], &op->call_op.variables[1], &layout, func_name.c_str());
+            if (!field) co_return nullptr;
+            co_return ConstantInt::get(
+                int64_type, func_name == "offsetof" ? field->byte_offset : field->bit_offset);
+        }
+        if (func_name == "field-addr") {
+            co_return emitLayoutFieldAccess(op, false, false, true, "field-addr");
+        }
+        if (func_name == "field-ref") {
+            co_return emitLayoutFieldAccess(op, false, false, false, "field-ref");
+        }
+        if (func_name == "field-set!") {
+            co_return emitLayoutFieldAccess(op, true, false, false, "field-set!");
+        }
+        if (func_name == "volatile-field-ref") {
+            co_return emitLayoutFieldAccess(op, false, true, false, "volatile-field-ref");
+        }
+        if (func_name == "volatile-field-set!") {
+            co_return emitLayoutFieldAccess(op, true, true, false, "volatile-field-set!");
         }
         if (func_name == "compiler-fence") {
             if (op->call_op.num_vars != 1) {
@@ -26860,7 +28247,12 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
 
         // Who wrote this declaration decides whether the `ffi` capability
         // applies to it, and whether it may name the policy at all.
+        // Freestanding and standalone WASM targets have no hosted capability
+        // runtime (`eshkol_capability_enforce`), so they bind directly while
+        // still rejecting attempts to declare policy entry points.
         const bool extern_is_program_own = externIsProgramOwn();
+        const bool wrap_with_ffi_gate =
+            extern_is_program_own && !freestanding_codegen_ && !wasm_codegen_;
         if (extern_is_program_own && externNamesThePolicy(real_func_name)) {
             eshkol_error_at(
                 g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
@@ -26900,7 +28292,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         if (Function* existing_func = module->getFunction(real_func_name)) {
             // Function already exists - use the existing declaration
             applyExternFunctionAttributes(op->extern_op, existing_func);
-            function_table[func_name] = extern_is_program_own
+            function_table[func_name] = wrap_with_ffi_gate
                 ? externFfiGateWrapper(existing_func, real_func_name)
                 : existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
@@ -26943,7 +28335,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         auto ft_it = function_table.find(func_name);
         if (ft_it != function_table.end() && ft_it->second) {
             applyExternFunctionAttributes(op->extern_op, ft_it->second);
-            if (extern_is_program_own &&
+            if (wrap_with_ffi_gate &&
                 !ft_it->second->getName().starts_with("__eshkol_ffi_gate.")) {
                 function_table[func_name] =
                     externFfiGateWrapper(ft_it->second, real_func_name);
@@ -26954,7 +28346,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
 
         // Map type strings to LLVM types
         auto mapStringToType = [this](const char* type_str) -> Type* {
-            if (strcmp(type_str, "void") == 0) return void_type;
+            if (strcmp(type_str, "void") == 0 || strcmp(type_str, "null") == 0) return void_type;
             if (strcmp(type_str, "int") == 0) return int32_type;
             if (strcmp(type_str, "long") == 0) return int64_type;
             if (strcmp(type_str, "float") == 0) return Type::getFloatTy(*context);
@@ -26963,9 +28355,14 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
                 return PointerType::getUnqual(*context);
             }
             if (strcmp(type_str, "...") == 0) return nullptr;
-            // WASM-specific types
-            if (strcmp(type_str, "i32") == 0) return int32_type;
-            if (strcmp(type_str, "i64") == 0) return int64_type;
+            // Fixed-width machine scalar types (freestanding / FFI / WASM)
+            if (strcmp(type_str, "u8") == 0 || strcmp(type_str, "i8") == 0) return int8_type;
+            if (strcmp(type_str, "u16") == 0 || strcmp(type_str, "i16") == 0) return int16_type;
+            if (strcmp(type_str, "u32") == 0 || strcmp(type_str, "i32") == 0) return int32_type;
+            if (strcmp(type_str, "u64") == 0 || strcmp(type_str, "i64") == 0) return int64_type;
+            if (strcmp(type_str, "usize") == 0 || strcmp(type_str, "isize") == 0) {
+                return module->getDataLayout().getIntPtrType(*context);
+            }
             if (strcmp(type_str, "f32") == 0) return Type::getFloatTy(*context);
             if (strcmp(type_str, "f64") == 0) return double_type;
             // `void*` is accepted as a friendlier alias for `ptr` — a C
@@ -27036,7 +28433,7 @@ Value* EshkolLLVMCodeGen::codegenExtern(const eshkol_operations_t* op) {
         // Add to function table using the given name so it can be called by
         // that name. A program's own declaration is bound to the `ffi` gate
         // wrapper rather than to the symbol, so every call site passes the gate.
-        function_table[func_name] = extern_is_program_own
+        function_table[func_name] = wrap_with_ffi_gate
             ? externFfiGateWrapper(extern_func, real_func_name)
             : extern_func;
 
@@ -27121,7 +28518,10 @@ Value* EshkolLLVMCodeGen::codegenSchemeReportEnvironment(const eshkol_operations
             "atomic-load", "atomic-store!", "atomic-exchange!",
             "atomic-compare-exchange!",
             "atomic-fetch-add!", "atomic-fetch-sub!", "atomic-fetch-and!",
-            "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic",
+            "atomic-fetch-or!", "atomic-fetch-xor!", "target-intrinsic", "unsafe-asm",
+            "define-layout", "static-assert", "sizeof", "alignof", "offsetof",
+            "bit-offset", "field-addr", "field-ref", "field-set!",
+            "volatile-field-ref", "volatile-field-set!",
             "volatile-load", "volatile-store!",
             "exact-integer?", "square",
             "floor-quotient", "floor-remainder", "floor/",
@@ -34196,6 +35596,28 @@ Value* EshkolLLVMCodeGen::codegenNamedLet(const eshkol_operations_t* op) {
             func_name,
             module.get()
         );
+
+        // Propagate freestanding safety constraints from the enclosing function
+        // into synthetic named-let loop helpers so `:no-alloc` / `:interrupt`
+        // verification covers loop bodies uniformly across kernel and MCU profiles.
+        Function* enclosing_fn = builder->GetInsertBlock()
+            ? builder->GetInsertBlock()->getParent()
+            : current_function;
+        if (enclosing_fn) {
+            if (no_alloc_functions_.count(enclosing_fn) != 0 ||
+                interrupt_functions_.count(enclosing_fn) != 0) {
+                no_alloc_functions_.insert(loop_func);
+                loop_func->addFnAttr("eshkol.no-alloc", "true");
+            }
+            if (fpu_safe_functions_.count(enclosing_fn) != 0) {
+                fpu_safe_functions_.insert(loop_func);
+                loop_func->addFnAttr("eshkol.fpu-safe", "true");
+            }
+            if (arch_hal_functions_.count(enclosing_fn) != 0) {
+                arch_hal_functions_.insert(loop_func);
+                loop_func->addFnAttr("eshkol.arch-hal", "true");
+            }
+        }
 
         // Register the capture-name list so codegenCall can forward capture
         // pointers when emitting non-tail recursive (loop ...) calls inside
@@ -45200,6 +46622,14 @@ int eshkol_get_freestanding_codegen(void) {
     return g_freestanding_codegen ? 1 : 0;
 }
 
+void eshkol_set_freestanding_kernel_codegen(int enabled) {
+    g_freestanding_kernel_codegen = (enabled != 0);
+}
+
+int eshkol_get_freestanding_kernel_codegen(void) {
+    return g_freestanding_kernel_codegen ? 1 : 0;
+}
+
 void eshkol_set_shared_library_exports(int enabled) {
     g_shared_library_exports = (enabled != 0);
 }
@@ -45214,7 +46644,7 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
     } flush_language_coverage;
     try {
         EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
-                                  g_freestanding_codegen);
+                                  g_freestanding_codegen, g_freestanding_kernel_codegen);
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -45265,7 +46695,7 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
 
     try {
         EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
-                                  g_freestanding_codegen);
+                                  g_freestanding_codegen, g_freestanding_kernel_codegen);
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -45290,7 +46720,7 @@ LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t n
     } flush_language_coverage;
     try {
         EshkolLLVMCodeGen codegen(module_name, true, g_codegen_target_triple,
-                                  g_freestanding_codegen);  // library mode
+                                  g_freestanding_codegen, g_freestanding_kernel_codegen);  // library mode
         auto result = codegen.generateIR(asts, num_asts);
 
         if (!result.first || !result.second) {
@@ -45654,6 +47084,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // instead (see embeddedTargetForModule).
         const eshkol::profile::EmbeddedTarget* embedded_target =
             embeddedTargetForModule(*module);
+        const bool is_kernel_module = moduleIsFreestandingKernel(*module);
         const bool use_large_aarch64_code_model =
             !embedded_target &&
             object_triple.getArch() == Triple::aarch64 && !object_triple.isOSWindows();
@@ -45663,7 +47094,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
 
         TargetOptions target_options;
         if (embedded_target) {
-            applyEmbeddedTargetOptions(*embedded_target, target_options);
+            applyEmbeddedTargetOptions(*embedded_target, target_options, is_kernel_module);
             if (embedded_target->code_model == eshkol::profile::CodeModel::Medium) {
                 code_model = llvm::CodeModel::Medium;
             }
@@ -45697,7 +47128,7 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         const std::string cpu_name = embedded_target ? std::string(embedded_target->cpu)
             : (use_host_cpu_features ? g_cached_cpu_name : std::string("generic"));
         const std::string feature_string = embedded_target
-            ? std::string(embedded_target->features)
+            ? effectiveEmbeddedTargetFeatures(*embedded_target, is_kernel_module)
             : (use_host_cpu_features ? g_cached_features : std::string());
         const Reloc::Model reloc_model = embedded_target ? Reloc::Static : Reloc::PIC_;
         std::unique_ptr<TargetMachine> target_machine(

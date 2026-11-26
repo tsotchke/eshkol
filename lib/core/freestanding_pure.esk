@@ -1,0 +1,141 @@
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+;;;
+;;; core.freestanding_pure — Tier 1 freestanding-pure stdlib partition.
+;;;
+;;; Every definition in this module is strictly `:no-alloc`, integer-only,
+;;; zero-OS, and free of any OALR allocator or hosted runtime dependency.
+;;; Safe for `freestanding-kernel-native` and `freestanding-mcu-native`
+;;; across x86_64, AArch64, RISC-V, and Cortex-M4.
+
+(provide
+  pure-min-u64
+  pure-max-u64
+  pure-clamp-u64
+  pure-align-up-u64
+  pure-align-down-u64
+  pure-is-aligned-u64
+  pure-is-pow2-u64
+  pure-bit-mask-u64
+  pure-bit-extract-u64
+  pure-bit-set-u64
+  pure-bit-clear-u64
+  pure-popcount-u64
+  pure-clz-u64
+  pure-ctz-u64
+  pure-bswap-u32
+  pure-bswap-u64
+  pure-crc32-step)
+
+(define (pure-min-u64 (a : u64) (b : u64)) : u64
+  (if (< a b) a b)
+  :no-alloc)
+
+(define (pure-max-u64 (a : u64) (b : u64)) : u64
+  (if (> a b) a b)
+  :no-alloc)
+
+(define (pure-clamp-u64 (x : u64) (lo : u64) (hi : u64)) : u64
+  (if (< x lo)
+      lo
+      (if (> x hi) hi x))
+  :no-alloc)
+
+(define (pure-align-down-u64 (val : u64) (align : u64)) : u64
+  (let ((mask (- align 1)))
+    (bitwise-and val (bitwise-not mask)))
+  :no-alloc)
+
+(define (pure-align-up-u64 (val : u64) (align : u64)) : u64
+  (let ((mask (- align 1)))
+    (bitwise-and (+ val mask) (bitwise-not mask)))
+  :no-alloc)
+
+(define (pure-is-aligned-u64 (val : u64) (align : u64)) : u64
+  (if (= (bitwise-and val (- align 1)) 0) 1 0)
+  :no-alloc)
+
+(define (pure-is-pow2-u64 (val : u64)) : u64
+  (if (> val 0)
+      (if (= (bitwise-and val (- val 1)) 0) 1 0)
+      0)
+  :no-alloc)
+
+(define (pure-bit-mask-u64 (width : u64)) : u64
+  (if (>= width 63)
+      -1
+      (- (bit-shift-left 1 width) 1))
+  :no-alloc)
+
+(define (pure-bit-extract-u64 (val : u64) (shift : u64) (width : u64)) : u64
+  (bitwise-and (bit-shift-right val shift) (pure-bit-mask-u64 width))
+  :no-alloc)
+
+(define (pure-bit-set-u64 (val : u64) (bit-idx : u64)) : u64
+  (bitwise-or val (bit-shift-left 1 bit-idx))
+  :no-alloc)
+
+(define (pure-bit-clear-u64 (val : u64) (bit-idx : u64)) : u64
+  (bitwise-and val (bitwise-not (bit-shift-left 1 bit-idx)))
+  :no-alloc)
+
+(define (pure-popcount-u64 (val : u64)) : u64
+  (let loop ((x val) (count 0) (steps 64))
+    (if (= steps 0)
+        count
+        (loop (bit-shift-right x 1)
+              (+ count (bitwise-and x 1))
+              (- steps 1))))
+  :no-alloc)
+
+(define (pure-clz-u64 (val : u64)) : u64
+  (if (= val 0)
+      64
+      (let loop ((bit 63) (zeros 0))
+        (if (< bit 0)
+            zeros
+            (if (= (bitwise-and (bit-shift-right val bit) 1) 1)
+                zeros
+                (loop (- bit 1) (+ zeros 1))))))
+  :no-alloc)
+
+(define (pure-ctz-u64 (val : u64)) : u64
+  (if (= val 0)
+      64
+      (let loop ((x val) (zeros 0) (steps 64))
+        (if (= steps 0)
+            zeros
+            (if (= (bitwise-and x 1) 1)
+                zeros
+                (loop (bit-shift-right x 1) (+ zeros 1) (- steps 1))))))
+  :no-alloc)
+
+(define (pure-bswap-u32 (val : u64)) : u64
+  (let ((b0 (bitwise-and val 255))
+        (b1 (bitwise-and (bit-shift-right val 8) 255))
+        (b2 (bitwise-and (bit-shift-right val 16) 255))
+        (b3 (bitwise-and (bit-shift-right val 24) 255)))
+    (bitwise-or
+      (bitwise-or (bit-shift-left b0 24) (bit-shift-left b1 16))
+      (bitwise-or (bit-shift-left b2 8) b3)))
+  :no-alloc)
+
+(define (pure-bswap-u64 (val : u64)) : u64
+  (let ((lo (pure-bswap-u32 (bitwise-and val 4294967295)))
+        (hi (pure-bswap-u32 (bitwise-and (bit-shift-right val 32) 4294967295))))
+    (bitwise-or (bit-shift-left lo 32) hi))
+  :no-alloc)
+
+(define (pure-crc32-step (crc : u64) (byte-val : u64)) : u64
+  (let loop ((c (bitwise-xor (bitwise-and crc 4294967295)
+                             (bitwise-and byte-val 255)))
+             (bits 8))
+    (if (= bits 0)
+        (bitwise-and c 4294967295)
+        (let ((lsb (bitwise-and c 1))
+              (shifted (bit-shift-right c 1)))
+          (loop (if (= lsb 1)
+                    (bitwise-xor shifted 3988292384)
+                    shifted)
+                (- bits 1)))))
+  :no-alloc)

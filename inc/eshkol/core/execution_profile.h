@@ -36,6 +36,7 @@ enum class ExecutionProfile {
     HostedVm,                  // Host OS present; execution via the bytecode VM (requires --emit-eskb)
     FreestandingKernelNative,  // No OS/stdlib; native code for kernel-level targets (requires --target)
     FreestandingMcuNative,     // No OS/stdlib; native code for microcontroller targets (requires --target)
+    EshkolOsUser,              // No host OS/POSIX; native ELF userspace with OALR + capability syscalls (requires --target)
     FreestandingVm,            // No OS/stdlib; execution via the bytecode VM (requires --emit-eskb)
     EmbeddedVm                 // No OS/stdlib, no target triple; embedded bytecode VM (requires --emit-eskb)
 };
