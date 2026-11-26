@@ -1,0 +1,90 @@
+{
+ "target": "../../EshkolKernelFrameMappings.lean",
+ "mutants": [
+  {
+   "id": "map-skips-last-asid-check",
+   "description": "map omits native's last-ASID check, so two user ASIDs may share a frame writably",
+   "old": "      else if 0 < f.refcount ∧ sp.user = true ∧ f.lastAsid ≠ none ∧ f.lastAsid ≠ some sp.asid then\n        (.permAlias, S)\n",
+   "new": "",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_asid : ¬ type_of% @reachable_mutable_isolation := by\n  intro h\n  have := h 1 0 wSpaces [.alloc .user 0, .map 1 0 wH wRU, .map 2 0 wH wRWU] (by decide)\n    ⟨1, 0, 0, wRU, 2⟩ (by decide) ⟨2, 0, 0, wRWU, 2⟩ (by decide) ⟨1, true⟩ ⟨2, true⟩\n    (by decide) (by decide) rfl rfl rfl (by decide)\n  exact absurd this.2 (by decide)",
+   "witness_name": "witness_asid",
+   "refutes": "reachable_mutable_isolation"
+  },
+  {
+   "id": "map-skips-write-execute-alias-check",
+   "description": "map omits the write/execute alias check against the permission union",
+   "old": "      else if 0 < f.refcount ∧ ((f.permUnion.w && p.x) || (f.permUnion.x && p.w)) = true then\n        (.permAlias, S)\n",
+   "new": "",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_map_wx : ¬ type_of% @reachable_coherent := by\n  intro h\n  have hc := h 1 0 wSpaces [.alloc .user 0, .map 0 0 wH wRWK, .map 0 1 wH wRXK]\n  exact hc.2.2.2.2.2.1 ⟨0, 0, 0, wRWK, 2⟩ (by decide) ⟨0, 1, 0, wRXK, 2⟩ (by decide) rfl ⟨rfl, rfl⟩",
+   "witness_name": "witness_map_wx",
+   "refutes": "reachable_coherent"
+  },
+  {
+   "id": "remap-skips-write-execute-alias-check",
+   "description": "remap omits the write/execute alias check when the frame has other mappings",
+   "old": "        if 1 < f.refcount ∧ ((f.permUnion.w && p.x) || (f.permUnion.x && p.w)) = true then\n          (.permAlias, S)\n        else if encodeCheck",
+   "new": "        if encodeCheck",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_remap_wx : ¬ type_of% @reachable_coherent := by\n  intro h\n  have hc := h 1 0 wSpaces [.alloc .user 0, .map 0 0 wH wRK, .map 0 1 wH wRXK, .remap 0 0 wRWK]\n  exact hc.2.2.2.2.2.1 ⟨0, 0, 0, wRWK, 2⟩ (by decide) ⟨0, 1, 0, wRXK, 2⟩ (by decide) rfl ⟨rfl, rfl⟩",
+   "witness_name": "witness_remap_wx",
+   "refutes": "reachable_coherent"
+  },
+  {
+   "id": "map-skips-kernel-alias-check",
+   "description": "map lets a user space map a kernel frame",
+   "old": "      if f.owner = .kernel ∧ sp.user = true then (.kernelAlias, S)\n      else if f.owner = .free then (.staleHandle, S)",
+   "new": "      if f.owner = .free then (.staleHandle, S)",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_kernel_alias : ¬ type_of% @reachable_coherent := by\n  intro h\n  have hc := h 1 1 wSpaces [.map 1 0 ⟨0, 1, true⟩ wRU]\n  exact hc.2.2.1 ⟨1, 0, 0, wRU, 1⟩ (by decide) ⟨1, true⟩ (by decide) rfl (by decide)",
+   "witness_name": "witness_kernel_alias",
+   "refutes": "reachable_coherent"
+  },
+  {
+   "id": "free-skips-still-mapped-check",
+   "description": "free releases a frame that is still mapped",
+   "old": "    else if f.refcount ≠ 0 then (.frameStillMapped, S)\n",
+   "new": "",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_free_mapped : ¬ type_of% @reachable_coherent := by\n  intro h\n  have hc := h 1 0 wSpaces [.alloc .user 0, .map 1 0 wH wRU, .free wH]\n  exact absurd (hc.2.1 ⟨1, 0, 0, wRU, 2⟩ (by decide)).2 (by decide)",
+   "witness_name": "witness_free_mapped",
+   "refutes": "reachable_coherent"
+  },
+  {
+   "id": "unmap-keeps-refcount",
+   "description": "unmap removes the entry but leaves the frame's summaries unchanged",
+   "old": "                   frames := setFrame S.frames e.frame (S.frames e.frame).release })",
+   "new": "                   frames := S.frames })",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_unmap_refcount : ¬ type_of% @reachable_coherent := by\n  intro h\n  have hc := h 1 0 wSpaces [.alloc .user 0, .map 1 0 wH wRU, .unmap 1 0]\n  exact absurd (hc.1 0) (by decide)",
+   "witness_name": "witness_unmap_refcount",
+   "refutes": "reachable_coherent"
+  },
+  {
+   "id": "map-records-no-last-asid",
+   "description": "map leaves the last-ASID summary unchanged instead of recording the mapper",
+   "old": "                   lastAsid := some sp.asid } })",
+   "new": "                   lastAsid := f.lastAsid } })",
+   "expect": "REFUTED",
+   "differential": "DIVERGES",
+   "witness": "def wSpaces : List Space := [⟨0, false⟩, ⟨1, true⟩, ⟨2, true⟩]\ndef wRU : Perms := ⟨true, false, false, true, false⟩\ndef wRWU : Perms := ⟨true, true, false, true, false⟩\ndef wRK : Perms := ⟨true, false, false, false, true⟩\ndef wRWK : Perms := ⟨true, true, false, false, true⟩\ndef wRXK : Perms := ⟨true, false, true, false, true⟩\ndef wH : Handle := ⟨0, 2, true⟩\ntheorem witness_no_last_asid : ¬ type_of% @reachable_coherent := by\n  intro h\n  have hc := h 1 0 wSpaces [.alloc .user 0, .map 1 0 wH wRU]\n  obtain ⟨a, ha, _⟩ := hc.2.2.2.2.2.2.2.2.1 ⟨1, 0, 0, wRU, 2⟩ (by decide) ⟨1, true⟩ (by decide) rfl\n  have hnone : (((System.init 1 0 wSpaces).run [.alloc .user 0, .map 1 0 wH wRU]).frames 0).lastAsid = none := by decide\n  rw [hnone] at ha\n  cases ha",
+   "witness_name": "witness_no_last_asid",
+   "refutes": "reachable_coherent"
+  },
+  {
+   "id": "unmap-keeps-last-asid",
+   "description": "precision mutant: the last unmap of a frame keeps its last ASID instead of clearing it; safety is unaffected because no entry remains, so it must survive the safety proofs",
+   "old": "  else if f.refcount = 1 then { f with refcount := 0, permUnion := Perms.empty, lastAsid := none }",
+   "new": "  else if f.refcount = 1 then { f with refcount := 0, permUnion := Perms.empty }",
+   "expect": "SURVIVED",
+   "differential": "DIVERGES"
+  }
+ ]
+}
