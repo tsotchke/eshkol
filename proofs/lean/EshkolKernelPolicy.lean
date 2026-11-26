@@ -14,13 +14,22 @@
        restart sees zero zombie locks.
     4. `compositor_surface_spatial_disjointness`: accepted surface tables and
        writes preserve spatial non-overlap across distinct badges.
-    5. `compositor_readonly_write_always_traps`: any write on a read-only
-       surface capability always returns `roTrap` and preserves framebuffer
+    5. `compositor_readonly_write_always_traps`: an owner write on a registered
+       read-only surface always returns `roTrap` and preserves framebuffer
        contents identically.
     6. `compositor_audio_bounds_preserved`: overrun/underrun audio steps
        preserve `count ≤ cap` and keep the supervisor operational.
 
-  Zero `sorry`, zero custom `axiom`.
+  Model-to-Implementation Correspondence
+
+  `lib/kernel/k_kernel_policy.c` implements service tokens, surface writes
+  and the audio ring. Generations here are natural numbers. The native
+  generation counter is uint32_t, so the trace argument covers executions
+  before wraparound. Surface values denote registered descriptors and each
+  write models one cell of the native span operation. Diagnostic counters
+  and slot replacement are outside this model. The audio transition carries
+  supervisorHalted through each step; this frame condition constrains model
+  changes. Native scheduler progress requires separate evidence.
 -/
 
 namespace EshkolKernelPolicy
@@ -38,6 +47,8 @@ inductive PolicyResult where
   | revokedCap
   | staleToken
   | notFaulted
+  | surfaceRange
+  | bounds
   | surfaceConflict
   | roTrap
   deriving DecidableEq, Repr
@@ -111,6 +122,38 @@ def SupervisorState.restartService (st : SupervisorState) (sid : Nat) :
            if st.lockOwner l = some sid then Option.none else st.lockOwner l })
     | _ => (.notFaulted, st)
 
+inductive SupervisorEvent where
+  | fault (service : Nat)
+  | revoke (service : Nat)
+  | restart (service : Nat)
+
+def SupervisorState.step (st : SupervisorState) : SupervisorEvent → SupervisorState
+  | .fault sid => st.faultService sid
+  | .revoke sid => st.revokeCap sid
+  | .restart sid => (st.restartService sid).2
+
+theorem supervisor_step_generation_monotone (st : SupervisorState) (ev : SupervisorEvent)
+    (sid : Nat) : (st.services sid).tokenGen ≤ ((st.step ev).services sid).tokenGen := by
+  cases ev with
+  | fault i => by_cases h : sid = i <;> simp [SupervisorState.step, SupervisorState.faultService, h]
+  | revoke i => by_cases h : sid = i <;> simp [SupervisorState.step, SupervisorState.revokeCap, h]
+  | restart i =>
+    cases hl : (st.services i).rootCapLive <;> cases hs : (st.services i).status <;>
+      by_cases h : sid = i <;> simp_all [SupervisorState.step, SupervisorState.restartService] <;> omega
+
+theorem supervisor_trace_generation_monotone (st : SupervisorState) (events : List SupervisorEvent)
+    (sid : Nat) :
+    (st.services sid).tokenGen ≤ ((events.foldl SupervisorState.step st).services sid).tokenGen := by
+  induction events generalizing st with
+  | nil => exact Nat.le_refl _
+  | cons ev rest ih => exact Nat.le_trans (supervisor_step_generation_monotone st ev sid) (ih _)
+
+/-- Any state with a later generation rejects the old token, including after revocation. -/
+theorem later_generation_rejects_token (st : SupervisorState) (sid prior : Nat)
+    (h : prior < (st.services sid).tokenGen) : st.validateToken sid prior ≠ .ok := by
+  cases hl : (st.services sid).rootCapLive <;>
+    simp [SupervisorState.validateToken, hl, Nat.ne_of_lt h]
+
 /-- Theorem 1: Restarting a faulted service mints a strictly greater token generation
     and permanently rejects the prior faulted token. -/
 theorem supervisor_restart_never_leaks_prior_token (st : SupervisorState) (sid : Nat)
@@ -120,15 +163,21 @@ theorem supervisor_restart_never_leaks_prior_token (st : SupervisorState) (sid :
     let (res, stRestart) := stFault.restartService sid
     res = .ok ∧
     priorTok < (stRestart.services sid).tokenGen ∧
-    stRestart.validateToken sid priorTok = .staleToken := by
-  dsimp only [SupervisorState.faultService, SupervisorState.restartService,
-              SupervisorState.validateToken]
-  simp only [↓reduceIte, hlive, Bool.not_true, Bool.false_eq_true]
-  refine ⟨trivial, by omega, ?_⟩
-  have hle : (st.services sid).tokenGen ≤
-             max (st.services sid).tokenGen (st.services sid).lastFaultedGen :=
-    Nat.le_max_left _ _
-  simp [hle]
+    stRestart.validateToken sid priorTok = .staleToken ∧
+    ∀ events : List SupervisorEvent,
+      let later := events.foldl SupervisorState.step stRestart
+      priorTok < (later.services sid).tokenGen ∧ later.validateToken sid priorTok ≠ .ok := by
+  have fresh : (st.services sid).tokenGen <
+      (((st.faultService sid).restartService sid).2.services sid).tokenGen := by
+    simp [SupervisorState.restartService, SupervisorState.faultService, hlive]
+    omega
+  refine ⟨?_, fresh, ?_, ?_⟩
+  · simp [SupervisorState.restartService, SupervisorState.faultService, hlive]
+  · simp [SupervisorState.restartService, SupervisorState.faultService, SupervisorState.validateToken,
+          hlive, Nat.le_max_left]
+  · intro events
+    have h := Nat.lt_of_lt_of_le fresh (supervisor_trace_generation_monotone _ events sid)
+    exact ⟨h, later_generation_rejects_token _ sid _ h⟩
 
 /-- Theorem 2: Attempting restart when root capability is revoked always fails closed
     with `revokedCap` and leaves the service stopped. -/
@@ -194,10 +243,14 @@ def CompositorState.registerSurface (c : CompositorState) (s : Surface) :
 
 def CompositorState.writeSurface (c : CompositorState) (s : Surface)
     (callerBadge cellOffset pixelVal : Nat) : PolicyResult × CompositorState :=
-  if callerBadge ≠ s.ownerBadge then
+  if s ∉ c.surfaces then
+    (.surfaceRange, c)
+  else if callerBadge ≠ s.ownerBadge then
     (.surfaceConflict, c)
   else if !s.writable then
     (.roTrap, c)
+  else if cellOffset ≥ s.xLen then
+    (.bounds, c)
   else
     (.ok, { c with framebuffer := fun idx =>
       if idx = s.xStart + cellOffset then pixelVal else c.framebuffer idx })
@@ -231,13 +284,80 @@ theorem compositor_surface_spatial_disjointness (fb : Nat -> Nat) (ss : List Sur
     rw [List.foldl_cons]
     exact ih (c.registerSurface s).2 (registerSurface_preserves_disjoint c s hc)
 
-/-- Theorem 5: Writing through a read-only surface capability always traps (`roTrap`)
+/-- Theorem 5: An owner write through a registered read-only surface traps (`roTrap`)
     and leaves the framebuffer bit-for-bit identical. -/
 theorem compositor_readonly_write_always_traps (c : CompositorState) (s : Surface)
-    (cellOffset pixelVal : Nat) (hro : s.writable = false) :
+    (cellOffset pixelVal : Nat) (hreg : s ∈ c.surfaces) (hro : s.writable = false) :
     c.writeSurface s s.ownerBadge cellOffset pixelVal = (.roTrap, c) := by
   unfold CompositorState.writeSurface
-  simp [hro]
+  simp [hreg, hro]
+
+theorem valid_write_sets_cell (c : CompositorState) (s : Surface) (offset pixel : Nat)
+    (registered : s ∈ c.surfaces) (writable : s.writable = true) (bound : offset < s.xLen) :
+    let result := c.writeSurface s s.ownerBadge offset pixel
+    result.1 = .ok ∧ result.2.framebuffer (s.xStart + offset) = pixel := by
+  simp [CompositorState.writeSurface, registered, writable, Nat.not_le_of_lt bound]
+
+/-- Characterize any observable pixel change, including the exact destination. -/
+theorem changed_cell_requires_valid_write (c : CompositorState) (s : Surface)
+    (badge offset pixel cell : Nat)
+    (changed : (c.writeSurface s badge offset pixel).2.framebuffer cell ≠ c.framebuffer cell) :
+    s ∈ c.surfaces ∧ badge = s.ownerBadge ∧ s.writable = true ∧
+    offset < s.xLen ∧ cell = s.xStart + offset ∧ (c.writeSurface s badge offset pixel).1 = .ok := by
+  unfold CompositorState.writeSurface at *
+  repeat' split at changed <;> simp_all
+  simp [Nat.not_le_of_lt (by assumption : offset < s.xLen)]
+
+theorem writeSurface_preserves_outside (c : CompositorState) (s : Surface)
+    (badge offset pixel cell : Nat) (outside : cell < s.xStart ∨ s.xStart + s.xLen ≤ cell) :
+    (c.writeSurface s badge offset pixel).2.framebuffer cell = c.framebuffer cell := by
+  apply Classical.byContradiction
+  intro changed
+  obtain ⟨_, _, _, _, _, _⟩ := changed_cell_requires_valid_write c s badge offset pixel cell changed
+  omega
+
+private theorem surface_at_cell_unique {ss : List Surface} {a b : Surface} {cell : Nat}
+    (hd : ss.Pairwise (fun x y => x.overlaps y = false)) (ha : a ∈ ss) (hb : b ∈ ss)
+    (ina : a.xStart ≤ cell ∧ cell < a.xStart + a.xLen)
+    (inb : b.xStart ≤ cell ∧ cell < b.xStart + b.xLen) : a = b := by
+  induction ss with
+  | nil => cases ha
+  | cons head tail ih =>
+    obtain ⟨sep, rest⟩ := List.pairwise_cons.mp hd
+    simp only [List.mem_cons] at ha hb
+    rcases ha with rfl | ha <;> rcases hb with rfl | hb
+    · rfl
+    · have h := sep b hb
+      simp [Surface.overlaps] at h
+      omega
+    · have h := sep a ha
+      simp [Surface.overlaps] at h
+      omega
+    · exact ih rest ha hb
+
+theorem registered_cell_changes_only_by_owner (c : CompositorState) (s target : Surface)
+    (badge offset pixel cell : Nat) (hd : c.Disjoint) (registered : target ∈ c.surfaces)
+    (inside : target.xStart ≤ cell ∧ cell < target.xStart + target.xLen)
+    (changed : (c.writeSurface s badge offset pixel).2.framebuffer cell ≠ c.framebuffer cell) :
+    s = target ∧ badge = target.ownerBadge ∧ target.writable = true ∧
+    offset < target.xLen ∧ cell = target.xStart + offset ∧ (c.writeSurface s badge offset pixel).1 = .ok := by
+  obtain ⟨hs, owner, writable, bound, dest, ok⟩ :=
+    changed_cell_requires_valid_write c s badge offset pixel cell changed
+  have eq := surface_at_cell_unique hd hs registered (cell := cell) (by constructor <;> omega) inside
+  subst target
+  exact ⟨rfl, owner, writable, bound, dest, ok⟩
+
+theorem out_of_bounds_write_rejected (c : CompositorState) (s : Surface)
+    (offset pixel : Nat) (hs : s ∈ c.surfaces) (hw : s.writable = true) (ho : s.xLen ≤ offset) :
+    c.writeSurface s s.ownerBadge offset pixel = (.bounds, c) := by
+  simp [CompositorState.writeSurface, hs, hw, ho]
+
+example :
+    let a : Surface := ⟨1, 0, 10, true⟩
+    let b : Surface := ⟨2, 10, 10, true⟩
+    let c := CompositorState.registerAll ⟨[], fun _ => 0⟩ [a, b]
+    (c.writeSurface a 1 15 7).1 = .bounds ∧ (c.writeSurface a 1 15 7).2.framebuffer 15 = 0 := by
+  decide
 
 /-! ## Section 3: Real-Time Audio Ring Boundedness & Non-Halting Liveness -/
 

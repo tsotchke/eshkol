@@ -10052,6 +10052,13 @@ Value* EshkolLLVMCodeGen::languageCoverageString(const std::string& value) {
         return ptr;
     }
 
+bool EshkolLLVMCodeGen::canEmitCoverageHooks(Function* function) const {
+        return language_coverage_enabled_ && !freestanding_codegen_ &&
+               !freestanding_kernel_codegen_ && function &&
+               !no_alloc_functions_.count(function) &&
+               !interrupt_functions_.count(function);
+    }
+
 void EshkolLLVMCodeGen::emitLanguageCoverage(const eshkol_ast_t* ast) {
         if (!language_coverage_enabled_ || !ast || ast->type != ESHKOL_OP) {
             return;
@@ -10071,6 +10078,7 @@ void EshkolLLVMCodeGen::emitLanguageCoverage(const eshkol_ast_t* ast) {
             return;
         }
         Function* site_function = site_block->getParent();
+        if (!canEmitCoverageHooks(site_function)) return;
         Module& site_module = *site_function->getParent();
 
         Type* void_type = Type::getVoidTy(*context);
@@ -16582,7 +16590,7 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
                     exit_code = builder->CreateTrunc(safeExtractInt64(tagged), int32_type);
                 }
             }
-            if (language_coverage_enabled_) {
+            if (canEmitCoverageHooks(builder->GetInsertBlock()->getParent())) {
                 // _exit bypasses C++ destructors, so buffered coverage records
                 // must be flushed here. The exec-call hook used to do this on
                 // every execution of the call site; it is now guarded to run

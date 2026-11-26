@@ -318,7 +318,7 @@ k_pol_status_t k_policy_surface_write(k_policy_state_t* pol,
         return K_POL_ERR_RO_TRAP;
     }
 
-    if (len == 0u || cell_offset > s->x_len || len > (s->x_len - cell_offset)) {
+    if (len == 0u || cell_offset >= s->x_len || len > (s->x_len - cell_offset)) {
         return K_POL_ERR_BOUNDS;
     }
 

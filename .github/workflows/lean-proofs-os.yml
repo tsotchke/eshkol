@@ -1,0 +1,45 @@
+name: OS kernel Lean proofs
+
+on:
+  pull_request:
+    paths:
+      - 'proofs/lean/**'
+      - 'scripts/check_os_proof_axioms.lean'
+      - '.github/workflows/lean-proofs-os.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'proofs/lean/**'
+      - 'scripts/check_os_proof_axioms.lean'
+      - '.github/workflows/lean-proofs-os.yml'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Lean 4.12.0
+        run: |
+          curl -fsSL --retry 3 https://github.com/leanprover/lean4/releases/download/v4.12.0/lean-4.12.0-linux.tar.zst -o "$RUNNER_TEMP/lean.tar.zst"
+          tar --zstd -xf "$RUNNER_TEMP/lean.tar.zst" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/lean-4.12.0-linux/bin" >> "$GITHUB_PATH"
+      - name: Compile every OS proof and audit axiom dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          lean --version
+          export LEAN_PATH="$RUNNER_TEMP/os-proofs"
+          mkdir -p "$LEAN_PATH"
+          modules=()
+          for file in proofs/lean/*.lean; do
+            module="$(basename "$file" .lean)"
+            lean -DwarningAsError=true --root=proofs/lean -o "$LEAN_PATH/$module.olean" "$file"
+            modules+=("$module")
+          done
+          lean -DwarningAsError=true --run scripts/check_os_proof_axioms.lean "${modules[@]}"

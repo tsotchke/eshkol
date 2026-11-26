@@ -4,7 +4,7 @@
 
   Eshkol OS Phase K3: Machine-Checked Lean 4.12.0 Formal Proofs
     1. `child_capability_never_exceeds_parent`: monotonic rights attenuation
-       across arbitrary finite CDT derivation traces.
+       on each successful CDT derivation.
     2. `cdt_depth_bounded_and_acyclic`: strict depth ceiling and parent-depth
        monotonicity ruling out CDT cycles structurally.
     3. `revocation_completeness` and `zero_side_effects_on_revoked_complete`:
@@ -18,13 +18,29 @@
 
 namespace EshkolKernelK3
 
+/-! ## Model-to-Implementation Correspondence
+
+`lib/kernel/k3_smp_cap_ipc.c` implements CDT attenuation, revocation and IPC
+completion using the handles and masks in `inc/eshkol/kernel/k3_smp_cap_ipc.h`.
+The model checks the same subset relation on 32-bit rights. Native handle
+authentication, nonempty rights, locking and slot selection are additional
+checks. Lean follows parent links to classify each slot. C visits child and
+sibling links with a bounded DFS stack. The shared-memory actions preserve
+private CSpaces by a frame condition on the model; these proofs do not verify
+native memory access or atomic execution. -/
+
 /-! ## Section 1: CDT Monotonic Rights Attenuation & Structural Acyclicity -/
 
-/-- Rights bitmask modeled as a predicate over bit indices. -/
-abbrev Rights := Nat -> Bool
+abbrev Rights := BitVec 32
 
 def rightsSubset (child parent : Rights) : Prop :=
-  ∀ b, child b = true → parent b = true
+  ∀ bit, child.getLsbD bit = true → parent.getLsbD bit = true
+
+private theorem mask_check_implies_subset {child parent : Rights}
+    (check : child &&& parent = child) : rightsSubset child parent := by
+  intro bit set
+  have h := congrArg (fun mask : Rights => mask.getLsbD bit) check
+  simpa [BitVec.getLsbD_and, set] using h
 
 structure CapNode where
   active : Bool
@@ -48,7 +64,7 @@ def CdtState.Valid (s : CdtState) : Prop :=
 def CdtState.empty (maxDepth : Nat) : CdtState :=
   { maxDepth := maxDepth
     nodes := fun _ =>
-      { active := false, compId := 0, depth := 0, parent := Option.none, rights := fun _ => false } }
+      { active := false, compId := 0, depth := 0, parent := Option.none, rights := 0 } }
 
 theorem cdt_empty_valid (maxDepth : Nat) : (CdtState.empty maxDepth).Valid := by
   constructor
@@ -70,14 +86,13 @@ def CdtState.mintRoot (s : CdtState) (slot compId : Nat) (r : Rights) : CdtState
 /-- Derive a child capability into an inactive slot `childSlot` under `parentSlot`
     if and only if `parent` is active, `depth < maxDepth`, and `childRights ⊆ parent.rights`. -/
 def CdtState.derive (s : CdtState) (parentSlot childSlot targetComp : Nat)
-    (childRights : Rights) (hsub : ∀ b, childRights b = true → (s.nodes parentSlot).rights b = true) :
-    CdtState :=
-  let _ := hsub
+    (childRights : Rights) : Option CdtState :=
   if parentSlot ≠ childSlot ∧
      (s.nodes childSlot).active = false ∧
      (s.nodes parentSlot).active = true ∧
-     (s.nodes parentSlot).depth < s.maxDepth then
-    { s with
+     (s.nodes parentSlot).depth < s.maxDepth ∧
+     childRights &&& (s.nodes parentSlot).rights = childRights then
+    some { s with
       nodes := fun i =>
         if i = childSlot then
           { active := true
@@ -88,7 +103,7 @@ def CdtState.derive (s : CdtState) (parentSlot childSlot targetComp : Nat)
         else
           s.nodes i }
   else
-    s
+    none
 
 theorem mintRoot_preserves_valid (s : CdtState) (slot compId : Nat) (r : Rights)
     (hv : s.Valid) : (s.mintRoot slot compId r).Valid := by
@@ -125,17 +140,15 @@ theorem mintRoot_preserves_valid (s : CdtState) (slot compId : Nat) (r : Rights)
         exact hres
   · exact ⟨hdepth, hpar⟩
 
-theorem derive_preserves_valid (s : CdtState) (parentSlot childSlot targetComp : Nat)
-    (childRights : Rights)
-    (hsub : ∀ b, childRights b = true → (s.nodes parentSlot).rights b = true)
-    (hv : s.Valid) :
-    (s.derive parentSlot childSlot targetComp childRights hsub).Valid := by
+theorem derive_preserves_valid (s next : CdtState) (parentSlot childSlot targetComp : Nat)
+    (childRights : Rights) (hv : s.Valid)
+    (derived : s.derive parentSlot childSlot targetComp childRights = some next) : next.Valid := by
   rcases hv with ⟨hdepth, hpar⟩
-  unfold CdtState.derive
-  dsimp only
-  split
+  unfold CdtState.derive at derived
+  split at derived
   · rename_i hcond
-    rcases hcond with ⟨hnepc, hchinact, hpact, hplt⟩
+    rcases hcond with ⟨hnepc, hchinact, hpact, hplt, hsub⟩
+    cases derived
     constructor
     · intro id ha
       dsimp only at ha ⊢
@@ -156,7 +169,7 @@ theorem derive_preserves_valid (s : CdtState) (parentSlot childSlot targetComp :
         injection hp with hp_eq
         subst hp_eq
         simp only [hnepc, ↓reduceIte]
-        refine ⟨hpact, Nat.lt_succ_self _, hsub⟩
+        refine ⟨hpact, Nat.lt_succ_self _, mask_check_implies_subset hsub⟩
       · rename_i hne
         have hp' : (s.nodes id).parent = some p := by simpa [hne] using hp
         have hres := hpar id p ha hp'
@@ -167,17 +180,22 @@ theorem derive_preserves_valid (s : CdtState) (parentSlot childSlot targetComp :
           cases hchinact
         simp only [hne, hpne, ↓reduceIte]
         exact hres
-  · exact ⟨hdepth, hpar⟩
+  · cases derived
 
-/-- Theorem 1: In any valid CDT state, every live child's rights are a subset of its parent's rights. -/
-theorem child_capability_never_exceeds_parent (s : CdtState) (hv : s.Valid)
-    (child parent : Nat)
-    (hact : (s.nodes child).active = true)
-    (hpar : (s.nodes child).parent = some parent) :
-    rightsSubset (s.nodes child).rights (s.nodes parent).rights :=
-  (hv.2 child parent hact hpar).2.2
+/-- Acceptance entails attenuation even when the input tree has no validity proof. -/
+theorem child_capability_never_exceeds_parent (s next : CdtState) (parent child comp : Nat)
+    (requested : Rights) (accepted : s.derive parent child comp requested = some next) :
+    (next.nodes child).rights = requested ∧
+    rightsSubset (next.nodes child).rights (s.nodes parent).rights := by
+  unfold CdtState.derive at accepted
+  split at accepted
+  · rename_i checks
+    cases accepted
+    simp only [↓reduceIte, true_and]
+    exact mask_check_implies_subset checks.2.2.2.2
+  · cases accepted
 
-/-- Strict ancestor relation (reflexive-transitive closure of parent links with ≥ 1 step). -/
+/-- Strict ancestor relation following one or more active child links. -/
 inductive StrictAncestor (s : CdtState) : Nat -> Nat -> Prop where
   | direct {a b : Nat} :
       (s.nodes b).active = true →
@@ -198,6 +216,53 @@ theorem strict_ancestor_increases_depth (s : CdtState) (hv : s.Valid) {a b : Nat
   | step _ hact hpar ih =>
     exact Nat.lt_trans ih (hv.2 _ _ hact hpar).2.1
 
+def ancestorWalk : Nat → CdtState → Nat → Nat → Bool
+  | 0, _, _, _ => false
+  | fuel + 1, s, root, x =>
+      match (s.nodes x).parent with
+      | none => false
+      | some p =>
+          (s.nodes x).active && (p = root || ancestorWalk fuel s root p)
+
+def runtimeInSubtree (s : CdtState) (root x : Nat) : Bool :=
+  x = root || ancestorWalk (s.maxDepth + 1) s root x
+
+theorem ancestorWalk_sound (s : CdtState) {fuel root x : Nat}
+    (hw : ancestorWalk fuel s root x = true) : StrictAncestor s root x := by
+  induction fuel generalizing x with
+  | zero => simp [ancestorWalk] at hw
+  | succ fuel ih =>
+    simp only [ancestorWalk] at hw
+    split at hw
+    · contradiction
+    · rename_i p
+      simp only [Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at hw
+      rcases hw with ⟨hact, hdirect | hnext⟩
+      · exact StrictAncestor.direct hact (by simpa [hdirect] using p)
+      · exact StrictAncestor.step (ih hnext) hact (by simp_all)
+
+theorem ancestorWalk_complete (s : CdtState) (hv : s.Valid) {fuel root x : Nat}
+    (hfuel : (s.nodes x).depth < fuel) (hanc : StrictAncestor s root x) :
+    ancestorWalk fuel s root x = true := by
+  induction hanc generalizing fuel with
+  | direct hact hpar =>
+    cases fuel with
+    | zero => omega
+    | succ fuel => simp [ancestorWalk, hpar, hact]
+  | step _ hact hpar ih =>
+    have hdepth := (hv.2 _ _ hact hpar).2.1
+    cases fuel with
+    | zero => omega
+    | succ fuel =>
+      have hw : ancestorWalk fuel s root _ = true := ih (by omega)
+      simp [ancestorWalk, hpar, hact, hw]
+
+theorem strict_ancestor_target_active (s : CdtState) {a b : Nat}
+    (hanc : StrictAncestor s a b) : (s.nodes b).active = true := by
+  induction hanc with
+  | direct hact _ => exact hact
+  | step _ hact _ => exact hact
+
 /-- Theorem 2: Bounded depth and complete structural acyclicity (no node can be its own ancestor). -/
 theorem cdt_depth_bounded_and_acyclic (s : CdtState) (hv : s.Valid) :
     (∀ id, (s.nodes id).active = true → (s.nodes id).depth ≤ s.maxDepth) ∧
@@ -213,25 +278,68 @@ theorem cdt_depth_bounded_and_acyclic (s : CdtState) (hv : s.Valid) :
 def InSubtree (s : CdtState) (root x : Nat) : Prop :=
   x = root ∨ StrictAncestor s root x
 
-/-- Atomic subtree revocation: clears `active` for `root` and every transitive descendant. -/
-noncomputable def revokeSubtree (s : CdtState) (root : Nat) (inSub : Nat -> Bool)
-    (hchar : ∀ x, inSub x = true ↔ InSubtree s root x) : CdtState :=
-  let _ := hchar
-  { s with
-    nodes := fun x =>
-      if inSub x = true then
-        { (s.nodes x) with active := false, rights := fun _ => false }
-      else
-        s.nodes x }
+theorem runtimeInSubtree_equiv (s : CdtState) (hv : s.Valid) (root x : Nat) :
+    runtimeInSubtree s root x = true ↔ InSubtree s root x := by
+  unfold runtimeInSubtree InSubtree
+  constructor
+  · intro h
+    simp only [Bool.or_eq_true, decide_eq_true_eq] at h
+    rcases h with hroot | hw
+    · exact Or.inl hroot
+    · exact Or.inr (ancestorWalk_sound s hw)
+  · intro h
+    rcases h with rfl | hanc
+    · simp
+    · have hbound := hv.1 x (strict_ancestor_target_active s hanc)
+      have hw := ancestorWalk_complete s hv (fuel := s.maxDepth + 1) (by omega) hanc
+      simp [hw]
 
-/-- Theorem 3A: Revoking `root` atomically invalidates `root` and every transitive descendant. -/
-theorem revocation_completeness (s : CdtState) (root : Nat) (inSub : Nat -> Bool)
-    (hchar : ∀ x, inSub x = true ↔ InSubtree s root x) :
-    ∀ x, InSubtree s root x → ((revokeSubtree s root inSub hchar).nodes x).active = false := by
-  intro x hmem
-  have ht : inSub x = true := (hchar x).mpr hmem
-  unfold revokeSubtree
-  simp [ht]
+/-- Atomic subtree revocation: clears `active` for `root` and every transitive descendant. -/
+def revokeSubtree (s : CdtState) (root : Nat) : CdtState :=
+  { s with nodes := fun x =>
+      if runtimeInSubtree s root x then { (s.nodes x) with active := false, rights := 0 }
+      else s.nodes x }
+
+theorem revocation_completeness (s : CdtState) (root : Nat) (hv : s.Valid) (x : Nat)
+    (hmem : InSubtree s root x) : ((revokeSubtree s root).nodes x).active = false := by
+  simp [revokeSubtree, (runtimeInSubtree_equiv s hv root x).mpr hmem]
+
+theorem revocation_preserves_outside (s : CdtState) (root x : Nat) (hv : s.Valid)
+    (outside : ¬ InSubtree s root x) : (revokeSubtree s root).nodes x = s.nodes x := by
+  have miss := mt (runtimeInSubtree_equiv s hv root x).mp outside
+  simp [revokeSubtree, miss]
+
+theorem revokeSubtree_preserves_valid (s : CdtState) (root : Nat) (hv : s.Valid) :
+    (revokeSubtree s root).Valid := by
+  have hchar := runtimeInSubtree_equiv s hv root
+  rcases hv with ⟨hdepth, hpar⟩
+  unfold CdtState.Valid
+  dsimp [revokeSubtree]
+  constructor
+  · intro id ha
+    split at ha
+    · simp at ha
+    · rename_i hid
+      simp only [hid, ↓reduceIte] at ha ⊢
+      exact hdepth id ha
+  · intro id p ha hp
+    split at ha
+    · simp at ha
+    · rename_i hid
+      simp only [hid, ↓reduceIte] at ha hp ⊢
+      split
+      · rename_i hpmem
+        have hchild : StrictAncestor s root id := by
+          rcases (hchar p).mp hpmem with hroot | hanc
+          · subst p
+            exact StrictAncestor.direct ha hp
+          · exact StrictAncestor.step hanc ha hp
+        have himem : runtimeInSubtree s root id = true := (hchar id).mpr (Or.inr hchild)
+        exact (hid himem).elim
+      · rename_i hpnone
+        have hpar' : (s.nodes id).parent = some p := by simpa [hpnone] using hp
+        simp [hpnone]
+        exact hpar id p ha hpar'
 
 structure IpcReceiverState where
   rxBuf       : List UInt8
@@ -253,11 +361,11 @@ def completeInFlight (cdt : CdtState) (sqe : InFlightSqe) (rx : IpcReceiverState
 
 /-- Theorem 3B: Mid-flight completion after direct or ancestor revocation fails closed with zero side effects. -/
 theorem zero_side_effects_on_revoked_complete (s : CdtState) (root : Nat)
-    (inSub : Nat -> Bool) (hchar : ∀ x, inSub x = true ↔ InSubtree s root x)
+    (hv : s.Valid)
     (sqe : InFlightSqe) (rx : IpcReceiverState)
     (hdesc : InSubtree s root sqe.senderCapSlot) :
-    completeInFlight (revokeSubtree s root inSub hchar) sqe rx = (false, rx) := by
-  have hrev := revocation_completeness s root inSub hchar sqe.senderCapSlot hdesc
+    completeInFlight (revokeSubtree s root) sqe rx = (false, rx) := by
+  have hrev := revocation_completeness s root hv sqe.senderCapSlot hdesc
   unfold completeInFlight
   simp [hrev]
 

@@ -1569,6 +1569,8 @@ private:
 
     Value* languageCoverageString(const std::string& value);
 
+    bool canEmitCoverageHooks(Function* function) const;
+
     void emitLanguageCoverage(const eshkol_ast_t* ast);
 
     Value* codegenAST(const eshkol_ast_t* ast);

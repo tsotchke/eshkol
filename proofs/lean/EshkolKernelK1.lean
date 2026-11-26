@@ -8,7 +8,18 @@
     3. Trap vector isolation and non-interference across all 5 ISAs
        (x86_64, AArch64, RISC-V 64, RISC-V 32, Cortex-M4).
 
-  Zero `sorry`, zero custom `axiom`.
+  Model-to-Implementation Correspondence
+
+  `lib/kernel/k1_boot_traps.c` dispatches traps and instruction decoding.
+  The five decoder sources under `lib/kernel/arch/` are
+  `k1_arch_x86_64.c`, `k1_arch_aarch64.c`, `k1_arch_riscv64.c`,
+  `k1_arch_riscv32.c`, and `k1_arch_cortex_m4.c`. Lean classifies whole
+  byte lists against selected encodings; the C decoders consume instruction
+  bytes from a buffer and also report the consumed length and native cause.
+  The heapAllocs and kernelCtx equalities are frame conditions for the
+  modeled transitions. They detect changes to those fields in Lean.
+  Native allocation behavior and register preservation require independent
+  verification of the C and machine-code paths.
 -/
 
 namespace EshkolKernelK1

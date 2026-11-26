@@ -452,7 +452,24 @@ void operator delete[](void* p, std::size_t) noexcept {
     std::free(p);
 }
 
+static void test_surface_interval() {
+    k_policy_state_t policy{};
+    k_policy_init(&policy, 1u);
+    CHECK(k_policy_surface_register(&policy, 0u, 1u, 0u, 10u, 1u) == K_POL_OK);
+    CHECK(k_policy_surface_register(&policy, 1u, 2u, 10u, 10u, 1u) == K_POL_OK);
+    CHECK(k_policy_surface_write(&policy, 0u, 1u, 9u, 1u, 7u) == K_POL_OK);
+    CHECK(policy.framebuffer[9] == 7u);
+    uint32_t before[K_POL_FB_CELLS];
+    std::memcpy(before, policy.framebuffer, sizeof(before));
+    CHECK(k_policy_surface_write(&policy, 0u, 1u, 15u, 1u, 8u) == K_POL_ERR_BOUNDS);
+    CHECK(k_policy_surface_write(&policy, 0u, 1u, 10u, 1u, 8u) == K_POL_ERR_BOUNDS);
+    CHECK(k_policy_surface_write(&policy, 0u, 1u, 9u, 2u, 8u) == K_POL_ERR_BOUNDS);
+    CHECK(k_policy_surface_write(&policy, 2u, 1u, 0u, 1u, 8u) == K_POL_ERR_SURFACE_RANGE);
+    CHECK(std::memcmp(before, policy.framebuffer, sizeof(before)) == 0);
+}
+
 int main() {
+    test_surface_interval();
     /* Part 1: Exhaustive bounded state-space model checker (BFS uses host std::vector/set). */
     uint64_t states_explored = 0ULL;
     uint64_t transitions_checked = 0ULL;

@@ -9,13 +9,21 @@
        reachable PTE states under arbitrary map/remap/unmap traces.
     3. `kernel_non_aliasing`: no kernel-reserved physical frame ever appears
        in any user address space.
-    4. `address_space_disjointness`: distinct non-shared user address spaces
+    4. `address_space_disjointness`: distinct modeled user address spaces
        never alias the same physical frame with conflicting permissions.
     5. `mpu_overlap_and_guard_exclusion`: accepted MCU MPU tables contain
        pairwise disjoint regions and never overlap the vector table or
        stack guard zone.
 
-  Zero `sorry`, zero custom `axiom`.
+  Model-to-Implementation Correspondence
+
+  `lib/kernel/k2_mmu_frames.c` implements physical frame accounting, address
+  spaces and MPU regions. Counts here range over physical frame indices below
+  totalFrames. UserAspace models a page table; MmuSystem tracks private
+  mapping records across ASIDs and permits same-ASID aliases compatible with
+  W^X. Explicit shared frames are outside this model. Unmap removes every
+  record at one (ASID, VA). Arithmetic uses natural numbers. These transition
+  proofs do not establish hardware page table or MPU register behavior.
 -/
 
 namespace EshkolKernelK2
@@ -35,9 +43,44 @@ structure FramePool where
   owners         : Nat -> FrameOwner
   generations    : Nat -> Nat
 
-/-- Conservation invariant: free + allocated = total and owners are bounded. -/
+/-- Count matching owners among the physical indices from zero to n exclusive. -/
+def countOwners (test : FrameOwner → Bool) (owners : Nat → FrameOwner) : Nat → Nat
+  | 0 => 0
+  | n + 1 => countOwners test owners n + (test (owners n)).toNat
+
+def isFree : FrameOwner → Bool
+  | .free => true
+  | _ => false
+def isAllocated (owner : FrameOwner) : Bool := !isFree owner
+
 def FramePool.Conserved (p : FramePool) : Prop :=
+  p.freeCount = countOwners isFree p.owners p.totalFrames ∧
+  p.allocatedCount = countOwners isAllocated p.owners p.totalFrames ∧
   p.freeCount + p.allocatedCount = p.totalFrames
+
+/-- Updating a single owner replaces just its contribution to the count. -/
+private theorem countOwners_update (test : FrameOwner → Bool) (owners : Nat → FrameOwner)
+    (idx : Nat) (owner : FrameOwner) (n : Nat) (hi : idx < n) :
+    countOwners test (fun i => if i = idx then owner else owners i) n + (test (owners idx)).toNat =
+    countOwners test owners n + (test owner).toNat := by
+  induction n with
+  | zero => omega
+  | succ n ih =>
+    by_cases he : n = idx
+    · subst n
+      have before : ∀ m, m ≤ idx →
+          countOwners test (fun i => if i = idx then owner else owners i) m = countOwners test owners m := by
+        intro m
+        induction m with
+        | zero => intro _; rfl
+        | succ m smaller =>
+          intro hm
+          simp [countOwners, Nat.ne_of_lt (by omega : m < idx), smaller (by omega)]
+      simp [countOwners, before idx (Nat.le_refl _)]
+      omega
+    · have prev := ih (by omega)
+      simp only [countOwners, he, ↓reduceIte]
+      omega
 
 inductive PoolOp where
   | allocUser (idx : Nat)
@@ -68,6 +111,18 @@ def FramePool.step (p : FramePool) (op : PoolOp) : FramePool :=
 def FramePool.run (p : FramePool) (ops : List PoolOp) : FramePool :=
   ops.foldl FramePool.step p
 
+private theorem initial_owner_counts (total kRes : Nat) :
+    let owners := fun i => if i < kRes then FrameOwner.kernel else .free
+    countOwners isFree owners total = total - kRes ∧
+    countOwners isAllocated owners total = min total kRes := by
+  induction total with
+  | zero => simp [countOwners]
+  | succ n ih =>
+    dsimp only at *
+    obtain ⟨hf, ha⟩ := ih
+    by_cases h : n < kRes <;>
+      simp [countOwners, h, hf, ha, isAllocated, isFree] <;> omega
+
 theorem pool_init_conserved (total kRes : Nat) (hle : kRes ≤ total) :
     FramePool.Conserved
       { totalFrames := total
@@ -75,30 +130,43 @@ theorem pool_init_conserved (total kRes : Nat) (hle : kRes ≤ total) :
         allocatedCount := kRes
         owners := fun i => if i < kRes then .kernel else .free
         generations := fun _ => 1 } := by
-  unfold FramePool.Conserved
-  dsimp
-  omega
+  obtain ⟨hf, ha⟩ := initial_owner_counts total kRes
+  exact ⟨hf.symm, by simpa [Nat.min_eq_right hle] using ha.symm, by dsimp; omega⟩
 
 theorem pool_step_preserves_conservation (p : FramePool) (op : PoolOp)
     (h : p.Conserved) : (p.step op).Conserved := by
-  unfold FramePool.Conserved at *
+  obtain ⟨hf, ha, ht⟩ := h
   cases op with
   | allocUser idx =>
     unfold FramePool.step
     dsimp only
     split
-    · rename_i hcond
+    · rename_i check
+      obtain ⟨hi, ho, _⟩ := check
+      have free := countOwners_update isFree p.owners idx .user _ hi
+      have allocated := countOwners_update isAllocated p.owners idx .user _ hi
+      simp only [ho] at free allocated
+      change _ + 1 = _ + 0 at free
+      change _ + 0 = _ + 1 at allocated
+      unfold FramePool.Conserved
       dsimp only
       omega
-    · exact h
+    · exact ⟨hf, ha, ht⟩
   | freeUser idx gen =>
     unfold FramePool.step
     dsimp only
     split
-    · rename_i hcond
+    · rename_i check
+      obtain ⟨hi, ho, _, _⟩ := check
+      have free := countOwners_update isFree p.owners idx .free _ hi
+      have allocated := countOwners_update isAllocated p.owners idx .free _ hi
+      simp only [ho] at free allocated
+      change _ + 0 = _ + 1 at free
+      change _ + 1 = _ + 0 at allocated
+      unfold FramePool.Conserved
       dsimp only
       omega
-    · exact h
+    · exact ⟨hf, ha, ht⟩
 
 theorem double_free_rejected_preserves_state (p : FramePool) (idx gen : Nat)
     (hfree : p.owners idx = .free) :
@@ -120,6 +188,10 @@ theorem no_frame_leak (p : FramePool) (ops : List PoolOp) (h : p.Conserved) :
     unfold FramePool.run
     rw [List.foldl_cons]
     exact ih (p.step op) (pool_step_preserves_conservation p op h)
+
+example : ¬ (FramePool.mk 1 1 0 (fun _ => .user) (fun _ => 1)).Conserved := by
+  unfold FramePool.Conserved
+  decide
 
 /-! ## Section 2: W^X Enforcement and Kernel Non-Aliasing -/
 
@@ -333,6 +405,17 @@ def MmuSystem.mapFrame (s : MmuSystem) (asid va : Nat) (pte : Pte) : MmuSystem :
   else
     s
 
+def MmuSystem.unmap (s : MmuSystem) (asid va : Nat) : MmuSystem :=
+  { mappings := s.mappings.filter (fun e => ¬(e.1 = asid ∧ e.2.1 = va)) }
+
+theorem unmap_preserves_disjoint (s : MmuSystem) (asid va : Nat) (h : s.Disjoint) :
+    (s.unmap asid va).Disjoint := by
+  intro e1 e2 h1 h2 hpfn
+  apply h e1 e2
+  · exact (List.mem_filter.mp h1).1
+  · exact (List.mem_filter.mp h2).1
+  · exact hpfn
+
 def MmuSystem.runMaps (s : MmuSystem) (ops : List (Nat × Nat × Pte)) : MmuSystem :=
   ops.foldl (fun acc op => acc.mapFrame op.1 op.2.1 op.2.2) s
 
@@ -416,15 +499,20 @@ structure MpuTable where
   stackGuard  : MpuRegion
   regions     : List MpuRegion
 
+/-- ARMv7-M regions have size 2^k, at least 32 bytes, and a size-aligned base. -/
+def MpuRegion.installable (r : MpuRegion) : Bool :=
+  decide (32 ≤ r.size ∧ r.size = 2 ^ r.size.log2 ∧ r.base % r.size = 0)
+
 def MpuTable.Safe (t : MpuTable) : Prop :=
   (∀ r ∈ t.regions, MpuRegion.overlaps r t.vectorGuard = false ∧
                     MpuRegion.overlaps r t.stackGuard = false) ∧
-  t.regions.Pairwise (fun a b => MpuRegion.overlaps a b = false)
+  t.regions.Pairwise (fun a b => MpuRegion.overlaps a b = false) ∧
+  t.regions.length ≤ 8 ∧ ∀ r ∈ t.regions, r.installable = true
 
 def MpuTable.addRegion (t : MpuTable) (r : MpuRegion) : MpuTable :=
-  if !MpuRegion.overlaps r t.vectorGuard &&
-     !MpuRegion.overlaps r t.stackGuard &&
-     t.regions.all (fun existing => !MpuRegion.overlaps r existing) then
+  if r.installable = true ∧ t.regions.length < 8 ∧
+     r.overlaps t.vectorGuard = false ∧ r.overlaps t.stackGuard = false ∧
+     t.regions.all (fun existing => !r.overlaps existing) then
     { t with regions := r :: t.regions }
   else
     t
@@ -437,34 +525,25 @@ theorem mpu_add_preserves_safe (t : MpuTable) (r : MpuRegion) (hs : t.Safe) :
   unfold MpuTable.addRegion
   split
   · rename_i hcond
-    rcases hs with ⟨hguards, hpair⟩
-    have h12 : (!MpuRegion.overlaps r t.vectorGuard && !MpuRegion.overlaps r t.stackGuard) = true ∧
-               (t.regions.all fun existing => !MpuRegion.overlaps r existing) = true :=
-      Bool.and_eq_true _ _ |>.mp hcond
-    have hg : (!MpuRegion.overlaps r t.vectorGuard) = true ∧
-              (!MpuRegion.overlaps r t.stackGuard) = true :=
-      Bool.and_eq_true _ _ |>.mp h12.1
-    have hvec : MpuRegion.overlaps r t.vectorGuard = false := Bool.not_eq_true' _ |>.mp hg.1
-    have hstk : MpuRegion.overlaps r t.stackGuard = false := Bool.not_eq_true' _ |>.mp hg.2
-    have hall : ∀ x ∈ t.regions, MpuRegion.overlaps r x = false := by
-      intro x hx
-      have hx' := List.all_eq_true.mp h12.2 x hx
-      exact Bool.not_eq_true' _ |>.mp hx'
-    constructor
+    obtain ⟨ok, room, vec, stk, disjoint⟩ := hcond
+    obtain ⟨guards, pairs, _, valid⟩ := hs
+    refine ⟨?_, List.Pairwise.cons ?_ pairs, by simp; omega, ?_⟩
     · intro x hx
-      simp only [List.mem_cons] at hx
-      rcases hx with rfl | hxm
-      · exact ⟨hvec, hstk⟩
-      · exact hguards x hxm
-    · exact List.Pairwise.cons hall hpair
+      rcases List.mem_cons.mp hx with rfl | hx
+      · exact ⟨vec, stk⟩
+      · exact guards _ hx
+    · intro x hx
+      simpa using List.all_eq_true.mp disjoint x hx
+    · intro x hx
+      rcases List.mem_cons.mp hx with rfl | hx
+      · exact ok
+      · exact valid _ hx
   · exact hs
 
 theorem mpu_overlap_and_guard_exclusion (vecGuard stkGuard : MpuRegion) (rs : List MpuRegion) :
     (MpuTable.installAll { vectorGuard := vecGuard, stackGuard := stkGuard, regions := [] } rs).Safe := by
   have hinit : (MpuTable.mk vecGuard stkGuard []).Safe := by
-    constructor
-    · intro r hr; cases hr
-    · exact List.Pairwise.nil
+    simp [MpuTable.Safe]
   suffices ∀ (t : MpuTable), t.Safe → (t.installAll rs).Safe from this _ hinit
   induction rs with
   | nil => intro t ht; exact ht
