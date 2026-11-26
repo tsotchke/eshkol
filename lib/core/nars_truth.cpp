@@ -126,6 +126,7 @@ extern "C" bool eshkol_nars_abduction(eshkol_nars_truth_t v1, eshkol_nars_truth_
         !valid_horizon(k)) {
         return false;
     }
+    /* Abduction uses <M --> P> for weight and <S --> P> for result frequency. */
     double w = v1.frequency * v1.confidence * v2.confidence;
     out->frequency = v2.frequency;
     out->confidence = w_to_c(w, k);
@@ -138,6 +139,7 @@ extern "C" bool eshkol_nars_induction(eshkol_nars_truth_t v1, eshkol_nars_truth_
         !valid_horizon(k)) {
         return false;
     }
+    /* Induction uses <M --> S> for weight and <M --> P> for result frequency. */
     double w = v2.frequency * v1.confidence * v2.confidence;
     out->frequency = v1.frequency;
     out->confidence = w_to_c(w, k);

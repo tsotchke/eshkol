@@ -192,7 +192,6 @@ struct eshkol_asp_solver {
         model_storage.clear();
         model_views.clear();
         eshkol_asp_stats_t stats{};
-        std::memset(&stats, 0, sizeof(stats));
 
         /* Build Clark completion + rule satisfaction CNF */
         uint32_t total_vars = num_atoms;
@@ -254,21 +253,19 @@ struct eshkol_asp_solver {
         }
 
         const uint32_t max_rounds = cfg.max_cegar_rounds > 0 ? cfg.max_cegar_rounds : 10000u;
+        eshkol_asp_status_t result = ESHKOL_ASP_BUDGET_EXCEEDED;
         for (uint32_t round = 0; round < max_rounds; round++) {
             eshkol_cdcl_config_t scfg = eshkol_cdcl_default_config();
             scfg.emit_drat = false;
             if (cfg.max_sat_conflicts > 0) {
-                if (stats.total_conflicts >= cfg.max_sat_conflicts) {
-                    if (out_stats) *out_stats = stats;
-                    return ESHKOL_ASP_BUDGET_EXCEEDED;
-                }
+                if (stats.total_conflicts >= cfg.max_sat_conflicts) break;
                 scfg.max_conflicts = cfg.max_sat_conflicts - stats.total_conflicts;
             }
 
             eshkol_cdcl_solver_t* sat = eshkol_cdcl_create(total_vars, &scfg);
             if (!sat) {
-                if (out_stats) *out_stats = stats;
-                return ESHKOL_ASP_INVALID_INPUT;
+                result = ESHKOL_ASP_INVALID_INPUT;
+                break;
             }
             for (const auto& cl : cnf) {
                 eshkol_cdcl_add_clause(sat, cl.data(), static_cast<uint32_t>(cl.size()));
@@ -281,11 +278,11 @@ struct eshkol_asp_solver {
 
             if (sst == ESHKOL_SAT_BUDGET_EXCEEDED) {
                 eshkol_cdcl_destroy(sat);
-                if (out_stats) *out_stats = stats;
-                return ESHKOL_ASP_BUDGET_EXCEEDED;
+                break;
             }
             if (sst == ESHKOL_SAT_UNSATISFIABLE) {
                 eshkol_cdcl_destroy(sat);
+                result = model_storage.empty() ? ESHKOL_ASP_UNSAT : ESHKOL_ASP_SAT;
                 break;
             }
 
@@ -319,6 +316,7 @@ struct eshkol_asp_solver {
                 stats.num_models = static_cast<uint32_t>(model_storage.size());
 
                 if (cfg.max_models > 0 && stats.num_models >= cfg.max_models) {
+                    result = ESHKOL_ASP_SAT;
                     break;
                 }
 
@@ -367,8 +365,14 @@ struct eshkol_asp_solver {
             model_views[i].true_atoms = model_storage[i].empty() ? nullptr : model_storage[i].data();
         }
 
+        if (result == ESHKOL_ASP_BUDGET_EXCEEDED && !model_views.empty()) {
+            result = ESHKOL_ASP_PARTIAL;
+        }
+        if (result == ESHKOL_ASP_UNSAT) {
+            stats.evidence_status = ESHKOL_EVIDENCE_UNCERTIFIED;
+        }
         if (out_stats) *out_stats = stats;
-        return model_views.empty() ? ESHKOL_ASP_UNSAT : ESHKOL_ASP_SAT;
+        return result;
     }
 };
 
@@ -466,7 +470,10 @@ extern "C" bool eshkol_asp_add_choice_rule(eshkol_asp_solver_t* solver,
 
 extern "C" eshkol_asp_status_t eshkol_asp_solve(eshkol_asp_solver_t* solver,
                                                 eshkol_asp_stats_t* out_stats) {
-    if (!solver) return ESHKOL_ASP_INVALID_INPUT;
+    if (!solver) {
+        if (out_stats) *out_stats = {};
+        return ESHKOL_ASP_INVALID_INPUT;
+    }
     return solver->solve(out_stats);
 }
 

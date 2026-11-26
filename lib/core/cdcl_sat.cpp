@@ -14,7 +14,20 @@
 #include <limits>
 #include <vector>
 
+#ifdef ESHKOL_CDCL_TEST_ALLOCATIONS
+void* eshkol_cdcl_test_malloc(size_t size);
+void* eshkol_cdcl_test_realloc(void* ptr, size_t size);
+#endif
+
 namespace {
+
+#ifdef ESHKOL_CDCL_TEST_ALLOCATIONS
+constexpr auto drat_malloc = eshkol_cdcl_test_malloc;
+constexpr auto drat_realloc = eshkol_cdcl_test_realloc;
+#else
+constexpr auto drat_malloc = std::malloc;
+constexpr auto drat_realloc = std::realloc;
+#endif
 
 constexpr uint32_t kNoReason = UINT32_MAX;
 
@@ -231,42 +244,64 @@ struct eshkol_cdcl_solver {
         return (lit & 1u) ? static_cast<int8_t>(-v) : v;
     }
 
+    void drat_allocation_failed() {
+        stats.drat_alloc_failed = true;
+        stats.evidence_status = ESHKOL_EVIDENCE_INCOMPLETE_ALLOC;
+    }
+
     void drat_record(eshkol_drat_op_t op, const std::vector<uint32_t>& lits) {
-        if (!cfg.emit_drat) return;
-        if (op == ESHKOL_DRAT_ADD && lits.empty()) {
-            if (emitted_empty_clause) return;
-            emitted_empty_clause = true;
-        }
+        if (!cfg.emit_drat || stats.drat_alloc_failed) return;
+        const bool empty_add = op == ESHKOL_DRAT_ADD && lits.empty();
+        if (empty_add && emitted_empty_clause) return;
         if (proof.num_steps >= proof.capacity) {
-            uint32_t new_cap = proof.capacity == 0 ? 64u : proof.capacity * 2u;
+            constexpr auto max_steps = std::min<uint64_t>(UINT32_MAX,
+                SIZE_MAX / sizeof(eshkol_drat_step_t));
+            const uint64_t grown = proof.capacity == 0 ? 64u : uint64_t{proof.capacity} * 2u;
+            const auto new_cap = static_cast<uint32_t>(std::min(grown, max_steps));
+            if (new_cap <= proof.capacity) {
+                drat_allocation_failed();
+                return;
+            }
             auto* next = static_cast<eshkol_drat_step_t*>(
-                std::realloc(proof.steps, static_cast<size_t>(new_cap) * sizeof(eshkol_drat_step_t)));
-            if (!next) return;
+                drat_realloc(proof.steps, static_cast<size_t>(new_cap) * sizeof(eshkol_drat_step_t)));
+            if (!next) {
+                drat_allocation_failed();
+                return;
+            }
             proof.steps = next;
             proof.capacity = new_cap;
         }
-        eshkol_drat_step_t& step = proof.steps[proof.num_steps++];
-        step.op = op;
-        step.num_lits = static_cast<uint32_t>(lits.size());
-        if (step.num_lits > 0) {
-            step.lits = static_cast<int32_t*>(
-                std::malloc(static_cast<size_t>(step.num_lits) * sizeof(int32_t)));
-            if (!step.lits) {
-                step.num_lits = 0;
-            } else {
-                for (uint32_t i = 0; i < step.num_lits; i++) {
-                    step.lits[i] = lit_to_dimacs(lits[i]);
-                }
+        eshkol_drat_step_t step{op, 0, nullptr};
+        if (!lits.empty()) {
+            if (lits.size() > UINT32_MAX || lits.size() > SIZE_MAX / sizeof(int32_t)) {
+                drat_allocation_failed();
+                return;
             }
-        } else {
-            step.lits = nullptr;
+            step.num_lits = static_cast<uint32_t>(lits.size());
+            step.lits = static_cast<int32_t*>(
+                drat_malloc(lits.size() * sizeof(int32_t)));
+            if (!step.lits) {
+                drat_allocation_failed();
+                return;
+            }
+            for (uint32_t i = 0; i < step.num_lits; i++) {
+                step.lits[i] = lit_to_dimacs(lits[i]);
+            }
         }
+        proof.steps[proof.num_steps++] = step;
+        if (empty_add) emitted_empty_clause = true;
         stats.drat_steps = proof.num_steps;
     }
 
-    void drat_record_empty() {
-        std::vector<uint32_t> empty;
-        drat_record(ESHKOL_DRAT_ADD, empty);
+    eshkol_sat_status_t finish_unsat() {
+        ok = false;
+        drat_record(ESHKOL_DRAT_ADD, {});
+        if (!stats.drat_alloc_failed) {
+            stats.evidence_status = cfg.emit_drat ? ESHKOL_EVIDENCE_CERTIFIED
+                                                  : ESHKOL_EVIDENCE_UNCERTIFIED;
+        }
+        status = ESHKOL_SAT_UNSATISFIABLE;
+        return status;
     }
 
     bool enqueue(uint32_t lit, uint32_t from_cid) {
@@ -642,11 +677,7 @@ struct eshkol_cdcl_solver {
     }
 
     eshkol_sat_status_t solve() {
-        if (!ok) {
-            drat_record_empty();
-            status = ESHKOL_SAT_UNSATISFIABLE;
-            return status;
-        }
+        if (!ok) return finish_unsat();
 
         /* Initial level-0 propagation */
         bool budget_hit = false;
@@ -655,12 +686,7 @@ struct eshkol_cdcl_solver {
             status = ESHKOL_SAT_BUDGET_EXCEEDED;
             return status;
         }
-        if (init_confl != kNoReason) {
-            ok = false;
-            drat_record_empty();
-            status = ESHKOL_SAT_UNSATISFIABLE;
-            return status;
-        }
+        if (init_confl != kNoReason) return finish_unsat();
 
         uint64_t restart_idx = 0;
         uint64_t conflicts_in_restart = 0;
@@ -677,12 +703,7 @@ struct eshkol_cdcl_solver {
             if (confl != kNoReason) {
                 stats.conflicts++;
                 conflicts_in_restart++;
-                if (decision_level() == 0) {
-                    ok = false;
-                    drat_record_empty();
-                    status = ESHKOL_SAT_UNSATISFIABLE;
-                    return status;
-                }
+                if (decision_level() == 0) return finish_unsat();
                 if (cfg.max_conflicts > 0 && stats.conflicts >= cfg.max_conflicts) {
                     status = ESHKOL_SAT_BUDGET_EXCEEDED;
                     return status;
@@ -696,12 +717,7 @@ struct eshkol_cdcl_solver {
 
                 cancel_until(bt_level);
                 if (learnt_buf.size() == 1) {
-                    if (!enqueue(learnt_buf[0], kNoReason)) {
-                        ok = false;
-                        drat_record_empty();
-                        status = ESHKOL_SAT_UNSATISFIABLE;
-                        return status;
-                    }
+                    if (!enqueue(learnt_buf[0], kNoReason)) return finish_unsat();
                 } else {
                     Clause c;
                     c.lits = learnt_buf;

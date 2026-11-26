@@ -16,9 +16,7 @@
 #ifndef ESHKOL_CORE_ASP_SOLVER_H
 #define ESHKOL_CORE_ASP_SOLVER_H
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <eshkol/core/cdcl_sat.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,7 +26,8 @@ typedef enum eshkol_asp_status {
     ESHKOL_ASP_SAT             = 0,
     ESHKOL_ASP_UNSAT           = 1,
     ESHKOL_ASP_BUDGET_EXCEEDED = 2,
-    ESHKOL_ASP_INVALID_INPUT   = 3
+    ESHKOL_ASP_INVALID_INPUT   = 3,
+    ESHKOL_ASP_PARTIAL         = 4  /* Stable models available after budget exhaustion */
 } eshkol_asp_status_t;
 
 typedef struct eshkol_asp_config {
@@ -47,6 +46,7 @@ typedef struct eshkol_asp_stats {
     uint32_t loop_formulas_added;
     uint32_t sat_calls;
     uint64_t total_conflicts;
+    eshkol_evidence_status_t evidence_status;
 } eshkol_asp_stats_t;
 
 typedef struct eshkol_asp_solver eshkol_asp_solver_t;
@@ -80,7 +80,15 @@ bool eshkol_asp_add_choice_rule(eshkol_asp_solver_t* solver,
                                 const uint32_t* pos_body, uint32_t num_pos,
                                 const uint32_t* neg_body, uint32_t num_neg);
 
-/* Enumerate stable models via Clark completion + loop-formula elimination on CDCL SAT. */
+/*
+ * Enumerate stable models via Clark completion and loop-formula elimination.
+ * SAT means enumeration finished or reached the requested max_models.
+ * If a round or conflict budget stops enumeration, PARTIAL makes the stable
+ * models found so far available through eshkol_asp_get_model. BUDGET_EXCEEDED
+ * means the budget stopped the search before it found any stable model.
+ * ASP UNSAT currently carries ESHKOL_EVIDENCE_UNCERTIFIED. Certification
+ * requires DRAT support for the search and evidence for its loop formulas.
+ */
 eshkol_asp_status_t eshkol_asp_solve(eshkol_asp_solver_t* solver,
                                      eshkol_asp_stats_t* out_stats);
 

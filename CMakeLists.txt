@@ -4446,6 +4446,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     set_tests_properties(ce12_starlight_diff_zx_lean4_test PROPERTIES TIMEOUT 120)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce12_solver_evidence_test.cpp")
+    add_executable(ce12_solver_evidence_test
+        tests/logic/ce12_solver_evidence_test.cpp
+        lib/core/cdcl_sat.cpp
+        lib/core/asp_solver.cpp
+        lib/core/nars_truth.cpp)
+    target_compile_features(ce12_solver_evidence_test PRIVATE cxx_std_17)
+    target_compile_definitions(ce12_solver_evidence_test PRIVATE ESHKOL_CDCL_TEST_ALLOCATIONS)
+    target_include_directories(ce12_solver_evidence_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME ce12_solver_evidence_test COMMAND ce12_solver_evidence_test)
+    set_tests_properties(ce12_solver_evidence_test PROPERTIES TIMEOUT 60)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
     add_executable(ad_tape_zero_gradients_test tests/core/ad_tape_zero_gradients_test.cpp)
     target_compile_features(ad_tape_zero_gradients_test PRIVATE cxx_std_20)

@@ -58,9 +58,17 @@ bool eshkol_nars_contraposition(eshkol_nars_truth_t tv, double k, eshkol_nars_tr
 bool eshkol_nars_deduction(eshkol_nars_truth_t v1, eshkol_nars_truth_t v2,
                            eshkol_nars_truth_t* out);
 
+/*
+ * Premises in order: v1 = <M --> P>, v2 = <S --> P>. Conclusion: <S --> M>.
+ * Frequency is v2.frequency. Evidence weight is v1.frequency times both confidences.
+ */
 bool eshkol_nars_abduction(eshkol_nars_truth_t v1, eshkol_nars_truth_t v2,
                            double k, eshkol_nars_truth_t* out);
 
+/*
+ * Premises in order: v1 = <M --> P>, v2 = <M --> S>. Conclusion: <S --> P>.
+ * Frequency is v1.frequency. Evidence weight is v2.frequency times both confidences.
+ */
 bool eshkol_nars_induction(eshkol_nars_truth_t v1, eshkol_nars_truth_t v2,
                            double k, eshkol_nars_truth_t* out);
 

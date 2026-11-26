@@ -34,6 +34,14 @@ typedef enum eshkol_sat_status {
     ESHKOL_SAT_INVALID_INPUT   = 4
 } eshkol_sat_status_t;
 
+/* Proof evidence carried independently of the solver outcome. */
+typedef enum eshkol_evidence_status {
+    ESHKOL_EVIDENCE_NONE             = 0, /* No UNSAT evidence status applies */
+    ESHKOL_EVIDENCE_CERTIFIED        = 1, /* A complete proof is available for independent verification */
+    ESHKOL_EVIDENCE_UNCERTIFIED      = 2, /* UNSAT without a recorded proof */
+    ESHKOL_EVIDENCE_INCOMPLETE_ALLOC = 3  /* Proof recording stopped at an allocation failure */
+} eshkol_evidence_status_t;
+
 typedef enum eshkol_drat_op {
     ESHKOL_DRAT_ADD    = 0,
     ESHKOL_DRAT_DELETE = 1
@@ -80,6 +88,8 @@ typedef struct eshkol_cdcl_stats {
     uint64_t deleted_clauses;
     uint64_t minimized_lits;
     uint32_t drat_steps;
+    eshkol_evidence_status_t evidence_status;
+    bool drat_alloc_failed;
 } eshkol_cdcl_stats_t;
 
 typedef struct eshkol_cdcl_solver eshkol_cdcl_solver_t;
@@ -116,10 +126,14 @@ bool eshkol_cdcl_copy_model(const eshkol_cdcl_solver_t* solver,
                             int8_t* out_model,
                             uint32_t out_len);
 
-/* Access the structured DRAT proof recorded by the solver (owned by solver). */
+/*
+ * Access the structured DRAT trace (owned by solver). For UNSAT, check
+ * evidence_status before using the trace as a proof. With INCOMPLETE_ALLOC,
+ * the trace contains only the steps recorded before the allocation failure.
+ */
 const eshkol_drat_proof_t* eshkol_cdcl_get_proof(const eshkol_cdcl_solver_t* solver);
 
-/* Retrieve solver telemetry counters. */
+/* Retrieve solver counters and proof evidence status. */
 void eshkol_cdcl_get_stats(const eshkol_cdcl_solver_t* solver,
                            eshkol_cdcl_stats_t* out_stats);
 
