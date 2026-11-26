@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming, Darwin Seatbelt and Linux seccomp/Landlock sandboxing, deterministic
   socket collectives, Metal FP64 crossover dispatch, Verificatum ADR-0061 proof
   replay, and shared-library tail-transfer export ordering. (#956)
+- Add the full mathematics programme (`core.operator`, `core.measure`,
+  `core.logic.modal`, `core.hodge`, `core.alg_group`, `core.integrable`,
+  `core.analysis`, `core.geometry`, `core.quant`, `core.hep`, `core.set`,
+  `core.higher_algebra`), Grothendieck three-era and beyond-frontiers modules,
+  probability sheaves and Hoare logic (`core.grothendieck.probability_sheaves`),
+  stochastic BLC work-stealing/costed-contract modules, and 140 Lean 4.12.0
+  theorems. (#958)
 
 
 ### Added
