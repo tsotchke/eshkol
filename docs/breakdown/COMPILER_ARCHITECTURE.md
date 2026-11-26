@@ -15,7 +15,7 @@ sources:
   - lib/backend/llvm_codegen.cpp
   - scripts/gate_compiler_architecture.py
 ---
-# Compiler Architecture in Eshkol (v1.3.5-evolve)
+# Compiler Architecture in Eshkol (v1.4.0-connection)
 
 ## Table of Contents
 
@@ -38,7 +38,7 @@ sources:
 
 ## Overview
 
-Eshkol is a **production compiler** targeting **LLVM IR** for native code generation. The v1.1-accelerate release extends the v1.0 foundation with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic (full R7RS numeric tower), first-class continuations, signal processing, a 75+ builtin ML framework, and WebAssembly output.
+Eshkol is a **production compiler** targeting **LLVM IR** for native code generation. The v1.1-accelerate release extended the v1.0 foundation with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic (full R7RS numeric tower), first-class continuations, signal processing, a 75+ builtin ML framework, and WebAssembly output; later lines through v1.4.0-connection added persistence, the stable C FFI, exactness hardening, and the connection-era systems surface (networking, WAL persistence, collectives) on the same pipeline, which now serves 1,651 total language constructs and 1,069 builtins.
 
 The architecture combines:
 
@@ -371,7 +371,7 @@ static constexpr unsigned TAGGED_VALUE_PADDING_IDX = 3;  // uint32_t padding
 static constexpr unsigned TAGGED_VALUE_DATA_IDX = 4;     // int64_t data
 ```
 
-**Critical:** The data field is at index **4**, not 3. Using index 3 accesses the padding field, which was the root cause of multiple null dereference bugs in v1.0.
+**Critical:** The data field is at index **4**, not 3. Using index 3 accesses the padding field, which was the root cause of multiple null dereference failures in v1.0.
 
 ### Type Tags
 
@@ -719,7 +719,7 @@ auto jtmb = orc::JITTargetMachineBuilder::detectHost();
 jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);  // Match stdlib.o
 ```
 
-Without this fix, the 3rd and subsequent tagged value arguments to stdlib functions arrive as all-zeros on ARM64, because the ABI for struct passing differs between optimization levels.
+Without this setting, the 3rd and subsequent tagged value arguments to stdlib functions arrive as all-zeros on ARM64, because the ABI for struct passing differs between optimization levels.
 
 ### Stdlib Preloading
 

@@ -842,7 +842,7 @@ every value already carries its type tag at runtime, so "casting" is simply a ru
   it can emit direct machine instructions instead of polymorphic dispatch.
 - **Progressive typing** — developers can add annotations incrementally, each one providing
   more compile-time safety and better performance.
-- **Warnings guide improvement** — type warnings identify potential bugs without blocking
+- **Warnings guide improvement** — type warnings identify potential errors without blocking
   development.
 
 ---
@@ -1418,10 +1418,10 @@ Port types deviate from the standard type tag model. Rather than using a dedicat
 bool is_port = (type_tag & ESHKOL_PORT_ANY_FLAG) != 0;
 
 // INCORRECT: this always returns false for ports
-bool is_port = (type_tag == ESHKOL_VALUE_HEAP_PTR);  // BUG
+bool is_port = (type_tag == ESHKOL_VALUE_HEAP_PTR);  // WRONG
 ```
 
-This encoding was the root cause of a hanging-stdin bug in `readChar`/`peekChar`: the old code checked `type_tag == ESHKOL_VALUE_HEAP_PTR` (0x08), which never matched a port type byte like `0x18`, causing the fallback to stdin. The fix was `AND(type_tag, 0x50) != 0`.
+This encoding was the root cause of a hanging-stdin failure mode in `readChar`/`peekChar`: the old code checked `type_tag == ESHKOL_VALUE_HEAP_PTR` (0x08), which never matched a port type byte like `0x18`, causing the fallback to stdin. The correct check is `AND(type_tag, 0x50) != 0`.
 
 The heap object itself still has `HEAP_SUBTYPE_PORT` (9) in its `eshkol_object_header_t`, so subtype-based dispatch (e.g., in the display system) works normally. The flag-bit encoding is specific to the *tagged value's type byte* and exists to enable fast port-direction checks without dereferencing the heap pointer.
 

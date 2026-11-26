@@ -146,7 +146,7 @@ optimizer.step()
 
 - Extensive ML libraries such as scikit-learn, etc
 - GPU acceleration (shipped in v1.1 via Metal, CUDA, and XLA backends)
-- Distributed training frameworks (Planned: workstream W6, a PJRT/XLA spike at v1.4.0-connection, native-mesh gates through v2.0-starlight)
+- Distributed training frameworks (foundations shipped at v1.4.0-connection: workstream W6 PJRT CPU plugin and socket-backed collectives; the accelerator device runtime is v1.4.5-accelerate, native-mesh gates through v2.0-starlight)
 - Visualization libraries
 - Large community/ecosystem
 
@@ -348,7 +348,7 @@ BindingCodegen        - Variable definitions
 **vs. Python Ecosystem:**
 - GPU acceleration (Metal SF64 + CUDA, shipped in v1.1)
 - ML builtins (75+ operations: activations, losses, optimizers, CNN, transformer)
-- No distributed training frameworks (Planned: workstream W6, v1.4.0-connection through v2.0-starlight)
+- No distributed training frameworks (foundations shipped at v1.4.0-connection: W6 PJRT CPU plugin and socket collectives; full runtime v1.4.5-accelerate through v2.0-starlight)
 - Small community/package ecosystem (eshkol-pkg shipped, registry growing)
 
 **vs. Julia:**
@@ -620,8 +620,8 @@ With XLA / SIMD / parallel-map / GPU dispatch / consciousness engine / exact-num
 - **Integrated symbolic-numeric systems** — where homoiconic code can rewrite itself at native speed without an interpreter in the loop.
 - **Neuro-symbolic intelligence** - where logic programming meets active inference in a compiled language
 
-**Eshkol v1.1-accelerate** delivers what no competitor can: a production compiler combining automatic differentiation, deterministic memory, homoiconicity, GPU acceleration, parallel computing, and a consciousness engine. Future releases will add distributed computing (v1.2-scale), multi-GPU support (v1.2-scale), and full R7RS library system (v1.3-evolve).
+**Eshkol v1.1-accelerate** delivers what no competitor can: a production compiler combining automatic differentiation, deterministic memory, homoiconicity, GPU acceleration, parallel computing, and a consciousness engine. Later releases delivered the full R7RS library system (v1.3.0-evolve) and the first distributed-computing foundations (v1.4.0-connection: PJRT CPU plugin and socket collectives); multi-GPU support and the accelerator device runtime arrive with v1.4.5-accelerate.
 
 ---
 
-*This analysis reflects v1.1-accelerate capabilities. Status at v1.3.6-evolve (2026-10-09): since then Eshkol has added arbitrary-order exact AD (Taylor towers, v1.3.0), full R7RS conformance on the portable differential corpus (34/34 against chibi-scheme), multi-shot continuations on every engine, certified interval and Taylor-model enclosures, exact rational linear algebra, and 46 documented mathematics examples verified in exact arithmetic ([docs/MATHEMATICS_EXAMPLES.md](../MATHEMATICS_EXAMPLES.md)); the comparison axes above are otherwise unchanged. For future features, see [ROADMAP.md](../../ROADMAP.md).*
+*This analysis reflects v1.1-accelerate capabilities. Status at v1.4.0-connection (2026-11-25, release candidate): since then Eshkol has added arbitrary-order exact AD (Taylor towers, v1.3.0), full R7RS conformance on the portable differential corpus (34/34 against chibi-scheme), multi-shot continuations on every engine, certified interval and Taylor-model enclosures, exact rational linear algebra, 46 documented mathematics examples verified in exact arithmetic ([docs/MATHEMATICS_EXAMPLES.md](../MATHEMATICS_EXAMPLES.md)), and — at v1.4.0-connection — the resource-sound systems profile (linear TCP/UDP/TLS handles, O(1) event-loop HTTP/WebSocket/SSE, write-ahead-logged agent memory, socket collectives), WebGPU browser VM dispatch, exact-rational tensors, arbitrary-depth nested differentiation, the Full Mathematics Programme with differentiable SBLC search proposals (`core.sblc.relax`), and 395 machine-checked Lean 4.12.0 theorems; the comparison axes above are otherwise unchanged. For future features, see [ROADMAP.md](../../ROADMAP.md).*

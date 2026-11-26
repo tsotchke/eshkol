@@ -15,9 +15,14 @@ the full Mathematics Programme (Grothendieck three-era libraries across
 derived categories, and six-functor formalism; Beyond Frontiers spanning Hodge
 theory, Lie/algebraic groups, integrable systems, representation theory, and
 K-theory; Probability Sheaves `arXiv:2611.30692`; Stochastic Binary Lambda
-Calculus), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
-395 machine-checked Lean 4.12.0 theorems, 86 verified example programs, and
-built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
+Calculus with differentiable search proposals, `core.sblc.relax` — an exact
+finite-logit oracle, Rao-Blackwellized REINFORCE with exact rational inner
+coins and variance-reduction confidence diagnostics, and strict-projected
+Gumbel-Softmax/Concrete grammar proposals, each relaxed candidate re-verified
+exactly), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
+395 machine-checked Lean 4.12.0 theorems across 12 standalone proof files (287
+for the mathematics programme, 108 in `EshkolSBLCRelaxation.lean`), 86 verified
+example programs, and built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
 <!-- source: CHANGELOG.md §1.4.0-connection (#845, #956, #958); RELEASE_NOTES.md -->
 
 Eshkol v1.3.6-evolve checks mathematics that machines discovered. That is not a
@@ -469,7 +474,7 @@ Each item below cites the file or measurement that grounds the claim.
   arena-allocated bignum; the architecture-model invariant that checks this is
   derived from the source rather than from a hand-typed list, resolved through a
   libclang semantic index of the real case arms. `ESHKOL_ARENA_POISON=1` poisons
-  freed arena memory so any remaining gap crashes loudly instead of corrupting
+  freed arena memory so any remaining gap halts loudly instead of corrupting
   silently. See *lib/core/runtime_regions.cpp* and
   *tests/memory/region_evac_taylor_exact_test.esk*.
 
@@ -776,8 +781,8 @@ Outputs land under `artifacts/paper/outputs/` with stable SHA-256 hashes printed
 by the harness. A current successful run produces, among others,
 `weights.qlmw = 381599e7…3f0c`, `vm-traces.jsonl = 4239cbb9…4801` (the
 transformer trace agrees bitwise: same SHA), and
-`comparison-report.json = 80aa6fed…4105`. Platform divergence is treated as a
-bug.
+`comparison-report.json = 80aa6fed…4105`. Platform divergence violates the
+artefact's contract and should be reported.
 
 As of v1.3.5-evolve the performance claims reproduce in one command too:
 

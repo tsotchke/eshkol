@@ -5,7 +5,7 @@ supported path for embedding Eshkol as an AOT-compiled dependency of a
 larger C/C++ project (e.g. Noesis) — and, specifically, how incremental
 rebuilds stay correct when a source changes.
 
-## The bug this fixes
+## The problem this closes
 
 Prior to ESH-0215, a build-system integration that compiled `main.esk` to
 `main.o` via `eshkol-run --emit-object -o main.o main.esk` could only tell
@@ -14,7 +14,7 @@ its build graph that `main.o` depends on `main.esk`. If `main.esk` did
 prerequisite unchanged — Ninja/Make saw no reason to rebuild, and the
 downstream project silently linked a stale object. The workaround was to
 `rm` the object and re-run the build 2-3 times, hoping a stale link
-surfaced the mismatch. That is architecturally the same class of bug as
+surfaced the mismatch. That is architecturally the same class of problem as
 ESH-0183 (the `-r` persistent run-cache also used to hash only the entry
 file — see `exe/eshkol-run.cpp`'s `transitiveSourceDigest`).
 
@@ -39,7 +39,7 @@ itself uses (the referring file's directory, the current directory, the
 Paths with spaces, `#`, or `$` are escaped per Make depfile conventions.
 The scan is deliberately generous — a dependency that turns out to be
 unreachable at compile time only costs a redundant rebuild, whereas a
-missed dependency reintroduces the stale-object bug.
+missed dependency reintroduces the stale-object problem.
 
 Ninja's `DEPFILE` build-edge attribute (or `make`'s `-include *.d`) reads
 this file and adds each listed path as an *implicit* dependency of the
@@ -126,7 +126,7 @@ against a real `brew install --build-from-source` result, and gated by
 
 LLVM executable compilation, including file JIT and WebAssembly, accepts an
 explicit `(define (main) ...)` entry only when it declares no parameters. A
-fixed-argument or rest-argument `main` produces an entry-signature diagnostic
+positional-argument or rest-argument `main` produces an entry-signature diagnostic
 instead of an internal LLVM verifier error. A nullary native `main` still uses
 its integer result as the process exit status. Library compilation does not
 select or invoke an entry point, so this restriction does not apply there.
@@ -213,7 +213,7 @@ configure time by compiling a trivial program with `--emit-object --shared-lib
 
 ### `cmake --install` does not yet produce a consumable prefix
 
-**Status: Planned for a v1.3.5 follow-up.**
+**Status: Planned.**
 
 The contract above is delivered today by the *packaging* pipelines — the homebrew
 formula and the release workflow — and by
@@ -276,7 +276,7 @@ and links `eshkol-runtime` directly (the same target real generated
 programs link against), so it exercises the production dependency graph
 rather than a hand-rolled stand-in.
 
-To reproduce the fix manually:
+To reproduce the behaviour manually:
 
 ```sh
 cmake -S . -B build -G Ninja
@@ -299,3 +299,21 @@ log:
 cat build/tests/build_integration/CMakeFiles/build_integration_demo.esk.dir/main.esk.o.d
 ninja -C build -t deps tests/build_integration/CMakeFiles/build_integration_demo.esk.dir/main.esk.o
 ```
+
+## Loadable shared libraries and tail transfer
+
+`eshkol-run --shared-lib program.esk -o mylib` writes a platform shared library
+with C-ABI exports (`libmylib.dylib`, `libmylib.so`, `mylib.dll`) for a C or
+Python host; adding `-c` produces a library-mode object for linking into other
+Eshkol modules instead. Since v1.4.0-connection the export ordering supports
+**tail transfer across the library boundary**: a tail call that leaves the
+shared library transfers control rather than growing the stack, so a mutually
+recursive pair split across two libraries still runs in constant stack space.
+
+A downstream project that compiles `.esk` sources with resource-linearity
+checking enabled (`--strict-resources`, ADR-0056) gets compile-time errors for
+sockets, TLS sessions, files and regions that are left unclosed or closed
+twice. `cmake/EshkolCompile.cmake` invokes `eshkol-run --emit-object` with a
+set flag list, so a project that wants the stricter mode today drives
+`eshkol-run` through its own `add_custom_command` rather than through the
+module.

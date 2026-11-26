@@ -8,7 +8,7 @@
 <h2 id="try-without-installing">Try Without Installing</h2>
 <p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to try Eshkol in your browser:</p>
 <ul>
-<li><strong>Playground</strong> — Full REPL with a 72-opcode core VM and 741 VM-table builtins running in WebAssembly</li>
+<li><strong>Playground</strong> — Full REPL with a 73-opcode core VM and 800 VM-table builtins running in WebAssembly</li>
 <li><strong>Learn</strong> — interactive textbook with runnable code examples, plus 27 in-depth tutorials</li>
 <li><strong>Examples</strong> — 10 complete programs you can run instantly</li>
 </ul>
@@ -448,6 +448,20 @@ eshkol-run hello.esk -o hello
 (close-port in)
 (display line)  ; =&gt; Hello, File!</code></pre>
 <hr />
+<h3 id="6-networking-with-handles-you-cannot-leak">6. <strong>Networking, with Handles You Cannot Leak</strong></h3>
+<p><em>(v1.4.0-connection)</em></p>
+<pre class="scheme"><code>(require core.net)
+
+;; The scoped form closes the socket on normal return AND on a raise.
+(call-with-tcp-connection &quot;example.org&quot; 80
+  (lambda (sock)
+    (tcp-write sock &quot;GET / HTTP/1.1\r\nHost: example.org\r\n\r\n&quot;)
+    (display (tcp-read sock 4096))))</code></pre>
+<p>Failures arrive as structured conditions rather than bare errno values:</p>
+<pre class="scheme"><code>(guard (e ((network-error? e) (display (network-error-reason e))))
+  (tcp-connect &quot;127.0.0.1&quot; 1))</code></pre>
+<p>Compile with <code>--strict-resources</code> and the compiler requires every socket, TLS session, file and region to be used exactly once — a leaked or twice-closed handle stops the build instead of reaching production. TLS (<code>core.tls</code>), an HTTP/1.1 client and server, WebSocket and Server-Sent Events are built on the same handle model; see <a href="/docs#page=api_reference&amp;sockets--tls" data-url="/content/api_reference.html">API_REFERENCE.md</a>.</p>
+<hr />
 <h2 id="advanced-example-optimization">Advanced Example: Optimization</h2>
 <p>Gradient descent to find minimum of Rosenbrock function.</p>
 <pre class="scheme"><code>; Rosenbrock function: f(x,y) = (1-x)² + 100(y-x²)²
@@ -593,7 +607,7 @@ f(optimum) = 8.4e-7</code></pre>
 <h2 id="next-steps">Next Steps</h2>
 <h3 id="learn-more">Learn More</h3>
 <ol type="1">
-<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> — Complete function reference (550+ functions)</li>
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> — Complete function reference (1,069 built-in functions)</li>
 <li><strong><a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html">Architecture Guide</a></strong> — System internals (memory, types, compilation)</li>
 <li><strong><a href="/docs#page=reference_language" data-url="/content/reference_language.html">Language Reference</a></strong> — Comprehensive language guide</li>
 <li><strong><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Autodiff Deep Dive</a></strong> — Three differentiation modes in detail</li>
@@ -722,7 +736,7 @@ eshkol-run --no-stdlib program.esk -o program</code></pre>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <p><strong>Error: “Unknown function”</strong> - Check spelling and imports - Use <code>(require core.module)</code> for standard library</p>
 <p><strong>Error: “Type mismatch”</strong> - Eshkol uses gradual typing - type errors are warnings - Check if you’re mixing incompatible types</p>
-<p><strong>Segfault or crash</strong> - Report bug with minimal reproducer - Check if using external pointers correctly</p>
+<p><strong>A memory fault</strong> - File a report with a minimal reproducer - Check that external pointers are used correctly</p>
 <p><strong>Slow performance</strong> - Compile with <code>eshkol-run</code> for production (not REPL) - Use tensors for numerical code - Enable tail call optimization with <code>letrec</code></p>
 <hr />
 <h2 id="repl-commands">REPL Commands</h2>

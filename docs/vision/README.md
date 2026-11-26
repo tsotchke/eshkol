@@ -9,12 +9,18 @@
 
 This directory contains vision documents tracing Eshkol's architectural baseline (v1.0-foundation through v1.2.1-scale, the release they were last revised against), grounded in the actual compiler implementation.
 
-> **Status at v1.3.6-evolve (2026-10-09).** The current release is v1.3.6-evolve
-> (prepared for publication; v1.3.5-evolve is the latest shipped tag). The v1.3
-> line added arbitrary-order exact AD, full R7RS conformance and the R7RS
-> library system, flat memory for resident loops, a parser with no recursion
-> budget, multi-shot continuations, certified enclosures, the exact tower, and
-> the 46 documented [mathematics examples](../MATHEMATICS_EXAMPLES.md); see the
+> **Status at v1.4.0-connection (2026-11-25, release candidate).** The current
+> release is v1.4.0-connection (release candidate; v1.3.6-evolve, shipped
+> 2026-10-19, is the latest published tag). The v1.3 line added arbitrary-order
+> exact AD, full R7RS conformance and the R7RS library system, flat memory for
+> resident loops, a parser with no recursion budget, multi-shot continuations,
+> certified enclosures, the exact tower, and the 46 documented
+> [mathematics examples](../MATHEMATICS_EXAMPLES.md). v1.4.0-connection adds
+> the resource-sound systems profile — linear TCP/UDP/TLS/Unix-domain handles,
+> O(1) event-loop HTTP/WebSocket/SSE, write-ahead-logged agent memory, socket
+> collectives — plus WebGPU browser VM dispatch, exact-rational tensors, the
+> Full Mathematics Programme with differentiable SBLC search proposals
+> (`core.sblc.relax`), and 395 machine-checked Lean 4.12.0 theorems; see the
 > [README](../../README.md) and [ROADMAP](../../ROADMAP.md). Figures below that
 > describe the v1.0/v1.1 baseline are kept as that record; structural facts are
 > stated in place as of `inc/eshkol/eshkol.h` at
@@ -29,7 +35,7 @@ Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-21 com
 - **Compiler-integrated automatic differentiation** (forward/reverse modes with nested gradient support)
 - **Arena-based memory management** (OALR - Ownership-Aware Lexical Regions)
 - **HoTT-inspired gradual type system** with bidirectional type checking
-- **R7RS Scheme compatibility** over a 1,116-construct canonical language surface (1,056 builtins; `tests/coverage/language_surface.json`)
+- **R7RS Scheme compatibility** over a 1,651-construct canonical language surface (1,069 builtins; `tests/coverage/language_surface.json`)
 - **Interactive REPL** with LLVM ORC JIT compilation
 - **Quantum-inspired RNG** for high-quality stochastic computing
 
@@ -175,10 +181,12 @@ struct eshkol_closure {
 - **Web platform** — WASM compilation, 73 DOM API functions (97 `web-*` bindings in `lib/web/web.esk` at v1.3.6)
 - **Package manager** — `eshkol-pkg` with TOML manifest and registry support
 
-### Not Yet Implemented at v1.1 — status at v1.3.6
+### Not Yet Implemented at v1.1 — status at v1.4.0-connection
 
-- Distributed computing — Planned: workstream W6, a PJRT/XLA spike at
-  v1.4.0-connection with native-mesh gates through v2.0-starlight
+- Distributed computing — foundations DELIVERED at v1.4.0-connection
+  (workstream W6: PJRT CPU plugin execution path and socket-backed collective
+  primitives); the full accelerator device runtime is v1.4.5-accelerate, with
+  native-mesh gates through v2.0-starlight
 - Quantum computing primitives — qubits, gates, VQE: opt-in differentiable
   Moonlab VQE/CHSH and the linear `Qubit` type SHIPPED (v1.3.3, v1.3.4);
   quantum circuit compilation remains v2.0-starlight
@@ -212,4 +220,4 @@ All vision documents in this directory:
 
 ---
 
-*This directory documents the Eshkol compiler vision. The current release is **v1.3.6-evolve** (see the status note above). The pages were last revised against **v1.2.1-scale** (closed out 2026-05-20), shipping on top of the v1.1-accelerate baseline with the full exact-numeric tower (bignum / rational / complex), Metal + CUDA + XLA acceleration, the native agent FFI surface (HTTP / SQLite / subprocess / fs-watch), production-grade model serialisation, plus v1.2.1 hardening (stdlib `LinkOnceODR`, parser line tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation). The aggregate gate at release is **37/37 test suites, 528/528 self-reported tests, 87/87 v1.2 edge-case checks**.*
+*This directory documents the Eshkol compiler vision. The current release is **v1.4.0-connection** (release candidate; see the status note above). The pages were last revised against **v1.2.1-scale** (closed out 2026-05-20), shipping on top of the v1.1-accelerate baseline with the full exact-numeric tower (bignum / rational / complex), Metal + CUDA + XLA acceleration, the native agent FFI surface (HTTP / SQLite / subprocess / fs-watch), production-grade model serialisation, plus v1.2.1 hardening (stdlib `LinkOnceODR`, parser line tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation). The aggregate gate at release is **37/37 test suites, 528/528 self-reported tests, 87/87 v1.2 edge-case checks**.*

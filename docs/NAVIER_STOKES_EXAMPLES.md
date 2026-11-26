@@ -4,6 +4,10 @@
 The authored matrix contains **12 programs, 14 criteria and 28 CTest entries**, each with native JIT and AOT variants, under `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Localization supplies three criteria. Every one of these 12 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **12** completed in both modes; **12** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes. Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 <!-- example-catalogue:ns-summary:end -->
 
+These programs ship in Eshkol v1.4.0-connection. The measurement snapshot above
+is the historical one taken at the v1.3.6-evolve cut on the date it states; it
+is quoted as measured and is not a claim about any later commit.
+
 Source: an external reference construction for the three-dimensional
 Navier-Stokes equations, OpenAI, "Finite time blowup for Navier–Stokes" (2026),
 <https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf>.
@@ -497,6 +501,14 @@ These are capability gaps, stated as such.
   residual that returns a graded value whose coefficients can be collected
   and solved — symbolic multivariate polynomial and series *values* and
   polynomial-valued duals, neither of which exists today.
-- **Proof-object export.** Nothing here emits a certificate that could be
-  checked without running Eshkol. Every verdict above rests on trusting this
-  compiler, and that trust is not transferable.
+- **Proof-object export.** Nothing in *this family* emits a certificate that
+  could be checked without running Eshkol: every verdict above rests on
+  trusting this compiler, and that trust is not transferable. The capability
+  itself is no longer missing in v1.4.0-connection — Eshkol Verificatum
+  ([ADR 0061](design/adr/0061-eshkol-verificatum.md)) replays machine-checked
+  Lean 4.12.0 proofs independently of the compiler that produced them, and the
+  release carries 395 top-level machine-checked Lean 4.12.0 theorems across 12
+  standalone proof files (287 for the mathematics programme and 108 in
+  `EshkolSBLCRelaxation.lean`), with 0 `sorry` and 0 custom axioms, replayed in
+  CI. What remains is emitting obligations for *these* programs' residual,
+  exponent and profile checks so the same replay covers them.

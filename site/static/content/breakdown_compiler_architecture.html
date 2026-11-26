@@ -1,4 +1,4 @@
-<h1 id="compiler-architecture-in-eshkol-v135-evolve">Compiler Architecture in Eshkol (v1.3.5-evolve)</h1>
+<h1 id="compiler-architecture-in-eshkol-v140-connection">Compiler Architecture in Eshkol (v1.4.0-connection)</h1>
 <h2 id="table-of-contents">Table of Contents</h2>
 <ul>
 <li><a href="/docs#page=breakdown_compiler_architecture&amp;overview" data-url="/content/breakdown_compiler_architecture.html">Overview</a></li>
@@ -18,7 +18,7 @@
 </ul>
 <hr />
 <h2 id="overview">Overview</h2>
-<p>Eshkol is a <strong>production compiler</strong> targeting <strong>LLVM IR</strong> for native code generation. The v1.1-accelerate release extends the v1.0 foundation with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic (full R7RS numeric tower), first-class continuations, signal processing, a 75+ builtin ML framework, and WebAssembly output.</p>
+<p>Eshkol is a <strong>production compiler</strong> targeting <strong>LLVM IR</strong> for native code generation. The v1.1-accelerate release extended the v1.0 foundation with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic (full R7RS numeric tower), first-class continuations, signal processing, a 75+ builtin ML framework, and WebAssembly output; later lines through v1.4.0-connection added persistence, the stable C FFI, exactness hardening, and the connection-era systems surface (networking, WAL persistence, collectives) on the same pipeline, which now serves 1,651 total language constructs and 1,069 builtins.</p>
 <p>The architecture combines:</p>
 <ul>
 <li><strong>S-expression parser</strong> for R7RS-compatible Scheme syntax</li>
@@ -299,7 +299,7 @@ static constexpr unsigned TAGGED_VALUE_FLAGS_IDX = 1;    // uint8_t flags
 static constexpr unsigned TAGGED_VALUE_RESERVED_IDX = 2; // uint16_t reserved
 static constexpr unsigned TAGGED_VALUE_PADDING_IDX = 3;  // uint32_t padding
 static constexpr unsigned TAGGED_VALUE_DATA_IDX = 4;     // int64_t data</code></pre>
-<p><strong>Critical:</strong> The data field is at index <strong>4</strong>, not 3. Using index 3 accesses the padding field, which was the root cause of multiple null dereference bugs in v1.0.</p>
+<p><strong>Critical:</strong> The data field is at index <strong>4</strong>, not 3. Using index 3 accesses the padding field, which was the root cause of multiple null dereference failures in v1.0.</p>
 <h3 id="type-tags">Type Tags</h3>
 <table>
 <colgroup>
@@ -886,7 +886,7 @@ auto jtmb = orc::JITTargetMachineBuilder::detectHost();
 // On ARM64, -O2 generates different struct arg stack layouts for
 // {i8, i8, i16, i32, i64} -- 3rd+ arg received as all-zeros
 jtmb-&gt;setCodeGenOptLevel(CodeGenOptLevel::None);  // Match stdlib.o</code></pre>
-<p>Without this fix, the 3rd and subsequent tagged value arguments to stdlib functions arrive as all-zeros on ARM64, because the ABI for struct passing differs between optimization levels.</p>
+<p>Without this setting, the 3rd and subsequent tagged value arguments to stdlib functions arrive as all-zeros on ARM64, because the ABI for struct passing differs between optimization levels.</p>
 <h3 id="stdlib-preloading">Stdlib Preloading</h3>
 <p>The REPL preloads stdlib via two mechanisms:</p>
 <ol type="1">

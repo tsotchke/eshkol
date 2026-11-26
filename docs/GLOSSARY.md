@@ -30,6 +30,10 @@ the program itself, exactly where the arithmetic allows, through `derivative`,
 its derivative information through a computation: a dual number, a jet, a Taylor
 tower or a tape node. [AD architecture](reference/ad/architecture.md)
 
+**Admission ticket.** The bounded grant an SSE stream takes with `sse-admit!`
+before it may send, so the number of concurrent streams a server will carry is
+declared rather than discovered. [API reference](API_REFERENCE.md#http-websocket--server-sent-events)
+
 **Agent FFI.** The foreign-function layer that gives Eshkol programs HTTP,
 subprocess, SQLite, cryptography and platform services under a capability
 policy. [Agent reference](reference/agent/INDEX.md)
@@ -65,6 +69,10 @@ an exact integer becomes when it no longer fits 64 bits.
 **Borrow.** Temporary, non-owning access to a value under OALR, checked by the
 type checker's ownership analysis. [Type system](breakdown/TYPE_SYSTEM.md#ownership-and-linearity)
 
+**Borrow pattern.** Temporary access to a linear resource through a scoped
+`call-with-…` form, which closes the handle on normal return and on a raise
+without transferring ownership. [API reference](API_REFERENCE.md#sockets--tls)
+
 **Builtin.** A procedure provided by the compiler and runtime rather than a
 library module; the count is taken from `tests/coverage/language_surface.json`.
 [Language reference](reference/language/INDEX.md)
@@ -82,6 +90,10 @@ subprocesses) a program may use. [Capabilities](reference/language/capabilities.
 differentiation a capture is resolved where the closure was created.
 [AD capture rules](reference/ad/operators.md#where-a-capture-is-resolved)
 
+**Cech descent.** The computation of sheaf cohomology from a cover by
+intersecting its pieces, the mechanism `core.sheaf` uses.
+[Mathematics guide](guide/MATHEMATICS.md)
+
 **Certified enclosure.** An interval or Taylor model whose bounds are proved
 with directed rounding rather than sampled. [Certified enclosures](reference/stdlib/certified-enclosures.md)
 
@@ -93,9 +105,17 @@ with directed rounding rather than sampled. [Certified enclosures](reference/std
 plus its captured environment. A procedure binding that can change is always
 called through it. [Architecture](ESHKOL_V1_ARCHITECTURE.md)
 
+**Collective operation.** A broadcast, all-reduce, all-gather, reduce-scatter or
+barrier across ranks over sockets, reduced in rank order so the same inputs give
+the same bits on every run. [Feature matrix](FEATURE_MATRIX.md#connection--systems-v140-connection)
+
 **Completion oracle.** The set of criteria in `.icc/completion-oracles.yaml`
 that a release target must meet; each criterion is graded from evidence.
 [Release process](platform/RELEASE_PROCESS.md)
+
+**Connection handle.** A socket, TLS session or HTTP server as a tracked runtime
+value with its own identity and structured error reporting, rather than a bare
+file descriptor. [API reference](API_REFERENCE.md#sockets--tls)
 
 **Consistency.** The gradual-typing relation under which the dynamic type
 `Value` fits every type. [Gradual typing](guide/GRADUAL_TYPING.md#4-fitting-one-type-to-another)
@@ -140,6 +160,10 @@ differential evidence on both engines, stored as exact counts.
 
 **EREPL machine mode.** The REPL's line protocol for driving it from another
 program. [`eshkol-repl`](reference/runtime/eshkol-repl.md)
+
+**Exact tensor.** A tensor of dtype `exact`, whose elements are exact
+rationals end to end — including across the NumPy binding, so no boundary
+demotes them to binary64 (ADR-0058). [Feature matrix](FEATURE_MATRIX.md#connection--systems-v140-connection)
 
 **ESHKOL_PATH.** The environment variable naming the library directory the
 compiler searches for modules and the standard library.
@@ -231,6 +255,10 @@ result of a branching form and for loop variables. [Gradual typing](guide/GRADUA
 
 ## K
 
+**Kripke–Joyal forcing.** The procedure that decides a statement in the
+internal language of a presheaf topos, cross-checked instance by instance
+against the subobject classifier. [Mathematics guide](guide/MATHEMATICS.md)
+
 **Known-defect marker.** `<!-- doc-example: known-defect ID: ... -->`: the page
 states the designed behaviour, the build does not deliver it yet, and the ledger
 entry `ID` is open. [Writing documentation](DOCUMENTATION.md#markers)
@@ -245,10 +273,19 @@ into `tests/coverage/language_surface.json`. [Test coverage](TEST_COVERAGE.md)
 debt), `PR-` (parity ratchet), `IF-` (in flight), `VA-` (vacuous assurance).
 Only open silent-wrong entries block a release. [Contributing](../CONTRIBUTING.md)
 
+**Lean proof file.** One of the 12 standalone files under `verification/`
+carrying 395 top-level machine-checked theorems, with 0 `sorry` and 0 custom
+axioms, checked in Lean 4.12.0 in CI. [Feature matrix](FEATURE_MATRIX.md#mathematics-programme--formal-proofs-v140-connection)
+
 **Linear type.** A type whose values must be used exactly once, such as `Qubit`;
 violations are compile-time errors. [Language guide](ESHKOL_LANGUAGE_GUIDE.md)
 
 ## M
+
+**Linear resource.** A socket, TLS session, file or region the compiler
+requires to be used exactly once under `--strict-resources` (ADR-0056), so an
+unclosed or twice-closed handle is a compile-time error.
+[API reference](API_REFERENCE.md#sockets--tls)
 
 **Metamorphic testing.** Checking that a transformation of a program which should
 not change its answer does not. [Testing](TESTING.md)
@@ -329,9 +366,25 @@ derivatives from outputs back to inputs. [AD tape](reference/ad/tape.md)
 **Self-test.** A gate's `--self-test` mode, which proves the gate fails on
 planted faults and passes on clean input. [Testing](TESTING.md)
 
+**SBLC (Stochastic Binary Lambda Calculus).** An exact prior over programs in
+which a term's weight is exactly `1/2^length` as an Eshkol rational, enumerated
+to a bounded length and decided rather than estimated (ADR-0017).
+[Feature matrix](FEATURE_MATRIX.md#sblc--differentiable-proposals-adr-0017-v140-connection)
+
+**Server-Sent Events (SSE).** A one-way event stream over HTTP, bounded here by
+an admission ticket and the stream's own deadline, with explicit cleanup.
+[API reference](API_REFERENCE.md#http-websocket--server-sent-events)
+
+**Sheaf.** Data assigned to the pieces of a site that agrees on overlaps;
+`core.sheaf` computes its cohomology by Cech descent.
+[Mathematics guide](guide/MATHEMATICS.md)
+
 **Silent-wrong.** A wrong value, derivative or memory outcome produced with no
 diagnostic and a zero exit status; an open silent-wrong ledger entry blocks a
 release. [Contributing](../CONTRIBUTING.md)
+
+**Site.** A finite category with a Grothendieck topology — the covers over which
+a sheaf is defined. [Mathematics guide](guide/MATHEMATICS.md)
 
 **Static callee binding.** The compiler's record that a name denotes a specific
 compiled procedure, tied to the binding that owns it, so a direct call is used
@@ -340,16 +393,33 @@ only while the name cannot change. [ADR 0015](design/adr/0015-static-callee-bind
 **stdlib.o.** The precompiled standard library object that the JIT and AOT
 drivers load instead of recompiling the library. [JIT internals](reference/runtime/jit-internals.md)
 
+**Strict resources.** `--strict-resources`: the flag that turns resource
+linearity on, tracking sockets, TLS sessions, files and regions use-exactly-once
+(ADR-0056). [`eshkol-run`](reference/runtime/eshkol-run.md)
+
 **Strict types.** `--strict-types`: every type diagnostic is an error and no
 code is generated. [`eshkol-run`](reference/runtime/eshkol-run.md)
 
 ## T
+
+**Subprocess confinement.** Launching a subprocess under Darwin Seatbelt or
+Linux seccomp with Landlock; a platform offering no confinement mechanism
+refuses the launch rather than running unconfined.
+[Feature matrix](FEATURE_MATRIX.md#connection--systems-v140-connection)
 
 **Tagged value.** The runtime representation of every Eshkol value: a type tag,
 flags and a payload. [Type system](breakdown/TYPE_SYSTEM.md#tagged-value-representation)
 
 **Tail-transfer dispatcher.** The portable lowering of mutual tail calls on
 targets where `musttail` cannot be used. [Tail calls](reference/language/tail-calls.md)
+
+**TLS session.** An encrypted connection from `core.tls`, created from a
+client or server context and closed with `tls-session-close`; `tls-available?`
+reports whether a build carries TLS at all. [API reference](API_REFERENCE.md#sockets--tls)
+
+**Topos.** A category behaving like a universe of sets; `core.topos` builds the
+presheaf topos over a site and decides its internal language.
+[Mathematics guide](guide/MATHEMATICS.md)
 
 **Tape.** The record of operations that reverse-mode AD replays backwards.
 [AD tape](reference/ad/tape.md)
@@ -375,12 +445,27 @@ file path) that the audit tooling grades against the tree.
 **Value.** The checker's dynamic type: the type of anything it does not know,
 consistent with every type. [Gradual typing](guide/GRADUAL_TYPING.md#4-fitting-one-type-to-another)
 
+**Verificatum replay.** The independent re-checking of the Lean proofs rather
+than trusting a stored verdict (ADR-0061, ADR-0063).
+[Feature matrix](FEATURE_MATRIX.md#mathematics-programme--formal-proofs-v140-connection)
+
 **VM.** See *Bytecode VM*.
 
 ## W
 
+**WAL (write-ahead log).** The log `core.memory_store` writes through so a
+checkpoint commit either lands whole or leaves the previous state intact.
+[Feature matrix](FEATURE_MATRIX.md#connection--systems-v140-connection)
+
 **WASM.** The WebAssembly build of Eshkol that runs in the browser REPL and the
 website. [Web platform](breakdown/WEB_PLATFORM.md)
+
+**WebGPU dispatch.** The browser lane in which the bytecode VM sends compute
+work to WebGPU (ADR-0029). [Web platform](breakdown/WEB_PLATFORM.md)
+
+**WebSocket.** A bidirectional framed connection over HTTP, with RFC-validated
+framing for text and binary payloads.
+[API reference](API_REFERENCE.md#http-websocket--server-sent-events)
 
 ## Z
 

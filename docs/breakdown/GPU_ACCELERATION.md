@@ -116,7 +116,7 @@ multiples of the tile, each elementwise op on random values, on uniformly
 random f64 bit patterns and on an edge-value matrix, and each reduction. The
 exact tier must match bit for bit (reductions within `GPU_GATE_TOL`, default
 `1e-9`), a run with zero GPU dispatches fails, and `--corrupt=<kernel>`
-(gemm, elem, reduce, round, sticky) proves the gate goes red on a broken kernel.
+(gemm, elem, reduce, round, sticky) proves the gate goes red on a corrupted kernel.
 `tests/webgpu/webgpu_live_test.mjs` checks device limits, dispatch tiling and
 JSPI suspension in Chrome; `tests/webgpu/webgpu_regressions_test.mjs` checks the
 tier and fallback contracts without a browser.
@@ -216,7 +216,7 @@ so throughput scales linearly until `efficiency_scale` elements are reached.
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `blas_overhead_ns` | 5,000 (5 us) | Fixed cBLAS dispatch overhead |
+| `blas_overhead_ns` | 5,000 (5 us) | Constant cBLAS dispatch overhead |
 | `blas_peak_gflops` | 1,100 | Measured via Apple Accelerate AMX |
 | `blas_efficiency_scale` | 10,000 | Elements for full BLAS saturation |
 | `gpu_overhead_ns` | 200,000 (200 us) | Metal command buffer + data transfer |
@@ -284,7 +284,7 @@ residue pair, then reconstruct via CRT. Constants are precomputed using
 `__int128` for exact arithmetic (`gpu_memory.mm:188`). Adaptive N selection
 (`gpu_memory.mm:260`) minimizes moduli count based on actual input magnitudes.
 
-The default exact tier (`ESHKOL_SF64_KERNEL=ozaki`, fixed N=16 moduli) does the
+The default exact tier (`ESHKOL_SF64_KERNEL=ozaki`, constant N=16 moduli) does the
 per-modulus residue split and the double-double CRT reconstruction on the CPU —
 `O(num_moduli · N^2)` host passes that download every per-modulus `W_l` plane and
 dominate wall time.
@@ -417,7 +417,7 @@ bool round_up = (round_bits > 0x200u) ||
                 ((round_bits == 0x200u) && ((sig.y & 1u) != 0));
 ```
 
-The mask `0x3FF` was a critical bug fix -- the earlier `0x7FF` shifted the
+The `0x3FF` mask is load-bearing -- the earlier `0x7FF` shifted the
 halfway point, causing systematic rounding errors.
 
 ### Performance
@@ -532,7 +532,7 @@ the produced binaries depend on Vulkan being installed.
   abs, relu, sqrt, reciprocal), full reductions (sum, prod, min, max, mean),
   and matmul in f64 and f32. Every expression mirrors the CPU reference and
   is compiled without contraction, so results are bit-identical to the CPU on
-  IEEE-754 devices. Reductions use a fixed chunk tree (256 elements per
+  IEEE-754 devices. Reductions use a constant-shape chunk tree (256 elements per
   invocation, partials of partials), so a sum is reproducible run to run and
   across devices. GLSL.std.450 defines exp/log/sin/cos/tanh only for 16- and
   32-bit floats; those f64 operations, sigmoid, axis reductions, softmax,
@@ -694,7 +694,7 @@ unconditionally. Note that no hosted CI runner has a GPU (see
 reporting job), so on CI the loud skip is the expected outcome and this
 certification is a per-release manual attestation from a Metal/CUDA host.
 
-`tests/gpu/ozaki_certification_gate.sh` runs a deterministic `512x512` integer-valued f64 witness. It uses an independent sampled native-`i128` dot-product oracle with a proven bound below `2^58`, then converts oracle sums to correctly rounded f64. On the identical witness, Apple Accelerate must differ on at least one sample while fixed-`N16` Metal exact Ozaki (`ozaki`) must match every sampled reference. The script exercises both default cached-JIT and AOT and requires real fixed-`N16` Metal dispatch markers, explicitly rejecting CPU fallback. ICC oracle name is `ozaki-certification`. This is a correctness-only certification witness: no default-dispatch change and no performance claim.
+`tests/gpu/ozaki_certification_gate.sh` runs a deterministic `512x512` integer-valued f64 witness. It uses an independent sampled native-`i128` dot-product oracle with a proven bound below `2^58`, then converts oracle sums to correctly rounded f64. On the identical witness, Apple Accelerate must differ on at least one sample while constant-`N16` Metal exact Ozaki (`ozaki`) must match every sampled reference. The script exercises both default cached-JIT and AOT and requires real constant-`N16` Metal dispatch markers, explicitly rejecting CPU fallback. ICC oracle name is `ozaki-certification`. This is a correctness-only certification witness: no default-dispatch change and no performance claim.
 
 The default DGEMM tier is unchanged; both `ozaki` and `ozaki-fast` are opt-in.
 See section 3 (Ozaki-II CRT DGEMM) for the accuracy/throughput tables.
@@ -871,7 +871,7 @@ If rounding causes the mantissa to overflow (bit 52 carries into bit 53),
 the significand is shifted right and the exponent incremented. Overflow to
 infinity and underflow to subnormal/zero are handled as edge cases.
 
-The `0x3FF` mask was a critical bug fix (documented in `metal_softfloat.h`
+The `0x3FF` mask is a critical correction (documented in `metal_softfloat.h`
 and the project memory). The earlier `0x7FF` (11 bits) shifted the halfway
 point, causing systematic rounding errors in matmul accumulation.
 
@@ -1333,8 +1333,8 @@ honest.
   run red if that probe exits 0, fails to compile, is missing, or exits
   non-zero without emitting a `FAIL:` marker — checked before the ordinary
   failure count, so a green canary cannot be outvoted by the passing tests
-  around it. Do not "fix" that file: a green canary is not a fixed test, it is
-  a broken verdict pipeline. The Windows judge applies the same inversion to
+  around it. Do not "repair" that file: a green canary does not mean the test
+  is healthy, it means the verdict pipeline is dead. The Windows judge applies the same inversion to
   any `*_must_fail.esk`.
 - **A trace-contract self-test.** `gpu_correctness_gate.sh --self-test` runs
   with no build and no GPU, and asserts that a SKIP writes no trace directory,
@@ -1409,10 +1409,10 @@ They are often conflated and they prove different things:
   live. It computes a 2×2 `matmul` whose `C[0,0]` is `19.0` and asserts it is
   `999.0`. It is computed *through the tensor path* on purpose, so a build that
   cannot even construct a tensor still reaches a `FAIL` verdict rather than
-  crashing before printing one. `scripts/run_gpu_tests.sh` hard-fails the whole
+  aborting before printing one. `scripts/run_gpu_tests.sh` hard-fails the whole
   run on four distinct outcomes: the file is missing, it fails to compile, it
   exits 0, or it exits non-zero without a `FAIL:` marker (which would mean the
-  marker grammar itself had broken). This check runs before the ordinary failure
+  marker grammar itself had failed). This check runs before the ordinary failure
   count, so a green canary cannot be outvoted by the passing tests around it.
 - **`gpu_correctness_gate.sh --self-test`** proves the **trace contract** holds.
   It needs no build and no GPU.

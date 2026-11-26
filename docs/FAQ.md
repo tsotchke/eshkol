@@ -116,6 +116,86 @@ These are compiled to native code, not interpreted. Belief propagation runs at C
 
 ---
 
+## Networking & Systems
+
+### Can Eshkol talk to the network?
+
+Yes, since v1.4.0-connection. `core.net` provides TCP and UDP sockets and Unix
+domain sockets; `core.tls` provides TLS client and server contexts and
+sessions; there is an HTTP/1.1 client (`http-request`) and a non-blocking
+HTTP/1.1 server on the portable event loop, plus WebSocket with RFC-validated
+framing and bounded Server-Sent Events streaming. `core.http_server` adds a
+pure-Scheme request parser and router with `/health`, `/ready` and `/metrics`
+fallbacks.
+
+```scheme
+(require core.net)
+(call-with-tcp-connection "example.org" 80
+  (lambda (sock)
+    (tcp-write sock "GET / HTTP/1.1\r\nHost: example.org\r\n\r\n")
+    (display (tcp-read sock 4096))))
+```
+
+### How do I avoid leaking a socket?
+
+Two ways, and they compose. Use the scoped forms — `call-with-tcp-connection`,
+`call-with-tcp-listener`, `call-with-tcp-accept`, `call-with-udp-socket`,
+`call-with-tls-client` — which close the handle on normal return *and* on a
+raise. Then compile with `--strict-resources` (ADR-0056): the compiler tracks
+sockets, TLS sessions, files and regions use-exactly-once, so an unclosed or
+twice-closed handle is a compile-time error rather than something you discover
+in production.
+
+### How do network errors surface?
+
+As structured conditions, not bare errno values. `network-error?` identifies
+them and `network-error-code`, `network-error-operation` and
+`network-error-reason` read the detail; TLS has the matching `tls-error?`
+family. Check `(tls-available?)` before assuming a build carries TLS instead of
+silently falling back to plaintext.
+
+### Is anything guaranteed about distributed results?
+
+Socket collectives (broadcast, all-reduce, all-gather, reduce-scatter,
+barrier) reduce in rank order, so the same ranks and the same inputs give the
+same bits on every run. Durable writes go through a write-ahead log and commit
+atomically: a checkpoint lands whole, or the previous state stays intact.
+Subprocesses run confined under Darwin Seatbelt or Linux seccomp with Landlock,
+and a platform with no confinement mechanism refuses the launch rather than
+running unconfined.
+
+---
+
+## Mathematics & Verification
+
+### What is the mathematics programme?
+
+A set of libraries (v1.4.0-connection) that state mathematics the way a
+mathematician states it — a site, a sheaf, a topos, a ring — and decide each
+claim exactly, by enumeration and exact linear algebra, never by sampling:
+`core.sheaf`, `core.topos`, `core.ring`, `core.category`, `core.simplicial`,
+`core.homological`, `core.theory`, `core.manifold`, `core.curvature`,
+`core.exact_linalg` and the Stochastic Binary Lambda Calculus in `core.sblc`.
+A reader's guide is in [guide/MATHEMATICS.md](guide/MATHEMATICS.md).
+
+### Are the proofs actually checked?
+
+Yes. 395 top-level theorems across 12 standalone proof files are
+machine-checked in Lean 4.12.0 in CI, with 0 `sorry` and 0 custom axioms, and
+replayed independently (ADR-0061, ADR-0063). 86 example programs are verified
+alongside them.
+
+### What is NOT in v1.4.0-connection?
+
+Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) are later
+work, and multi-host distributed computing beyond single-host socket
+collectives is still ahead. Backend parity is a documented subset, not complete
+parity: the VM parity manifest carries 997 rows, 322 of them `gap`, and each
+construct's engine coverage is listed in
+[FEATURE_MATRIX.md](FEATURE_MATRIX.md).
+
+---
+
 ## Performance
 
 ### Is Eshkol fast?

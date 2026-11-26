@@ -16,7 +16,8 @@ sources:
 ---
 # Eshkol Web Platform
 
-**Status**: Stable — v1.2.1-scale
+**Status**: Stable — current as of v1.4.0-connection (Site WASM 476KB,
+VM WASM 1762KB; WebGPU browser VM dispatch per ADR-0029)
 **Module**: `web`
 **Source**: `lib/web/web.esk`
 **Compiler flag**: `--wasm` (`-w`)
@@ -256,7 +257,7 @@ The document (1), window (2), and body (3) handles are permanent. Calling
 (web-get-body)     -> i32   ; Always handle 3 (document.body)
 ```
 
-These functions involve no dynamic allocation and return fixed constants.
+These functions involve no dynamic allocation and return static constants.
 They exist for consistency: code that receives a node handle as a parameter
 can call these functions to obtain root references without requiring ambient
 global state.
@@ -1132,10 +1133,10 @@ Commands, from the repository root:
 | `python3 scripts/generate_wasm_import_glue.py --check` | Freshness gate: each bundle has exactly one generated block, it equals the fragment, and each bundle's core keys equal the manifest. Modifies nothing. |
 | `python3 scripts/generate_wasm_import_glue.py --selftest` | Negative controls: the checked-in glue passes, a deliberately stale block and a deliberately missing core key are both rejected. |
 | `python3 scripts/check_wasm_imports.py --build-dir build` | Compiles a set of smoke programs with `eshkol-run --wasm`, reads each module's import section, and fails when either bundle lacks an `env` import a module asks for. `--strict` also fails on stubs no module requests. `--prebuilt-wasm-dir DIR` checks existing `.wasm` files without compiling. |
-| `python3 scripts/check_wasm_imports.py --selftest` | The import scanner's own regression suite, the ABI-geometry check and the generated-glue self-test, with no build. |
+| `python3 scripts/check_wasm_imports.py --selftest` | The import scanner's own self-check suite, the ABI-geometry check and the generated-glue self-test, with no build. |
 
 The import check runs its self-tests first, unconditionally, and refuses to
-report a verdict from a broken scanner (exit 2). It extracts the `env` keys by
+report a verdict from a scanner that cannot pass its own checks (exit 2). It extracts the `env` keys by
 tokenizing the JavaScript, so comments, strings and nested object literals
 cannot add or hide a key.
 

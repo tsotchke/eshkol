@@ -6,6 +6,8 @@
 - [High-Level Architecture](#high-level-architecture)
 - [Key Features](#key-features)
 - [v1.1-accelerate Feature Summary](#v11-accelerate-feature-summary)
+- [v1.2.0-scale Feature Summary](#v120-scale-feature-summary)
+- [v1.4.0-connection Feature Summary](#v140-connection-feature-summary)
 - [When to Use Eshkol](#when-to-use-eshkol)
 - [Comparison with Other Languages](#comparison-with-other-languages)
 - [Production Readiness](#production-readiness)
@@ -14,7 +16,7 @@
 
 ## Core Philosophy and Design Principles
 
-Eshkol is a **compiled programming language** targeting scientific computing, machine learning, and cognitive architectures. It reconciles three traditionally incompatible goals: Lisp's homoiconicity and functional purity, systems programming's deterministic memory management, and numerical computing's automatic differentiation requirements. Version 1.1-accelerate extends the core with GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic, signal processing, first-class continuations, and a 75+ builtin ML framework.
+Eshkol is a **compiled programming language** targeting scientific computing, machine learning, and cognitive architectures. It reconciles three traditionally incompatible goals: Lisp's homoiconicity and functional purity, systems programming's deterministic memory management, and numerical computing's automatic differentiation requirements. The shipped lines build on each other: v1.1-accelerate added GPU acceleration, parallel primitives, a consciousness engine, exact arithmetic, signal processing, first-class continuations, and the ML builtin framework; v1.2-scale added persistence, the stable C FFI, and per-thread arenas; the v1.3-evolve series hardened exactness and the release infrastructure; and the current release, v1.4.0-connection (release candidate, 2026-11-25), adds the systems profile — linear networking with TLS, HTTP/1.1, WebSocket and Server-Sent Events, write-ahead-log atomic persistence, collective parallel operations, subprocess sandboxing, exact-rational tensors, and WebGPU browser VM dispatch — for a surface of 1,651 total language constructs and 1,069 builtins.
 
 ### Architectural Constraints
 
@@ -39,7 +41,7 @@ The `vref` operator is AD-aware: when extracting from tensors during gradient co
 
 2. **Tagged values as the universal representation** — Every value is a 16-byte `{type:u8, flags:u8, reserved:u16, padding:u32, data:u64}` structure. Immediate values (integers, floats, booleans) store data inline; pointers store 64-bit addresses to objects with prepended headers. This uniformity simplifies the compiler but requires careful attention to alignment and cache behavior.
 
-3. **Type consolidation via object headers** — The pointer consolidation eliminates specific pointer types (CONS_PTR, STRING_PTR, etc.) in favor of polymorphic HEAP_PTR and CALLABLE types. The 8-byte header at offset -8 from the data pointer stores the specific subtype (19 heap-subtype slots assigned through v1.2; slot 14 is reserved for the v1.3 RULE). This trades one pointer dereference for extensible type space.
+3. **Type consolidation via object headers** — The pointer consolidation eliminates specific pointer types (CONS_PTR, STRING_PTR, etc.) in favor of polymorphic HEAP_PTR and CALLABLE types. The 8-byte header at offset -8 from the data pointer stores the specific subtype (25 declared heap-subtype slots through slot 25 as of v1.4.0; slot 14 remains reserved for RULE). This trades one pointer dereference for extensible type space.
 
 4. **Modular code generation through callbacks** — The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph (modules call into main codegen rather than vice versa), enabling parallel development and incremental testing.
 
@@ -149,7 +151,7 @@ Eshkol applies LLVM's standard optimization pipeline:
 **Object Header System** (8 bytes prepended to all heap data):
 ```c
 struct {
-    uint8_t subtype;     // 18 subtypes: cons, string, vector, tensor, closure,
+    uint8_t subtype;     // 25 declared subtypes: cons, string, vector, tensor,
                          //   continuation, promise, substitution, fact, KB,
                          //   factor graph, workspace, ...
     uint8_t flags;       // Linear, borrowed, shared, marked, exact
@@ -194,7 +196,7 @@ OALR (Ownership-Aware Lexical Regions) reconciles functional programming's desir
 
 The type system operates on three levels:
 
-**Runtime level:** 16-byte tagged values with an 8-bit type field. Types 0-7 store data directly (int64, double, bool, char, symbol, nil, complex); types 8-9 are consolidated pointers requiring header inspection for subtype. 19 heap-subtype slots and 5 callable subtypes as of v1.2.1; slot 14 reserved for the v1.3 RULE.
+**Runtime level:** 16-byte tagged values with an 8-bit type field. Types 0-7 store data directly (int64, double, bool, char, symbol, nil, complex); types 8-9 are consolidated pointers requiring header inspection for subtype. 25 declared heap-subtype slots (through slot 25) and 5 callable subtypes as of v1.4.0; slot 14 remains reserved for RULE.
 
 **HoTT level:** Type expressions representing primitives, compounds (list, vector, tensor, arrow), polymorphic types (forall quantification), and a universe hierarchy (U_0 for values, U_1 for types, U_2 for type operators). Type checking generates constraints and solves via unification; failure produces warnings, not errors.
 
@@ -357,8 +359,8 @@ binary files, round-tripping cleanly across processes and platforms:
 - **`(tensor-save path tensor)` / `(tensor-load path)`** — single
   tensor.
 - **`(kb-save path kb)` / `(kb-load path)`** — knowledge base with
-  fact and rule serialisation (pointer-safe; v1.1's raw HEAP_PTR
-  format that dangled across save/load is fixed).
+  fact and rule serialisation (pointer-safe, superseding v1.1's raw
+  HEAP_PTR format that dangled across save/load).
 
 ### Stable C FFI + Python Bindings
 
@@ -371,7 +373,7 @@ wraps it via pybind11 with NumPy zero-copy interop. `pip install` works.
 The arena allocator is now thread-aware: each worker thread holds its
 own region stack, with results merged back to the parent on join. This
 formalises the v1.1 ad-hoc per-task allocation that powered
-`parallel-map` and is a prerequisite for v1.4 networking.
+`parallel-map` and underpins the v1.4.0-connection networking stack.
 
 ### Self-Differentiating Neural Computer Artifact
 
@@ -396,13 +398,70 @@ simulates an 83-instruction bytecode VM with native reverse-mode AD.
 
 ### v1.2 Hardening
 
-Seven critical/high security fixes landed: subprocess shell-string
-injection (agent_subprocess.c), Python-FFI AST injection, integer
-overflows in arena/KB-persistence/image-IO, path traversal + TOCTOU,
-Windows-subprocess buffer overflow, error-propagation patterns
-(36 silent-swallow sites), ReDoS protection, SQL-injection guards,
-URL validation. See [SECURITY.md](../../SECURITY.md) and
-[HARDENING.md](../HARDENING.md).
+Seven critical/high security hardening items landed, closing exposure
+to subprocess shell-string injection (agent_subprocess.c), Python-FFI
+AST injection, integer overflows in arena/KB-persistence/image-IO,
+path traversal + TOCTOU, Windows-subprocess buffer overflow,
+error-propagation patterns (36 silent-swallow sites), ReDoS,
+SQL injection, and unvalidated URLs. See
+[SECURITY.md](../../SECURITY.md) and [HARDENING.md](../HARDENING.md).
+
+---
+
+## v1.4.0-connection Feature Summary
+
+The current release (release candidate, 2026-11-25) is the *systems profile*:
+it connects Eshkol programs to the network, to persistent storage, and to each
+other. The v1.3-evolve series that preceded it closed the exactness programme
+(exact nested AD, region evacuation contracts, the Ozaki exact GPU tier) and
+hardened the release infrastructure.
+
+### Connection and Systems
+
+- **Linear networking**: sockets as linear resources with TLS via system
+  libraries, HTTP/1.1 client and server, WebSocket, and Server-Sent Events
+  (SSE) on an O(1) event loop
+- **Write-ahead log (WAL) and atomic persistence**: durable state that
+  recovers consistently after interrupted execution
+- **Collective parallel operations**: deterministic native socket collectives
+  layered on the work-stealing runtime
+- **Subprocess sandboxing** and **shared-library tail transfer**
+- **WebGPU browser VM dispatch** (ADR-0029): the bytecode VM dispatches tensor
+  work to WebGPU in the browser; Site WASM is 476KB, VM WASM is 1762KB
+- **Exact-rational tensors** (ADR-0058): tensors of dtype `exact` carry exact
+  rational elements through arithmetic and AD
+
+### Mathematics, AD, ML and SBLC
+
+- **Full Mathematics Programme**: Grothendieck-era foundations (three eras),
+  measure/Markov/disintegration, operator and C*-algebras, modal logic,
+  geometry/DEC/gauge/schemes, the Hodge/Weil fourfold, algebraic groups,
+  integrable systems, quantitative finance/SDE/Malliavin, physics (AQFT,
+  electromagnetism, lattice QFT), HEP/Lie theory/amplitudes, set
+  theory/forcing/ordinals, higher algebra/DG/operads, and cellular/condensed
+  sheaves, with work-stealing arena two-cell semantics, costed contracts, and
+  stochastic BLC confluence
+- **`core.sblc.relax`** (ADR-0017 item 5): exact finite-logit oracle verified
+  against native AD; Rao-Blackwellized REINFORCE with exact rational inner
+  coins and variance-reduction confidence diagnostics; depth-masked
+  Gumbel-Softmax/Concrete grammar proposals with strict closed-term projection
+  and loud projection-error refusal — built on `core.sblc` and
+  `core.ml.gradient_estimators`
+
+### Formal Verification
+
+- **395 top-level machine-checked Lean 4.12.0 theorems** across 12 standalone
+  proof files (287 for the mathematics programme plus 108 in
+  `EshkolSBLCRelaxation.lean`), with 0 `sorry` and 0 custom axioms, verified in
+  Lean 4.12.0 CI
+- **Verificatum Lean proof replay** (ADR-0061, ADR-0063)
+- **86 verified examples**
+
+### Surface Counts
+
+- **1,651 total language constructs** and **1,069 builtins**
+- **997-row VM parity manifest**: 630 vm-supported, 45 native-only-justified,
+  322 gap
 
 ---
 
@@ -427,10 +486,13 @@ URL validation. See [SECURITY.md](../../SECURITY.md) and
 ### Limitations
 
 **Not ideal for:**
-- Enterprise web backends (no native HTTP server; web support is WASM/browser-only)
 - Mobile applications (compilation targets desktop/server/WASM, no mobile SDK)
 - Native GUI applications (no desktop GUI toolkit; graphics limited to WASM Canvas)
-- Enterprise data processing (SQL/database integration not yet available)
+- Enterprise data processing at warehouse scale (SQLite is integrated via the agent FFI; client/server RDBMS drivers are not)
+
+Networked services are in scope as of v1.4.0-connection: the release ships a
+native HTTP/1.1 client and server, TLS, WebSocket, and SSE on an O(1) event
+loop, with WAL-backed atomic persistence.
 
 **Ecosystem maturity:**
 - Package ecosystem is growing (40 stdlib modules, eshkol-pkg package manager, git-based registry)
@@ -502,7 +564,7 @@ Both pursue memory safety without garbage collection:
 
 ## Production Readiness
 
-Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for scientific computing, machine learning, and cognitive architecture deployment.
+Eshkol v1.4.0-connection represents a **mature, production-ready implementation** for scientific computing, machine learning, networked systems, and cognitive architecture deployment. The implementation-scale figures below were measured on the v1.2.1-scale tree and have since grown (the v1.3.6 release measured `lib/` and `inc/` together at about 387,000 lines); the current surface counts 1,651 total language constructs and 1,069 builtins.
 
 ### Implementation Scale
 
@@ -524,8 +586,9 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 ### Test Coverage
 
 - **38 test directories** organized by feature: autodiff, bignum, closures, collections, complex, control_flow, error_handling, features, gpu, integration, io, json, lists, logic, macros, memory, migration, ml, modules, neural, numeric, parallel, parser, rational, repl, signal, stdlib, string, system, tco, types, typesystem, web, xla, benchmark, codegen
-- **528 self-reported tests** across 37 automated test suites via shell scripts (plus the 87-test v1.2 edge-case gate)
-- **~113,400 lines** of test code
+- **528 self-reported tests** across 37 automated test suites via shell scripts (plus the 87-test v1.2 edge-case gate) at the v1.2.1 measurement; the suite has grown with each release since
+- **~113,400 lines** of test code at the v1.2.1 measurement
+- **v1.4.0-connection formal layer**: 395 top-level machine-checked Lean 4.12.0 theorems across 12 standalone proof files (0 `sorry`, 0 custom axioms), 86 verified examples, and a 997-row VM parity manifest (630 vm-supported, 45 native-only-justified, 322 gap)
 
 ### Tooling
 
@@ -539,7 +602,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Competitive Technical Advantages
 
-**For gradient-based optimization and machine learning:** Three-mode AD with 32-level nested gradient support. 555+ built-in functions including compiler-level ML operations covering the complete training pipeline (init → forward → loss → backward → clip → optimize → schedule). SIMD → cBLAS → GPU automatic dispatch.
+**For gradient-based optimization and machine learning:** Three-mode AD with 32-level nested gradient support. 1,069 builtins including compiler-level ML operations covering the complete training pipeline (init → forward → loss → backward → clip → optimize → schedule). SIMD → cBLAS → GPU automatic dispatch.
 
 **For cognitive and agent-based systems:** 22 consciousness engine builtins implementing logic programming, active inference, and global workspace theory. No other compiled language provides these as first-class operations.
 

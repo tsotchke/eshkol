@@ -32,7 +32,7 @@ is true now, and a change updates its pages in the same pull request.**
 7. [Historical pages](#7-historical-pages)
 8. [When the page and the code disagree](#8-when-the-page-and-the-code-disagree)
 9. [The gates, and how to run them](#9-the-gates-and-how-to-run-them)
-10. [The v1.4.0 plan](#10-the-v140-plan)
+10. [The documentation plan](#10-the-documentation-plan)
 
 ## 1. Where a page goes
 
@@ -67,7 +67,7 @@ title:
 kind: guide            # tutorial | guide | reference | explanation | project | report
 status: current        # current | historical | superseded
 owner-area: types      # the subsystem that owns the page
-since: v1.3.5          # the release in which the page first shipped
+since: v1.4.0          # the release in which the page first shipped
 sources:               # machine sources and source files the page's facts come from
   - lib/types/type_relation.cpp
 ---
@@ -98,15 +98,15 @@ now**, in the present tense. They carry no release narrative: not "new in",
 something used to misbehave. That material belongs in `CHANGELOG.md`,
 `RELEASE_NOTES.md`, `ANNOUNCEMENT.md` and [`UPGRADING.md`](UPGRADING.md).
 
-Where provenance helps the reader, annotate the statement: "(since v1.3.5)".
+Where provenance helps the reader, annotate the statement: "(since v1.4.0)".
 
 | Instead of | Write |
 |---|---|
-| "The checker now descends into `cond` bodies." | "The checker examines every `cond` body (since v1.3.5)." |
+| "The checker now descends into `cond` bodies." | "The checker examines every `cond` body (since v1.4.0)." |
 | "Previously this crashed; it has been fixed." | State the behaviour. The fix is a `CHANGELOG.md` line. |
-| "New in v1.3.5: `json-get-in` takes a default." | "`(json-get-in obj path [default])`" with the default described. |
+| "New in v1.4.0: `json-get-in` takes a default." | "`(json-get-in obj path [default])`" with the default described. |
 
-The front-matter gate enforces a fixed list of release-narrative phrases ("new
+The front-matter gate enforces a declared list of release-narrative phrases ("new
 in v", "what's new", "recently", "refreshed candidate", "release candidate",
 "this release adds", "in this release") on every evergreen page that carries
 front matter; the rest of this section is the reviewer's rule. A line that must keep such a phrase (a quotation, a heading of a
@@ -241,14 +241,14 @@ A current page that links to a historical or superseded page says so on the same
 line ("the dated audit of 2026-08-25", "superseded by ..."). When a later
 document corrects a figure, the correction is propagated to every current page
 that cites it; `icc citation-binding` and `icc supersession-propagation` list
-the citations still to fix.
+the citations still to correct.
 
 ## 8. When the page and the code disagree
 
 Decide which one is the design before touching either.
 
 - The page is wrong about what exists (a signature, a flag, a count, a path):
-  fix the page.
+  correct the page.
 - The page states the designed behaviour and the implementation lags: the page
   stays as written. File the gap as a ledger entry under `.icc/ledger/entries/`,
   and if an executed example shows it, mark that example `known-defect` with the
@@ -294,9 +294,10 @@ file) or a dated historical statement goes in
 `.icc/doc-claims-allowlist.yaml`, with a reason in the style of the existing
 entries.
 
-## 10. The v1.4.0 plan
+## 10. The documentation plan
 
-Recorded in ADR 0019 and listed here so that a contributor can pick one up.
+Recorded in ADR 0019 and listed here so that a contributor can pick one up. The
+items below are the standing plan for the v1.4.x line.
 
 **Generated references.** A CLI reference for every binary harvested from its
 `--help`; an environment-variable registry harvested from the `getenv` call

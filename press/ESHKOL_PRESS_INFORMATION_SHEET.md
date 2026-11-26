@@ -14,9 +14,15 @@ arbitrary-depth nested differentiation (ADR-0057), exact-rational tensors
 `category`/`monoidal`/`effective`, schemes, derived categories, six-functor
 formalism), Beyond Frontiers (Hodge theory, Lie/algebraic groups, integrable
 systems, representation theory, K-theory), Probability Sheaves
-(`arXiv:2611.30692`), Verificatum independent Lean proof replay (ADR-0061,
-ADR-0063) with 395 machine-checked Lean 4.12.0 theorems, 86 verified examples,
-built-in image codecs, and the SDNC paper artefact.
+(`arXiv:2611.30692`), Stochastic Binary Lambda Calculus with differentiable
+search proposals (`core.sblc.relax`, ADR-0017 item 5: an exact finite-logit
+oracle, Rao-Blackwellized REINFORCE with exact rational inner coins and
+variance-reduction confidence diagnostics, and strict-projected
+Gumbel-Softmax/Concrete grammar proposals, each relaxed candidate re-verified
+exactly), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
+395 machine-checked Lean 4.12.0 theorems across 12 standalone proof files (287
+for the mathematics programme, 108 in `EshkolSBLCRelaxation.lean`), 86 verified
+examples, built-in image codecs, and the SDNC paper artefact.
 
 ---
 
@@ -45,7 +51,8 @@ and Linux seccomp/Landlock sandboxing, browser WebGPU) with its full exact
 Mathematics Programme: Grothendieck three-era libraries, Beyond Frontiers
 (Hodge theory, Lie/algebraic groups, integrable systems, representation theory,
 K-theory), Probability Sheaves (`arXiv:2611.30692`), exact-rational tensors,
-arbitrary-depth nested differentiation, 395 machine-checked Lean 4.12.0 theorems
+arbitrary-depth nested differentiation, differentiable SBLC search proposals
+(`core.sblc.relax`), 395 machine-checked Lean 4.12.0 theorems
 (ADR-0061, ADR-0063), and 86 verified example programs.
 
 In v1.3.6-evolve Eshkol checks mathematics that machines discovered. That is
@@ -226,7 +233,7 @@ every runtime change is pinned by the gate its pull request added.
 - **Bounded per-iteration memory in compiled loops.** Native AOT reclamation
   covers named-let exit, a discarded numeric tensor and direct literal
   `tensor-dot`; the original million-iteration report is retained as a
-  regression fixture. It does not establish flat RSS for every loop or
+  permanent guard fixture. It does not establish flat RSS for every loop or
   platform. (#729, #735)
 - **Allocation-checked constructors and handlers.** Generated cons, vector and
   closure construction, selected collection, parallel and FFT paths, captured
@@ -832,7 +839,7 @@ consists of:
   checks this is derived from the source rather than from a hand-typed list,
   resolved through a libclang semantic index of the real case arms.
   `ESHKOL_ARENA_POISON=1` poisons `arena_destroy`'d memory so any gap in that
-  coverage crashes loudly instead of corrupting silently. See
+  coverage halts loudly instead of corrupting silently. See
   *lib/core/runtime_regions.cpp* and
   *tests/memory/region_evac_taylor_exact_test.esk*.
 - **Region reclamation on the bytecode VM** (Stage 1, v1.3.5-evolve).
@@ -1194,8 +1201,8 @@ SHA-256  opcode-coverage.json      152a4bacc483d8985abeb08bc0d44112144f536ed6632
 ```
 
 The transformer trace and the VM trace share a hash because they agree
-bitwise. Platform divergence is treated as a bug; issue reports should
-include the CPU, libc, and floating-point environment.
+bitwise. Platform divergence violates the artefact's contract; issue reports
+should include the CPU, libc, and floating-point environment.
 
 Implementation note: the paper proves the gated indicator function is exact
 in float32 for any scale S > 33.2; the artefact ships with S = 300 (rather
@@ -1229,11 +1236,10 @@ C.
 
 Measured 4–12× speed-up of `parallel-map` on 24 cores
 (*docs/breakdown/ROADMAP.md §1.1-accelerate completed*; the underlying
-root-cause fix is recorded in project memory as the parallel-map
-flags-byte fix: worker tagged-value flags were hardcoded to zero, which
-mis-dispatched into the bignum path; packing `{type, flags}` into
-`item_type:i64` with the default flipped on restored real parallelism
-across both AOT and JIT paths). `eshkol_runtime_shutdown()` stops and joins the global parallel thread pool
+root-cause correction is the parallel-map flags-byte change: worker
+tagged-value flags were hardcoded to zero, which mis-dispatched into the
+bignum path; packing `{type, flags}` into `item_type:i64` with the default
+flipped on restored real parallelism across both AOT and JIT paths). `eshkol_runtime_shutdown()` stops and joins the global parallel thread pool
 before running shutdown hooks, so a graceful `SIGTERM` tears the pool down in a
 defined order.
 
@@ -1721,4 +1727,5 @@ Press, programme committees, and academic correspondence:
 **team@tsotchke.org**.
 Security disclosures: **security@eshkol.ai** (see *SECURITY.md* for the
 disclosure process and the supported-version table; initial response within
-3 business days, fix-or-mitigation plan within 14 days for HIGH and CRITICAL).
+3 business days, remediation-or-mitigation plan within 14 days for HIGH and
+CRITICAL).

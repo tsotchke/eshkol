@@ -1,6 +1,33 @@
 # Eshkol trajectory — from v1.2-scale to zero-compromise Noesis
 
-> **Status at v1.3.6-evolve (2026-10-09):** this plan was written on 2026-04-17 against v1.2-scale; "current" below means that release. Eshkol has since shipped the v1.3 line through v1.3.5-evolve, and v1.3.6-evolve is prepared for publication. Noesis ships with v1.5.0-intelligence, which now publishes after v1.4.5-accelerate (see [ROADMAP](../ROADMAP.md)).
+> **Status at v1.4.0-connection:** this plan was written on 2026-04-17 against
+> v1.2-scale, and every "current" below means *that* release. The tiers and
+> task IDs are kept verbatim as the historical plan of record. Eshkol has since
+> shipped the v1.3 line through v1.3.6-evolve, and v1.4.0-connection is the
+> current release. Noesis itself ships with v1.5.0-intelligence, which
+> publishes after v1.4.5-accelerate (see [ROADMAP](../ROADMAP.md)).
+>
+> **What v1.4.0-connection settles here.** The Connection & Systems track
+> delivers the substrate that Tier 4 (M3) and Tier 5 (M4) were waiting on:
+> linear networking with typestate-checked handles, TLS, HTTP/1.1, WebSocket
+> and Server-Sent Events, a write-ahead log with atomic persistence,
+> collectives, subprocess sandboxing, WebGPU browser VM dispatch
+> ([ADR 0029](design/adr/0029-browser-vm-webgpu-dispatch.md)), exact-rational
+> tensors and shared-library tail transfer. Read the M1 HTTP/WebSocket rows and
+> the M4 socket row as superseded by that track rather than as open work.
+>
+> **Differentiable proposals.** The M0-era framing of "AD ops the faculty layer
+> needs" is now a larger surface: `core.sblc.relax`
+> ([ADR 0017](design/adr/0017-stochastic-binary-lambda-calculus.md)) gives an exact
+> finite-logit oracle verified against native AD, Rao-Blackwellized REINFORCE
+> with variance-reduction confidence diagnostics, and depth-masked
+> Gumbel-Softmax/Concrete grammar proposals with strict closed-term projection
+> and loud projection-error refusal. That is the differentiable-proposal path a
+> Noesis-style proposer needs, and it is in this release. See
+> [reference/ad/architecture.md](reference/ad/architecture.md).
+>
+> Not in v1.4.0-connection: Consciousness Engine v2 (CE-12) and the Eshkol OS
+> milestones (K1–K6). Those remain planned work on the roadmap.
 
 **Date**: 2026-04-17
 **Source audit**: Noesis faculty-layer runtime feature audit, 2026-04-17
@@ -31,12 +58,12 @@ Working / verified this pass (test suites live under `tests/v1_2_edge_cases/`):
 
 | Area | Tests | Notes |
 |---|---|---|
-| v1.2 regressions | 37 | all bug-fix items from previous sprint |
+| v1.2 edge cases | 37 | all correctness items from the previous sprint |
 | Symbol consistency | 7 | HEAP_PTR/legacy unification |
 | Parallel AD worker init | 7 | per-thread arena + tape |
-| Image I/O arena safety | 7 | no free-on-arena, `tensor?` fixed |
+| Image I/O arena safety | 7 | no free-on-arena, `tensor?` correct |
 | Boundary values | 34 | INT64_MAX, NaN, Inf, empty collections |
-| Type safety | 24 | type-error raises instead of segfault |
+| Type safety | 24 | type-error raises instead of an abrupt exit |
 | Quasiquote | 10 | `,x`, `,@xs`, nested, in lambda body |
 | Match `(? pred)` | 15 | builtin + user-defined predicates |
 | Hash tables | 25 | SRFI-125 aliases, 500-element stress |
@@ -44,7 +71,7 @@ Working / verified this pass (test suites live under `tests/v1_2_edge_cases/`):
 | **Total** | **179** | |
 
 Noesis-audit items delivered in this pass: **#136 quasiquote**, **#137 hash tables**,
-**#139 match `(? pred)`**. Plus the complete audit-fix sprint (#129 symbol, #130
+**#139 match `(? pred)`**. Plus the complete audit-remediation sprint (#129 symbol, #130
 AD worker init, #131 port padding, #132 image I/O, #133 FFI error paths, #135
 car/cdr type guards).
 
@@ -96,7 +123,7 @@ table but prerequisite for running Noesis end-to-end):
 | **#141** | Match apostrophe-quote in subject | done |
 | **#134** | Compile-to-binary eval linker | done |
 
-**Entry criterion (M0 → M1)**: all 12 items done , full v1.2 regression
+**Entry criterion (M0 → M1)**: all 12 items done , the full v1.2 edge-case
 suite (14 suites / 200+ tests) green , Noesis Sigma / Aletheia / Mneme
 benches run end-to-end without workarounds .
 
@@ -105,7 +132,7 @@ benches run end-to-end without workarounds .
 Verify locally:
 
 ```
-bash scripts/run_all_tests.sh           # 14 regression suites
+bash scripts/run_all_tests.sh           # 14 edge-case suites
 ./build/eshkol-run -r tests/v1_2_edge_cases/testing_framework_test.esk
 ./build/eshkol-run -r tests/v1_2_edge_cases/time_api_test.esk
 ./build/eshkol-run -r tests/v1_2_edge_cases/binary_io_test.esk
@@ -244,7 +271,7 @@ faculty actually needs them; otherwise defer.
 - **ROCm / HIP**, **OneAPI / SYCL** — AMD / Intel GPU paths; post-M4.
 - ****#134**** compile-to-binary `eval` linker — workaround
   (use `-r` JIT mode) exists; defer.
-- ****#141**** match subject apostrophe-quote hang — use
+- ****#141**** match subject apostrophe-quote stall — use
   `(quote foo)` form; minor parser edge case.
 
 ---
@@ -258,7 +285,7 @@ faculty actually needs them; otherwise defer.
    needs an item out of order (e.g. Sigma wants #154 GELU before M1 HTTP
    server is touched), take the detour.
 3. **Tests live with tasks**. Every task in this trajectory must ship a
-   regression test under `tests/v1_2_edge_cases/` (or a tier-appropriate
+   test under `tests/v1_2_edge_cases/` (or a tier-appropriate
    sibling directory) before marking it done.
 4. **Keep this doc as the source of truth** — the task tracker expands and
    contracts, but this ordering is stable.

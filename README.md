@@ -698,8 +698,8 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient` (or `eshkol-run -r 
 - **JSON Schema validation**: Draft 7 subset for experiment-manifest / preregistration enforcement (`json-schema-valid?`, `json-schema-validate`)
 - **R7RS-compliant scoping**: User redefines of stdlib functions cleanly shadow the stdlib version (LinkOnceODR linkage; variadic-info hygiene)
 - **WASM library mode**: `--wasm` produces self-contained module without falling through to native link
-- **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
-- **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
+- **Hardening**: subprocess shell-injection hardening, Python FFI AST-injection hardening, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
+- **87-test edge/security suite**: durable coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every hardening change in this release
 
 ### v1.4.0-connection Release (Release Candidate — November 2026)
 
@@ -728,9 +728,16 @@ runtime foundations.**
   theory, Lie and algebraic groups, integrable systems, representation theory,
   K-theory), Probability Sheaves (`arXiv:2611.30692`), signed-curvature
   stereographic geometry (`core.geom`, ADR-0018), Stochastic Binary Lambda
-  Calculus (`core.sblc`, ADR-0017), content-addressed certified transcripts
-  (`core.transcript`), independent Lean proof replay (ADR-0061, ADR-0063) with
-  395 machine-checked Lean 4.12.0 theorems, and 86 runnable verified examples.
+  Calculus (`core.sblc`, ADR-0017) with differentiable search proposals
+  (`core.sblc.relax`, ADR-0017 item 5: an exact finite-logit oracle on
+  enumerated domains, Rao-Blackwellized REINFORCE with exact rational inner
+  coins and variance-reduction confidence diagnostics, and strict-projected
+  Gumbel-Softmax/Concrete grammar proposals — every relaxed candidate is
+  projected to a strict closed program and re-verified exactly),
+  content-addressed certified transcripts (`core.transcript`), independent
+  Lean proof replay (ADR-0061, ADR-0063) with 395 machine-checked Lean 4.12.0
+  theorems across 12 standalone proof files (287 for the mathematics programme
+  and 108 in `EshkolSBLCRelaxation.lean`), and 86 runnable verified examples.
 - **Accelerator & distributed foundations (W6)**:
   PJRT CPU plugin execution path and socket-backed collective communication
   primitives laying the foundation for v1.4.5-accelerate.
@@ -811,8 +818,8 @@ limits of what it establishes. **46.**
   entry keeps its own identity across internal renaming.
 - **Flat RSS, for the confirmed loop shapes.** AOT per-iteration memory is
   bounded for named-let exit, a discarded numeric tensor, and a direct literal
-  `tensor-dot`; the original million-iteration report is kept as a regression
-  fixture. This does not claim flat RSS for every loop on every platform.
+  `tensor-dot`; the original million-iteration report is kept as a permanent
+  guard fixture. This does not claim flat RSS for every loop on every platform.
 - **One REPL input path.** Pipes and `--machine` mode are prompt-free whether
   or not readline is present; interactive sessions keep their prompts. Release
   builds require a native image I/O backend.
@@ -1001,7 +1008,7 @@ multi-pillar adversarial-testing infrastructure.
   literals, `cond`/`case` `=>` clauses, allocating `vector-copy` (including
   on `#(...)` literals), the `error-object?`/`error-object-message`/
   `error-object-irritants` family, R7RS `write` escaping, nested ellipsis in
-  `syntax-rules`, and 2-argument `substring` are all fixed.
+  `syntax-rules`, and 2-argument `substring` all match the reference behavior.
 - **Full SICP support**: an 88-probe full-book gate (`tests/sicp/`,
   `scripts/run_sicp_smoke.sh`) covering chapters 1-5 — including the metacircular,
   analyzing, lazy, and `amb` nondeterministic evaluators, the query system, and
@@ -1009,9 +1016,9 @@ multi-pillar adversarial-testing infrastructure.
 - **Robustness**: mutual tail calls are proper O(1)-stack R7RS tail calls on
   AArch64; named-let TCO covers every tail position including through
   `guard`; the closure-capture ceiling is raised 16 → 64; a class of
-  unbounded RSS growth in long-running loops is fixed, on the native engine,
-  with automatic per-iteration arena reclamation; a shutdown-teardown race and a deep-
-  recursion `SIGILL`-with-no-diagnostic bug are both fixed; `eshkol-run -r`/AOT
+  unbounded RSS growth in long-running loops is eliminated, on the native engine,
+  by automatic per-iteration arena reclamation; a shutdown-teardown race and a deep-
+  recursion `SIGILL`-with-no-diagnostic failure mode are both resolved; `eshkol-run -r`/AOT
   caching now invalidates correctly on transitive `(load ...)`/`(require ...)`
   dependency changes.
 - **Build**: `--emit-depfile` plus a canonical `cmake/EshkolCompile.cmake` for
@@ -1209,8 +1216,9 @@ its headline view.
   every handle; agent runtime SSE, subprocess, and WAL persistence
 - WebGPU dispatch for the WASM target; exact-rational tensors (`'exact`);
   the nested-differentiation recursive Taylor carrier and ring carriers;
-  `core.sheaf`, `core.topos`, `core.cat.*`, `core.geom`, `core.sblc`, and
-  `core.transcript`; PJRT CPU spike and socket collectives
+  `core.sheaf`, `core.topos`, `core.cat.*`, `core.geom`, `core.sblc` with
+  differentiable `core.sblc.relax` proposals, and `core.transcript`; PJRT CPU
+  spike and socket collectives
 
 ### v1.4.1 (ABI) and v1.4.5-accelerate (device runtime) — Planned
 - OALR ABI v2 and the remaining object-ABI migration stages; the embedding SDK

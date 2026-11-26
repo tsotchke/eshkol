@@ -519,7 +519,7 @@ uint8_t subtype = header-&gt;subtype;</code></pre>
 </tr>
 </tbody>
 </table>
-<p><strong>Header overhead:</strong> Fixed 8 bytes per object, amortized over object size.</p>
+<p><strong>Header overhead:</strong> Constant 8 bytes per object, amortized over object size.</p>
 <hr />
 <h2 id="best-practices">Best Practices</h2>
 <h3 id="1-prefer-arena-allocation">1. Prefer Arena Allocation</h3>
@@ -568,10 +568,10 @@ uint8_t subtype = header-&gt;subtype;</code></pre>
 <li><strong>Lifetime tracking</strong> - Shared references automatically freed</li>
 <li><strong>No dangling pointers</strong> - Weak references become <code>nothing</code> when freed</li>
 </ol>
-<p><strong>These guarantees eliminate entire classes of memory bugs at compile time.</strong></p>
+<p><strong>These guarantees eliminate entire classes of memory errors at compile time.</strong></p>
 <hr />
 <h2 id="v11-memory-patterns">v1.1 Memory Patterns</h2>
-<p>This section documents the memory allocation and lifecycle patterns introduced in Eshkol v1.1, covering the consciousness engine (logic, inference, workspace), parallel execution, and GPU buffer management. All descriptions are grounded in the source code as it exists on the <code>refactor/optimisation</code> branch.</p>
+<p>This section documents the memory allocation and lifecycle patterns introduced in Eshkol v1.1, covering the consciousness engine (logic, inference, workspace), parallel execution, and GPU buffer management. All descriptions are grounded in the source code; line numbers were captured when the patterns landed and the architecture is unchanged through v1.4.0-connection.</p>
 <h3 id="1-consciousness-engine-allocation">1. Consciousness Engine Allocation</h3>
 <p>All consciousness engine objects use the same <code>arena_allocate_with_header</code> primitive as bignums and rationals. Every heap-allocated object carries an 8-byte <code>eshkol_object_header_t</code> prepended before the data pointer:</p>
 <pre><code>Memory layout:  [header: 8 bytes][object data: variable]
@@ -666,7 +666,7 @@ Memory: arena_allocate_aligned(arena, cpt_size * sizeof(double), 8)</code></pre>
 <h4 id="workspace-module-storage">Workspace Module Storage</h4>
 <p><code>eshkol_make_workspace</code> allocates the workspace struct and its inline module array as a single contiguous allocation:</p>
 <pre><code>data_size = sizeof(eshkol_workspace_t) + max_modules * sizeof(eshkol_workspace_module_t)</code></pre>
-<p>This is a fixed-capacity design: the maximum number of modules is set at creation time. The <code>content</code> buffer (a <code>double</code> array of dimension <code>dim</code>) is allocated separately via <code>arena_allocate_aligned</code>.</p>
+<p>This is a bounded-capacity design: the maximum number of modules is set at creation time. The <code>content</code> buffer (a <code>double</code> array of dimension <code>dim</code>) is allocated separately via <code>arena_allocate_aligned</code>.</p>
 <p>Module registration (<code>ws-register!</code>) copies the module name into the arena via <code>arena_allocate_aligned(arena, name_len + 1, 1)</code> and stores the process function as a tagged value (a closure). The module struct is filled in-place within the pre-allocated array.</p>
 <p>The <code>ws-step!</code> finalization (<code>eshkol_ws_step_finalize</code>) uses stack-allocated arrays (max 16 modules) for salience scores and proposal pointers – no arena allocation occurs during the step computation itself. The winning module’s proposal tensor content is copied into the workspace’s pre-allocated <code>content</code> buffer via element-wise conversion from int64 bit patterns to doubles.</p>
 <h3 id="2-parallel-arena-isolation">2. Parallel Arena Isolation</h3>
@@ -832,10 +832,10 @@ Check g_buffer_pool[bucket] for available buffer
 <pre class="c"><code>typedef void (*eshkol_thunk_caller_t)(const eshkol_tagged_value_t* thunk,
                                       eshkol_tagged_value_t* result);</code></pre>
 <p><code>call_wind_thunk</code> passes the thunk by address and receives its value through an out-pointer. The generated caller (<code>__eshkol_call_thunk</code>) performs an ordinary closure call, so the aggregate return, the passing of capture-slot addresses, rest parameters and the arity check are all handled by generated code — the same protocol as any other procedure call. See also <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">CONTINUATIONS.md</a> for the call/cc and dynamic-wind implementation built on it.</p>
-<h3 id="windows-x64-struct-by-value-parameter-fix-region_escape_tagged_value_into">Windows x64 Struct-by-Value Parameter Fix (<code>region_escape_tagged_value_into</code>)</h3>
+<h3 id="windows-x64-struct-by-value-parameter-convention-region_escape_tagged_value_into">Windows x64 Struct-by-Value Parameter Convention (<code>region_escape_tagged_value_into</code>)</h3>
 <p><strong>File:</strong> <code>lib/core/runtime_regions_evacuation.cpp</code></p>
 <p>The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. <code>region_escape_tagged_value_into</code> previously took <code>eshkol_tagged_value_t val</code> by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.</p>
-<p>The fix changes the signature:</p>
+<p>The current signature takes the value by pointer:</p>
 <pre class="c"><code>// Before:
 extern &quot;C&quot; void region_escape_tagged_value_into(
     eshkol_tagged_value_t* out,
@@ -870,7 +870,7 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
 <p>Total: 8 bytes, statically asserted. The header is prepended to every heap-allocated object; the data pointer returned by <code>arena_allocate_with_header</code> points to the byte immediately after the header. <code>ESHKOL_GET_HEADER(data_ptr)</code> in §446 is the macro that walks backwards by <code>sizeof(eshkol_object_header_t)</code> to recover the header pointer.</p>
 <p>The 4-byte <code>size</code> field caps the maximum single-object data size at <code>UINT32_MAX</code> = 4 GiB − 1 (see “Allocation Hardening” below). The <code>ref_count</code> is <code>uint16_t</code>, so 65 535 shared references is the upper bound before saturation. The <code>flags</code> byte is a bitfield of <code>ESHKOL_OBJ_FLAG_*</code> constants (§315–319): MARKED, LINEAR, BORROWED, CONSUMED, SHARED, WEAK, PINNED, EXTERNAL.</p>
 <h3 id="arena-block-size-1024-byte-floor-8192-byte-default">Arena Block Size: 1024-Byte Floor, 8192-Byte Default</h3>
-<p><code>arena_create</code> (<code>lib/core/runtime_arena_core.cpp</code> §113–145) enforces a minimum block size of 1024 bytes. The common case is <code>arena_create(8192)</code> from <code>Arena</code> (the C++ wrapper, §2417). The REPL shared arena passes 8192 as well. Per-thread worker arenas pass 1 MB. The global arena and per-thread arenas are <em>not</em> a fixed size — the field is <code>default_block_size</code>, applied when a <em>new</em> block needs to be allocated. The initial block is created at arena creation time.</p>
+<p><code>arena_create</code> (<code>lib/core/runtime_arena_core.cpp</code> §113–145) enforces a minimum block size of 1024 bytes. The common case is <code>arena_create(8192)</code> from <code>Arena</code> (the C++ wrapper, §2417). The REPL shared arena passes 8192 as well. Per-thread worker arenas pass 1 MB. The global arena and per-thread arenas are <em>not</em> a constant size — the field is <code>default_block_size</code>, applied when a <em>new</em> block needs to be allocated. The initial block is created at arena creation time.</p>
 <p>When the current block cannot satisfy an allocation, <code>arena_allocate_aligned</code> (§290–339) allocates a new block sized <code>max(aligned_size, arena-&gt;default_block_size)</code> and links it at the head of the singly-linked block chain. Old blocks remain reachable for the arena’s lifetime (until <code>arena_reset</code> or <code>arena_destroy</code>).</p>
 <h3 id="allocation-hardening-size_max-and-uint32_max-guards">Allocation Hardening: SIZE_MAX and UINT32_MAX Guards</h3>
 <p><code>arena_allocate_with_header</code> (<code>lib/core/runtime_object_alloc.cpp</code> §20–62) guards against two integer-overflow classes flagged in docs/HARDENING.md §192:</p>
@@ -993,8 +993,8 @@ void arena_pop_scope(arena_t* arena);</code></pre>
     free(scope);
 }</code></pre>
 <p><strong>LIFO discipline is the invariant.</strong> Cross-scope release corrupts memory; the function logs an error and skips the pop rather than kill the process. There is no magic sentinel on the scope object itself, but the matching wrapper type for AD tapes (<code>AdTapeOwned</code>) carries one — <code>magic = 0x5045544f444151</code> (“ADOWNER” in ASCII) — so the release path can verify it is operating on an owned tape rather than an arena-borrowed one. <code>ad_tape_release</code> on a non-owned tape silently no-ops.</p>
-<p><strong>The Bug I scenario.</strong> A theorem-proving downstream (Noesis Sigma) was allocating one AD tape per Adam-optimizer iteration, ~75 000 tapes per discover run, none freed. The main arena grew until <code>malloc</code> returned NULL; subsequent AD ops dereffed a NULL tape and crashed. The fix (commit <code>fb86bf1</code>, 2026-04-20) wraps each owned tape in <code>arena_push_scope</code> at creation and <code>arena_pop_scope</code> at explicit release, on the main arena. No separate arena per tape; just checkpoint/restore on the existing one. This is a textbook use of the scope API — many short-lived allocations followed by bulk release in LIFO order.</p>
-<p><strong>Diagnostic poisoning</strong>. When <code>ESHKOL_ARENA_POISON=1</code>, the pop routine (§732–771) fills the released region with <code>0xCB</code> bytes before freeing the blocks. Any later dereference of a stale pointer crashes with an address containing <code>0xCB</code> in obvious positions, turning a silent SEGV at a mangled-looking address into an immediately-recognizable arena UAF. The byte was picked to be distinct from libc’s MallocPreScribble (0xAA), MallocScribble (0x55), and glibc’s <code>perturb_free</code> (0x42).</p>
+<p><strong>The tape-accumulation scenario.</strong> A theorem-proving downstream (Noesis Sigma) was allocating one AD tape per Adam-optimizer iteration, ~75 000 tapes per discover run, none freed. The main arena grew until <code>malloc</code> returned NULL; subsequent AD ops dereffed a NULL tape and aborted. The remedy (commit <code>fb86bf1</code>, 2026-04-20) wraps each owned tape in <code>arena_push_scope</code> at creation and <code>arena_pop_scope</code> at explicit release, on the main arena. No separate arena per tape; just checkpoint/restore on the existing one. This is a textbook use of the scope API — many short-lived allocations followed by bulk release in LIFO order.</p>
+<p><strong>Diagnostic poisoning</strong>. When <code>ESHKOL_ARENA_POISON=1</code>, the pop routine (§732–771) fills the released region with <code>0xCB</code> bytes before freeing the blocks. Any later dereference of a stale pointer traps with an address containing <code>0xCB</code> in obvious positions, turning a silent SEGV at a mangled-looking address into an immediately-recognizable arena UAF. The byte was picked to be distinct from libc’s MallocPreScribble (0xAA), MallocScribble (0x55), and glibc’s <code>perturb_free</code> (0x42).</p>
 <h3 id="512-mb-stack-for-deep-recursion">512 MB Stack for Deep Recursion</h3>
 <p>Two coordinated changes set the process stack to 512 MB:</p>
 <p><strong>Link-time, macOS</strong> (<code>CMakeLists.txt</code> §1358–1359):</p>

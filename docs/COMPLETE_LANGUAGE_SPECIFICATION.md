@@ -2,6 +2,11 @@
 
 **Status:** Comprehensive implementation documentation from source code
 
+**Specified release:** `v1.4.0-connection` (2026-11-25), RELEASE CANDIDATE. The
+canonical surface is 1,651 declared constructs with 1,069 built-in functions and
+122 special forms; see [FEATURE_MATRIX.md](FEATURE_MATRIX.md) for the
+per-feature matrix.
+
 ---
 
 ## Table of Contents
@@ -33,6 +38,7 @@
 25. [Implementation Details](#25-implementation-details)
 26. [File Organization](#26-file-organization)
 27. [Bytecode VM and ESKB Format](#27-bytecode-vm-and-eskb-format)
+28. [Connection and Systems Interfaces](#28-connection-and-systems-interfaces)
 
 ---
 
@@ -2966,7 +2972,7 @@ dimension. `sparse-mixed-partials` is order->=3 only.
 ```scheme
 (require core.ad.taylor_numerics)
 (taylor-eval coefficients dt)                    ; Horner-evaluate a taylor coefficient list at offset dt
-(taylor-ode-solve function y0 t0 t1 k n)         ; order-k, n-step fixed-step scalar IVP solver
+(taylor-ode-solve function y0 t0 t1 k n)         ; order-k, n-step constant-step scalar IVP solver
 (taylor-root function x0 k)                      ; Householder root refinement (k=1 Newton, k=2 Halley)
 (taylor-inverse-series function x0 k)            ; Taylor series of f^-1 via Lagrange inversion
 ```
@@ -3255,7 +3261,7 @@ Variables captured from enclosing scopes:
 ```
 
 #### 12.1.2 Variadic Functions
-**Fixed + Rest Parameters:**
+**Required + Rest Parameters:**
 ```scheme
 (define (f x y . rest)
   (cons x (cons y rest)))
@@ -3272,7 +3278,7 @@ Variables captured from enclosing scopes:
 ```c
 num_captures field encodes:
 - Bits 0-15:  actual capture count
-- Bits 16-31: fixed parameter count
+- Bits 16-31: required parameter count
 - Bit 63:     is_variadic flag
 ```
 
@@ -3507,7 +3513,7 @@ struct eshkol_display_opts {
 
 ## 14. Exact Arithmetic Specification
 
-Eshkol implements the R7RS numeric tower (R7RS 6.2) with exact arithmetic support extending beyond the fixed-width `INT64` representation. This section specifies the representation, promotion rules, and semantic invariants for exact arithmetic.
+Eshkol implements the R7RS numeric tower (R7RS 6.2) with exact arithmetic support extending beyond the machine-width `INT64` representation. This section specifies the representation, promotion rules, and semantic invariants for exact arithmetic.
 
 ### 14.1 Bignum Representation
 
@@ -3655,7 +3661,7 @@ The VM (`lib/backend/vm_native.c`, native id 32) implements the identical contra
 
 #### 14.4.3 Exact `sqrt` (SW-167)
 
-R7RS 6.2.6 requires `(sqrt z)` to be exact when `z` is an exact nonnegative number and the exact square root of `z` is exact — extended in Eshkol to rationals: exact when both the numerator and the denominator are perfect squares. `(sqrt 16)` is the exact `4`; `(sqrt 1/4)` is the exact `1/2`; `(sqrt 4/9)` is the exact `2/3`; `(sqrt 15)` and `(sqrt 1/2)` stay inexact because no exact root exists. The implementation (`eshkol_exact_sqrt_tagged`, `lib/core/rational.cpp`) is the `n=2` case of the same `eshkol_bignum_iroot` root-finder 14.4.2 describes, applied independently to numerator and denominator. This composes with the pre-existing negative-exact-promotes-to-complex rule (§15, `(sqrt -4)` is `0.0+2.0i`): a negative exact operand is intercepted and promoted to a — necessarily inexact, since Eshkol's complex type has no exact form — complex value before the exact-root path is ever reached, so `(sqrt -4)` is unaffected by this section. The VM (`lib/backend/vm_native.c`, native id 25, `vm_exact_sqrt`) implements the identical contract, and shares `log`'s (native id 24) real-domain fallback, which this fix also corrected to read a rational/bignum operand through the heap-aware `as_number_vm` rather than the heap-blind `as_number` (a pre-existing, silently-wrong `(sqrt 1/2)` => `0` found while adding VM coverage for this section).
+R7RS 6.2.6 requires `(sqrt z)` to be exact when `z` is an exact nonnegative number and the exact square root of `z` is exact — extended in Eshkol to rationals: exact when both the numerator and the denominator are perfect squares. `(sqrt 16)` is the exact `4`; `(sqrt 1/4)` is the exact `1/2`; `(sqrt 4/9)` is the exact `2/3`; `(sqrt 15)` and `(sqrt 1/2)` stay inexact because no exact root exists. The implementation (`eshkol_exact_sqrt_tagged`, `lib/core/rational.cpp`) is the `n=2` case of the same `eshkol_bignum_iroot` root-finder 14.4.2 describes, applied independently to numerator and denominator. This composes with the pre-existing negative-exact-promotes-to-complex rule (§15, `(sqrt -4)` is `0.0+2.0i`): a negative exact operand is intercepted and promoted to a — necessarily inexact, since Eshkol's complex type has no exact form — complex value before the exact-root path is ever reached, so `(sqrt -4)` is unaffected by this section. The VM (`lib/backend/vm_native.c`, native id 25, `vm_exact_sqrt`) implements the identical contract, and shares `log`'s (native id 24) real-domain fallback, which this change also corrected to read a rational/bignum operand through the heap-aware `as_number_vm` rather than the heap-blind `as_number` (a pre-existing, silently-wrong `(sqrt 1/2)` => `0` found while adding VM coverage for this section).
 
 #### 14.4.4 Edge Cases
 
@@ -4645,7 +4651,14 @@ kinds of model at run time. See
 ## 23. Complete Language Capabilities Summary
 
 ### Total Language Elements:
-- **Special Forms:** 39
+
+The canonical, machine-derived totals are 1,651 declared constructs, 1,069
+built-in functions, 122 special forms and 114 parser AST operations, read from
+`tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`.
+The breakdown below counts the documented groups in this specification and
+overlaps between them, so the group figures do not sum to the canonical total.
+
+- **Special Forms (documented here):** 39
 - **Built-in Operators:** 15 (arithmetic/logical)
 - **Math Functions:** 20
 - **List Functions:** 60+
@@ -4664,7 +4677,7 @@ kinds of model at run time. See
 - **Memory Management:** 6
 - **REPL Commands:** 14
 
-### **GRAND TOTAL: 300+ Language Features**
+### **Canonical total: 1,651 declared constructs**
 
 ---
 
@@ -4740,7 +4753,7 @@ eshkol_tagged_value_t func(args..., captures...)
 ```
 
 **Variadic Functions:**
-- Fixed parameters first
+- Required parameters first
 - Rest parameter as tagged cons list
 
 ### 25.3 Exception Handling Mechanism
@@ -4855,15 +4868,122 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ---
 
+## 28. Connection and Systems Interfaces
+
+Added in v1.4.0-connection. Every connection in this section is a tracked
+handle: it carries its own identity, it reports its own errors as a typed
+condition, and under `--strict-resources` (ADR-0056) the compiler requires it
+to be used exactly once — an unclosed or twice-closed handle is a compile-time
+error rather than a runtime surprise.
+
+### 28.1 Sockets (`core.net`)
+
+`(tcp-listen host port)` and `(tcp-connect host port)` return socket handles.
+`(tcp-accept listener)` yields a connection handle. Transfer is
+`(tcp-read sock n)` / `(tcp-write sock data)`, with the buffer-filling variants
+`tcp-read!`, `tcp-write!` and `tcp-write-all!` for caller-owned bytevectors,
+and `(tcp-shutdown sock how)` / `(tcp-close sock)` to end it. Datagrams use
+`udp-bind`, `udp-sendto`, `udp-recvfrom`, `udp-send-to!`, `udp-receive-from!`
+and `udp-close`. `unix-socket-connect` opens a Unix domain socket for local
+IPC on the same handle model.
+
+Introspection is `net-local-address`, `net-peer-address`, `net-local-port`,
+`net-peer-port`; `(net-nonblocking! sock flag)` selects blocking mode and
+`(net-cancel! sock)` cancels an in-flight operation. A failure raises a
+condition satisfying `network-error?`, carrying `network-error-code`,
+`network-error-operation` and `network-error-reason` — never a bare integer
+errno at the language surface.
+
+Scoped forms (`call-with-tcp-listener`, `call-with-tcp-connection`,
+`call-with-tcp-accept`, `call-with-udp-socket`) close the handle on normal
+return and on a raise, which is what makes a socket safe inside `guard`.
+
+### 28.2 TLS (`core.tls`)
+
+`(tls-available?)` reports whether the build carries TLS at all, so a program
+can refuse rather than silently fall back to plaintext. Contexts come from
+`tls-client-context`, `tls-client-context/options` and `tls-server-context`
+and are released with `tls-context-close`. Sessions are `tls-connect`,
+`tls-listen`, `tls-accept`, `tls-read`, `tls-write`, `tls-write-all!`,
+`tls-session-close` and `tls-listener-close`, with `tls-cancel!` for
+cancellation and `tls-error?` as the condition predicate. The scoped forms are
+`call-with-tls-client`, `call-with-tls-server`, `call-with-tls-connection` and
+`call-with-tls-accept`.
+
+### 28.3 HTTP/1.1
+
+The client is `(http-request …)`, with `http-set-proxy` and
+`http-set-tls-client-cert` for proxy and client-certificate configuration. The
+server is `http-server-create`, `http-server-accept`, `http-server-respond`,
+`http-server-port` and `http-server-close`: non-blocking, built on the
+portable event loop, with O(1) readiness scaling rather than a per-connection
+scan.
+
+`core.http_server` is the pure-Scheme layer over it. A response is the
+three-element list `(status content-type body)`; a route is
+`(method path handler)` where `handler` maps a request to a response.
+Request accessors (`http-request-method`, `http-request-target`,
+`http-request-path`, `http-request-query`, `http-request-version`,
+`http-request-header`, `http-request-content-length`, `http-request-body`)
+take the raw request string, tolerate both `\r\n` and `\n` line endings, and
+degrade to `""` or `#f` on malformed input. Bodies are bounded by
+`http-max-request-body-size` and `http-request-body-too-large?`. `/health`,
+`/ready` and `/metrics` have built-in fallbacks.
+
+### 28.4 WebSocket and Server-Sent Events
+
+WebSocket is `websocket-connect`, `websocket-send`, `websocket-send-binary`,
+`websocket-receive` and `websocket-close`, with RFC-validated framing over
+text and binary payloads.
+
+Server-Sent Events are bounded by construction: `call-with-http-sse-stream`
+brackets a stream, `sse-admit!` takes an admission ticket, `sse-send!` and
+`sse-progress!` emit events, and `sse-finish!` or `sse-cancel!` ends the
+stream. `sse-deadline-ms` is the stream's own deadline, so an abandoned client
+cannot hold the stream open indefinitely; cleanup is explicit
+(`sse-cleanup-ticket`), never implicit.
+
+### 28.5 Durable persistence
+
+`core.memory_store` writes through a write-ahead log, and the atomic
+checkpoint layer brackets a durable write as begin / write / commit / abort:
+a commit either lands whole or leaves the previous state intact, and an
+aborted checkpoint leaves no partial file behind. `core.merkle` verifies
+content-addressed records over the same store.
+
+### 28.6 Collectives and processes
+
+The native collective layer provides broadcast, all-reduce, all-gather,
+reduce-scatter and barrier over sockets, with rank-ordered reduction: the same
+ranks and the same inputs produce the same bits on every run, which is what
+makes a distributed result reproducible rather than merely close.
+
+Subprocesses run confined — Darwin Seatbelt, Linux seccomp with Landlock — and
+a platform with no confinement mechanism available refuses to launch rather
+than running unconfined.
+
+Shared-library tail transfer makes a tail call that crosses a `--shared-lib`
+boundary transfer control instead of growing the stack, so a mutually
+recursive pair split across libraries still runs in constant stack space.
+
+### 28.7 Exact tensors across boundaries
+
+Tensors of dtype `exact` (ADR-0058) carry exact rational elements end to end,
+including across the NumPy binding, so no boundary silently demotes an exact
+value to binary64. The browser lane dispatches VM compute work to WebGPU
+(ADR-0029).
+
+---
+
 ## Conclusion
 
 This document provides a **complete** specification of the Eshkol programming language, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
-- All 116 special forms and 113 parser AST operations
-- All 1,069 built-in functions (1,470 declared constructs in total)
-- 790 registered VM builtin names and aliases (the manifest's `builtins_in_vm_table` count)
-- 72-opcode bytecode VM with ESKB binary format
+- All 122 special forms and 114 parser AST operations
+- All 1,069 built-in functions, on a declared language surface of 1,651 constructs
+- 800 registered VM builtin names and aliases (the manifest's `builtins_in_vm_table` count)
+- 73-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)
 - Full memory management system (OALR arenas)
 - Entire standard library (40 modules)
@@ -4883,3 +5003,27 @@ This document provides a **complete** specification of the Eshkol programming la
 - Parallel execution model (thread pool, futures, memory safety)
 - GPU dispatch (Metal SF64, CUDA, cost model)
 - Signal processing (FFT, windows, filters, convolution)
+- Connection and systems surface (v1.4.0-connection): TCP/UDP and Unix domain
+  sockets, TLS client and server sessions, HTTP/1.1 client and server,
+  WebSocket, Server-Sent Events, write-ahead logging with atomic checkpoint
+  commit, deterministic socket collectives, subprocess sandboxing,
+  shared-library tail transfer, WebGPU browser VM dispatch, and exact-rational
+  tensors
+- Linear resource accounting under `--strict-resources` (ADR-0056): sockets,
+  TLS sessions, files and regions are use-exactly-once, with a scoped borrow
+  form for temporary access
+- Mathematics programme libraries (v1.4.0-connection): sites, sheaves and Cech
+  cohomology; a presheaf topos with its internal language; rings as values;
+  finite category theory; simplicial and homological algebra; measure theory
+  and probability sheaves; operator algebras; integrable systems; geometry,
+  discrete exterior calculus and gauge theory; exact linear algebra and
+  Gröbner bases
+- Stochastic Binary Lambda Calculus (ADR-0017): exact rational distribution
+  semantics, bounded closed enumeration, resumable checkpoints, DBSP Z-set
+  incremental updates, VM PRNG parity, and the `core.sblc.relax` differentiable
+  proposal layer whose relaxed candidates are projected back to strict closed
+  terms and re-verified
+- Formal verification: 395 top-level machine-checked theorems across 12
+  standalone proof files, with 0 `sorry` and 0 custom axioms, checked in
+  Lean 4.12.0 in CI, plus independent Verificatum proof replay (ADR-0061,
+  ADR-0063) and 86 verified example programs

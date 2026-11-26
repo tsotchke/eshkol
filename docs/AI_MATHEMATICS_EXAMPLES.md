@@ -1,12 +1,18 @@
 # AI-driven mathematics examples
 
-Status: SHIPPED. At release SHA `60f345def` all four programs print
-`RESULT: ALL PASS` with `Failed: 0` in native JIT, native AOT and the hosted
-bytecode VM (macOS arm64, Release build; the per-program outcomes and timings are
-in [the mathematics catalogue](MATHEMATICS_EXAMPLES.md) and
-`docs/examples/measurements.json`). The family was first verified on the Linux
+Status: shipping in v1.4.0-connection. The measurement snapshot quoted here is
+the historical one taken at release SHA `60f345def` (the v1.3.6-evolve cut,
+measured 2026-10-09): all four programs print `RESULT: ALL PASS` with
+`Failed: 0` in native JIT, native AOT and the hosted bytecode VM (macOS arm64,
+Release build; the per-program outcomes and timings are in
+[the mathematics catalogue](MATHEMATICS_EXAMPLES.md) and
+`docs/examples/measurements.json`). This family sits inside the
+v1.4.0-connection mathematics programme, whose example set is 86 verified
+programs in total (82 that build with the default configuration and 4 that
+require `ESHKOL_QUANTUM_ENABLED=ON`; see
+[the example catalogue](EXAMPLES.md) for the run scope). The family was first verified on the Linux
 x86-64 lite lane with native AOT, native JIT, and the hosted bytecode VM; that
-earlier lane was not re-measured for this release.
+earlier lane was not re-measured for the snapshot above.
 
 These examples reproduce public finite or algebraic witnesses. They do not
 claim to rediscover the results: each program checks the supplied witness with

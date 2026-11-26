@@ -182,6 +182,15 @@ descriptor, or another unavailable host capability must have an explicit
 The row emits an `EXCLUDED` trace event; it is not a blanket corpus skip.
 Stdlib-only fixtures remain in the supported corpus and must match desktop.
 
+## VM Parity Manifest
+
+Native-vs-VM coverage is tracked construct by construct in the VM parity
+manifest. As of v1.4.0-connection the manifest has 997 rows: 630 constructs
+are vm-supported, 45 are native-only-justified (each with an explicit
+justification), and 322 are recorded gaps. The manifest is the honest
+boundary: the VM does not claim complete backend parity, and a construct
+outside the supported set fails loudly rather than silently diverging.
+
 ## ESKB Binary Format
 
 Programs compile to ESKB (Eshkol Bytecode) binary format:

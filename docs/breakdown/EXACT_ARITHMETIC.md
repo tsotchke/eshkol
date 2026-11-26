@@ -1,7 +1,10 @@
 # Exact Arithmetic in Eshkol — Bignum, Rational, Complex, Double and Dual
 
 This document is the canonical reference for the numeric tower implemented in
-Eshkol v1.2.1-scale. Its scope is the *exact* and *inexact* numeric types —
+Eshkol (current as of v1.4.0-connection; the tower's architecture has been
+stable since v1.2.1-scale, and v1.4.0-connection extends exactness into
+tensors with exact-rational tensor elements, ADR-0058). Its scope is the
+*exact* and *inexact* numeric types —
 `int64`, arbitrary-precision integers (bignums), exact rationals, IEEE 754
 doubles, dual numbers (forward-mode automatic differentiation) and complex
 numbers — together with the dispatch architecture that ties them into a single
@@ -9,9 +12,10 @@ polymorphic arithmetic surface compatible with R7RS §6.2 *Numbers*.
 
 The treatment is post-doctoral in register and faithful to the source. Every
 function name, dispatch order, layout constant and demotion rule cited below
-maps to a concrete line in the v1.2.1-scale source tree. Where the v1.2 release
-closed gaps that were latent in earlier branches, the gap and its fix are
-described with file-level citations.
+maps to a concrete line in the source tree (line numbers were captured on the
+v1.2.1-scale audit tree). Where the v1.2 release closed gaps that were latent
+in earlier branches, the gap and its closure are described with file-level
+citations.
 
 ---
 
@@ -113,7 +117,7 @@ which align an `int64_t` on an 8-byte boundary):
 When the LLVM codegen wants to read the data union it uses
 `CreateExtractValue(tagged, {4})` — index 4, not 3, because the LLVM struct
 layout is `{i8, i8, i16, i32, i64}`. The padding word at index 3 was the source
-of a long-standing class of off-by-one bugs in v1.1 (`MEMORY.md`: "Tagged value
+of a long-standing class of off-by-one errors in v1.1 (`MEMORY.md`: "Tagged value
 data field index").
 
 ### 2.1 What `data` holds per type
@@ -225,7 +229,7 @@ result.
 
 All bignums are arena-allocated and immutable. There are no in-place mutations;
 every arithmetic operation returns a freshly allocated bignum. This decision
-simplifies aliasing analysis, eliminates a class of double-free bugs that
+simplifies aliasing analysis, eliminates a class of double-free hazards that
 plagued earlier sign-magnitude libraries, and is consistent with the functional
 semantics of Scheme numerics.
 
@@ -982,7 +986,7 @@ tree has six leaves:
 6. **Tagged value, type = `HEAP_PTR`, subtype = `BIGNUM`** — call
    `eshkol_bignum_to_double` (lines 1701–1717).
 7. **Tagged value, type = `HEAP_PTR`, non-numeric subtype** — return 0.0
-   instead of crashing (lines 1719–1723). This is a defensive fallback that
+   instead of aborting (lines 1719–1723). This is a defensive fallback that
    shows up when a user passes a string to a numeric operation; the
    `compare` path raises a type error upstream, so this branch is reached
    only from places like `mathFunc` that have already validated their
@@ -1029,12 +1033,12 @@ if (left->type == ESHKOL_VALUE_DOUBLE || right->type == ESHKOL_VALUE_DOUBLE) {
 }
 ```
 
-This is the bug class documented in `MEMORY.md` as "bignum+double returns 0":
+This is the behaviour class documented in `MEMORY.md` as "bignum+double returns 0":
 before this dispatch was hoisted above the exact path, `tagged_to_bignum`
 returned NULL for type DOUBLE (because doubles don't have a HEAP_PTR field to
 unwrap), and the function fell through the `if (!a || !b)` guard and returned
-int64 zero. The fix places the double check first so the bignum path is never
-entered when an inexact operand is present.
+int64 zero. The current dispatch places the double check first so the bignum
+path is never entered when an inexact operand is present.
 
 ### 8.2 Rational + double → double
 
@@ -1060,11 +1064,11 @@ The same rule applies in `eshkol_rational_binary_tagged`
 
 * `(modulo (* (expt 2 64) 3) (expt 2 64))` — `expt` and `*` both stay in
   bignum. `modulo` reaches `codegenModulo` in `llvm_codegen.cpp`,
-  which (since the fix at commit 51ec814) checks `emitIsBignumCheck` first
+  which (since the correction at commit 51ec814) checks `emitIsBignumCheck` first
   and dispatches into `emitBignumBinaryCall(op=4)`. Without that check, the
   raw `SRem` would have been applied to the heap pointer bits, returning a
   small multiple of the pointer — the original symptom of the 35-gap audit's
-  modulo bug.
+  modulo entry.
 
 ### 8.4 Exactness flag propagation
 
@@ -1108,7 +1112,7 @@ branch (line 16356) and follow a three-way path:
 The PHI at line 16416 merges three incoming edges: exact-identity, rational,
 float.
 
-### 9.1 The PHI predecessor mismatch fix
+### 9.1 The PHI predecessor mismatch lesson
 
 A subtle correctness lesson is documented in `MEMORY.md` as the
 "floor/ceil/round/truncate PHI predecessor mismatch": when
@@ -1221,7 +1225,7 @@ The runtime (`bignum.cpp`) implements the multi-strategy parse:
 
 This cascade ensures that `(string->number "99999999999999999999999999999")`
 returns an exact bignum rather than losing precision through double
-conversion. The fix is documented in `MEMORY.md` as
+conversion. The behaviour is documented in `MEMORY.md` as
 "string->number missing bignum".
 
 ### 10.3 What's *not* yet supported
@@ -1253,7 +1257,7 @@ surface. The CHANGELOG entry at `CHANGELOG.md:723–726` records the closure:
 > and `bignum + double` → double per R7RS exact+inexact semantics.
 
 The gaps fell into four classes, each illustrated by representative source
-fixes:
+corrections:
 
 ### 11.1 Class A — dispatch fall-through (operand path skips bignum check)
 
@@ -1262,7 +1266,7 @@ whether either operand is a bignum HEAP_PTR. Because `unpackInt64` on a
 HEAP_PTR returns the pointer-as-int64 (not the numeric value), the fast path
 silently produces garbage.
 
-**Representative fixes:**
+**Representative corrections:**
 
 * **`codegenModulo`** (`llvm_codegen.cpp`). The safe path now
   checks `emitIsBignumCheck` before the `SRem` (line 16634). Without this,
@@ -1271,13 +1275,13 @@ silently produces garbage.
 
 * **`ArithmeticCodegen::compare`** (`arithmetic_codegen.cpp`). The
   bignum check (line 1856) and rational check (line 1871) precede the
-  double/int dispatch. Before the fix, rationals fell through to the int
+  double/int dispatch. Previously, rationals fell through to the int
   path, which compared their *pointer addresses* — non-deterministic ordering
   depending on arena allocation order.
 
 * **`ArithmeticCodegen::abs`** (`arithmetic_codegen.cpp`). The
   heap-pointer path (lines 1489–1529) handles bignums by `emitBignumCompareCall`
-  + `emitBignumBinaryCall(op=7=neg)`. Before the fix, `codegenAbs` always
+  + `emitBignumBinaryCall(op=7=neg)`. Previously, `codegenAbs` always
   routed through `extractAsDouble` and packed via `packDouble`, returning an
   inexact result for negative bignums.
 
@@ -1288,7 +1292,7 @@ The pattern: a primitive normalises both operands to double via
 $2^{53}$ this loses bits and can produce a *wrong* result, not merely an
 inexact one.
 
-**Representative fixes:**
+**Representative corrections:**
 
 * **`min` / `max`** (`arithmetic_codegen.cpp`). The bignum check
   dispatches to `emitBignumCompareCall` and selects between the *original*
@@ -1307,8 +1311,8 @@ inexact one.
 ### 11.3 Class C — exact-result-loss on integer exponents
 
 * **`expt`** (`arithmetic_codegen.cpp` + `bignum.cpp`).
-  Before the fix, `(expt 2 100)` always went through libm `pow`, returning a
-  double approximation. After the fix:
+  Previously, `(expt 2 100)` always went through libm `pow`, returning a
+  double approximation. Now:
   - codegen tests `base_is_exact && exp_is_int` (both signs of exponent,
     see below),
   - dispatches into `eshkol_bignum_pow_tagged`,
@@ -1334,7 +1338,7 @@ inexact one.
   overflow (`(expt 10 -30)` printed `1e-30` instead of the exact
   `1/1000000000000000000000000000000`).
 
-  The fix adds `eshkol_rational_pow_tagged` (`rational.cpp`): for a
+  SW-152 adds `eshkol_rational_pow_tagged` (`rational.cpp`): for a
   rational base and an exact integer exponent, it raises the numerator and
   denominator bignums independently (`eshkol_bignum_pow` on each), then
   builds the exact result via `eshkol_rational_from_bignums_tagged` —
@@ -1348,7 +1352,7 @@ inexact one.
   rational payload from a bignum payload on BOTH the base and the exponent,
   closing the same mis-extraction for a bignum-valued exponent overflowing
   `int64_t` (e.g. `(expt 2 (expt 10 20))`). The VM
-  (`lib/backend/vm_native.c`, native id 32) gained the mirror-image fix: a
+  (`lib/backend/vm_native.c`, native id 32) gained the mirror-image treatment: a
   `VAL_RATIONAL`-base branch and a negative-exponent int/bignum-base branch,
   both following the same numerator/denominator idiom already established
   in `vm_rational.c`, and its inexact fallback switched from the
@@ -1372,65 +1376,65 @@ inexact one.
 
 * **`numberToString`** (`string_io_codegen.cpp`). The runtime-type
   dispatch added explicit HEAP_PTR subtype check at lines 775–805 (rational
-  vs bignum). Before the fix, `(number->string (expt 2 100))` printed raw
+  vs bignum). Previously, `(number->string (expt 2 100))` printed raw
   pointer bits.
 
 * **`string->number`** (`bignum.cpp`). The cascade
   `strtoll` $\to$ `ERANGE` $\to$ bignum parse $\to$ `strtod` ensures that
   `(string->number "<long integer>")` produces exact bignum, not lossy
-  double. Before the fix, the function used `strtod` only.
+  double. Previously, the function used `strtod` only.
 
 ### 11.6 Class F — conversion-to-AD types missing bignum
 
 * **`convertToComplex`** (`arithmetic_codegen.cpp`). The HEAP_PTR
-  branch dispatches into `eshkol_bignum_to_double` (lines 400–408). Before
-  the fix, bignums were treated as int64 via `unpackInt64` + `SIToFP`, which
+  branch dispatches into `eshkol_bignum_to_double` (lines 400–408).
+  Previously, bignums were treated as int64 via `unpackInt64` + `SIToFP`, which
   applied `SIToFP` to the pointer bits — producing a meaningless double.
 
-* **`convertToDual`** (`arithmetic_codegen.cpp`). Same fix: the
+* **`convertToDual`** (`arithmetic_codegen.cpp`). Same treatment: the
   HEAP_PTR branch (lines 124–139) calls `eshkol_bignum_to_double`.
 
-### 11.7 Five concrete fixes with citations
+### 11.7 Five concrete closures with citations
 
-To make the audit's surface concrete, here are five representative fixes with
+To make the audit's surface concrete, here are five representative closures with
 exact source locations:
 
-1. **`codegenAbs` missing bignum path** — fixed by delegating to
+1. **`codegenAbs` missing bignum path** — closed by delegating to
    `ArithmeticCodegen::abs` at `llvm_codegen.cpp`, which handles bignum
    via `emitBignumCompareCall` / `emitBignumBinaryCall` at
    `arithmetic_codegen.cpp`.
 
-2. **`ArithmeticCodegen::compare` missing rational path** — fixed by adding
+2. **`ArithmeticCodegen::compare` missing rational path** — closed by adding
    `emitIsRationalCheck` at `arithmetic_codegen.cpp` and
    `emitRationalCompareCall` at lines 1875–1877. Without this, rationals
    fell through to integer comparison on raw pointer bits.
 
-3. **`min/max` precision loss for bignums > $2^{53}$** — fixed at
+3. **`min/max` precision loss for bignums > $2^{53}$** — closed at
    `arithmetic_codegen.cpp` (min) and 2095–2102 (max). The bignum
    check uses exact 128-bit comparison and selects between the original
    operands.
 
-4. **`bignum + double` returning 0** — fixed at `bignum.cpp`. The
+4. **`bignum + double` returning 0** — closed at `bignum.cpp`. The
    double check was hoisted above the `tagged_to_bignum` promotion attempt
    in `eshkol_bignum_binary_tagged`.
 
-5. **`number->string` missing bignum** — fixed at
+5. **`number->string` missing bignum** — closed at
    `string_io_codegen.cpp`. The HEAP_PTR subtype is read at
    `ptr - 8`, then dispatches to `eshkol_bignum_to_string` or
    `eshkol_rational_to_string`.
 
-A sixth fix worth mentioning, although technically Class A: the
+A sixth closure worth mentioning, although technically Class A: the
 **`floor/ceil/round/truncate` PHI predecessor mismatch** at
 `llvm_codegen.cpp` — recapturing `float_exit` via
 `builder->GetInsertBlock()` after `CreateBr(merge)`. This one was an LLVM
-verifier failure rather than a silent wrong-answer bug.
+verifier failure rather than a silent wrong-answer behaviour.
 
-### 11.8 Regression test coverage
+### 11.8 Guard test coverage
 
-`tests/v1_2_edge_cases/bignum_modulo_test.esk` is the documented regression
+`tests/v1_2_edge_cases/bignum_modulo_test.esk` is the documented guard-test
 template (`MEMORY.md`: "Bignum dispatch in arithmetic codegen"). The pattern
 extends: any new integer op added inline in `llvm_codegen.cpp` must include
-a bignum-modulo-style regression test.
+a bignum-modulo-style guard test.
 
 ### 11.9 Class E — `sqrt`/`expt` lost exactness on a fractional root (SW-167)
 
@@ -1441,7 +1445,7 @@ correct but needlessly INEXACT `4.0`/`2.0` via libm, because neither
 `sqrt`'s codegen nor `ArithmeticCodegen::pow`'s exact-path check ever
 attempted an exact root.
 
-The fix adds one new primitive both call: `eshkol_bignum_iroot(arena, a, n,
+SW-167 adds one new primitive both call: `eshkol_bignum_iroot(arena, a, n,
 *out_exact)` (`bignum.cpp`) computes `floor(a^(1/n))` via Newton's method
 in exact bignum arithmetic (`x_{k+1} = ((n-1)*x_k + a/x_k^(n-1)) / n`,
 seeded from a bit-length estimate that is provably an overestimate of the
@@ -1460,12 +1464,12 @@ negative-exact-promotes-to-complex rule (§7.6), and `expt` keeps ordinary
 inexact `pow()` semantics for a negative base with a fractional exponent
 (Eshkol's `expt` has never promoted to complex the way `sqrt`/`log` do).
 
-Closing this exposed a THIRD, unrelated pre-existing defect in the same
+Closing this exposed a THIRD, unrelated pre-existing gap in the same
 neighborhood on the VM: `sqrt`'s (native id 25) and `log`'s (native id 24)
 non-promoted fallback called the heap-blind `as_number()` rather than
 `as_number_vm()`, so `(sqrt 1/2)` — an operand with no exact root, correctly
 falling to the inexact path — read `as_number()`'s silent `0.0` default and
-answered `sqrt(0.0) = 0` instead of `0.7071067811865476`. Fixed alongside
+answered `sqrt(0.0) = 0` instead of `0.7071067811865476`. Closed alongside
 SW-167 in the same `vm_native.c` cases, since it shares the exact operand
 shape (an exact rational reaching the "no exact result available, use the
 double" fallback) the new exact-root work needed to get right anyway.
@@ -1597,7 +1601,7 @@ The gate is `tests/memory/bignum_rational_flat_rss_test.sh`. Its acceptance
 case is measured as a RATIO against a control running the identical loop shapes
 over machine integers, so it asserts the exact/inexact asymmetry — the defect —
 rather than an absolute figure on one machine. Every fixture checks its own
-answer as well as its shape, so a reclamation bug that frees something live
+answer as well as its shape, so a reclamation error that frees something live
 fails as a wrong result rather than passing as a memory win.
 
 ## 13. Limitations and future work
@@ -1720,7 +1724,7 @@ Partial:
   `stringToNumber` codegen entry points.
 * `lib/backend/llvm_codegen.cpp §codegenModulo`, `§codegenAbs`,
   `§codegenRound`, `§codegenMathFunction` (the rounding-function branch),
-  `§codegenMinMax` — the dispatch sites the 35-gap audit fixed.
+  `§codegenMinMax` — the dispatch sites the 35-gap audit closed.
 
 ### Standards
 
@@ -1731,6 +1735,6 @@ Partial:
 
 The maintainer's private working notes record the bignum-dispatch lessons
 documented here, including the dispatch pattern for new integer ops and the
-`codegenModulo` fix at commit `51ec814`. Those entries are point-in-time
+`codegenModulo` correction at commit `51ec814`. Those entries are point-in-time
 observations and are not part of this repository; this document supersedes
 them wherever source verification is required.

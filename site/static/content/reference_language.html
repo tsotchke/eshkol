@@ -1,5 +1,6 @@
 <h1 id="eshkol-language-core-reference">Eshkol Language Core Reference</h1>
-<p>Complete reference for the Eshkol language core, targeting <strong>v1.3.5-evolve</strong>.</p>
+<p>Complete reference for the Eshkol language core, targeting <strong>v1.4.0-connection</strong>.</p>
+<p>The declared language surface is <strong>1,651</strong> constructs and the compiler provides <strong>1,069 built-in functions</strong>; <code>docs/FEATURE_MATRIX.md</code> is the canonical surface count and both figures are re-derived from <code>tests/coverage/</code> by <code>scripts/check_surface_counts.py</code> on every run.</p>
 <p>Every example in these documents was executed against a fresh build of the compiler (<code>cmake --build build --target eshkol-run stdlib</code>) and the shown output is the real program output. Examples are run with the JIT runner:</p>
 <pre class="sh"><code>eshkol-run -r file.esk        # JIT-run a file
 eshkol-run -e &#39;(display (+ 2 3))&#39;   # JIT-evaluate one expression
@@ -102,7 +103,7 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 </tr>
 <tr>
 <td>16</td>
-<td>Native 128-bit integers (<code>i128</code>): distinct wrapping fixed-width type</td>
+<td>Native 128-bit integers (<code>i128</code>): a distinct wrapping 128-bit-wide type</td>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/i128.md" target="_blank" rel="noopener noreferrer">i128.md</a></td>
 </tr>
 <tr>
@@ -152,8 +153,8 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 </tr>
 </tbody>
 </table>
-<h2 id="known-issue-conventions">Known-issue conventions</h2>
-<p>Open defects are tracked in the project ledger (<code>.swarm/tasks/ESH-*.json</code>). Where a form has a documented defect, the reference links it inline as, e.g., <strong>ESH-0090</strong>. These are documented honestly as <em>Known Issues</em> — they are real, reproducible, and not worked around in the examples.</p>
+<h2 id="known-limitation-conventions">Known-limitation conventions</h2>
+<p>Open limitations are tracked in the project ledger (<code>.swarm/tasks/ESH-*.json</code>). Where a form has a documented limitation, the reference links it inline as, e.g., <strong>ESH-0090</strong>. These are documented honestly as <em>Known Issues</em> — they are real, reproducible, and not worked around in the examples.</p>
 <p>Consolidated list of language-core known issues referenced here:</p>
 <table>
 <colgroup>
@@ -185,7 +186,7 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 </tr>
 </tbody>
 </table>
-<p>Closed since v1.3.3 — kept here because earlier releases documented them, and each is now covered by an example in the page that used to carry the warning:</p>
+<p>Closed as of v1.4.0-connection (each closed in v1.3.3 or earlier) — kept here because earlier releases documented them, and each is now covered by an example in the page that used to carry the warning:</p>
 <table>
 <colgroup>
 <col style="width: 44%" />
@@ -202,7 +203,7 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 <tbody>
 <tr>
 <td>ESH-0101 / ESH-0112 (ledger SW-81)</td>
-<td>A deep non-tail recursion ran the native stack into its guard page and died with a bare SIGILL and no message.</td>
+<td>A deep non-tail recursion ran the native stack into its guard page and stopped with a bare SIGILL and no message.</td>
 <td>Exhausting the stack prints <code>eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); …</code>, names the limit and exits 121 — on JIT, on AOT and inside <code>parallel-map</code> workers, each of which gets its own <code>sigaltstack</code>. A larger <code>ESHKOL_STACK_SIZE</code> completes the same program. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md#native-stack-guard" target="_blank" rel="noopener noreferrer">../runtime/environment-variables.md</a>.</td>
 </tr>
 <tr>
@@ -212,7 +213,7 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 </tr>
 <tr>
 <td>ESH-0092 / ESH-0103</td>
-<td>A top-level global named after a libc symbol (<code>free</code>, <code>log</code>, …) corrupted it: SIGBUS at teardown, or a <code>set!</code> silently lost.</td>
+<td>A top-level global named after a libc symbol (<code>free</code>, <code>log</code>, …) overwrote it: SIGBUS at teardown, or a <code>set!</code> silently lost.</td>
 <td>Ordinary bindings on JIT and AOT — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/binding-mutation-and-scope.md" target="_blank" rel="noopener noreferrer">binding-mutation-and-scope.md</a>.</td>
 </tr>
 <tr>
@@ -237,7 +238,7 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 </tr>
 <tr>
 <td>ESH-0108</td>
-<td>stdlib <code>length</code>/<code>filter</code> crashed (SIGILL) on very large lists.</td>
+<td>stdlib <code>length</code>/<code>filter</code> stopped with SIGILL on very large lists.</td>
 <td><code>(length (iota 1000000))</code> → <code>1000000</code>; <code>(filter even? (iota 1000000))</code> → 500,000 elements.</td>
 </tr>
 <tr>

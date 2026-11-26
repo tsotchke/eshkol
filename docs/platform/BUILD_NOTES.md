@@ -28,9 +28,10 @@ cmake --build build -j
 
 ## Supported host compilers
 
-Eshkol v1.3.5-evolve is built and verified with **GCC 13** and with
+Eshkol v1.4.0-connection is built and verified with **GCC 13** and with
 **Clang/LLVM 21**. **GCC 15 is not a supported host compiler** for building the
-compiler itself (since v1.3.5). Where the system default is GCC 15, pin a supported compiler
+compiler itself (first stated for v1.3.5, and still the case). Where the system
+default is GCC 15, pin a supported compiler
 for the whole build tree, C and C++ together:
 
 ```sh
@@ -153,15 +154,15 @@ Built natively on `windows-11-arm`:
 cmake -B build -G "Visual Studio 17 2022" -A ARM64 -T ClangCL
 ```
 
-Downloads the LLVM 21.1.8 aarch64 Windows SDK. Three layered fixes made this
-platform build and run (culminating in **PR #77**,
-`fix/windows-arm64-sincos-portable`):
+Downloads the LLVM 21.1.8 aarch64 Windows SDK. Three layered changes made this
+platform build and run (culminating in **PR #77**):
 
 1. A **portable `sincos` shim** (MSVC has no `sincos`).
 2. **AOT codegen**: use the *small* code model with `FunctionSections` +
    `DataSections` and `/OPT:REF,/OPT:ICF` dead-stripping instead of the Large
-   code model — Large corrupts aarch64-COFF SEH `.pdata`/`.xdata` and breaks
-   `_setjmpex`/longjmp unwinding used by `raise`/`guard`/`dynamic-wind`.
+   code model — Large corrupts aarch64-COFF SEH `.pdata`/`.xdata`, which
+   invalidates the `_setjmpex`/longjmp unwinding used by
+   `raise`/`guard`/`dynamic-wind`.
 3. **JIT**: scope the windows-arm64 executable triple correctly.
 
 These were verified on CI (no local arm64-Windows machine).

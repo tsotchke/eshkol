@@ -37,8 +37,12 @@ being `OP_NATIVE_CALL`, the deliberate external boundary for host services.
 > *paper* freezes them at a tagged verification SHA (per the companion
 > framing). Where this doc and the frozen paper disagree on a count,
 > the doc is the moving reference and the paper is the historical pin.
-> This revision is re-verified on the v1.3.5-evolve release branch:
-> `ctest --test-dir build -R '^sdnc_paper_weight_tests$'` passes there.
+> This revision tracks the v1.4.0-connection release branch, where the opcode
+> and native-call figures below were re-measured; the three-way weight
+> self-test is run with
+> `ctest --test-dir build -R '^sdnc_paper_weight_tests$'`. The previous
+> re-verification pin was the v1.3.5-evolve release branch, where that test
+> passed.
 
 ---
 
@@ -63,12 +67,13 @@ correspond opcode-for-capability.
    `OP_NATIVE_CALL=37`, the deliberate host boundary.
 
 2. **The production bytecode VM** (`lib/backend/vm_core.c`, `eshkol_vm.c`,
-   `vm_native.c`). The compiler/runtime's executable ISA: a 72-value opcode
-   enum (`OP_NOP=0 … OP_VOID=63`, plus `OP_LANGUAGE_COVERAGE` 64/65 and
-   `OP_LANGUAGE_COVERAGE_FORM` 71 instrumentation, `OP_GLOBAL_MARK` 66, the v2
+   `vm_native.c`). The compiler/runtime's executable ISA: a 73-value opcode
+   enum (`OP_NOP=0 … OP_VOID=63`, plus `OP_LANGUAGE_COVERAGE` 64/65,
+   `OP_LANGUAGE_COVERAGE_FORM` 71 and `OP_LANGUAGE_COVERAGE_READ` 72
+   instrumentation, `OP_GLOBAL_MARK` 66, the v2
    closure encoding 67/68, `OP_RAISE_SECONDARY` 69 and `OP_TAIL_CALL_POPN` 70;
-   `OP_COUNT=72`) plus **743 native-call IDs spanning 0–2230** — measured on
-   the v1.3.5-evolve cut as the distinct `case N:` labels in
+   `OP_COUNT=73`) plus **822 native-call IDs spanning 0–2254** — measured on
+   the v1.4.0-connection cut as the distinct `case N:` labels in
    `lib/backend/vm_native.c`'s dispatch — reached
    through `OP_NATIVE_CALL`. Here the same capabilities run as native calls:
    reverse-mode AD at **390–409** (+1841–1844), tensors 410–461, the
@@ -142,7 +147,7 @@ Concretely (constants from `lib/backend/weight_matrices.c §53-86`):
   (`OP_AD_VAR=64` through `OP_AD_COS=82`), with a later base stack op
   `OP_SWAP=83` bringing `OP_COUNT` to **84**. This is the SDNC weight-matrix
   layer's ISA; the production bytecode VM realises the same semantics as a
-  72-opcode enum plus 743 native calls (AD at 390–409), and the two layers
+  73-opcode enum plus 822 native calls (AD at 390–409), and the two layers
   correspond opcode-for-capability (§0).
 - **83 opcodes weight-implemented**: arithmetic, comparison, control
   flow, type predicates, stack housekeeping (incl. `OP_SWAP`), bounded
@@ -714,9 +719,9 @@ Noesis companion repository.
 - `docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md` — shorter,
   user-facing exposition.
 - `lib/backend/weight_matrices.c` — the analytical weight
-  constructor and verifier (7,544 lines).
+  constructor and verifier (7,649 lines).
 - `lib/backend/vm_core.c` — the production bytecode VM opcode enum
-  (72 values; layer 2, see §0), plus the 743-ID native-call surface.
+  (73 values; layer 2, see §0), plus the 822-ID native-call surface.
 - `lib/backend/weight_matrices.c §103-136` — the SDNC weight-matrix
   layer's 83-opcode ISA enum (`OP_COUNT=84` incl. `OP_SWAP=83`).
 - `lib/backend/qllm_backward.c` + `inc/eshkol/backend/qllm_backward.h`
@@ -734,9 +739,9 @@ Noesis companion repository.
 
 ## 12. The production VM native-call surface (layer 2)
 
-The production bytecode VM (layer 2, §0) reaches beyond its 72 opcodes
-through `OP_NATIVE_CALL`. On the v1.3.5-evolve cut it dispatches **743 distinct
-native-call IDs, spanning 0–2230** (`lib/backend/vm_native.c`, driven by
+The production bytecode VM (layer 2, §0) reaches beyond its 73 opcodes
+through `OP_NATIVE_CALL`. On the v1.4.0-connection cut it dispatches **822 distinct
+native-call IDs, spanning 0–2254** (`lib/backend/vm_native.c`, driven by
 the builtin table in `eshkol_vm.c`). These are host-runtime IDs threaded
 through the single `OP_NATIVE_CALL` boundary. The map below verifies the
 principal capability ranges — earlier docs' narrower ranges (e.g. "AD 370–409",

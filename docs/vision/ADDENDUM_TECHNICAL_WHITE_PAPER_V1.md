@@ -2,9 +2,9 @@
 
 **A Production Compiler with Integrated Automatic Differentiation**
 
-This document provides a detailed technical analysis of the Eshkol compiler as it stands in the current v1.2.1-scale production release, building on the architectural baseline established in v1.0-foundation. It describes the actual production compiler, not aspirational features. For the broader vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md).
+This document provides a detailed technical analysis of the Eshkol compiler as it stood in the v1.2.1-scale production release, building on the architectural baseline established in v1.0-foundation; the current release is v1.4.0-connection (release candidate, see the status note below). It describes the actual production compiler, not aspirational features. For the broader vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md).
 
-> **Status at v1.3.6-evolve (2026-10-09).** This deep dive was written against
+> **Status at v1.4.0-connection (2026-11-25, release candidate).** This deep dive was written against
 > v1.2.1-scale. Its structures were re-read against `inc/eshkol/eshkol.h`,
 > `lib/core/arena_memory.h` and `lib/frontend/parser.cpp` at `60f345def`. Five
 > structural statements are brought up to date in place: the tagged value has no `padding` field (§2.2), the
@@ -12,7 +12,12 @@ This document provides a detailed technical analysis of the Eshkol compiler as i
 > the backend has 39 codegen modules (§2.1), and the parser runs on an explicit
 > continuation stack (§1.2). Type tags and heap subtypes added since v1.2.1 are
 > listed where the original lists stop. Later capability (arbitrary-order AD,
-> multi-shot continuations, the VM region evacuator, the exact tower) is
+> multi-shot continuations, the VM region evacuator, the exact tower, and the
+> v1.4.0-connection systems profile: linear TCP/UDP/TLS handles, O(1)
+> event-loop HTTP/WebSocket/SSE, write-ahead-logged agent memory, socket
+> collectives, WebGPU browser VM dispatch, exact-rational tensors, the Full
+> Mathematics Programme with differentiable SBLC search proposals
+> (`core.sblc.relax`), and 395 machine-checked Lean 4.12.0 theorems) is
 > described in [ESHKOL_V1_ARCHITECTURE.md](../ESHKOL_V1_ARCHITECTURE.md) and
 > the [README](../../README.md).
 

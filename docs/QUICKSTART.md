@@ -18,7 +18,7 @@ This hands-on tutorial introduces Eshkol's core features through practical examp
 
 Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
-- **Playground** — Full REPL with a 72-opcode core VM and 741 VM-table builtins running in WebAssembly
+- **Playground** — Full REPL with a 73-opcode core VM and 800 VM-table builtins running in WebAssembly
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 10 complete programs you can run instantly
 
@@ -567,6 +567,35 @@ weight matrix has a `(3 4)` gradient, which the weight update below uses.
 
 ---
 
+### 6. **Networking, with Handles You Cannot Leak**
+
+*(v1.4.0-connection)*
+
+```scheme
+(require core.net)
+
+;; The scoped form closes the socket on normal return AND on a raise.
+(call-with-tcp-connection "example.org" 80
+  (lambda (sock)
+    (tcp-write sock "GET / HTTP/1.1\r\nHost: example.org\r\n\r\n")
+    (display (tcp-read sock 4096))))
+```
+
+Failures arrive as structured conditions rather than bare errno values:
+
+```scheme
+(guard (e ((network-error? e) (display (network-error-reason e))))
+  (tcp-connect "127.0.0.1" 1))
+```
+
+Compile with `--strict-resources` and the compiler requires every socket, TLS
+session, file and region to be used exactly once — a leaked or twice-closed
+handle stops the build instead of reaching production. TLS (`core.tls`), an
+HTTP/1.1 client and server, WebSocket and Server-Sent Events are built on the
+same handle model; see [API_REFERENCE.md](API_REFERENCE.md#sockets--tls).
+
+---
+
 ## Advanced Example: Optimization
 
 Gradient descent to find minimum of Rosenbrock function.
@@ -738,7 +767,7 @@ Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 ### Learn More
 
-1. **[API Reference](API_REFERENCE.md)** — Complete function reference (550+ functions)
+1. **[API Reference](API_REFERENCE.md)** — Complete function reference (1,069 built-in functions)
 2. **[Architecture Guide](ESHKOL_V1_ARCHITECTURE.md)** — System internals (memory, types, compilation)
 3. **[Language Reference](reference/language/INDEX.md)** — Comprehensive language guide
 4. **[Autodiff Deep Dive](breakdown/AUTODIFF.md)** — Three differentiation modes in detail
@@ -921,9 +950,9 @@ eshkol-run --no-stdlib program.esk -o program
 - Eshkol uses gradual typing - type errors are warnings
 - Check if you're mixing incompatible types
 
-**Segfault or crash**
-- Report bug with minimal reproducer
-- Check if using external pointers correctly
+**A memory fault**
+- File a report with a minimal reproducer
+- Check that external pointers are used correctly
 
 **Slow performance**
 - Compile with `eshkol-run` for production (not REPL)

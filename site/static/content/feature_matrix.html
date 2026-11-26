@@ -1,4 +1,5 @@
 <h1 id="eshkol-feature-matrix">Eshkol Feature Matrix</h1>
+<p><strong>Current release:</strong> <code>v1.4.0-connection</code> (2026-11-25) — RELEASE CANDIDATE. Final publication is bound to fresh exact-commit qualification; see <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a> and <a href="/docs#page=roadmap" data-url="/content/roadmap.html">ROADMAP.md</a>.</p>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> = Production | <code>WIP</code> = In Progress | <code>Planned</code> = Planned | <code>No</code> = Not Planned | <code>Partial</code> = Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the “Final verification” section of <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>, and is bound to the tagged commit.</p>
 <p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,651</strong> constructs. The generated manifest records 1,069 builtins, 122 special forms, 114 internal AST operations and 637 prelude records; the categories overlap, and the public count deduplicates names and excludes internal-only entries. See <code>tests/coverage/language_surface.json</code> and <code>scripts/language_coverage.py</code> for the exact inventory and counting rules.</p>
@@ -405,7 +406,7 @@
 <tr>
 <td>128-bit integer (<code>i128</code>)</td>
 <td>Yes</td>
-<td>v1.3.4: fixed-width wrapping signed int off the numeric tower; native + VM</td>
+<td>v1.3.4: wrapping 128-bit signed int off the numeric tower; native + VM</td>
 <td>HEAP_SUBTYPE_I128 (25)</td>
 </tr>
 <tr>
@@ -1849,6 +1850,489 @@
 <td>Yes</td>
 <td><code>quantum-random-range</code></td>
 <td>Uniform distribution (same classical-fallback-by-default caveat as above)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="connection--systems-v140-connection">Connection &amp; Systems (v1.4.0-connection)</h2>
+<p>The connection track makes a socket, a stream and a durable write first-class language values with the same accounting discipline the rest of the language applies to memory: every handle is tracked, every boundary is declared, and a resource that cannot be accounted for is refused rather than silently leaked.</p>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 27%" />
+<col style="width: 17%" />
+<col style="width: 24%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>API</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Sockets</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>TCP client/listener</td>
+<td>Yes</td>
+<td><code>tcp-connect</code>, <code>tcp-listen</code>, <code>tcp-accept</code>, <code>tcp-read</code>, <code>tcp-write</code>, <code>tcp-shutdown</code>, <code>tcp-close</code></td>
+<td><code>core.net</code>; buffer-filling variants <code>tcp-read!</code> / <code>tcp-write!</code> / <code>tcp-write-all!</code>, cancellation via <code>net-cancel!</code></td>
+</tr>
+<tr>
+<td>UDP datagrams</td>
+<td>Yes</td>
+<td><code>udp-bind</code>, <code>udp-sendto</code>, <code>udp-recvfrom</code>, <code>udp-send-to!</code>, <code>udp-receive-from!</code>, <code>udp-close</code></td>
+<td><code>core.net</code></td>
+</tr>
+<tr>
+<td>Unix domain sockets</td>
+<td>Yes</td>
+<td><code>unix-socket-connect</code></td>
+<td>Local IPC on the same handle model</td>
+</tr>
+<tr>
+<td>Socket introspection</td>
+<td>Yes</td>
+<td><code>net-local-address</code>, <code>net-peer-address</code>, <code>net-local-port</code>, <code>net-peer-port</code>, <code>net-nonblocking!</code></td>
+<td>Typed <code>network-error?</code> condition with code, operation and reason accessors</td>
+</tr>
+<tr>
+<td>Scoped socket leases</td>
+<td>Yes</td>
+<td><code>call-with-tcp-listener</code>, <code>call-with-tcp-connection</code>, <code>call-with-tcp-accept</code>, <code>call-with-udp-socket</code></td>
+<td>Managed-resource form: the handle is closed on normal exit and on a raise</td>
+</tr>
+<tr>
+<td><strong>TLS</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>TLS client/server contexts</td>
+<td>Yes</td>
+<td><code>tls-client-context</code>, <code>tls-client-context/options</code>, <code>tls-server-context</code>, <code>tls-context-close</code></td>
+<td><code>core.tls</code>, over system libraries; <code>tls-available?</code> reports whether the build carries TLS</td>
+</tr>
+<tr>
+<td>TLS sessions</td>
+<td>Yes</td>
+<td><code>tls-connect</code>, <code>tls-listen</code>, <code>tls-accept</code>, <code>tls-read</code>, <code>tls-write</code>, <code>tls-write-all!</code>, <code>tls-session-close</code></td>
+<td>Same error-condition shape as <code>core.net</code> (<code>tls-error?</code>), same cancellation (<code>tls-cancel!</code>)</td>
+</tr>
+<tr>
+<td>Scoped TLS leases</td>
+<td>Yes</td>
+<td><code>call-with-tls-client</code>, <code>call-with-tls-server</code>, <code>call-with-tls-connection</code>, <code>call-with-tls-accept</code></td>
+<td>Closes the session and its context on either exit path</td>
+</tr>
+<tr>
+<td><strong>HTTP</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>HTTP/1.1 client</td>
+<td>Yes</td>
+<td><code>http-request</code>, <code>http-set-proxy</code>, <code>http-set-tls-client-cert</code></td>
+<td>Native client with proxy and client-certificate configuration</td>
+</tr>
+<tr>
+<td>HTTP/1.1 server</td>
+<td>Yes</td>
+<td><code>http-server-create</code>, <code>http-server-accept</code>, <code>http-server-respond</code>, <code>http-server-port</code>, <code>http-server-close</code></td>
+<td>Non-blocking server on the portable event loop; O(1) readiness scaling</td>
+</tr>
+<tr>
+<td>Request parsing &amp; routing</td>
+<td>Yes</td>
+<td><code>core.http_server</code></td>
+<td>Pure-Scheme request accessors, response tuples, routing with <code>/health</code>, <code>/ready</code>, <code>/metrics</code> fallbacks; bounded request bodies (<code>http-max-request-body-size</code>)</td>
+</tr>
+<tr>
+<td><strong>Streaming</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>WebSocket</td>
+<td>Yes</td>
+<td><code>websocket-connect</code>, <code>websocket-send</code>, <code>websocket-send-binary</code>, <code>websocket-receive</code>, <code>websocket-close</code></td>
+<td>RFC-validated framing, text and binary payloads</td>
+</tr>
+<tr>
+<td>Server-Sent Events (SSE)</td>
+<td>Yes</td>
+<td><code>call-with-http-sse-stream</code>, <code>sse-admit!</code>, <code>sse-send!</code>, <code>sse-progress!</code>, <code>sse-finish!</code>, <code>sse-cancel!</code></td>
+<td>Bounded native streaming with an admission ticket and a deadline (<code>sse-deadline-ms</code>); cleanup is explicit, never implicit</td>
+</tr>
+<tr>
+<td><strong>Durability</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Write-ahead log &amp; atomic persistence</td>
+<td>Yes</td>
+<td><code>core.memory_store</code>, atomic checkpoint layer (<code>begin</code> / <code>write</code> / <code>commit</code> / <code>abort</code>)</td>
+<td>A commit either lands whole or leaves the previous state intact; an aborted checkpoint leaves no partial file behind</td>
+</tr>
+<tr>
+<td>Merkle-verified records</td>
+<td>Yes</td>
+<td><code>core.merkle</code></td>
+<td>Content-addressed record verification over the same store</td>
+</tr>
+<tr>
+<td><strong>Parallel &amp; process</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Collective operations</td>
+<td>Yes</td>
+<td>Native collective layer (<code>broadcast</code>, <code>allreduce</code>, <code>allgather</code>, <code>reduce-scatter</code>, <code>barrier</code>) over sockets</td>
+<td>Deterministic, rank-ordered reduction: the same ranks and the same inputs give the same bits on every run</td>
+</tr>
+<tr>
+<td>Subprocess sandboxing</td>
+<td>Yes</td>
+<td>Subprocess layer with platform confinement</td>
+<td>Darwin Seatbelt and Linux seccomp + Landlock confinement; a platform without a confinement mechanism refuses rather than running unconfined</td>
+</tr>
+<tr>
+<td>Shared-library tail transfer</td>
+<td>Yes</td>
+<td><code>--shared-lib</code> export ordering with tail transfer</td>
+<td>A tail call crossing a shared-library boundary transfers rather than growing the stack</td>
+</tr>
+<tr>
+<td><strong>Resource accounting</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Linear handle tracking</td>
+<td>Yes</td>
+<td><code>--strict-resources</code> (ADR-0056)</td>
+<td>Sockets, TLS sessions, files and regions are use-exactly-once under the flag: an unclosed or twice-closed handle is a compile-time error</td>
+</tr>
+<tr>
+<td>Borrow pattern</td>
+<td>Yes</td>
+<td>Scoped <code>call-with-…</code> forms</td>
+<td>Temporary access to a handle without transferring ownership</td>
+</tr>
+<tr>
+<td><strong>Browser dispatch</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>WebGPU browser VM dispatch</td>
+<td>Yes</td>
+<td>ADR-0029</td>
+<td>The bytecode VM dispatches compute work to WebGPU in the browser lane</td>
+</tr>
+<tr>
+<td><strong>Exact tensors</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Exact-rational tensors</td>
+<td>Yes</td>
+<td>Tensor dtype <code>exact</code> (ADR-0058)</td>
+<td>Tensor elements are exact rationals end to end, including across the NumPy binding, so no boundary silently demotes to binary64</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="mathematics-programme--formal-proofs-v140-connection">Mathematics Programme &amp; Formal Proofs (v1.4.0-connection)</h2>
+<p>Eshkol states mathematics the way a mathematician states it — a site, a sheaf, a topos, a ring — and decides each claim exactly, by enumeration and exact linear algebra, never by sampling. A reader’s guide is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/guide/MATHEMATICS.md" target="_blank" rel="noopener noreferrer">docs/guide/MATHEMATICS.md</a>.</p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 26%" />
+<col style="width: 30%" />
+<col style="width: 23%" />
+</colgroup>
+<thead>
+<tr>
+<th>Area</th>
+<th>Status</th>
+<th>Modules</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Grothendieck three-era libraries</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Sites, sieves, topologies, Cech cohomology</td>
+<td>Yes</td>
+<td><code>core.sheaf</code></td>
+<td>Grothendieck topologies on finite categories; sheaf cohomology by Cech descent</td>
+</tr>
+<tr>
+<td>Presheaf topos &amp; internal language</td>
+<td>Yes</td>
+<td><code>core.topos</code></td>
+<td>Decided by Kripke–Joyal forcing, cross-checked instance by instance against the subobject classifier</td>
+</tr>
+<tr>
+<td>Rings as values (functor of points)</td>
+<td>Yes</td>
+<td><code>core.ring</code>, <code>core.multimodular</code></td>
+<td>One program over integers, rationals, binary64, modular arithmetic, Taylor jets, polynomial rings and group rings</td>
+</tr>
+<tr>
+<td>Finite category theory</td>
+<td>Yes</td>
+<td><code>core.category</code>, <code>core.effective</code></td>
+<td>Functor categories, adjunctions via comma categories, Kan extensions</td>
+</tr>
+<tr>
+<td>Simplicial sets, chain complexes, homology</td>
+<td>Yes</td>
+<td><code>core.simplicial</code>, <code>core.homological</code></td>
+<td>Homology with torsion</td>
+</tr>
+<tr>
+<td>Functional analysis; SGA / motives / Grothendieck–Riemann–Roch</td>
+<td>Yes</td>
+<td><code>core.theory</code>, <code>core.homological</code></td>
+<td>Era-one and era-two libraries of the programme</td>
+</tr>
+<tr>
+<td>Esquisse, tame topology, perfectoid; stacks and derivators; six operations</td>
+<td>Yes</td>
+<td><code>core.topos</code>, <code>core.sheaf</code>, <code>core.theory</code></td>
+<td>Era-three libraries, six-functor formalism</td>
+</tr>
+<tr>
+<td>Beyond frontiers</td>
+<td>Yes</td>
+<td><code>core.theory</code></td>
+<td>Hodge theory and the Weil fourfold, Lie and algebraic groups, representation theory, K-theory</td>
+</tr>
+<tr>
+<td><strong>Probability, measure and stochastics</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Probability sheaves</td>
+<td>Yes</td>
+<td><code>core.sheaf</code></td>
+<td><code>arXiv:2611.30692</code></td>
+</tr>
+<tr>
+<td>Measure theory, Markov kernels, disintegration</td>
+<td>Yes</td>
+<td><code>core.theory</code></td>
+<td>Exact kernels and disintegration on finite carriers</td>
+</tr>
+<tr>
+<td>Quantitative finance, SDEs, Malliavin calculus</td>
+<td>Yes</td>
+<td><code>core.theory</code>, <code>core.manifold</code></td>
+<td>Exact-coefficient stochastic calculus</td>
+</tr>
+<tr>
+<td><strong>Algebra, geometry, physics</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Operator and C* algebras</td>
+<td>Yes</td>
+<td><code>core.theory</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Modal logic</td>
+<td>Yes</td>
+<td><code>core.logic</code>, <code>core.topos</code></td>
+<td>Decided, not sampled</td>
+</tr>
+<tr>
+<td>Geometry, discrete exterior calculus, gauge theory, schemes</td>
+<td>Yes</td>
+<td><code>core.manifold</code>, <code>core.curvature</code>, <code>core.ring</code></td>
+<td>Signed-curvature unified chart (ADR-0018)</td>
+</tr>
+<tr>
+<td>Integrable systems</td>
+<td>Yes</td>
+<td><code>core.theory</code></td>
+<td>Lax pairs, Hitchin systems, Painlevé, KP hierarchy, quantum integrability</td>
+</tr>
+<tr>
+<td>Physics, AQFT, electromagnetism, lattice QFT</td>
+<td>Yes</td>
+<td><code>core.theory</code>, <code>core.quantum</code></td>
+<td></td>
+</tr>
+<tr>
+<td>HEP, Lie theory, scattering amplitudes</td>
+<td>Yes</td>
+<td><code>core.theory</code>, <code>core.quantum</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Set theory, forcing, ordinals</td>
+<td>Yes</td>
+<td><code>core.theory</code>, <code>core.topos</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Higher algebra, DG categories, operads</td>
+<td>Yes</td>
+<td><code>core.homological</code>, <code>core.monoidal</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Cellular and condensed sheaves</td>
+<td>Yes</td>
+<td><code>core.sheaf</code></td>
+<td></td>
+</tr>
+<tr>
+<td><strong>Exact linear algebra and solving</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Exact-rational affine solution families</td>
+<td>Yes</td>
+<td><code>core.exact_linalg</code>, <code>core.integer_linalg</code>, <code>core.exact_psd</code></td>
+<td>Exact solution families, not a floating-point approximation of one</td>
+</tr>
+<tr>
+<td>Gröbner bases, polynomial and extension fields</td>
+<td>Yes</td>
+<td><code>core.groebner</code>, <code>core.polynomial_exact</code>, <code>core.extension_field</code>, <code>core.cyclotomic</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Work-stealing arena two-cell, costed contracts, stochastic BLC confluence</td>
+<td>Yes</td>
+<td><code>core.blc</code>, <code>core.sblc</code>, arena runtime</td>
+<td>Costed evaluation contracts with a confluence argument, verified in Lean</td>
+</tr>
+<tr>
+<td><strong>Formal verification</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Machine-checked theorems</td>
+<td>Yes</td>
+<td><code>verification/</code></td>
+<td>395 top-level theorems across 12 standalone proof files — 287 for the mathematics programme and 108 in <code>EshkolSBLCRelaxation.lean</code> — with 0 <code>sorry</code> and 0 custom axioms, checked in Lean 4.12.0 in CI</td>
+</tr>
+<tr>
+<td>Independent proof replay</td>
+<td>Yes</td>
+<td>Verificatum replay (ADR-0061, ADR-0063)</td>
+<td>An independent replay re-checks the proofs rather than trusting a stored verdict</td>
+</tr>
+<tr>
+<td>Verified example programs</td>
+<td>Yes</td>
+<td><code>examples/</code></td>
+<td>86 verified example programs</td>
+</tr>
+<tr>
+<td>nLab conformance read-out</td>
+<td>Yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reports/NLAB_CONFORMANCE.md" target="_blank" rel="noopener noreferrer">NLAB_CONFORMANCE.md</a></td>
+<td>141 claims drawn from 51 nLab pages, turned into finite statements and decided by these libraries</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="sblc--differentiable-proposals-adr-0017-v140-connection">SBLC &amp; Differentiable Proposals (ADR-0017, v1.4.0-connection)</h2>
+<p>Stochastic Binary Lambda Calculus gives the language an exact prior over programs: a term’s weight is exactly <code>1/2^length</code> as an Eshkol rational, and every claim about the distribution is decided rather than estimated.</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 21%" />
+<col style="width: 36%" />
+<col style="width: 18%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Status</th>
+<th>API / Module</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Exact rational distribution semantics</td>
+<td>Yes</td>
+<td><code>core.sblc</code></td>
+<td>Term weights are exact rationals; per-length counts equal the independent recurrence and cumulative mass never exceeds one</td>
+</tr>
+<tr>
+<td>Bounded closed enumeration</td>
+<td>Yes</td>
+<td><code>core.sblc</code></td>
+<td>Structural <code>(length, bits)</code> enumeration to L &lt;= 16 bits, depth-aware closedness, no duplicates and no trailing-bit aliases</td>
+</tr>
+<tr>
+<td>Resumable checkpoints</td>
+<td>Yes</td>
+<td><code>sblc-search-start</code>, <code>sblc-search-resume</code></td>
+<td>Content-hash checkpoints retain exact unfinished frontiers across a process restart; a corrupted or context-mismatched checkpoint is refused</td>
+</tr>
+<tr>
+<td>DBSP Z-set incremental updates</td>
+<td>Yes</td>
+<td><code>core.dbsp</code> integration</td>
+<td>Signed Z-sets publish accepted / rejected / timeout mass deltas; an invalid update raises without publishing a partial successor</td>
+</tr>
+<tr>
+<td>VM PRNG parity</td>
+<td>Yes</td>
+<td><code>make-prng</code>, <code>prng?</code>, <code>prng-random</code>, <code>prng-random-integer</code></td>
+<td>JIT, AOT and VM traces are required to agree</td>
+</tr>
+<tr>
+<td>Differentiable proposals</td>
+<td>Yes (experimental)</td>
+<td><code>core.sblc.relax</code></td>
+<td>Exact finite-logit oracle whose gradients match native AD; Rao-Blackwellized REINFORCE with variance-reduction confidence diagnostics; depth-masked Gumbel-Softmax / Concrete grammar proposals. Every relaxed candidate is projected to a strict closed term and re-verified, and a projection error is refused loudly rather than absorbed. Learned proposal order can never alter completeness, prior weights, fair-choice probabilities or verifier outcomes</td>
+</tr>
+<tr>
+<td>Program-capsule hand-off</td>
+<td>Yes</td>
+<td>ADR-0005 boundary</td>
+<td>Exact program bits, semantic version, RNG policy and the verification certificate cross the capsule boundary together</td>
 </tr>
 </tbody>
 </table>
@@ -3736,7 +4220,7 @@
 <hr />
 <h2 id="roadmap">Roadmap</h2>
 <blockquote>
-<p>This section is a historical snapshot and may lag; see the canonical, continuously-updated <a href="/docs#page=roadmap" data-url="/content/roadmap.html">ROADMAP.md</a> for current status. As of v1.3.4-evolve (shipped 2026-08-19), the entire v1.1-accelerate through v1.3.4-evolve line has shipped. The dates below were re-anchored to measured velocity in the v1.3.5 documentation wave — see ROADMAP.md’s “Development workstreams” section for the six workstreams (W1-W6, including distributed computing as a first-class W6 track) every release from v1.3.5 now draws from.</p>
+<p>This section is a historical snapshot and may lag; see the canonical, continuously-updated <a href="/docs#page=roadmap" data-url="/content/roadmap.html">ROADMAP.md</a> for current status. The entire v1.1-accelerate through v1.3.6-evolve line has shipped, and <code>v1.4.0-connection</code> (2026-11-25) is the current RELEASE CANDIDATE. See ROADMAP.md’s “Development workstreams” section for the six workstreams (W1-W6, including distributed computing as a first-class W6 track) every release from v1.3.5 forward draws from.</p>
 </blockquote>
 <h3 id="v11-accelerate-q1-2026--completed">v1.1-accelerate (Q1 2026) — COMPLETED</h3>
 <ul>
@@ -3766,18 +4250,32 @@
 <p><strong>Corrected 2026-08-25 (conformity audit item d2, folded into the #464 v1.3.5 wave’s own restructure of this section):</strong> this row previously also listed “Advanced Types: refinement types, effect types, higher-rank types, row polymorphism” and “Compiler Optimization: PGO, whole-program optimization, polyhedral loop optimization” as SHIPPED. None of the six exists in the tree (<code>grep -i 'Refinement\|EffectRow\|SMT\|polyhedral'</code> is empty; ROADMAP.md itself marks WPO <code>[ ]</code> and PGO <code>[~]</code>). These are real, intended capabilities, not deleted — they are BUILD ITEMs below (v1.9.0), targeted per ADR-0004 (types) and ADR-0007 (PGO/WPO/polyhedral), not claimed as shipped. See also the paragraph immediately below, which #464 independently added making the same point.</p>
 </blockquote>
 <p>Advanced type-theory items (refinement types, effect types, higher-rank types, row polymorphism) did not ship in the v1.3 line; they are staged at v1.9.0-types, where refinement types are implemented with a built-in decision procedure (ADR-0044). PGO remains a build-time scaffold (workload selection is the open gap); whole-program optimization and polyhedral loop optimization are not yet scheduled to a specific release.</p>
-<h3 id="v135--the-consolidation-release-target-late-sep-2026">v1.3.5 — the consolidation release (target: late Sep 2026)</h3>
+<h3 id="v135-evolve--the-consolidation-release--shipped">v1.3.5-evolve — the consolidation release — SHIPPED</h3>
 <ul>
 <li><strong>VM region evacuator</strong>: <code>with-region</code> reclaims on the bytecode VM (flagship item)</li>
 <li><strong>Assurance wave 1</strong>: harness CI lanes, oracle/ledger schema checks, self-verdict scanner</li>
 <li><strong>Performance wave 1</strong>: benchmarks on Eshkol’s own axes, published and reproducible</li>
 </ul>
-<h3 id="v140-connection-target-nov-2026">v1.4.0-connection (target: Nov 2026)</h3>
+<h3 id="v136-evolve--runtime-updates--shipped-2026-10-19">v1.3.6-evolve — runtime updates — SHIPPED (2026-10-19)</h3>
 <ul>
-<li><strong>Networking</strong>: TCP/UDP/TLS sockets, Unix domain sockets, HTTP client/ server, WebSocket, with linear resource management</li>
-<li><strong>Distributed computing (W6 spike)</strong>: PJRT client spike, XLA multi-device single-host, native collectives over sockets</li>
-<li><strong>Interop wave 2</strong>: exactness across the Python/NumPy boundary, silent- demotion CI gate, definition-of-done rule goes live</li>
+<li>Runtime and documentation wave on the v1.3.5 base; see <a href="/docs#page=roadmap" data-url="/content/roadmap.html">ROADMAP.md</a> for the shipped item list</li>
 </ul>
+<h3 id="v140-connection--the-systems-profile--release-candidate-2026-11-25">v1.4.0-connection — the systems profile — RELEASE CANDIDATE (2026-11-25)</h3>
+<ul>
+<li><strong>Connection &amp; systems track</strong>: TCP/UDP/TLS sockets, Unix domain sockets, HTTP/1.1 client and server on the portable event loop, WebSocket, Server-Sent Events, write-ahead log and atomic persistence, deterministic socket collectives, subprocess sandboxing (Darwin Seatbelt, Linux seccomp
+<ul>
+<li>Landlock), shared-library tail transfer, WebGPU browser VM dispatch (ADR-0029) and exact-rational tensors (ADR-0058) — see <a href="/docs#page=feature_matrix&amp;connection--systems-v140-connection" data-url="/content/feature_matrix.html">Connection &amp; Systems</a></li>
+</ul></li>
+<li><strong>Linear resource management</strong>: <code>--strict-resources</code> (ADR-0056) tracks sockets, TLS sessions, files and regions use-exactly-once, with a borrow pattern for temporary access</li>
+<li><strong>Full mathematics programme</strong>: the Grothendieck three-era libraries, measure theory and probability sheaves, operator algebras, integrable systems, geometry and gauge theory, higher algebra — see <a href="/docs#page=feature_matrix&amp;mathematics-programme--formal-proofs-v140-connection" data-url="/content/feature_matrix.html">Mathematics Programme &amp; Formal Proofs</a></li>
+<li><strong>SBLC &amp; differentiable proposals (ADR-0017)</strong>: exact rational distribution semantics, bounded closed enumeration, resumable checkpoints, DBSP Z-set updates, VM PRNG parity and <code>core.sblc.relax</code></li>
+<li><strong>Formal verification</strong>: 395 machine-checked Lean 4.12.0 theorems across 12 standalone proof files, Verificatum independent proof replay (ADR-0061, ADR-0063), 86 verified example programs</li>
+<li><strong>Compiler &amp; AD</strong>: arbitrary-depth nested differentiation (ADR-0057), native cross-entropy reverse gradients, Windows x64 JIT unwind and continuation restoration, Metal FP64 matmul BLAS crossover dispatch</li>
+<li><strong>Interop wave 2</strong>: exactness across the Python/NumPy boundary, the silent-demotion CI gate, and the definition-of-done rule in force</li>
+</ul>
+<blockquote>
+<p>Not in v1.4.0-connection: Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) remain post-v1.4.0 work, and backend parity remains a documented subset rather than complete parity.</p>
+</blockquote>
 <h3 id="v150-intelligence-target-q1-2027">v1.5.0-intelligence (target: Q1 2027)</h3>
 <ul>
 <li><strong>Resident/DBSP spine</strong>: <code>core.dbsp</code> GA, native PGO in the release workflow (BUILD ITEM, moved from v1.3-evolve per ADR-0007, conformity audit item d2: workload-selection + canonical merge step to close out the existing scaffold, <code>CMakeLists.txt:340-388</code>)</li>
@@ -3807,7 +4305,7 @@
 </ul>
 <hr />
 <h2 id="production-readiness">Production Readiness</h2>
-<h3 id="production-ready-v11">Production-Ready (v1.1)</h3>
+<h3 id="production-ready-v140-connection">Production-Ready (v1.4.0-connection)</h3>
 <ul>
 <li>Core language (122 special forms, 1,069 builtins — 1,651-construct canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
@@ -3827,6 +4325,12 @@
 <li>call/cc and dynamic-wind</li>
 <li>Bytevectors</li>
 <li>LSP server</li>
+<li>Networking: TCP/UDP/TLS sockets, Unix domain sockets, HTTP/1.1 client and server, WebSocket, Server-Sent Events (v1.4.0-connection)</li>
+<li>Durable persistence: write-ahead log and atomic checkpoint commit (v1.4.0-connection)</li>
+<li>Linear resource accounting under <code>--strict-resources</code> (ADR-0056)</li>
+<li>Deterministic socket collectives and sandboxed subprocesses (v1.4.0-connection)</li>
+<li>Mathematics programme libraries: sheaves, topoi, rings as values, finite category theory, simplicial and homological algebra, exact linear algebra (v1.4.0-connection)</li>
+<li>Exact-rational tensors, including across the NumPy boundary (ADR-0058)</li>
 </ul>
 <h3 id="beta-quality">Beta Quality</h3>
 <ul>
@@ -3836,11 +4340,13 @@
 </ul>
 <h3 id="not-yet-production">Not Yet Production</h3>
 <ul>
-<li>Distributed computing (W6 spike targeted at v1.4.0; see ROADMAP.md)</li>
+<li>Distributed computing beyond the v1.4.0-connection socket collectives: multi-host tiers remain W6 work staged at v1.5.0 and later; see ROADMAP.md</li>
+<li>Consciousness Engine v2 (CE-12) and the Eshkol OS track (K1-K6) — post-v1.4.0 work, not shipped in v1.4.0-connection</li>
+<li>Complete backend parity: VM coverage is a documented subset (997 manifest rows, 322 of them <code>gap</code>), never complete parity</li>
 <li>StableHLO export path specifically (requires MLIR; see “Beta Quality” above — separate from raw ONNX tensor export, which is production, see below)</li>
 <li>Vulkan Compute</li>
 </ul>
-<p>(<strong>Re-verified 2026-08-25 during rebase onto #464 (docs/conformity-audit-resolution vs docs/v135-refresh):</strong> the two PRs disagreed here — #464’s merged text put “ONNX/StableHLO export” in this list as “ships post-training-win, no fixed date”; this branch’s own conformity-audit fix (item d4) had instead removed ONNX specifically, keeping only StableHLO. Re-checked by direct execution rather than trusting either prior claim: <code>eshkol-run -r tests/v1_2_edge_cases/onnx_export_test.esk</code> → 7/7 PASS, and the deeper Python validator <code>tests/v1_2_edge_cases/onnx_export_test.py</code> (which calls the real <code>onnx</code> package’s <code>onnx.checker.check_model</code> and verifies bit-exact value round-trip for 1D/2D/3D tensors) → <strong>9/9 PASS</strong>, both against a from-source build at this branch’s tip. <code>onnx-export-tensor</code> is a real, wired native builtin (<code>lib/core/system_builtins.c:5028</code>), not a stub. Conclusion: raw ONNX tensor export is production (kept as “Yes | v1.2” in Model Operations below, <code>model_io_test</code> also PASS); only the <em>StableHLO</em> export path — a different, MLIR-dependent capability — remains genuinely not-yet-production, and is listed above accordingly.)</p>
+<p>(<strong>Re-verified 2026-08-25 during rebase onto #464 (docs/conformity-audit-resolution vs docs/v135-refresh):</strong> the two PRs disagreed here — #464’s merged text put “ONNX/StableHLO export” in this list as “ships post-training-win, no scheduled date”; this branch’s own conformity-audit resolution (item d4) had instead removed ONNX specifically, keeping only StableHLO. Re-checked by direct execution rather than trusting either prior claim: <code>eshkol-run -r tests/v1_2_edge_cases/onnx_export_test.esk</code> → 7/7 PASS, and the deeper Python validator <code>tests/v1_2_edge_cases/onnx_export_test.py</code> (which calls the real <code>onnx</code> package’s <code>onnx.checker.check_model</code> and verifies bit-exact value round-trip for 1D/2D/3D tensors) → <strong>9/9 PASS</strong>, both against a from-source build at this branch’s tip. <code>onnx-export-tensor</code> is a real, wired native builtin (<code>lib/core/system_builtins.c:5028</code>), not a stub. Conclusion: raw ONNX tensor export is production (kept as “Yes | v1.2” in Model Operations below, <code>model_io_test</code> also PASS); only the <em>StableHLO</em> export path — a different, MLIR-dependent capability — remains genuinely not-yet-production, and is listed above accordingly.)</p>
 <hr />
 <h2 id="dual-backend-architecture-v11">Dual Backend Architecture (v1.1)</h2>
 <table>
@@ -3863,14 +4369,14 @@
 <td></td>
 </tr>
 <tr>
-<td>72-opcode core ISA</td>
+<td>73-opcode core ISA</td>
 <td>Yes</td>
-<td>Register+stack architecture, computed-goto dispatch; <code>OP_COUNT = 72</code> in <code>lib/backend/vm_core.c</code>, the enum <code>vm_run.c</code>’s dispatch table indexes — corrected 2026-08-25 from “64” (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. The old standalone hosted compiler snapshot was retired; current VM source uses its own production opcode table; <code>lib/backend/eshkol_benchmark.c</code> still declares its own <code>OpCode</code> stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc</td>
+<td>Register+stack architecture, computed-goto dispatch; <code>OP_COUNT = 73</code> in <code>lib/backend/vm_core.c</code>, the enum <code>vm_run.c</code>’s dispatch table indexes. Remeasured on the v1.4.0-connection cut: the long-closure, secondary-raise, popped-tail-call and coverage opcodes occupy 67-72, with <code>OP_LANGUAGE_COVERAGE_READ = 72</code> the highest. <code>lib/backend/eshkol_benchmark.c</code> declares its own narrower <code>OpCode</code> for benchmarking only, tracked as a separate cleanup item</td>
 </tr>
 <tr>
-<td>741 VM-reachable builtins</td>
+<td>800 VM-reachable builtins</td>
 <td>Yes</td>
-<td>Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; <code>tests/coverage/language_surface.json</code> <code>counts.builtins_in_vm_table</code> — 741 on the v1.3.5-evolve cut, dispatched through 743 distinct native-call IDs spanning 0–2230 in <code>lib/backend/vm_native.c</code>; corrected 2026-08-25 from “694” (conformity audit item d7) and remeasured since</td>
+<td>Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; <code>tests/coverage/language_surface.json</code> <code>counts.builtins_in_vm_table</code> — 800 on the v1.4.0-connection cut, dispatched through the native-call ID table in <code>lib/backend/vm_native.c</code>; remeasured on every cut from the generated manifest rather than restated by hand</td>
 </tr>
 <tr>
 <td>ESKB binary format</td>
@@ -3930,7 +4436,7 @@
 <tr>
 <td>R7RS module forms (<code>op:IMPORT</code> / <code>op:PROVIDE</code> / <code>op:REQUIRE</code>)</td>
 <td>Yes</td>
-<td>v1.3.4-evolve (#402): the VM lane previously knew none of <code>define-library</code> / <code>import</code> / <code>export</code>. All three move to <code>vm-supported</code> with no new waivers; three latent VM defects were fixed with them (<code>provide</code> emitting nothing via a slot shift, a module-loader POP desync, and a fail-open forward reference now refused)</td>
+<td>v1.3.4-evolve (#402): the VM lane previously knew none of <code>define-library</code> / <code>import</code> / <code>export</code>. All three move to <code>vm-supported</code> with no new waivers, and three latent VM behaviours were corrected with them: <code>provide</code> now emits its slot, the module-loader stack stays in step, and a fail-open forward reference is refused</td>
 </tr>
 <tr>
 <td>Portable event loop</td>
@@ -4000,7 +4506,7 @@
 <tr>
 <td>VM Production</td>
 <td>Partial (documented subset)</td>
-<td>Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (<code>scripts/run_vm_parity.sh</code>): <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->. <code>tests/vm_parity/PARITY.tsv</code> carries 295 <code>gap</code> rows out of 962; the separate <code>tests/vm_parity/SURFACE_BASELINE.tsv</code> ratchet has no remaining entries (see <a href="/docs#page=vm_parity" data-url="/content/vm_parity.html">VM_PARITY.md</a>) — corrected from “Complete” 2026-08-25, conformity audit item d9</td>
+<td>Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (<code>scripts/run_vm_parity.sh</code>): <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->. <code>tests/vm_parity/PARITY.tsv</code> carries 997 manifest rows on the v1.4.0-connection cut — 630 <code>vm-supported</code>, 45 <code>native-only-justified</code> (conscious, permanent waivers) and 322 <code>gap</code>; the separate <code>tests/vm_parity/SURFACE_BASELINE.tsv</code> ratchet has no remaining entries (see <a href="/docs#page=vm_parity" data-url="/content/vm_parity.html">VM_PARITY.md</a>). Backend parity is a documented subset, never complete parity</td>
 </tr>
 <tr>
 <td>KB Pattern Matching</td>

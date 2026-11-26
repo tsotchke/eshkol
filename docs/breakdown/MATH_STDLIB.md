@@ -1,6 +1,6 @@
 # Eshkol Mathematics Standard Library
 
-**Status:** Stable — v1.2.1-scale
+**Status:** Stable — current as of v1.4.0-connection
 **Module:** `math`, `math.constants`, `math.special`, `math.ode`, `math.statistics`, `random`
 **Sources:** `lib/math/constants.esk`, `lib/math/special.esk`, `lib/math/ode.esk`,
 `lib/math/statistics.esk`, `lib/random/random.esk`
@@ -718,7 +718,7 @@ Eshkol provides two random number sources:
 | PRNG       | drand48 (LCG-48)   | Fast  | Simulations, Monte Carlo, ML      |
 | Quantum    | Hardware entropy   | Slow  | Cryptography, security, key gen   |
 
-The PRNG is deterministic given a fixed seed, enabling reproducible experiments.
+The PRNG is deterministic given a set seed, enabling reproducible experiments.
 The quantum source reads from the OS entropy pool (getrandom/SecRandomCopyBytes) and
 is non-deterministic.
 
@@ -993,7 +993,7 @@ PRNG functions. The quantum functions are unaffected by the seed.
 
 ## 7. Performance Considerations
 
-**Special functions:** All evaluations are O(1) amortized (fixed-degree polynomial
+**Special functions:** All evaluations are O(1) amortized (bounded-degree polynomial
 or continued fraction, bounded iteration). The gamma function Lanczos approximation
 uses 9 floating-point divisions and one `expt`/`exp`; on modern hardware this runs in
 tens of nanoseconds.
@@ -1008,9 +1008,9 @@ For vector-valued ODEs, all vector arithmetic is realized with alloca-based heap
 vectors and element-wise loops. For large state spaces (d > 1000), consider
 wrapping tensor operations inside f rather than using the vector helpers.
 
-**Adaptive vs fixed step:** RK45 is typically faster than RK4 at equivalent accuracy
+**Adaptive vs constant step:** RK45 is typically faster than RK4 at equivalent accuracy
 because the error-controlled step size can be much larger over smooth solution
-intervals. Reserve fixed-step methods for when the step size is externally mandated
+intervals. Reserve constant-step methods for when the step size is externally mandated
 (e.g., control system sampling rates, co-simulation interfaces).
 
 **Backward Euler:** Each step incurs a Newton solve — up to 10 additional f-calls

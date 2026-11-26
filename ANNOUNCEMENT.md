@@ -36,10 +36,16 @@ Grothendieck three-era libraries (`core.sheaf`, `core.topos`, `core.ring`,
 `core.theory`, `core.effective`, schemes, derived categories, and six-functor
 formalism), Beyond Frontiers (Hodge theory, Lie and algebraic groups, integrable
 systems, representation theory, and K-theory), Probability Sheaves
-(`arXiv:2611.30692`), Stochastic Binary Lambda Calculus (`core.sblc`),
-Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with 395
-machine-checked Lean 4.12.0 theorems, and an expanded suite of 86 verified
-examples. Built-in PNG/JPEG/BMP/WebP codecs remove all external image library
+(`arXiv:2611.30692`), Stochastic Binary Lambda Calculus (`core.sblc`) with
+differentiable search proposals (`core.sblc.relax`, ADR-0017 item 5): an exact
+finite-logit oracle on enumerated domains, Rao-Blackwellized REINFORCE with
+exact rational inner coins and variance-reduction confidence diagnostics, and
+strict-projected Gumbel-Softmax/Concrete grammar proposals, every relaxed
+candidate re-verified exactly before acceptance. Verificatum independent Lean
+proof replay (ADR-0061, ADR-0063) carries 395 machine-checked Lean 4.12.0
+theorems across 12 standalone proof files (287 for the mathematics programme
+and 108 in `EshkolSBLCRelaxation.lean`), joined by an expanded suite of 86
+verified examples. Built-in PNG/JPEG/BMP/WebP codecs remove all external image library
 dependencies across platforms.
 
 The final publication contract is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->,
