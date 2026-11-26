@@ -23,7 +23,7 @@ all 36 CI checks passed ([run](https://github.com/tsotchke/eshkol/actions/runs/4
   Sheaves (`arXiv:2611.30692`), exact-rational affine solution families
   (`core.exact_linalg`), signed-curvature unified chart (`core.curvature`,
   ADR-0018), Stochastic Binary Lambda Calculus (`core.sblc`) & lexical-environment
-  `core.blc` evaluation, rational heat-stencil verification, 140 machine-checked
+  `core.blc` evaluation, rational heat-stencil verification, 395 machine-checked
   Lean 4.12.0 theorems (ADR-0063), and an expanded 86-example verified suite.
   (#785, #845, #912, #942, #945, #958)
 - **Compiler, AD, GPU & verification hardening.** Arbitrary-depth nested

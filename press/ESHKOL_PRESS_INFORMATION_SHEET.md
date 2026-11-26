@@ -15,7 +15,7 @@ arbitrary-depth nested differentiation (ADR-0057), exact-rational tensors
 formalism), Beyond Frontiers (Hodge theory, Lie/algebraic groups, integrable
 systems, representation theory, K-theory), Probability Sheaves
 (`arXiv:2611.30692`), Verificatum independent Lean proof replay (ADR-0061,
-ADR-0063) with 140 machine-checked Lean 4.12.0 theorems, 86 verified examples,
+ADR-0063) with 395 machine-checked Lean 4.12.0 theorems, 86 verified examples,
 built-in image codecs, and the SDNC paper artefact.
 
 ---
@@ -45,7 +45,7 @@ and Linux seccomp/Landlock sandboxing, browser WebGPU) with its full exact
 Mathematics Programme: Grothendieck three-era libraries, Beyond Frontiers
 (Hodge theory, Lie/algebraic groups, integrable systems, representation theory,
 K-theory), Probability Sheaves (`arXiv:2611.30692`), exact-rational tensors,
-arbitrary-depth nested differentiation, 140 machine-checked Lean 4.12.0 theorems
+arbitrary-depth nested differentiation, 395 machine-checked Lean 4.12.0 theorems
 (ADR-0061, ADR-0063), and 86 verified example programs.
 
 In v1.3.6-evolve Eshkol checks mathematics that machines discovered. That is

@@ -730,7 +730,7 @@ runtime foundations.**
   stereographic geometry (`core.geom`, ADR-0018), Stochastic Binary Lambda
   Calculus (`core.sblc`, ADR-0017), content-addressed certified transcripts
   (`core.transcript`), independent Lean proof replay (ADR-0061, ADR-0063) with
-  140 machine-checked Lean 4.12.0 theorems, and 86 runnable verified examples.
+  395 machine-checked Lean 4.12.0 theorems, and 86 runnable verified examples.
 - **Accelerator & distributed foundations (W6)**:
   PJRT CPU plugin execution path and socket-backed collective communication
   primitives laying the foundation for v1.4.5-accelerate.

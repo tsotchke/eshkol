@@ -37,7 +37,7 @@ Grothendieck three-era libraries (`core.sheaf`, `core.topos`, `core.ring`,
 formalism), Beyond Frontiers (Hodge theory, Lie and algebraic groups, integrable
 systems, representation theory, and K-theory), Probability Sheaves
 (`arXiv:2611.30692`), Stochastic Binary Lambda Calculus (`core.sblc`),
-Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with 140
+Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with 395
 machine-checked Lean 4.12.0 theorems, and an expanded suite of 86 verified
 examples. Built-in PNG/JPEG/BMP/WebP codecs remove all external image library
 dependencies across platforms.

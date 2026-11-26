@@ -432,7 +432,7 @@ v1.3.6-evolve meets on v1.4.0-connection. The complete list is the
   K-theory), Probability Sheaves (`arXiv:2611.30692`), signed-curvature
   stereographic geometry (`core.geom`, ADR-0018), Stochastic Binary Lambda
   Calculus (`core.sblc`, ADR-0017), and `core.transcript` are available via
-  `(require ...)` and remain opt-in, alongside 140 machine-checked Lean 4.12.0
+  `(require ...)` and remain opt-in, alongside 395 machine-checked Lean 4.12.0
   theorems (ADR-0063) and 86 verified example programs; `core.transcript` is
   disabled by default and never alters program output.
 - **Canonical language surface and VM parity manifest growth.** The canonical

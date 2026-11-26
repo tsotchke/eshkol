@@ -16,7 +16,7 @@ derived categories, and six-functor formalism; Beyond Frontiers spanning Hodge
 theory, Lie/algebraic groups, integrable systems, representation theory, and
 K-theory; Probability Sheaves `arXiv:2611.30692`; Stochastic Binary Lambda
 Calculus), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
-140 machine-checked Lean 4.12.0 theorems, 86 verified example programs, and
+395 machine-checked Lean 4.12.0 theorems, 86 verified example programs, and
 built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
 <!-- source: CHANGELOG.md §1.4.0-connection (#845, #956, #958); RELEASE_NOTES.md -->
 
