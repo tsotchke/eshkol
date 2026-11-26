@@ -8,11 +8,11 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.6--evolve-blue.svg)](RELEASE_NOTES.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.4.0--connection-blue.svg)](RELEASE_NOTES.md)
 
-**Prepared for publication:** v1.3.6-evolve. **Intended release date:** Wednesday, November 25, 2026.
-[Source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38657799489) passed all 823 configured CTest cases and all 411 VM parity cases.
-Publication requires exact-commit release evidence and an ICC ready/100 verdict.
+**Release candidate:** v1.4.0-connection. **Planned release date:** Wednesday, November 25, 2026.
+PR #956 merged Track B to `master` (`b4eac7abd`) with all 36 CI checks passing ([run](https://github.com/tsotchke/eshkol/actions/runs/45713545739)).
+Final publication requires exact-commit CTest and VM-parity qualification and an ICC ready/100 verdict.
 See the [latest published release](https://github.com/tsotchke/eshkol/releases/latest),
 [release notes](RELEASE_NOTES.md) and [upgrading guide](docs/UPGRADING.md).
 
@@ -56,13 +56,16 @@ See the [latest published release](https://github.com/tsotchke/eshkol/releases/l
 
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
 
-- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on both the LLVM backend and the bytecode VM. `divergence`/`curl` were central-difference approximations (`h=1e-7`) on the VM until 2026-08-26; both now seed one forward dual per input variable and read the tangent of each output component, so a gradient field's curl is exactly `#(0 0 0)` rather than `#(1.1102230246251565e-09 ...)`, and `(ad-finite-difference-evals)` reads 0. Cross-engine agreement is measured, not asserted: `tests/vm_parity/corpus/72_curl_field_shapes.esk`
+- **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on both the LLVM backend and the bytecode VM, composing to arbitrary nesting depth across forward, reverse, and mixed passes with unique 64-bit perturbation epochs (ADR-0057). `divergence`/`curl` seed one forward dual per input variable and read the tangent of each output component, so a gradient field's curl is exactly `#(0 0 0)` and `(ad-finite-difference-evals)` reads 0. Cross-engine agreement is measured, not asserted: `tests/vm_parity/corpus/72_curl_field_shapes.esk`
+- **Systems profile, networking, and linear handles** - O(1) event-loop scaling (`kqueue`/`epoll`), managed-resource TCP/UDP/TLS leases (ADR-0055), Unix domain sockets, non-blocking HTTP/WebSocket server, bounded native HTTP SSE streaming, fibers/coroutines, and deterministic socket collectives. Under `--strict-resources` (ADR-0056), sockets, TLS, file ports, event loops, threads, mutexes, condition variables, and subprocesses enforce `open -> borrowed -> open -> closed` typestate at compile time.
+- **Capability policies & OS sandboxing** - One narrow-only capability policy store covers shell, subprocess, socket, network, and FFI sinks across LLVM JIT, AOT, and the bytecode VM, backed by Darwin Seatbelt and Linux seccomp/Landlock subprocess sandboxing and a native in-process Keychain bridge.
 - **Ownership and type annotations** - The native compiler, JIT, REPL and hosted bytecode compiler check moves, borrows, and every alias, closure and stored reference to an owned value before execution. Legacy programs can use `--unsafe` to skip static checks. A successful `(the <type> expr)` returns the evaluated operand. A runtime tag mismatch raises a catchable condition.
+- **Exact mathematics & verified execution** - Exact-rational tensor elements (ADR-0058), exact linear algebra and PSD certificates, unified signed-curvature stereographic geometry (`core.curvature`, ADR-0018), finite decidable mathematics (`core.sheaf`, `core.topos`, `core.ring`, `core.category`, `core.simplicial`, `core.homological`, `core.monoidal`, `core.theory`, `core.effective`), and Verificatum independent proof replay (ADR-0061).
 - **Explicit reclamation points** - Region teardown runs synchronously, including escape traversal and promotion. Eshkol does not run an independently scheduled heap collector; region-exit cost still depends on the objects and graph being processed.
-- **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
-- **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM
-- **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
-- **Mathematical rigor** - HoTT type foundations: a cubical type theory in the compiler checks proofs about identity types, univalence and higher inductive types at compile time and computes with them (ADR-0043, [HoTT guide](docs/guide/HOTT.md)); the gradual checker of ordinary code reaches "provable, not just tested" at the ADR-0000 Stage 14b / v2.0 target
+- **Native compilation & zero-dependency codecs** - LLVM backend generates native code across macOS, Linux, and Windows with built-in PNG/JPEG/BMP/WebP codecs (no system libpng/libjpeg/libwebp dependency).
+- **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`) and WebGPU tensor dispatch with explicit CPU fallback. The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM.
+- **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting).
+- **Mathematical rigor** - HoTT type foundations: a cubical type theory in the compiler checks proofs about identity types, univalence and higher inductive types at compile time and computes with them (ADR-0043, [HoTT guide](docs/guide/HOTT.md)); dependent, refinement, row-polymorphic, higher-rank, and session types build toward the v2.0 target.
 
 ---
 
@@ -698,6 +701,41 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient` (or `eshkol-run -r 
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
 - **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
 
+### v1.4.0-connection Release (Release Candidate — November 2026)
+
+**Connect Eshkol to the outside world under the same linear resource discipline
+that made `Qubit` safe — while extending the mathematics, autodiff, and browser
+runtime foundations.**
+
+- **Linear systems & networking (`core.net`, `core.io.event_loop`, `core.http`, `core.ws`)**:
+  TCP/UDP sockets, Unix domain sockets, OpenSSL TLS (Linux & macOS), and
+  HTTP/WebSocket client/server on the shipped event loop, with linear resource
+  handles enforced statically and closed deterministically at region boundaries.
+- **Agent runtime & persistence**:
+  Streaming SSE client/server, structured subprocess execution with ownership
+  cleanup, and durable write-ahead-logged (WAL) agent memory.
+- **Exact-rational tensors & recursive AD**:
+  Exact-rational tensor dtype (`'exact`, ADR-0058) on native JIT/AOT and
+  arbitrary-depth nested differentiation over recursive Taylor-level carriers
+  (ADR-0027) and ring/polynomial/matrix carriers.
+- **Browser WebGPU dispatch**:
+  Browser VM tensor operations dispatch through the shared GPU seam via WebGPU
+  (ADR-0029), alongside exact browser numerics.
+- **Mathematics & certified transcripts**:
+  Finite sites, sheaves, and Cech/derived cohomology (`core.sheaf`), topos
+  internal language and Kripke-Joyal forcing (`core.topos`), finite categories
+  and Kan extensions (`core.cat.*`), signed-curvature stereographic geometry
+  (`core.geom`), Stochastic Binary Lambda Calculus (`core.sblc`), and
+  content-addressed certified transcripts (`core.transcript`).
+- **Accelerator & distributed foundations (W6)**:
+  PJRT CPU plugin execution path and socket-backed collective communication
+  primitives laying the foundation for v1.4.5-accelerate.
+- **Language surface**:
+  **1,651** canonical constructs (**1,069** builtins, 122 special forms, 114
+  internal AST ops, 637 prelude records) at 100% execution-backed coverage
+  (0 deficit), and a **997-row** VM parity manifest (630 `vm-supported`,
+  45 `native-only-justified`, 322 `gap`).
+
 ### v1.3.6-evolve Release
 
 **Hand the compiler a published mathematical claim — a counterexample to the
@@ -1154,18 +1192,21 @@ its headline view.
 - Model serialization, stable C FFI with Python/NumPy bindings, image I/O
 - Per-thread arenas, actionable error messages, WASM library mode
 
-### v1.3-evolve (July–October 2026) — SHIPPED through v1.3.5; v1.3.6 PREPARED FOR PUBLICATION
+### v1.3-evolve (July–October 2026) — SHIPPED (v1.3.0 through v1.3.6)
 - Arbitrary-order exact AD, full R7RS conformance, flat memory for resident
   loops, a parser with no recursion budget, multi-shot continuations, certified
   enclosures and the exact tower (v1.3.0 → v1.3.5)
-- v1.3.6: the documented mathematics examples, exact browser numerics, and
-  measurement-bound publication
+- v1.3.6 (shipped 2026-10-19): the documented mathematics examples, exact
+  browser numerics, and measurement-bound publication
 
-### v1.4.0-connection (prior target 2026-10-15; under joint rebaseline) — Planned
-- TCP/UDP sockets, TLS, Unix domain sockets, HTTP/WebSocket on the shipped
-  event loop, with linear resource types for every handle
-- WebGPU dispatch for the WASM target; the self-hosted mesh as the primary CI
-  executor; the nested-differentiation carrier rewrite
+### v1.4.0-connection (November 2026) — RELEASE CANDIDATE
+- TCP/UDP sockets, OpenSSL TLS (Linux & macOS), Unix domain sockets, and
+  HTTP/WebSocket on the shipped event loop, with linear resource types for
+  every handle; agent runtime SSE, subprocess, and WAL persistence
+- WebGPU dispatch for the WASM target; exact-rational tensors (`'exact`);
+  the nested-differentiation recursive Taylor carrier and ring carriers;
+  `core.sheaf`, `core.topos`, `core.cat.*`, `core.geom`, `core.sblc`, and
+  `core.transcript`; PJRT CPU spike and socket collectives
 
 ### v1.4.1 (ABI) and v1.4.5-accelerate (device runtime) — Planned
 - OALR ABI v2 and the remaining object-ABI migration stages; the embedding SDK
@@ -1193,7 +1234,7 @@ Eshkol welcomes contributions from researchers and practitioners. The codebase i
 - **Modular codegen**: Add new backends by implementing CodegenModule interface
 - **Type system**: Extend HoTT types through TypeFamily registration
 - **Standard library**: Pure Eshkol implementations in `lib/core/`
-- **Testing**: v1.3.6-evolve qualification requires the aggregate suites, <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, executable language coverage and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> at the final release SHA. [docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md) distinguishes measurement preparation, final-source qualification and historical evidence.
+- **Testing**: v1.4.0-connection qualification requires the aggregate suites, <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, executable language coverage and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> at the final release SHA. [docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md) distinguishes measurement preparation, final-source qualification and historical evidence.
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding standards.
 
@@ -1203,18 +1244,19 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 |---|---|
 | **[QUICKSTART](docs/QUICKSTART.md)** | 15-minute getting-started guide |
 | **[Tutorials](docs/tutorials/README.md)** | 27 step-by-step tutorials |
-| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,058-builtin canonical surface |
+| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,069-builtin canonical surface |
 | **[Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
 | **[Quick Reference](docs/ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
 | **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)** | Arbitrary-order Taylor-tower AD walkthrough |
 | **[Complete Language Specification](docs/COMPLETE_LANGUAGE_SPECIFICATION.md)** | Full technical specification |
-| **[Examples](docs/EXAMPLES.md)** | All 67 example programs, generated from `docs/examples/catalogue.json` |
+| **[Examples](docs/EXAMPLES.md)** | All tracked example programs, generated from `docs/examples/catalogue.json` |
 | **[Mathematics Examples](docs/MATHEMATICS_EXAMPLES.md)** | The 46 mathematics programs and the scope of each result |
 | **[Standard Library API](docs/STDLIB_V1_2_API.md)** | Stdlib module surfaces, including infrastructure modules (Appendix B) |
 | **[Architecture deep-dives](docs/breakdown/README.md)** | Per-subsystem technical breakdowns (36 subsystem docs plus the index) |
 | **[FAQ](docs/FAQ.md)** | Installation, troubleshooting, common questions |
-| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 46-suite gate verifies |
+| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the release qualification gate verifies |
 | **[Known Issues](docs/KNOWN_ISSUES.md)** | Current limitations and tracked open items |
+| **[Upgrading Guide](docs/UPGRADING.md)** | Version-by-version migration guide through v1.4.0-connection |
 | **[Testing & Adversarial Harnesses](docs/TESTING.md)** | SICP gate + the five adversarial harnesses and how to run them |
 | **[VM Parity](docs/VM_PARITY.md)** | Bytecode-VM vs native-codegen parity ratchet |
 | **[ROADMAP](ROADMAP.md)** | Canonical release plan |
@@ -1238,7 +1280,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2026,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.3.6-evolve},
+  version = {1.4.0-connection},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}
@@ -1254,7 +1296,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: v1.3.6-evolve publication requires the aggregate suite at 46/46 suites, <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, execution-backed coverage of 1,118 names at the tagged source and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), regenerated by the Release workflow at the tagged commit. [docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md) distinguishes required final-source qualification from historical measurements.
+- **Testing**: v1.4.0-connection publication requires the aggregate suites, <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, execution-backed coverage of 1,651 constructs at the tagged source (0 deficit) and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> over a 997-row manifest (630 `vm-supported`, 45 `native-only-justified`, 322 `gap`), regenerated by the Release workflow at the tagged commit. [docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md) distinguishes required final-source qualification from historical measurements.
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

@@ -1,11 +1,16 @@
 # Eshkol Development Roadmap
 
-> **Publication update, 2026-10-19:** [v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)
+> **Release candidate update, 2026-11-25:** `v1.4.0-connection` is in
+> **RELEASE CANDIDATE** preparation on `master` (`b4eac7abd`, 36/36 CI checks
+> green on integration PR #956). Final publication requires fresh exact-commit
+> qualification at the tagged commit. See [RELEASE_NOTES.md](RELEASE_NOTES.md)
+> and [docs/RELEASE_LADDER.md](docs/RELEASE_LADDER.md).
+>
+> **Historical publication note, 2026-10-19:** [v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)
 > was published at 11:53:31 UTC from source
-> `341ac812ed600fd9d27c28e9509d66ab71363947`. The dated “prepared for
-> publication” passages below retain their historical snapshot meaning.
-> v1.4 development is active; its recovered integration scope and acceptance
-> requirements are recorded in [the development plan](docs/design/V1_4_CONNECTION_START_2026_10_19.md).
+> `341ac812ed600fd9d27c28e9509d66ab71363947`. The dated historical snapshot
+> passages below retain their archival meaning; the v1.4 integration record is
+> in [the development plan](docs/design/V1_4_CONNECTION_START_2026_10_19.md).
 
 
 > **This is the canonical roadmap.** It is the single source of truth for
@@ -537,14 +542,14 @@ workstreams rather than a single theme:
 
 ---
 
-## v1.3.6-evolve — runtime fixes - PREPARED FOR PUBLICATION
+## v1.3.6-evolve — runtime updates - SHIPPED (2026-10-19)
 
-Intended release date: Wednesday, November 25, 2026. [Source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38161249190) passed all
-819 configured CTest cases and all 411 VM parity cases. Publication requires the release
-workflow's independent exact-commit evidence and ICC ready/100 verdict. The release
+Shipped Monday, October 19, 2026 ([v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve),
+source `341ac812ed600fd9d27c28e9509d66ab71363947`). Its [source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38161249190) passed all
+819 configured CTest cases and all 411 VM parity cases. The release
 includes shared native REPL input across line-editing backends, required native
 image I/O in release builds, certified mixed exact/inexact interval conversion,
-and the confirmed AOT loop memory fixes; experimental features remain in the
+and the confirmed AOT loop memory updates; experimental features remained in the
 separate integration build. The per-change record is the `[1.3.6-evolve]`
 section of [CHANGELOG.md](CHANGELOG.md); the conditional scope it started from
 is in the [release ladder](docs/RELEASE_LADDER.md).
@@ -739,6 +744,8 @@ Ordered. These are v1.3.5-line items, not v1.4 features:
 
 ## v1.4.0-connection — the systems profile (target: 2026-10-15) - RELEASE CANDIDATE
 
+Intended release date: Wednesday, November 25, 2026.
+
 **Focus:** A resource-sound systems profile — connect to the outside world
 under the same discipline that made `Qubit` linear.
 
@@ -841,7 +848,7 @@ under the same discipline that made `Qubit` linear.
       as a category with finite products. `core.ring` carriers are models of
       the theory of commutative rings, and `core.topos`'s truth values are
       Heyting algebras. Theories in the type system are Planned for v1.5.0
-- [ ] Infinite categories (ADR-0054): `core.category.effective` gives
+- [x] Infinite categories (ADR-0054): `core.category.effective` gives
       effectively given categories (objects and hom-sets produced on demand,
       finite categories as a special case), functors, transformations and
       adjunctions with exact checks on generators; `core.category.presented`
@@ -892,8 +899,8 @@ under the same discipline that made `Qubit` linear.
       streams, verification on by default with SNI and hostname checks, and an
       explicit option for unverified peers. Windows Schannel is Planned for v1.4.1
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
-- [ ] Unix domain sockets for local IPC
-- [ ] HTTP client/server and WebSocket, on the shipped event loop
+- [x] Unix domain sockets for local IPC — SHIPPED in v1.4.0-connection (#916, #922, #926)
+- [x] HTTP client/server and WebSocket, on the shipped event loop — SHIPPED in v1.4.0-connection (O(1) event-loop server, 10K-connection gate, RFC-validated framing, #845, #956)
 - [x] Linear types for all handles: `open → borrowed → closed` with compile-time tracking -
       SHIPPED in v1.4.0-connection under `--strict-resources` (ADR-0056): sockets, TLS, file
       ports, the event loop, threads, mutexes, condition variables and processes, tracked
@@ -903,11 +910,11 @@ under the same discipline that made `Qubit` linear.
       `borrow`, `call-with-input-file`, `call-with-output-file`, `call-with-port` and
       `with-mutex` lend a handle that cannot be closed or escape; the `call-with-*` scopes
       close their port on return, on a raise and on a continuation escape
-- [ ] Agent runtime unblocked: SSE streaming, subprocess pipe contract,
-      durable session persistence
-- [ ] WebGPU backend for the WASM target (#562), inside the ordinary GPU
+- [x] Agent runtime unblocked: SSE streaming (#954), subprocess pipe contract (#914),
+      durable WAL session persistence, and Darwin Seatbelt / Linux seccomp + Landlock sandboxing (#956)
+- [x] WebGPU backend for the WASM target (#562), inside the ordinary GPU
       dispatch, with an explicit CPU fallback and an explicit refusal rather
-      than a silent demotion
+      than a silent demotion — SHIPPED in v1.4.0-connection (#956)
 - [ ] The self-hosted mesh becomes the primary CI executor (#529):
       `ESHKOL_MESH_PRIMARY` routes the Linux contexts to self-hosted runners,
       with the hosted lanes as the declared fallback
@@ -966,17 +973,11 @@ under the same discipline that made `Qubit` linear.
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
       that solve exact systems run on exact tensors. Exact tensors on the
       bytecode VM are planned for v1.4.1 (the VM refuses the dtype explicitly)
-- [ ] Ring carriers, the functor-of-points evaluation model (ADR-0034,
-      Proposed): one ring-carrier protocol, registered once per engine, for
-      the numeric tower, the forward-mode and Taylor AD carriers, modular,
-      symbolic and Z-set arithmetic, with multimodular computation over
-      Spec Z (fibres F_p, CRT, rational reconstruction under a proven bound).
-      In v1.4.0-connection: the record and the evidence program
+- [x] Ring carriers, the functor-of-points evaluation model (ADR-0034):
+      `core.ring` and `core.multimodular` shipped in v1.4.0-connection (#845) alongside
       `examples/mathematics_functor_of_points.esk` (29 checks, CTest
-      `rings_functor_of_points` JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
-      `core.multimodular`) through v1.5.0 (carriers in the type system), one
-      stage per rung as the record lists
-- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane
+      `rings_functor_of_points` JIT and AOT); carriers in the type system remain planned for v1.5.0
+- [ ] Assurance: ADR-0010 v1.4 set (A10 shipped in #956; `concurrency-tsan` runs in `.github/workflows/adversarial-nightly.yml`, per-PR TSan deferred on hosted runners)
 - [x] Assurance: SymPy oracle pilot on the exact-AD surface. **SHIPPED in
       v1.4.0-connection:** `scripts/sympy_exact_ad_oracle.py` runs a fixed
       corpus (`tests/sympy_oracle/exact_ad_corpus.json`) of `derivative-n`,
@@ -985,19 +986,16 @@ under the same discipline that made `Qubit` linear.
       equality where the documented contract promises an exact result, f64
       rounding where it promises a double), and emits one ICC trace per case
       plus `sympy_exact_ad_oracle_pilot`. CTest `sympy_exact_ad_oracle`
-- [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
-      accuracy and throughput, pinned hardware)
+- [x] Performance: benchmarks wave 2 — SHIPPED in v1.4.0-connection (`benchmarks/competitive_suite.py`, #956)
 - [x] Codebase: native image I/O dependency removal; decompose
       `runtime_regions.cpp`; doc-truth ratchet phase 1 (rank + quota, not
       yet release-blocking). Image I/O uses built-in PNG/JPEG/BMP/WebP
       codecs on every platform; the region runtime is
       four translation units; `doc_truth_ratchet_phase1` ranks `docs/`
       claims against `docs/reports/doc_truth/quota.json`
-- [ ] W6 interface spike: compile and execute one StableHLO module through
-      the PJRT CPU plugin, with a recorded trace. This does not claim device
-      execution or TPU readiness. XLA multi-device single-host is also in the
-      v1.4.0 plan; native collectives over its sockets remain subject to the
-      owner R7 scope ruling. Accelerator execution is delivered by v1.4.5.
+- [x] W6 interface spike: StableHLO/PJRT CPU plugin client (`lib/backend/xla/pjrt_client.cpp`)
+      and deterministic native socket collectives (`lib/core/collectives.c`) — SHIPPED in v1.4.0-connection (#845, #956).
+      Accelerator execution is delivered by v1.4.5.
 
 ---
 
@@ -1655,7 +1653,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: 2026-10-09 (v1.3.6-evolve documentation pass — the v1.3.6
+*Last Updated: 2026-11-25 (v1.4.0-connection release-candidate documentation pass —
+v1.3.6-evolve recorded as SHIPPED 2026-10-19, v1.4.0-connection promoted to
+RELEASE CANDIDATE with all delivered systems, networking, WebGPU, recursive-AD,
+exact-tensor, mathematics, and W6 items marked complete against `master` at
+`b4eac7abd`. Previously 2026-10-09, v1.3.6-evolve documentation pass — the v1.3.6
 section records what the release contains, each item with its pull request,
 and its timeline row replaces the conditional scope; the README headline view
 follows the publication order v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0. Previously
@@ -1688,4 +1690,4 @@ quantum/formal-verification (v2.0) arc, and its successor, the unified
 `differentiate` primitive (W1), is the v2.0 endpoint. See
 [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md).*
 
-*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs through v1.3.5-evolve, internally released 2026-09-22 with its verification record bound to the tagged commit, and v1.3.6-evolve, prepared for publication with its measurements bound to the exact release commit. The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), consolidation (v1.3.5), networking & resources (v1.4.0-connection), the ABI release (v1.4.1), accelerator device runtime (v1.4.5-accelerate), neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform & hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and quantum computing with formal verification (v2.0-starlight). v1.4.5 must publish before v1.5.0; their previous target windows require joint rebaseline — W6's development work may proceed in parallel, but publication order is fixed.*
+*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The v1.3 line shipped through v1.3.5-evolve (2026-09-22) and v1.3.6-evolve (2026-10-19), each with its verification record bound to the tagged commit. v1.4.0-connection is in release-candidate qualification with its measurements bound to the exact release commit. The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), consolidation (v1.3.5), networking & resources (v1.4.0-connection), the ABI & embedding SDK release (v1.4.1), accelerator device runtime (v1.4.5-accelerate), neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform & hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and quantum computing with formal verification (v2.0-starlight). v1.4.5 must publish before v1.5.0; W6's development work proceeds in parallel, and publication order is fixed.*

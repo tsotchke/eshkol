@@ -21,7 +21,7 @@ pages and lets them fan out to their siblings.
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
 - [Navier-Stokes examples](NAVIER_STOKES_EXAMPLES.md) — residuals, scaling laws and similarity profiles; the authored 12-program/14-criteria/28-CTest matrix with native JIT and AOT variants
 - [FAQ](FAQ.md) — installation, troubleshooting, common questions
-- [Upgrading to v1.3.5-evolve](UPGRADING.md) — what a program, a build or a contributor workflow written against v1.3.4 meets on v1.3.5
+- [Upgrading to v1.4.0-connection](UPGRADING.md) — what a program, a build or a contributor workflow meets across the v1.3.4 → v1.3.5 → v1.3.6 → v1.4.0-connection line
 - [Troubleshooting](TROUBLESHOOTING.md) — build and run problems with known causes: LLVM discovery, host compilers, `ESHKOL_PATH`, caches, stack size, Python bindings, Windows, WebAssembly
 - [Glossary](GLOSSARY.md) — the terms the documentation uses, each linked to its home page
 - [Getting Started (breakdown)](breakdown/GETTING_STARTED.md) — installation and first programs, implementation-level detail
@@ -31,8 +31,8 @@ pages and lets them fan out to their siblings.
 
 - [Language Guide](ESHKOL_LANGUAGE_GUIDE.md) — tutorial-style introduction to the language
 - [Language Reference index](reference/language/INDEX.md) — complete, example-verified function and syntax reference (binding/mutation, control flow, error handling, pattern matching, modules, continuations, and more)
-- [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
-- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,053-builtin surface
+- [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification
+- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,069-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
 - [Gradual typing guide](guide/GRADUAL_TYPING.md) — annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
 - [WGSL artifact guide](guide/WGSL_ARTIFACT.md) — derive a bounded polynomial with AD and compose its standalone evaluator with browser WebGPU kernels
@@ -77,7 +77,7 @@ pages and lets them fan out to their siblings.
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
 - [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 72-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 962 rows (622 `vm-supported`, 45 `native-only-justified`, 295 `gap`); <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> in v1.3.6 preparation, with final-source qualification required
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 997 rows (630 `vm-supported`, 45 `native-only-justified`, 322 `gap`); <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record --> in v1.4.0-connection release candidate, with final-source qualification required
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`
@@ -239,7 +239,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [Writing documentation](DOCUMENTATION.md) — page kinds, front matter, evergreen wording, facts rendered from sources, executed examples and every documentation gate
 - [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide and [`bench/reference-run/results.md`](../bench/reference-run/results.md) for the published reference run
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — required v1.3.6 candidate gates (final-source qualification pending): <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->
+- [Test Coverage](TEST_COVERAGE.md) — required v1.4.0-connection candidate gates (final-source qualification pending): <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

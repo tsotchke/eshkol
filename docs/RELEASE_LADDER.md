@@ -11,6 +11,13 @@ sources:
 
 # Release ladder: v1.3.6 through v1.5.0
 
+> **Release candidate update, 2026-11-25:** `v1.4.0-connection` is now
+> **RELEASE CANDIDATE** on `master` (`b4eac7abd`, PR #845 + PR #956 passing
+> 36/36 CI checks; release record PR #957). Final publication awaits
+> exact-commit qualification and tag cut, immediately followed by `v1.4.1-ABI`
+> (including the packaged Embedding SDK). The dated 2026-09-28 / 2026-10-19
+> planning snapshots below are retained for historical traceability.
+
 > **Publication update, 2026-10-19:** [v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)
 > was published at 11:53:31 UTC from source
 > `341ac812ed600fd9d27c28e9509d66ab71363947`. The dated “prepared for

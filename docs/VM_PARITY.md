@@ -288,10 +288,16 @@ recent promotions are
 logic-variable representation was unified across the engines (task #100).
 
 The v1.3.6-evolve preparation snapshot (2026-10-07, source `37cab398`)
-classifies **962 rows — 622 `vm-supported`, 45 `native-only-justified`,
-295 `gap`**. Its [verified full preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
-recorded **405/405** VM-parity checks. Publication requires independent
-qualification of the final release commit.
+classified **962 rows — 622 `vm-supported`, 45 `native-only-justified`,
+295 `gap`**; its [verified full preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
+recorded **405/405** VM-parity checks before v1.3.6-evolve shipped on
+2026-10-19.
+
+The **v1.4.0-connection** release-candidate snapshot (2026-11-25, `master` at
+`b4eac7abd`) classifies **997 rows — 630 `vm-supported`, 45
+`native-only-justified`, 322 `gap`** across the expanded 1,069-builtin surface.
+Final publication requires independent qualification of the tagged release
+commit (`<!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->`).
 
 **A status is a claim about the running system, and is now checked as one.**
 This audit validates the ledger against SOURCE TEXT — names scraped from the

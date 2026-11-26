@@ -16,16 +16,15 @@ sources:
   - cmake/EshkolImageIO.cmake
   - exe/eshkol-repl.cpp
 ---
-# Upgrading to v1.3.6-evolve
+# Upgrading to v1.4.0-connection
 
-What a program, a build or a contributor workflow written against
-v1.3.4-evolve meets on v1.3.6-evolve. Sections 1-9 are the v1.3.4-to-v1.3.5
-changes and remain true on v1.3.6; section 10 is what v1.3.5-evolve to
-v1.3.6-evolve adds on top of them. Each section states what is true now and
-what, if anything, to do about it. The complete list of changes is the
-`[1.3.5-evolve]` and `[1.3.6-evolve]` sections of
-[CHANGELOG.md](../CHANGELOG.md); the release summary is
-[RELEASE_NOTES.md](../RELEASE_NOTES.md).
+What a program, a build or a contributor workflow meets as it moves across
+v1.3.4-evolve, v1.3.5-evolve, v1.3.6-evolve, and v1.4.0-connection. Sections
+1-9 record the v1.3.4-to-v1.3.5 changes; section 10 records v1.3.5-to-v1.3.6;
+section 11 records what v1.4.0-connection adds on top of v1.3.6-evolve. Each
+section states what is true now and what, if anything, to do about it. The
+complete list of changes is in [CHANGELOG.md](../CHANGELOG.md); the release
+summary is [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 
 Every program on this page was run on the release compiler, on the JIT
 (`eshkol-run -r`) and as an AOT binary, with identical output.
@@ -42,6 +41,7 @@ Every program on this page was run on the release compiler, on the JIT
 8. [Environment variables](#8-environment-variables)
 9. [Contributors](#9-contributors)
 10. [Upgrading from v1.3.5-evolve to v1.3.6-evolve](#10-upgrading-from-v135-evolve-to-v136-evolve)
+11. [Upgrading from v1.3.6-evolve to v1.4.0-connection](#11-upgrading-from-v136-evolve-to-v140-connection)
 
 ## 1. The type checker sees more of your program
 
@@ -391,6 +391,54 @@ v1.3.5-evolve meets on v1.3.6-evolve. The complete list is the
   of continuing with a partially built value. This should not be observable
   in a program that was not already exhausting memory, since it replaces an
   unchecked path with a checked failure on the same error condition. (#721)
+
+## 11. Upgrading from v1.3.6-evolve to v1.4.0-connection
+
+What a program, a build or a contributor workflow written against
+v1.3.6-evolve meets on v1.4.0-connection. The complete list is the
+`[1.4.0-connection]` section of [CHANGELOG.md](../CHANGELOG.md).
+
+- **Linear network, TLS, and Unix-domain socket handles (`core.net`,
+  `core.io.event_loop`, `core.http`, `core.ws`).** TCP/UDP sockets, Unix domain
+  sockets, OpenSSL TLS sessions (Linux and macOS), and HTTP/WebSocket handlers
+  run on the shipped event loop under static linear resource ownership. Every
+  handle must be explicitly closed or transferred; leaving a linear handle
+  unconsumed or using it twice is rejected at compile time. Existing HTTP code
+  that did not use `core.net` linear handles continues to run unchanged.
+  Windows sockets and Windows Schannel TLS are planned for v1.4.1.
+- **Agent runtime streaming SSE, structured subprocesses, and WAL persistence.**
+  Streaming SSE client/server endpoints, structured subprocess ownership
+  cleanup, and durable write-ahead-logged (WAL) agent memory are available in
+  the standard agent runtime without changing the v1.3.6 synchronous FFI
+  signatures.
+- **Exact-rational tensors (`'exact` dtype, ADR-0058) on native JIT and AOT.**
+  Native engines now support exact-rational tensor elements and exact linear
+  algebra over them. The bytecode VM explicitly refuses `'exact` tensors until
+  v1.4.1; portable programs targeting both engines should keep tensor dtypes on
+  floating-point or integer representations until then.
+- **Recursive Taylor-level and ring differentiation carriers (ADR-0027).**
+  Nested higher-order differentiation carries enclosing derivative levels
+  through recursive Taylor towers and polynomial/matrix ring carriers without
+  aliasing perturbations. Programs written against v1.3.6 `derivative`,
+  `gradient`, `jacobian`, and `hessian` require no source changes.
+- **Browser WebGPU tensor dispatch (ADR-0029).** The WASM bytecode VM routes
+  eligible tensor operations through the shared WebGPU dispatch seam when the
+  browser provides WebGPU, falling back transparently to the CPU VM path
+  otherwise.
+- **Mathematics and certified transcript modules.** `core.sheaf`, `core.topos`,
+  `core.cat.*`, `core.geom` (signed-curvature stereographic geometry,
+  ADR-0018), `core.sblc` (Stochastic Binary Lambda Calculus, ADR-0017), and
+  `core.transcript` are available via `(require ...)` and remain opt-in;
+  `core.transcript` is disabled by default and never alters program output.
+- **Canonical language surface and VM parity manifest growth.** The canonical
+  language surface is now **1,651** constructs (**1,069** builtins, 100%
+  execution-backed coverage, 0 deficit), and `tests/vm_parity/PARITY.tsv`
+  tracks **997** rows (630 `vm-supported`, 45 `native-only-justified`, 322
+  `gap`). Contributors adding new builtins must run
+  `scripts/gen_language_surface.py` and `scripts/check_surface_counts.py`.
+- **Standalone Embedding SDK remains v1.4.1.** Projects embedding Eshkol from
+  C/C++ via CMake should continue following [BUILD_INTEGRATION.md](BUILD_INTEGRATION.md)
+  until the packaged `libeshkol` Embedding SDK ships in v1.4.1.
 
 Troubleshooting steps are collected in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md); the full change list is

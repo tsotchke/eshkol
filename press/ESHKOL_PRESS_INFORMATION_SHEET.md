@@ -1,15 +1,18 @@
-# Eshkol v1.3.6-evolve — Press Information Sheet
+# Eshkol v1.4.0-connection — Press Information Sheet
 
-For trade-press and academic readers preparing coverage of the v1.3 release
-line — arbitrary-order automatic differentiation, full R7RS conformance,
-resident/daemon-workload robustness, opt-in differentiable quantum computing
-with post-quantum cryptography; as of v1.3.5-evolve, multi-shot re-entrant
-continuations on every engine, region reclamation on the bytecode VM, constant
-stack space for mutual tail recursion in every tail-position spelling, and
-differentiation dispatch the compiler proves exhaustive; as of v1.3.6-evolve,
-exact reproduction of published results of AI-driven mathematical discovery and
-a documented catalogue of every example program, 46 of them mathematics — and
-the SDNC paper artefact it carries.
+For trade-press and academic readers preparing coverage of the v1.4 release
+line — building on v1.3's arbitrary-order automatic differentiation, full R7RS
+conformance, opt-in differentiable quantum computing, multi-shot re-entrant
+continuations, VM region reclamation, and exact machine-discovered mathematics
+witnesses — v1.4.0-connection introduces the resource-sound systems profile:
+managed TCP/UDP/TLS leases (ADR-0055), compile-time linear handle tracking
+(`--strict-resources`, ADR-0056), O(1) event-loop HTTP/WebSocket and bounded
+SSE streaming, unified capability policies with Darwin Seatbelt and Linux
+seccomp/Landlock subprocess sandboxing, arbitrary-depth nested differentiation
+(ADR-0057), exact-rational tensors (ADR-0058), finite decidable mathematics
+(`core.sheaf`/`topos`/`ring`/`category`/`monoidal`/`effective`), Verificatum
+independent proof replay (ADR-0061), built-in image codecs, and the SDNC paper
+artefact.
 
 ---
 
@@ -18,10 +21,10 @@ the SDNC paper artefact it carries.
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.6-evolve |
-| Release status | Prepared for publication (release record, `tests/coverage/release_record.json`) |
-| Intended release date | 25 November 2026 |
-| Builds on | v1.3.5-evolve (22 September 2026), v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
+| Version | v1.4.0-connection |
+| Release status | Release candidate (release record, `tests/coverage/release_record.json`) |
+| Planned release date | 25 November 2026 |
+| Builds on | v1.3.6-evolve (19 October 2026), v1.3.5-evolve (22 September 2026), v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |

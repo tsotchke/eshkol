@@ -1,20 +1,26 @@
 # Eshkol Test Coverage
 
-## v1.3.6-evolve final-source qualification contract
+## v1.4.0-connection final-source qualification contract
 
 Publication requires
 <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and
 <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->
-at the final source commit, with independent exact-commit evidence and an
+at the final source commit, with independent exact-commit evidence, 100%
+execution-backed language coverage (1,651/1,651 constructs, 0 deficit), and an
 ICC ready/100 verdict.
 
-The [earlier verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
+Integration PR #956 merged into `master` at `b4eac7abd` after passing 36/36 CI
+checks ([CI run](https://github.com/tsotchke/eshkol/actions/runs/45713545739)).
+Final v1.4.0-connection publication requires fresh exact-commit qualification
+at the tagged commit.
+
+### v1.3.6-evolve historical preparation records
+
+The [earlier v1.3.6 preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
 passed all 787 configured CTest cases and all 405 VM parity cases on its own
-frozen source and build cohort. Those historical preparation measurements do
-not qualify the expanded integration source. The [current source-bound preparation run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)
+frozen source and build cohort. The [subsequent v1.3.6 preparation run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)
 passed all 823 configured CTest cases and all 411 VM parity cases on its own
-frozen source and build cohort. Final qualification independently measures
-the final release commit.
+frozen source and build cohort before v1.3.6-evolve shipped on 2026-10-19.
 
 ## v1.3.5-evolve historical coverage
 

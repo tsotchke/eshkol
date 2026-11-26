@@ -2,6 +2,19 @@
 
 ## A compiled Scheme with a constructive proof that a transformer is an interpreter
 
+Eshkol v1.4.0-connection (release candidate, November 2026) adds a
+resource-sound systems profile — managed-resource TCP/UDP/TLS leases (ADR-0055),
+O(1) event-loop HTTP/WebSocket and bounded SSE streaming, Unix domain sockets,
+deterministic socket collectives, compile-time linear handle tracking under
+`--strict-resources` (ADR-0056), narrow-only capability policies with Darwin
+Seatbelt and Linux seccomp/Landlock subprocess sandboxing, arbitrary-depth
+nested differentiation (ADR-0057), exact-rational tensor elements (ADR-0058),
+finite decidable mathematics (`core.sheaf`, `core.topos`, `core.ring`,
+`core.category`, `core.simplicial`, `core.homological`, `core.monoidal`,
+`core.theory`, `core.effective`), Verificatum independent proof replay
+(ADR-0061), and built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
+<!-- source: CHANGELOG.md §1.4.0-connection (#845, #956); RELEASE_NOTES.md -->
+
 Eshkol v1.3.6-evolve checks mathematics that machines discovered. That is not a
 metaphor. The FunSearch cap set, the AlphaTensor matrix multiplication
 decompositions over F₂, and a polynomial counterexample map to the Jacobian
@@ -67,18 +80,19 @@ fit by gradient descent.
 ## Launch post
 
 ```
-Eshkol v1.3.6-evolve is out now.
+Eshkol v1.4.0-connection is here (release candidate).
 
-It checks mathematics that machines discovered: the FunSearch cap set, the
-AlphaTensor decompositions, a Jacobian-conjecture counterexample. Exactly, and
-completely.
+A resource-sound systems profile for compiled Scheme: linear socket/TLS/file
+handles checked at compile time (--strict-resources), O(1) event-loop HTTP/WS
+and SSE streaming, OS-sandboxed subprocesses, arbitrary-depth nested AD, exact
+rational tensors, finite decidable mathematics, and independent proof replay.
 
 https://github.com/tsotchke/eshkol
 ```
 
 ## Long-form article title
 
-`Eshkol v1.3.6-evolve: Checking Machine-Discovered Mathematics in a Compiled Scheme`
+`Eshkol v1.4.0-connection: A Resource-Sound Systems Profile and Verified Exact Mathematics in Compiled Scheme`
 
 ---
 

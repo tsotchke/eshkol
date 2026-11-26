@@ -4,6 +4,55 @@ Release candidate. Planned release date: Wednesday, November 25, 2026.
 Eshkol compiles R7RS Scheme through LLVM and runs the same language on its
 bytecode VM and in the browser.
 
+Eshkol v1.4.0-connection connects Eshkol programs to the operating system and
+network under the same resource discipline that made `Qubit` linear, while
+extending exact mathematics and automatic differentiation to arbitrary depth.
+
+**Resource-sound systems profile.** TCP/UDP sockets and TLS sessions are owned
+resource leases (ADR-0055) with monotonic per-operation deadlines, cross-thread
+cancellation, and scoped teardown on return, exception, and continuation escape.
+An O(1) event loop (`kqueue`/`epoll`) drives non-blocking HTTP/WebSocket
+servers, bounded native HTTP SSE streaming, Unix domain stream sockets,
+fibers/coroutines, and deterministic socket collectives. Under
+`--strict-resources` (ADR-0056), every native handle family — sockets, TLS,
+file ports, event loops, threads, mutexes, condition variables, and
+subprocesses — tracks `open -> borrowed -> open -> closed` at compile time
+across branches, loops, closures, `guard`, `dynamic-wind`, and `call/cc`.
+
+**Capability policies and OS sandboxing.** One narrow-only capability policy
+store governs shell, subprocess, socket, network, and FFI sinks across LLVM
+JIT, AOT, and the bytecode VM, reinforced by Darwin Seatbelt and Linux
+seccomp/Landlock subprocess sandboxing, a native in-process macOS Keychain
+bridge, full `.eskb` bytecode admission validation, keyed hash tables, and
+RFC-validated HTTP/WebSocket framing.
+
+**Arbitrary-depth AD and exact mathematics.** Differentiation nests to any
+depth in every mode via unique 64-bit perturbation epochs (ADR-0057). Exact
+tensors (`'exact` dtype, ADR-0058) carry exact rationals through linear algebra
+without silent floating-point demotion, joined by `core.curvature` (one
+real-analytic stereographic chart across every sign of curvature, ADR-0018),
+finite decidable mathematics (`core.sheaf`, `core.topos`, `core.ring`,
+`core.category`, `core.simplicial`, `core.homological`, `core.monoidal`,
+`core.theory`, `core.effective`, `core.sblc`), and Verificatum independent
+proof replay (ADR-0061). Built-in PNG/JPEG/BMP/WebP codecs remove all external
+image library dependencies across platforms.
+
+The final publication contract is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->,
+with no failed, skipped or infrastructure-only checks, bound to the exact
+release commit.
+
+Read the [release notes](RELEASE_NOTES.md) for mechanisms and verification,
+[upgrading guidance](docs/UPGRADING.md) for behavior changes, and
+[current limits](docs/KNOWN_ISSUES.md) for capabilities still in progress.
+
+---
+
+# Eshkol v1.3.6-evolve — published mathematics, checked exactly
+
+Shipped October 19, 2026 ([release](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)).
+Eshkol compiles R7RS Scheme through LLVM and runs the same language on its
+bytecode VM and in the browser.
+
 Eshkol checks mathematics that machines discovered. That is not a metaphor.
 Three published results of AI-driven discovery are rebuilt as Eshkol
 programs and verified with exact integer and rational arithmetic, completely
@@ -78,10 +127,8 @@ or without a line editor, and every release build carries native image I/O.
 ESKM v2 model files are available as a doubly gated experiment; default saves
 remain byte-identical v1.
 
-The final publication contract is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->,
-with no failed, skipped or infrastructure-only checks, bound to the exact
-release commit. [Source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38657799489) passed all 823 configured CTest cases and
-all 411 VM parity cases.
+Source-bound preparation ([run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)) passed all 823 configured CTest cases and
+all 411 VM parity cases for v1.3.6-evolve.
 
 Kristoffer Josefsson contributed the Linux ARM64 CUDA tooling: `CUDAARCHS`,
 CUDA Docker toolchain arguments, Linux build fingerprints, and Ozaki reports
