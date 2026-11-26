@@ -250,6 +250,56 @@ void test_kernel_and_permission_aliasing() {
     CHECK(k2_aspace_unmap(&user_as1, &pool, 0x300000ULL) == K2_OK);
     CHECK(k2_frame_free_user(&pool, &uframe) == K2_OK);
     CHECK(k2_aspace_unmap(&kernel_as, &pool, 0xFFFF800000010000ULL) == K2_OK);
+
+    /* Negative 2E: ASID partition enforcement — kernel must use ASID 0, user must use non-zero valid ASID */
+    static k2_aspace_t bad_as;
+    CHECK(k2_aspace_init(&bad_as, K2_MMU_X86_64_4L, 2u, 0u) == K2_ERR_INVALID_ARG);
+    CHECK(k2_aspace_init(&bad_as, K2_MMU_X86_64_4L, 0u, 1u) == K2_ERR_INVALID_ARG);
+    CHECK(k2_aspace_init(&bad_as, K2_MMU_X86_64_4L, K2_INVALID_INDEX, 1u) == K2_ERR_INVALID_ARG);
+
+    /* Negative 2F: Kernel mapping a user frame does not overwrite user ownership or lock out the user space */
+    k2_page_frame_t shared_check{};
+    CHECK(k2_frame_alloc_user(&pool, &shared_check) == K2_OK);
+    CHECK(k2_aspace_map(&user_as1, &pool, 0x400000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_map(&kernel_as, &pool, 0xFFFF800000020000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_KERNEL_ONLY) == K2_OK);
+    CHECK(k2_aspace_map(&user_as2, &pool, 0x500000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_WRITE | K2_PERM_USER) == K2_ERR_PERM_ALIAS);
+    CHECK(k2_aspace_unmap(&user_as1, &pool, 0x400000ULL) == K2_OK);
+    /* After user_as1 unmaps while kernel_as still holds a read-only mapping, user_as2 may map cleanly */
+    CHECK(k2_aspace_map(&user_as2, &pool, 0x500000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_WRITE | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_unmap(&user_as2, &pool, 0x500000ULL) == K2_OK);
+    CHECK(k2_aspace_unmap(&kernel_as, &pool, 0xFFFF800000020000ULL) == K2_OK);
+
+    /* Negative 2G: Distinct user address spaces with the same ASID still cannot alias one physical frame */
+    static k2_aspace_t dup_user_a;
+    static k2_aspace_t dup_user_b;
+    CHECK(k2_aspace_init(&dup_user_a, K2_MMU_X86_64_4L, 2u, 1u) == K2_OK);
+    CHECK(k2_aspace_init(&dup_user_b, K2_MMU_X86_64_4L, 2u, 1u) == K2_OK);
+    CHECK(k2_aspace_map(&dup_user_a, &pool, 0x2000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_map(&dup_user_b, &pool, 0x5000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_WRITE | K2_PERM_USER) == K2_ERR_PERM_ALIAS);
+    CHECK(k2_aspace_unmap(&dup_user_a, &pool, 0x2000ULL) == K2_OK);
+
+    /* Precision 2H: Exact W/X refcounts clear when a writable alias is unmapped while a read-only alias remains */
+    CHECK(k2_aspace_map(&user_as1, &pool, 0x600000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_map(&user_as1, &pool, 0x601000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_WRITE | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_map(&user_as1, &pool, 0x602000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_EXEC | K2_PERM_USER) == K2_ERR_PERM_ALIAS);
+    CHECK(k2_aspace_unmap(&user_as1, &pool, 0x601000ULL) == K2_OK);
+    CHECK(k2_aspace_map(&user_as1, &pool, 0x602000ULL, &shared_check,
+                        K2_PERM_READ | K2_PERM_EXEC | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_remap_perms(&user_as1, &pool, 0x602000ULL,
+                                K2_PERM_READ | K2_PERM_WRITE | K2_PERM_USER) == K2_OK);
+    CHECK(k2_aspace_unmap(&user_as1, &pool, 0x602000ULL) == K2_OK);
+    CHECK(k2_aspace_unmap(&user_as1, &pool, 0x600000ULL) == K2_OK);
+    CHECK(k2_frame_free_user(&pool, &shared_check) == K2_OK);
+
     CHECK(k2_frame_pool_invariants_hold(&pool) == 1);
 }
 

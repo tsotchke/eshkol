@@ -108,6 +108,25 @@ static int k2_va_canonical_for_mode(k2_mmu_mode_t mode, uint64_t va, uint32_t is
 
 /* ─────────────────────────── Physical Frame Allocator ─────────────────────────── */
 
+static void k2_meta_reset_mappings(k2_frame_meta_t* meta) {
+    meta->map_refcount = 0u;
+    meta->user_map_refcount = 0u;
+    meta->read_refcount = 0u;
+    meta->write_refcount = 0u;
+    meta->exec_refcount = 0u;
+    meta->mapped_perms = 0u;
+    meta->mapped_asid = K2_INVALID_INDEX;
+    meta->mapped_user_aspace = NULL;
+}
+
+static void k2_meta_recompute_perms(k2_frame_meta_t* meta) {
+    uint32_t p = 0u;
+    if (meta->read_refcount > 0u)  p |= K2_PERM_READ;
+    if (meta->write_refcount > 0u) p |= K2_PERM_WRITE;
+    if (meta->exec_refcount > 0u)  p |= K2_PERM_EXEC;
+    meta->mapped_perms = p;
+}
+
 k2_status_t k2_frame_pool_init(k2_frame_pool_t* pool,
                                uint64_t phys_base,
                                uint32_t total_frames,
@@ -141,9 +160,7 @@ k2_status_t k2_frame_pool_init(k2_frame_pool_t* pool,
     for (uint32_t i = 0u; i < kernel_reserved_count; ++i) {
         pool->frames[i].owner = K2_OWNER_KERNEL;
         pool->frames[i].generation = 1u;
-        pool->frames[i].map_refcount = 0u;
-        pool->frames[i].mapped_perms = 0u;
-        pool->frames[i].mapped_asid = K2_INVALID_INDEX;
+        k2_meta_reset_mappings(&pool->frames[i]);
         pool->frames[i].next_free = K2_INVALID_INDEX;
         k2_bitmap_set(pool, i);
     }
@@ -153,9 +170,7 @@ k2_status_t k2_frame_pool_init(k2_frame_pool_t* pool,
         uint32_t idx = rev - 1u;
         pool->frames[idx].owner = K2_OWNER_FREE;
         pool->frames[idx].generation = 1u;
-        pool->frames[idx].map_refcount = 0u;
-        pool->frames[idx].mapped_perms = 0u;
-        pool->frames[idx].mapped_asid = K2_INVALID_INDEX;
+        k2_meta_reset_mappings(&pool->frames[idx]);
         pool->frames[idx].next_free = pool->free_head;
         pool->free_head = idx;
     }
@@ -183,9 +198,7 @@ static k2_status_t k2_frame_alloc_internal(k2_frame_pool_t* pool,
     meta->next_free = K2_INVALID_INDEX;
     meta->owner = target_owner;
     meta->generation += 1u;
-    meta->map_refcount = 0u;
-    meta->mapped_perms = 0u;
-    meta->mapped_asid = K2_INVALID_INDEX;
+    k2_meta_reset_mappings(meta);
     k2_bitmap_set(pool, idx);
 
     pool->free_frames -= 1u;
@@ -246,8 +259,7 @@ k2_status_t k2_frame_free_user(k2_frame_pool_t* pool,
     k2_bitmap_clear(pool, idx);
     meta->owner = K2_OWNER_FREE;
     meta->generation += 1u;
-    meta->mapped_perms = 0u;
-    meta->mapped_asid = K2_INVALID_INDEX;
+    k2_meta_reset_mappings(meta);
     meta->next_free = pool->free_head;
     pool->free_head = idx;
 
@@ -566,6 +578,16 @@ k2_status_t k2_aspace_init(k2_aspace_t* aspace,
     if ((uint32_t)mode >= (uint32_t)K2_MMU_MODE_COUNT) {
         return K2_ERR_UNSUPPORTED_MMU;
     }
+    /* Partition ASID domains: kernel spaces use K2_KERNEL_ASID (0), user spaces use 1..K2_INVALID_INDEX-1. */
+    if (is_user_space == 0u) {
+        if (asid != K2_KERNEL_ASID) {
+            return K2_ERR_INVALID_ARG;
+        }
+    } else {
+        if (asid == K2_KERNEL_ASID || asid == K2_INVALID_INDEX) {
+            return K2_ERR_INVALID_ARG;
+        }
+    }
     k2_zero_bytes(aspace, sizeof(*aspace));
     aspace->mode = mode;
     aspace->asid = asid;
@@ -642,20 +664,18 @@ k2_status_t k2_aspace_map(k2_aspace_t* aspace,
         return K2_ERR_STALE_HANDLE;
     }
 
-    /* Reject conflicting-permission aliasing (RW vs RX) and cross-ASID mutable aliasing. */
+    /* Reject conflicting-permission aliasing (W vs X across live mappings) and cross-space user aliasing. */
     if (meta->map_refcount > 0u) {
-        int existing_w = (meta->mapped_perms & K2_PERM_WRITE) != 0u;
-        int existing_x = (meta->mapped_perms & K2_PERM_EXEC) != 0u;
         int new_w = (perms & K2_PERM_WRITE) != 0u;
         int new_x = (perms & K2_PERM_EXEC) != 0u;
-        if ((existing_w && new_x) || (existing_x && new_w)) {
+        if ((meta->write_refcount > 0u && new_x) || (meta->exec_refcount > 0u && new_w)) {
             return K2_ERR_PERM_ALIAS;
         }
-        if (aspace->is_user_space != 0u &&
-            meta->mapped_asid != K2_INVALID_INDEX &&
-            meta->mapped_asid != aspace->asid) {
-            return K2_ERR_PERM_ALIAS;
-        }
+    }
+    if (aspace->is_user_space != 0u &&
+        meta->user_map_refcount > 0u &&
+        (meta->mapped_asid != aspace->asid || meta->mapped_user_aspace != aspace)) {
+        return K2_ERR_PERM_ALIAS;
     }
 
     if (k2_aspace_find_slot(aspace, va) >= 0) {
@@ -686,8 +706,15 @@ k2_status_t k2_aspace_map(k2_aspace_t* aspace,
 
     aspace->mapped_count += 1u;
     meta->map_refcount += 1u;
-    meta->mapped_perms |= (perms & (K2_PERM_READ | K2_PERM_WRITE | K2_PERM_EXEC));
-    meta->mapped_asid = aspace->asid;
+    if ((perms & K2_PERM_READ) != 0u)  meta->read_refcount += 1u;
+    if ((perms & K2_PERM_WRITE) != 0u) meta->write_refcount += 1u;
+    if ((perms & K2_PERM_EXEC) != 0u)  meta->exec_refcount += 1u;
+    k2_meta_recompute_perms(meta);
+    if (aspace->is_user_space != 0u) {
+        meta->user_map_refcount += 1u;
+        meta->mapped_asid = aspace->asid;
+        meta->mapped_user_aspace = aspace;
+    }
 
     k2_aspace_tlb_shootdown_va(aspace, va);
     return K2_OK;
@@ -719,15 +746,14 @@ k2_status_t k2_aspace_remap_perms(k2_aspace_t* aspace,
     }
     k2_frame_meta_t* meta = &pool->frames[ent->frame_idx];
 
-    /* If aliased across multiple VAs in the same ASID, forbid creating a W/X alias. */
-    if (meta->map_refcount > 1u) {
-        int existing_w = (meta->mapped_perms & K2_PERM_WRITE) != 0u;
-        int existing_x = (meta->mapped_perms & K2_PERM_EXEC) != 0u;
-        int new_w = (new_perms & K2_PERM_WRITE) != 0u;
-        int new_x = (new_perms & K2_PERM_EXEC) != 0u;
-        if ((existing_w && new_x) || (existing_x && new_w)) {
-            return K2_ERR_PERM_ALIAS;
-        }
+    /* Check W^X against every other active mapping of this physical frame. */
+    uint32_t old_perms = ent->perms;
+    uint32_t other_w = meta->write_refcount - (((old_perms & K2_PERM_WRITE) != 0u && meta->write_refcount > 0u) ? 1u : 0u);
+    uint32_t other_x = meta->exec_refcount - (((old_perms & K2_PERM_EXEC) != 0u && meta->exec_refcount > 0u) ? 1u : 0u);
+    int new_w = (new_perms & K2_PERM_WRITE) != 0u;
+    int new_x = (new_perms & K2_PERM_EXEC) != 0u;
+    if ((other_w > 0u && new_x) || (other_x > 0u && new_w)) {
+        return K2_ERR_PERM_ALIAS;
     }
 
     uint64_t phys_addr = pool->phys_base + (((uint64_t)ent->frame_idx) << K2_PAGE_SHIFT);
@@ -741,13 +767,16 @@ k2_status_t k2_aspace_remap_perms(k2_aspace_t* aspace,
         return val;
     }
 
+    if ((old_perms & K2_PERM_READ) != 0u && meta->read_refcount > 0u)   meta->read_refcount -= 1u;
+    if ((old_perms & K2_PERM_WRITE) != 0u && meta->write_refcount > 0u) meta->write_refcount -= 1u;
+    if ((old_perms & K2_PERM_EXEC) != 0u && meta->exec_refcount > 0u)   meta->exec_refcount -= 1u;
+    if ((new_perms & K2_PERM_READ) != 0u)  meta->read_refcount += 1u;
+    if ((new_perms & K2_PERM_WRITE) != 0u) meta->write_refcount += 1u;
+    if ((new_perms & K2_PERM_EXEC) != 0u)  meta->exec_refcount += 1u;
+    k2_meta_recompute_perms(meta);
+
     ent->raw_pte = raw_pte;
     ent->perms = new_perms;
-    if (meta->map_refcount == 1u) {
-        meta->mapped_perms = (new_perms & (K2_PERM_READ | K2_PERM_WRITE | K2_PERM_EXEC));
-    } else {
-        meta->mapped_perms |= (new_perms & (K2_PERM_READ | K2_PERM_WRITE | K2_PERM_EXEC));
-    }
 
     k2_aspace_tlb_shootdown_va(aspace, va);
     return K2_OK;
@@ -772,11 +801,22 @@ k2_status_t k2_aspace_unmap(k2_aspace_t* aspace,
     uint32_t fidx = ent->frame_idx;
     if (fidx < pool->total_frames) {
         k2_frame_meta_t* meta = &pool->frames[fidx];
+        if ((ent->perms & K2_PERM_READ) != 0u && meta->read_refcount > 0u)   meta->read_refcount -= 1u;
+        if ((ent->perms & K2_PERM_WRITE) != 0u && meta->write_refcount > 0u) meta->write_refcount -= 1u;
+        if ((ent->perms & K2_PERM_EXEC) != 0u && meta->exec_refcount > 0u)   meta->exec_refcount -= 1u;
+        if (aspace->is_user_space != 0u && meta->user_map_refcount > 0u) {
+            meta->user_map_refcount -= 1u;
+            if (meta->user_map_refcount == 0u) {
+                meta->mapped_asid = K2_INVALID_INDEX;
+                meta->mapped_user_aspace = NULL;
+            }
+        }
         if (meta->map_refcount > 0u) {
             meta->map_refcount -= 1u;
             if (meta->map_refcount == 0u) {
-                meta->mapped_perms = 0u;
-                meta->mapped_asid = K2_INVALID_INDEX;
+                k2_meta_reset_mappings(meta);
+            } else {
+                k2_meta_recompute_perms(meta);
             }
         }
     }

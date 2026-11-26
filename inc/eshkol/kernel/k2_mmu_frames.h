@@ -33,6 +33,7 @@ extern "C" {
 #define K2_TLB_ENTRIES          64u
 #define K2_MAX_MPU_REGIONS      8u
 #define K2_MPU_MIN_REGION_BYTES 32ULL
+#define K2_KERNEL_ASID          0u
 #define K2_INVALID_INDEX        0xFFFFFFFFu
 
 /* Canonical permission bits. */
@@ -129,14 +130,21 @@ typedef struct k2_page_frame {
     uint32_t reserved;
 } k2_page_frame_t;
 
+struct k2_aspace;
+
 /* Per-frame internal accounting slot. */
 typedef struct k2_frame_meta {
     k2_frame_owner_t owner;
     uint32_t generation;
     uint32_t map_refcount;
+    uint32_t user_map_refcount;
+    uint32_t read_refcount;
+    uint32_t write_refcount;
+    uint32_t exec_refcount;
     uint32_t mapped_perms;
     uint32_t mapped_asid;
     uint32_t next_free;
+    const struct k2_aspace* mapped_user_aspace;
 } k2_frame_meta_t;
 
 /* Static boot-sized physical frame pool with O(1) free-list + bitmap guard. */
