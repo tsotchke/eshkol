@@ -205,3 +205,45 @@ package_surface:
     - path: licenses/zstd-LICENSE
       required: true
       platforms: [macos]
+
+  # ADR-0010 gap A10: declared public CLI flags of `eshkol-run` (verified
+  # live against `eshkol-run --help` when `--verify-integration-contract` is
+  # passed or when the packaged binary is executable on the host platform).
+  toolchain_flags:
+    - binary: eshkol-run
+      flags:
+        - "--help"
+        - "--output"
+        - "--compile-only"
+        - "--emit-depfile"
+        - "--shared-lib"
+        - "--wasm"
+        - "--profile"
+        - "--emit-eskb"
+        - "--eval"
+        - "--run"
+        - "--optimize"
+        - "--strict-types"
+        - "--features"
+        - "--abi-fingerprint"
+        - "--version"
+      required: true
+
+  # ADR-0010 gap A10: declared type/resource diagnostic golden fixtures under
+  # `tests/diagnostics/` that every release must keep intact alongside the
+  # diagnostic corpus check (A11).
+  type_diagnostics:
+    - case: type_ascription_contradiction
+      required: true
+    - case: linearity_no_cloning
+      required: true
+    - case: arity_fatal_mismatch
+      required: true
+    - case: move_unbound_operand
+      required: true
+    - case: catchable_type_error_arithmetic_451
+      required: true
+    - case: catchable_type_error_hash_452
+      required: true
+    - case: valid_control
+      required: true

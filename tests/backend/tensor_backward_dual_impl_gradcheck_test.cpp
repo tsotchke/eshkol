@@ -193,12 +193,14 @@ void matmul_check() {
 }
 
 /*******************************************************************************
- * LAYERNORM — per-row y = gamma*(x-mean)/sqrt(var+eps)   (beta omitted: the
- * bridge rule computes no dbeta at all, so there is nothing to compare there)
+ * LAYERNORM — per-row y = gamma*(x-mean)/sqrt(var+eps) + beta
+ * Verifies dX (input1), dGamma (input2), AND dBeta (input3) through both
+ * eshkol_tensor_backward_dispatch(AD_NODE_LAYERNORM) and
+ * eshkol_tensor_backward_dispatch(AD_NODE_TENSOR_LAYERNORM) against FD.
  ******************************************************************************/
 
-void layernorm_forward_ref(const double* X, const double* G, double* Y,
-                           int64_t rows, int64_t width, double eps) {
+void layernorm_forward_ref(const double* X, const double* G, const double* B,
+                           double* Y, int64_t rows, int64_t width, double eps) {
     for (int64_t r = 0; r < rows; r++) {
         const double* xr = &X[r * width];
         double* yr = &Y[r * width];
@@ -209,14 +211,15 @@ void layernorm_forward_ref(const double* X, const double* G, double* Y,
         for (int64_t i = 0; i < width; i++) { double d = xr[i] - mean; var += d * d; }
         var /= (double)width;
         double inv = 1.0 / std::sqrt(var + eps);
-        for (int64_t i = 0; i < width; i++) yr[i] = (xr[i] - mean) * inv * G[i];
+        for (int64_t i = 0; i < width; i++)
+            yr[i] = (xr[i] - mean) * inv * G[i] + (B ? B[i] : 0.0);
     }
 }
 
-double layernorm_probe(const double* X, const double* G, const double* cotan,
-                       int64_t rows, int64_t width, double eps) {
+double layernorm_probe(const double* X, const double* G, const double* B,
+                       const double* cotan, int64_t rows, int64_t width, double eps) {
     std::vector<double> Y((size_t)(rows * width));
-    layernorm_forward_ref(X, G, Y.data(), rows, width, eps);
+    layernorm_forward_ref(X, G, B, Y.data(), rows, width, eps);
     double L = 0.0;
     for (int64_t i = 0; i < rows * width; i++) L += cotan[i] * Y[i];
     return L;
@@ -225,12 +228,13 @@ double layernorm_probe(const double* X, const double* G, const double* cotan,
 void layernorm_check() {
     constexpr int64_t rows = 3, width = 4;
     const double eps = 1e-5;
-    double X[rows * width], G[width], cotan[rows * width];
+    double X[rows * width], G[width], B[width], cotan[rows * width];
     for (auto& v : X) v = urand();
     for (auto& v : G) v = 1.0 + 0.3 * urand();
+    for (auto& v : B) v = 0.5 * urand();
     for (auto& v : cotan) v = urand();
 
-    /* -- native -- */
+    /* -- native via eshkol_tensor_backward_dispatch(AD_NODE_LAYERNORM) -- */
     double saved_mean[rows], saved_inv_std[rows];
     for (int64_t r = 0; r < rows; r++) {
         const double* xr = &X[r * width];
@@ -243,49 +247,290 @@ void layernorm_check() {
         saved_mean[r] = mean;
         saved_inv_std[r] = 1.0 / std::sqrt(var + eps);
     }
-    double dX_native[rows * width] = {0}, dG_native[width] = {0}, dBeta_scratch[width] = {0};
-    eshkol_backward_layernorm(cotan, X, saved_mean, saved_inv_std, G,
-                              dX_native, dG_native, dBeta_scratch, rows, width);
-
-    /* -- bridge -- */
-    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
     int64_t shX[2] = {rows, width}, shG[1] = {width};
+    ad_node_t* xn_native = var_node(X, shX, 2);
+    ad_node_t* gn_native = var_node(G, shG, 1);
+    ad_node_t* bn_native = var_node(B, shG, 1);
+    ad_node_t native_node{};
+    native_node.type = AD_NODE_LAYERNORM;
+    native_node.input1 = xn_native;
+    native_node.input2 = gn_native;
+    native_node.input3 = bn_native;
+    native_node.shape = shX;
+    native_node.ndim = 2;
+    native_node.params.conv_params = {rows, width, 0, 0};
+    void* saved[4] = {X, saved_mean, saved_inv_std, G};
+    native_node.saved_tensors = saved;
+    native_node.num_saved = 4;
+    double* native_cotan = zeros((size_t)(rows * width));
+    std::memcpy(native_cotan, cotan, sizeof(cotan));
+    native_node.tensor_gradient = native_cotan;
+    eshkol_tensor_backward_dispatch(&native_node);
+    const double* dX_native = (const double*)xn_native->tensor_gradient;
+    const double* dG_native = (const double*)gn_native->tensor_gradient;
+    const double* dB_native = (const double*)bn_native->tensor_gradient;
+
+    /* -- bridge via ad_tensor_layernorm -> eshkol_tensor_backward_dispatch -- */
+    ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, shX, 2);
     ad_node_t* gn = var_node(G, shG, 1);
-    ad_node_t* node = ad_tensor_layernorm(tape, xn, gn, nullptr, eps);
+    ad_node_t* bn = var_node(B, shG, 1);
+    ad_node_t* node = ad_tensor_layernorm(tape, xn, gn, bn, eps);
     double* cotan_buf = zeros((size_t)(rows * width));
     std::memcpy(cotan_buf, cotan, sizeof(cotan));
     node->tensor_gradient = cotan_buf;
     eshkol_tensor_backward_dispatch(node);
     const double* dX_bridge = (const double*)xn->tensor_gradient;
     const double* dG_bridge = (const double*)gn->tensor_gradient;
+    const double* dB_bridge = (const double*)bn->tensor_gradient;
 
-    double d_dX = max_abs_diff(dX_native, dX_bridge, rows * width);
-    double d_dG = max_abs_diff(dG_native, dG_bridge, width);
-    char detail[128];
-    std::snprintf(detail, sizeof detail, "max|dX diff|=%.3e max|dGamma diff|=%.3e", d_dX, d_dG);
-    report("layernorm: native vs bridge", d_dX < 1e-9 && d_dG < 1e-9, detail);
+    double d_dX = (dX_native && dX_bridge) ? max_abs_diff(dX_native, dX_bridge, rows * width) : -1.0;
+    double d_dG = (dG_native && dG_bridge) ? max_abs_diff(dG_native, dG_bridge, width) : -1.0;
+    double d_dB = (dB_native && dB_bridge) ? max_abs_diff(dB_native, dB_bridge, width) : -1.0;
+    char detail[160];
+    std::snprintf(detail, sizeof detail,
+                  "max|dX|=%.3e max|dGamma|=%.3e max|dBeta|=%.3e", d_dX, d_dG, d_dB);
+    report("layernorm: native vs bridge (x,gamma,beta)",
+           dX_native && dG_native && dB_native &&
+           dX_bridge && dG_bridge && dB_bridge &&
+           d_dX < 1e-9 && d_dG < 1e-9 && d_dB < 1e-9, detail);
 
     const double h = 1e-6;
-    std::vector<double> fdX((size_t)(rows * width)), fdG((size_t)width);
+    std::vector<double> fdX((size_t)(rows * width)), fdG((size_t)width), fdB((size_t)width);
     for (int64_t i = 0; i < rows * width; i++) {
         double save = X[i];
-        X[i] = save + h; double Lp = layernorm_probe(X, G, cotan, rows, width, eps);
-        X[i] = save - h; double Lm = layernorm_probe(X, G, cotan, rows, width, eps);
+        X[i] = save + h; double Lp = layernorm_probe(X, G, B, cotan, rows, width, eps);
+        X[i] = save - h; double Lm = layernorm_probe(X, G, B, cotan, rows, width, eps);
         X[i] = save;
         fdX[i] = (Lp - Lm) / (2.0 * h);
     }
     for (int64_t i = 0; i < width; i++) {
         double save = G[i];
-        G[i] = save + h; double Lp = layernorm_probe(X, G, cotan, rows, width, eps);
-        G[i] = save - h; double Lm = layernorm_probe(X, G, cotan, rows, width, eps);
+        G[i] = save + h; double Lp = layernorm_probe(X, G, B, cotan, rows, width, eps);
+        G[i] = save - h; double Lm = layernorm_probe(X, G, B, cotan, rows, width, eps);
         G[i] = save;
         fdG[i] = (Lp - Lm) / (2.0 * h);
     }
+    for (int64_t i = 0; i < width; i++) {
+        double save = B[i];
+        B[i] = save + h; double Lp = layernorm_probe(X, G, B, cotan, rows, width, eps);
+        B[i] = save - h; double Lm = layernorm_probe(X, G, B, cotan, rows, width, eps);
+        B[i] = save;
+        fdB[i] = (Lp - Lm) / (2.0 * h);
+    }
     double fd_dX = max_abs_diff(dX_native, fdX.data(), rows * width);
     double fd_dG = max_abs_diff(dG_native, fdG.data(), width);
-    std::snprintf(detail, sizeof detail, "max|dX-fd|=%.3e max|dGamma-fd|=%.3e", fd_dX, fd_dG);
-    report("layernorm: native vs finite differences", fd_dX < 1e-6 && fd_dG < 1e-6, detail);
+    double fd_dB = max_abs_diff(dB_native, fdB.data(), width);
+    std::snprintf(detail, sizeof detail,
+                  "max|dX-fd|=%.3e max|dGamma-fd|=%.3e max|dBeta-fd|=%.3e",
+                  fd_dX, fd_dG, fd_dB);
+    report("layernorm: native vs finite differences",
+           fd_dX < 1e-6 && fd_dG < 1e-6 && fd_dB < 1e-6, detail);
+}
+
+/*******************************************************************************
+ * BATCHNORM — per-feature y = gamma*(x-mean)/sqrt(var+eps) + beta
+ * Verifies dX (input1), dGamma (input2), AND dBeta (input3) through
+ * eshkol_tensor_backward_dispatch(AD_NODE_BATCHNORM) against FD.
+ ******************************************************************************/
+
+double batchnorm_probe(const double* X, const double* G, const double* B,
+                       const double* cotan, int64_t batch, int64_t feat, double eps) {
+    double L = 0.0;
+    for (int64_t f = 0; f < feat; f++) {
+        double mean = 0.0;
+        for (int64_t b = 0; b < batch; b++) mean += X[b * feat + f];
+        mean /= (double)batch;
+        double var = 0.0;
+        for (int64_t b = 0; b < batch; b++) {
+            double d = X[b * feat + f] - mean;
+            var += d * d;
+        }
+        var /= (double)batch;
+        double inv = 1.0 / std::sqrt(var + eps);
+        for (int64_t b = 0; b < batch; b++) {
+            double y = (X[b * feat + f] - mean) * inv * G[f] + B[f];
+            L += cotan[b * feat + f] * y;
+        }
+    }
+    return L;
+}
+
+void batchnorm_dispatch_check() {
+    constexpr int64_t batch = 4, feat = 3;
+    const double eps = 1e-5;
+    double X[batch * feat], G[feat], B[feat], cotan[batch * feat];
+    for (auto& v : X) v = urand();
+    for (auto& v : G) v = 1.0 + 0.3 * urand();
+    for (auto& v : B) v = 0.5 * urand();
+    for (auto& v : cotan) v = urand();
+
+    double saved_mean[feat], saved_inv_std[feat];
+    for (int64_t f = 0; f < feat; f++) {
+        double mean = 0.0;
+        for (int64_t b = 0; b < batch; b++) mean += X[b * feat + f];
+        mean /= (double)batch;
+        double var = 0.0;
+        for (int64_t b = 0; b < batch; b++) {
+            double d = X[b * feat + f] - mean;
+            var += d * d;
+        }
+        var /= (double)batch;
+        saved_mean[f] = mean;
+        saved_inv_std[f] = 1.0 / std::sqrt(var + eps);
+    }
+
+    int64_t shX[2] = {batch, feat}, shF[1] = {feat};
+    ad_node_t* xn = var_node(X, shX, 2);
+    ad_node_t* gn = var_node(G, shF, 1);
+    ad_node_t* bn = var_node(B, shF, 1);
+    ad_node_t node{};
+    node.type = AD_NODE_BATCHNORM;
+    node.input1 = xn;
+    node.input2 = gn;
+    node.input3 = bn;
+    node.shape = shX;
+    node.ndim = 2;
+    node.params.conv_params = {batch, feat, 0, 0};
+    void* saved[4] = {X, saved_mean, saved_inv_std, G};
+    node.saved_tensors = saved;
+    node.num_saved = 4;
+    double* cotan_buf = zeros((size_t)(batch * feat));
+    std::memcpy(cotan_buf, cotan, sizeof(cotan));
+    node.tensor_gradient = cotan_buf;
+    eshkol_tensor_backward_dispatch(&node);
+
+    const double* dX = (const double*)xn->tensor_gradient;
+    const double* dG = (const double*)gn->tensor_gradient;
+    const double* dB = (const double*)bn->tensor_gradient;
+
+    const double h = 1e-6;
+    std::vector<double> fdX((size_t)(batch * feat)), fdG((size_t)feat), fdB((size_t)feat);
+    for (int64_t i = 0; i < batch * feat; i++) {
+        double save = X[i];
+        X[i] = save + h; double Lp = batchnorm_probe(X, G, B, cotan, batch, feat, eps);
+        X[i] = save - h; double Lm = batchnorm_probe(X, G, B, cotan, batch, feat, eps);
+        X[i] = save;
+        fdX[i] = (Lp - Lm) / (2.0 * h);
+    }
+    for (int64_t i = 0; i < feat; i++) {
+        double save = G[i];
+        G[i] = save + h; double Lp = batchnorm_probe(X, G, B, cotan, batch, feat, eps);
+        G[i] = save - h; double Lm = batchnorm_probe(X, G, B, cotan, batch, feat, eps);
+        G[i] = save;
+        fdG[i] = (Lp - Lm) / (2.0 * h);
+    }
+    for (int64_t i = 0; i < feat; i++) {
+        double save = B[i];
+        B[i] = save + h; double Lp = batchnorm_probe(X, G, B, cotan, batch, feat, eps);
+        B[i] = save - h; double Lm = batchnorm_probe(X, G, B, cotan, batch, feat, eps);
+        B[i] = save;
+        fdB[i] = (Lp - Lm) / (2.0 * h);
+    }
+    double eX = dX ? max_abs_diff(dX, fdX.data(), batch * feat) : 1.0;
+    double eG = dG ? max_abs_diff(dG, fdG.data(), feat) : 1.0;
+    double eB = dB ? max_abs_diff(dB, fdB.data(), feat) : 1.0;
+    char detail[160];
+    std::snprintf(detail, sizeof detail,
+                  "max|dX-fd|=%.3e max|dGamma-fd|=%.3e max|dBeta-fd|=%.3e", eX, eG, eB);
+    report("batchnorm: dispatch (x,gamma,beta) vs FD",
+           dX && dG && dB && eX < 1e-6 && eG < 1e-6 && eB < 1e-6, detail);
+}
+
+/*******************************************************************************
+ * CONV2D — multi-batch, multi-channel cross-correlation with stride
+ * Verifies dInput (input1) AND dKernel (input2) through
+ * eshkol_tensor_backward_dispatch(AD_NODE_CONV2D) against central FD.
+ ******************************************************************************/
+
+double conv2d_probe(const double* X, const double* K, const double* cotan,
+                    int64_t N, int64_t Cin, int64_t Cout,
+                    int64_t in_h, int64_t in_w, int64_t k_h, int64_t k_w,
+                    int64_t sh, int64_t sw, int64_t out_h, int64_t out_w) {
+    double L = 0.0;
+    for (int64_t b = 0; b < N; b++) {
+        for (int64_t co = 0; co < Cout; co++) {
+            for (int64_t oh = 0; oh < out_h; oh++) {
+                for (int64_t ow = 0; ow < out_w; ow++) {
+                    double acc = 0.0;
+                    for (int64_t ci = 0; ci < Cin; ci++) {
+                        for (int64_t kh = 0; kh < k_h; kh++) {
+                            for (int64_t kw = 0; kw < k_w; kw++) {
+                                int64_t ih = oh * sh + kh;
+                                int64_t iw = ow * sw + kw;
+                                acc += X[((b * Cin + ci) * in_h + ih) * in_w + iw]
+                                     * K[((co * Cin + ci) * k_h + kh) * k_w + kw];
+                            }
+                        }
+                    }
+                    L += cotan[((b * Cout + co) * out_h + oh) * out_w + ow] * acc;
+                }
+            }
+        }
+    }
+    return L;
+}
+
+void conv2d_dispatch_check() {
+    constexpr int64_t N = 2, Cin = 2, Cout = 3;
+    constexpr int64_t in_h = 5, in_w = 6, k_h = 3, k_w = 2, sh = 1, sw = 2;
+    constexpr int64_t out_h = (in_h - k_h) / sh + 1;
+    constexpr int64_t out_w = (in_w - k_w) / sw + 1;
+    constexpr size_t in_total = (size_t)(N * Cin * in_h * in_w);
+    constexpr size_t k_total  = (size_t)(Cout * Cin * k_h * k_w);
+    constexpr size_t out_total = (size_t)(N * Cout * out_h * out_w);
+
+    std::vector<double> X(in_total), K(k_total), cotan(out_total);
+    for (auto& v : X) v = urand();
+    for (auto& v : K) v = urand();
+    for (auto& v : cotan) v = urand();
+
+    int64_t shX[4] = {N, Cin, in_h, in_w};
+    int64_t shK[4] = {Cout, Cin, k_h, k_w};
+    int64_t shO[4] = {N, Cout, out_h, out_w};
+    ad_node_t* xn = var_node(X.data(), shX, 4);
+    ad_node_t* kn = var_node(K.data(), shK, 4);
+    ad_node_t node{};
+    node.type = AD_NODE_CONV2D;
+    node.input1 = xn;
+    node.input2 = kn;
+    node.shape = shO;
+    node.ndim = 4;
+    int64_t* p = (int64_t*)&node.params;
+    p[0] = k_h; p[1] = k_w; p[2] = sh; p[3] = sw; p[4] = Cin; p[5] = Cout;
+    void* saved[2] = {X.data(), K.data()};
+    node.saved_tensors = saved;
+    node.num_saved = 2;
+    double* cotan_buf = zeros(out_total);
+    std::memcpy(cotan_buf, cotan.data(), out_total * sizeof(double));
+    node.tensor_gradient = cotan_buf;
+    eshkol_tensor_backward_dispatch(&node);
+
+    const double* dX = (const double*)xn->tensor_gradient;
+    const double* dK = (const double*)kn->tensor_gradient;
+
+    const double h = 1e-6;
+    std::vector<double> fdX(in_total), fdK(k_total);
+    for (size_t i = 0; i < in_total; i++) {
+        double save = X[i];
+        X[i] = save + h; double Lp = conv2d_probe(X.data(), K.data(), cotan.data(), N, Cin, Cout, in_h, in_w, k_h, k_w, sh, sw, out_h, out_w);
+        X[i] = save - h; double Lm = conv2d_probe(X.data(), K.data(), cotan.data(), N, Cin, Cout, in_h, in_w, k_h, k_w, sh, sw, out_h, out_w);
+        X[i] = save;
+        fdX[i] = (Lp - Lm) / (2.0 * h);
+    }
+    for (size_t i = 0; i < k_total; i++) {
+        double save = K[i];
+        K[i] = save + h; double Lp = conv2d_probe(X.data(), K.data(), cotan.data(), N, Cin, Cout, in_h, in_w, k_h, k_w, sh, sw, out_h, out_w);
+        K[i] = save - h; double Lm = conv2d_probe(X.data(), K.data(), cotan.data(), N, Cin, Cout, in_h, in_w, k_h, k_w, sh, sw, out_h, out_w);
+        K[i] = save;
+        fdK[i] = (Lp - Lm) / (2.0 * h);
+    }
+    double eX = dX ? max_abs_diff(dX, fdX.data(), in_total) : 1.0;
+    double eK = dK ? max_abs_diff(dK, fdK.data(), k_total) : 1.0;
+    char detail[128];
+    std::snprintf(detail, sizeof detail, "max|dX-fd|=%.3e max|dK-fd|=%.3e", eX, eK);
+    report("conv2d: dispatch (input,kernel) vs FD",
+           dX && dK && eX < 1e-6 && eK < 1e-6, detail);
 }
 
 /*******************************************************************************
@@ -869,6 +1114,8 @@ int main() {
 
     matmul_check();
     layernorm_check();
+    batchnorm_dispatch_check();
+    conv2d_dispatch_check();
     transpose_check();
     sum_check();
     attention_check();

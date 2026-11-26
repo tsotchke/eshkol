@@ -1,0 +1,307 @@
+;;; agent.session — Crash-safe durable session persistence over SQLite WAL.
+;;;
+;;; Provides atomic, fsync-backed (`PRAGMA journal_mode = WAL`,
+;;; `PRAGMA synchronous = FULL`) append-only event logs, chained SHA-256
+;;; tamper-detection digests, and transactional checkpoints for long-running
+;;; Eshkol agents. All writes execute inside `BEGIN IMMEDIATE` / `COMMIT`
+;;; transactions with explicit rollback on failure so interrupted processes
+;;; never leave partial session state.
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require agent.sqlite)
+(require agent.crypto)
+
+(provide session-open session-close with-session-store
+         session-create! session-exists? session-delete! session-list
+         session-append! session-events session-events-after
+         session-checkpoint! session-latest-checkpoint
+         session-verify!)
+
+(define (session-exec-checked! db sql label)
+  (let ((rc (sqlite-exec db sql)))
+    (if (not (= rc 0))
+        (error (string-append label ": " (sqlite-last-error db)))
+        #t)))
+
+(define (session-with-tx db thunk)
+  (session-exec-checked! db "BEGIN IMMEDIATE;" "session-begin")
+  (let ((committed #f))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (let ((result (thunk)))
+          (session-exec-checked! db "COMMIT;" "session-commit")
+          (set! committed #t)
+          result))
+      (lambda ()
+        (if (not committed)
+            (sqlite-exec db "ROLLBACK;"))))))
+
+(define (session-event-digest prev-hash role payload)
+  (sha256 (string-append prev-hash "|" role "|" payload)))
+
+(define (session-open path)
+  "Open or create a durable WAL-backed session store at PATH."
+  (let ((db (sqlite-open path)))
+    (if (< db 0)
+        (error "session-open: failed to open session database" path)
+        (begin
+          (session-exec-checked! db "PRAGMA journal_mode = WAL;" "session-pragma-wal")
+          (session-exec-checked! db "PRAGMA synchronous = FULL;" "session-pragma-sync")
+          (session-exec-checked! db "PRAGMA foreign_keys = ON;" "session-pragma-fk")
+          (session-exec-checked! db "PRAGMA busy_timeout = 5000;" "session-pragma-timeout")
+          (session-exec-checked!
+            db
+            "CREATE TABLE IF NOT EXISTS sessions (
+               session_id TEXT PRIMARY KEY,
+               metadata   TEXT NOT NULL,
+               meta_hash  TEXT NOT NULL,
+               last_seq   INTEGER NOT NULL DEFAULT 0,
+               head_hash  TEXT NOT NULL
+             );"
+            "session-ddl-sessions")
+          (session-exec-checked!
+            db
+            "CREATE TABLE IF NOT EXISTS session_events (
+               session_id TEXT NOT NULL,
+               seq        INTEGER NOT NULL,
+               role       TEXT NOT NULL,
+               payload    TEXT NOT NULL,
+               prev_hash  TEXT NOT NULL,
+               event_hash TEXT NOT NULL,
+               PRIMARY KEY (session_id, seq),
+               FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+             );"
+            "session-ddl-events")
+          (session-exec-checked!
+            db
+            "CREATE TABLE IF NOT EXISTS session_checkpoints (
+               session_id TEXT NOT NULL,
+               seq        INTEGER NOT NULL,
+               state_text TEXT NOT NULL,
+               state_hash TEXT NOT NULL,
+               PRIMARY KEY (session_id, seq),
+               FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+             );"
+            "session-ddl-checkpoints")
+          db))))
+
+(define (session-close db)
+  "Close a durable session store."
+  (sqlite-close db))
+
+(define (with-session-store path fn)
+  "Open session store at PATH, pass handle to FN, and close deterministically."
+  (let ((db (session-open path)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (fn db))
+      (lambda () (session-close db)))))
+
+(define (session-exists? db session-id)
+  "Return #t if SESSION-ID exists in DB."
+  (with-statement db
+    "SELECT 1 FROM sessions WHERE session_id = ?1 LIMIT 1;"
+    (lambda (stmt)
+      (sqlite-bind-text stmt 1 session-id)
+      (sqlite-step-checked stmt))))
+
+(define (session-create! db session-id metadata)
+  "Create a durable session record with SHA-256 genesis hash. Returns genesis hash."
+  (if (not (and (string? session-id) (> (string-length session-id) 0)))
+      (error "session-create!: session-id must be a non-empty string"))
+  (if (not (string? metadata))
+      (error "session-create!: metadata must be a string"))
+  (let* ((meta-hash (sha256 metadata))
+         (genesis (sha256 (string-append "genesis|" session-id "|" meta-hash))))
+    (session-with-tx db
+      (lambda ()
+        (with-statement db
+          "INSERT INTO sessions(session_id, metadata, meta_hash, last_seq, head_hash)
+           VALUES (?1, ?2, ?3, 0, ?4);"
+          (lambda (stmt)
+            (sqlite-bind-text stmt 1 session-id)
+            (sqlite-bind-text stmt 2 metadata)
+            (sqlite-bind-text stmt 3 meta-hash)
+            (sqlite-bind-text stmt 4 genesis)
+            (sqlite-step-checked stmt)))
+        genesis))))
+
+(define (session-delete! db session-id)
+  "Atomically delete SESSION-ID and all associated events and checkpoints."
+  (session-with-tx db
+    (lambda ()
+      (with-statement db
+        "DELETE FROM sessions WHERE session_id = ?1;"
+        (lambda (stmt)
+          (sqlite-bind-text stmt 1 session-id)
+          (sqlite-step-checked stmt)))
+      (sqlite-changes db))))
+
+(define (session-list db)
+  "Return list of (session-id metadata last-seq head-hash) ordered by session-id."
+  (with-statement db
+    "SELECT session_id, metadata, last_seq, head_hash
+     FROM sessions ORDER BY session_id ASC;"
+    (lambda (stmt)
+      (let loop ((acc '()))
+        (if (sqlite-step-checked stmt)
+            (loop (cons (list (sqlite-column-text stmt 0)
+                              (sqlite-column-text stmt 1)
+                              (sqlite-column-int stmt 2)
+                              (sqlite-column-text stmt 3))
+                        acc))
+            (reverse acc))))))
+
+(define (session-append! db session-id role payload)
+  "Atomically append a hash-chained event to SESSION-ID. Returns assigned seq."
+  (if (not (and (string? session-id) (string? role) (string? payload)))
+      (error "session-append!: session-id, role, and payload must be strings"))
+  (session-with-tx db
+    (lambda ()
+      (let ((head
+              (with-statement db
+                "SELECT last_seq, head_hash FROM sessions WHERE session_id = ?1;"
+                (lambda (stmt)
+                  (sqlite-bind-text stmt 1 session-id)
+                  (if (sqlite-step-checked stmt)
+                      (cons (sqlite-column-int stmt 0)
+                            (sqlite-column-text stmt 1))
+                      #f)))))
+        (if (not head)
+            (error "session-append!: unknown session-id" session-id))
+        (let* ((next-seq (+ (car head) 1))
+               (prev-hash (cdr head))
+               (evt-hash (session-event-digest prev-hash role payload)))
+          (with-statement db
+            "INSERT INTO session_events(session_id, seq, role, payload, prev_hash, event_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6);"
+            (lambda (stmt)
+              (sqlite-bind-text stmt 1 session-id)
+              (sqlite-bind-int stmt 2 next-seq)
+              (sqlite-bind-text stmt 3 role)
+              (sqlite-bind-text stmt 4 payload)
+              (sqlite-bind-text stmt 5 prev-hash)
+              (sqlite-bind-text stmt 6 evt-hash)
+              (sqlite-step-checked stmt)))
+          (with-statement db
+            "UPDATE sessions SET last_seq = ?1, head_hash = ?2 WHERE session_id = ?3;"
+            (lambda (stmt)
+              (sqlite-bind-int stmt 1 next-seq)
+              (sqlite-bind-text stmt 2 evt-hash)
+              (sqlite-bind-text stmt 3 session-id)
+              (sqlite-step-checked stmt)))
+          next-seq)))))
+
+(define (session-events-after db session-id after-seq)
+  "Return ordered list of (seq role payload event-hash) with seq > AFTER-SEQ."
+  (with-statement db
+    "SELECT seq, role, payload, event_hash
+     FROM session_events
+     WHERE session_id = ?1 AND seq > ?2
+     ORDER BY seq ASC;"
+    (lambda (stmt)
+      (sqlite-bind-text stmt 1 session-id)
+      (sqlite-bind-int stmt 2 after-seq)
+      (let loop ((acc '()))
+        (if (sqlite-step-checked stmt)
+            (loop (cons (list (sqlite-column-int stmt 0)
+                              (sqlite-column-text stmt 1)
+                              (sqlite-column-text stmt 2)
+                              (sqlite-column-text stmt 3))
+                        acc))
+            (reverse acc))))))
+
+(define (session-events db session-id)
+  "Return all events for SESSION-ID in sequence order."
+  (session-events-after db session-id 0))
+
+(define (session-checkpoint! db session-id state-text)
+  "Atomically persist a SHA-256 verified checkpoint at the session's current seq."
+  (if (not (and (string? session-id) (string? state-text)))
+      (error "session-checkpoint!: session-id and state-text must be strings"))
+  (session-with-tx db
+    (lambda ()
+      (let ((cur-seq
+              (with-statement db
+                "SELECT last_seq FROM sessions WHERE session_id = ?1;"
+                (lambda (stmt)
+                  (sqlite-bind-text stmt 1 session-id)
+                  (if (sqlite-step-checked stmt)
+                      (sqlite-column-int stmt 0)
+                      #f)))))
+        (if (not cur-seq)
+            (error "session-checkpoint!: unknown session-id" session-id))
+        (let ((state-hash (sha256 state-text)))
+          (with-statement db
+            "INSERT OR REPLACE INTO session_checkpoints(session_id, seq, state_text, state_hash)
+             VALUES (?1, ?2, ?3, ?4);"
+            (lambda (stmt)
+              (sqlite-bind-text stmt 1 session-id)
+              (sqlite-bind-int stmt 2 cur-seq)
+              (sqlite-bind-text stmt 3 state-text)
+              (sqlite-bind-text stmt 4 state-hash)
+              (sqlite-step-checked stmt)))
+          cur-seq)))))
+
+(define (session-latest-checkpoint db session-id)
+  "Return latest checkpoint as (seq state-text state-hash), or #f if none."
+  (with-statement db
+    "SELECT seq, state_text, state_hash
+     FROM session_checkpoints
+     WHERE session_id = ?1
+     ORDER BY seq DESC LIMIT 1;"
+    (lambda (stmt)
+      (sqlite-bind-text stmt 1 session-id)
+      (if (sqlite-step-checked stmt)
+          (list (sqlite-column-int stmt 0)
+                (sqlite-column-text stmt 1)
+                (sqlite-column-text stmt 2))
+          #f))))
+
+(define (session-verify! db session-id)
+  "Recompute the full SHA-256 event chain and checkpoint digest for SESSION-ID.
+   Returns #t iff metadata, every event link, head hash, and latest checkpoint match."
+  (let ((header
+          (with-statement db
+            "SELECT metadata, meta_hash, last_seq, head_hash
+             FROM sessions WHERE session_id = ?1;"
+            (lambda (stmt)
+              (sqlite-bind-text stmt 1 session-id)
+              (if (sqlite-step-checked stmt)
+                  (list (sqlite-column-text stmt 0)
+                        (sqlite-column-text stmt 1)
+                        (sqlite-column-int stmt 2)
+                        (sqlite-column-text stmt 3))
+                  #f)))))
+    (if (not header)
+        #f
+        (let* ((metadata (car header))
+               (meta-hash (cadr header))
+               (last-seq (caddr header))
+               (head-hash (cadddr header))
+               (expected-meta-hash (sha256 metadata))
+               (genesis (sha256 (string-append "genesis|" session-id "|" expected-meta-hash))))
+          (if (not (string=? meta-hash expected-meta-hash))
+              #f
+              (let ((events (session-events db session-id)))
+                (let loop ((evts events) (expected-seq 1) (running-hash genesis))
+                  (if (null? evts)
+                      (and (= (- expected-seq 1) last-seq)
+                           (string=? running-hash head-hash)
+                           (let ((cp (session-latest-checkpoint db session-id)))
+                             (if (not cp)
+                                 #t
+                                 (string=? (caddr cp) (sha256 (cadr cp))))))
+                      (let* ((e (car evts))
+                             (seq (car e))
+                             (role (cadr e))
+                             (payload (caddr e))
+                             (stored-hash (cadddr e))
+                             (computed (session-event-digest running-hash role payload)))
+                        (if (and (= seq expected-seq)
+                                 (string=? stored-hash computed))
+                            (loop (cdr evts) (+ expected-seq 1) computed)
+                            #f))))))))))

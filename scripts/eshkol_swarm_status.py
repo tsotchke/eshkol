@@ -67,8 +67,11 @@ def _load_events():
     return events
 
 
+KNOWN_TASK_STATES = ("pending", "active", "done", "blocked")
+
+
 def _by_status(tasks):
-    out = {"pending": 0, "active": 0, "done": 0, "blocked": 0}
+    out = dict.fromkeys(KNOWN_TASK_STATES, 0)
     for t in tasks:
         s = t.get("status", "pending")
         out[s] = out.get(s, 0) + 1
@@ -120,9 +123,9 @@ def _render_status(tasks, claims, events):
         out.append(f"- latest event: *(none)*")
     # Known states in their lifecycle order, then any state a task file names
     # that this script does not know yet.
-    known = [("pending", counts["pending"]), ("active", counts["active"]),
-             ("done", counts["done"]), ("blocked", counts["blocked"])]
-    extra = [(k, v) for k, v in counts.items() if k not in {"pending", "active", "done", "blocked"}]
+    known_set = set(KNOWN_TASK_STATES)
+    known = [(state, counts.get(state, 0)) for state in KNOWN_TASK_STATES]
+    extra = [(k, v) for k, v in counts.items() if k not in known_set]
     states_str = " ".join(f"{k}={v}" for k, v in known + extra if v > 0)
     out.append(f"- task states: `{states_str if states_str else 'all pending'}`")
     out.append("")

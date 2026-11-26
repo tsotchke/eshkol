@@ -14,6 +14,22 @@ if invoke("eshkol_test_timeout 10 python3 -c 'raise SystemExit(7)'") != 7:
     raise SystemExit("FAIL: normal exit status was not preserved")
 if invoke("eshkol_test_timeout .2 python3 -c 'import time; time.sleep(10)'") != 124:
     raise SystemExit("FAIL: timeout status was not 124")
+stdin_shell = (
+    f"trap \"\" TERM INT; source {shlex.quote(str(source))}; "
+    "ESHKOL_TEST_TIMEOUT_FORCE_PYTHON=1 eshkol_test_timeout 10 "
+    "python3 -c 'import sys; sys.stdout.write(sys.stdin.read())'"
+)
+stdin_res = subprocess.run(
+    ["bash", "-c", stdin_shell],
+    input="payload-through-watchdog\n",
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if stdin_res.returncode != 0 or stdin_res.stdout != "payload-through-watchdog\n":
+    raise SystemExit(
+        f"FAIL: redirected stdin was not preserved (rc={stdin_res.returncode}, out={stdin_res.stdout!r})"
+    )
 
 with tempfile.TemporaryDirectory(prefix="eshkol-timeout-cancel-") as td:
     heartbeat = pathlib.Path(td) / "heartbeat"

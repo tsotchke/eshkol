@@ -1,0 +1,266 @@
+{
+  "schema": 1,
+  "r2_sha256": "b3ae3c9894788c12bdc721c3d95d2fa7b9bd6dfaaee796a6130dda5c297676d6",
+  "authorization": {
+    "scope": {
+      "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+      "contract": [
+        "R2 CLI ABI header fold",
+        "emit ABI fingerprint",
+        [
+          [
+            "R2 image and live policy",
+            "exact",
+            "artifact-validated",
+            "Equal",
+            "bound"
+          ]
+        ]
+      ],
+      "permission": "execution",
+      "policy_generation": 0,
+      "artifact": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+      "dependencies": {
+        "live policy": "9ea3cc7310f223481b26b7f07e67d73af02bbd0b55d5c180a61141574767a9e7",
+        "loader": "7a3d511cd68ee7ba23e5bc1432081a1bd78f98f6413e0a4cb5dc7a657ac70c67",
+        "operation": "e58096f49461196479c7e36925ed89078c0d5f0b013180dead32c9c19ade918e",
+        "published policy": "9ea3cc7310f223481b26b7f07e67d73af02bbd0b55d5c180a61141574767a9e7",
+        "r2": "ee47e9fe9dfe6557309481f9c78c29ff4bb1acfa4a05f373612b7aeaf1500a35",
+        "sink": "c702c74a97bda701d7a3412b11573202b55507c938cc8ba07ae99b48e2a24f99"
+      }
+    },
+    "scope_id": "8a25548e44440805707c114846316ab81597a74cf0e055697b86d338522234cc",
+    "evidence": [
+      {
+        "id": "58916c6d920a03fff91bdd369d3b14c4d0cf86456ace993d9a1cad6d1baf6956",
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "claim": "R2 image and live policy",
+        "kind": "exact",
+        "level": "artifact-validated",
+        "artifact": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+        "subject": "R2 CLI ABI header fold",
+        "value": "bound",
+        "location": "R2 selection, operation and consumer generation",
+        "inputs": {
+          "r2": "ee47e9fe9dfe6557309481f9c78c29ff4bb1acfa4a05f373612b7aeaf1500a35",
+          "operation": "e58096f49461196479c7e36925ed89078c0d5f0b013180dead32c9c19ade918e",
+          "live policy": "9ea3cc7310f223481b26b7f07e67d73af02bbd0b55d5c180a61141574767a9e7",
+          "published policy": "9ea3cc7310f223481b26b7f07e67d73af02bbd0b55d5c180a61141574767a9e7",
+          "loader": "7a3d511cd68ee7ba23e5bc1432081a1bd78f98f6413e0a4cb5dc7a657ac70c67",
+          "sink": "c702c74a97bda701d7a3412b11573202b55507c938cc8ba07ae99b48e2a24f99"
+        }
+      }
+    ],
+    "status": "authorized",
+    "edges": {
+      "scope": "8a25548e44440805707c114846316ab81597a74cf0e055697b86d338522234cc",
+      "evidence": [
+        "58916c6d920a03fff91bdd369d3b14c4d0cf86456ace993d9a1cad6d1baf6956"
+      ]
+    },
+    "decision_id": "b55ae31a0dcd0b768a8aabc06055ff6b0cd79f472a916024294af54c767af024"
+  },
+  "execution": {
+    "kernel_exe_sha256": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+    "same_sealed_inode": true,
+    "argv": [
+      "eshkol-run",
+      "--abi-fingerprint"
+    ],
+    "cwd": "/",
+    "operation_sha256": "e58096f49461196479c7e36925ed89078c0d5f0b013180dead32c9c19ade918e",
+    "mapped_library_digests": [
+      "112a389c1452c3a51d2fb90960cce8380fd68354a8fbbfd217546e5af7b8ec89",
+      "113df9c73ec231ca44dc4162ef9df5009be40bf2a521be2a43267eb4bf77b31c",
+      "141487afd4eba9d2ec4c105d3c0963a9f4ec12edcedc118d36f36f0ffe468308",
+      "1594d475b771bf8cbb547f0e9b0c842ec37628d42c6747960b4d7c12a4cf4427",
+      "1dedc9fee9ca46eb73e1abc9d989093acbb5bf1bb474fe673af7f0591fa4b2d9",
+      "247da4d5d34a91cadcdd6282be4c4644fcb8af001334d2b8a82ecda435418cbf",
+      "37ccd41c2833973912ac386d1ed978a291086f1f4c0c66099124d74cc120e0c1",
+      "3ff80e190eb46aca63ef2c032c56a85da6eb4b55f070f435ecc4558c992e9c00",
+      "447fc3c2e7340c1e8a8bec71ff2474e788b991d2d95d5970bef44e21d3704c4e",
+      "4683f3623dc47a92e862dc3c8770caff81c9f4c7e116bb672fc439737b06d88a",
+      "5df4f4df42d76270bb6981fabc7c1fdccd8ad28a23d84d67f73203fb3f537667",
+      "81dbdf431b1d828bad9e2511b562310bd3f0bdb1bad998775406d2784426fd66",
+      "8a051ec0f53b36ed0cf8eae097c519aec8e329fa86e3992a20f8b8304dc174fc",
+      "8d06f393f4a93bcf9b81145a259524d66a95522a646bf8d7e05b6ffdf2e63dcc",
+      "a962d0383ce4c2a39a81017ffd9e5b51f32fd314e411c09ddd6da21593079a8c",
+      "b7df856495561b6ec07ca2a1646209cfd0dadba359d6c79d7f17e29c3a9b69f3",
+      "babdd0d2612d7bd2f0099ac8c82714702fb5bb47b1e2e6fdba819c97c79fc0fd",
+      "bb376813876bb214535bbbdac70f2c0c4b00baecb81557dab78a79518248df06",
+      "c1404396288e178c8db2f30203cb8150e4d2c14cacee9a2883e0092f45399cc8",
+      "da84c5153ecbfb9cd3df51e81c868353c718f04a126c7bf579569cc3ee13a982",
+      "df621c68dbfed7e843434ef2faedb9f4d4b0543ad161e9a55eaf4d4ce2443176",
+      "e01b1ce7be2987f3b8560e26d0df2623f9dd5cec17be923ae28a785bc0d32d50",
+      "e4ad21c203d8e8b9b7f49071311339af6b438026e1ad236403e3b379b022f23d",
+      "f7379c9331de9d66c03b439a070e8056b7419fc4213320d647952b998d026b30",
+      "fc9d43b2f6c20e53b009238f767c5b949d202389e20de9e202ea684b4ba3729a",
+      "ff0825e113603c3866680d5d52216bc6d8eedf3a59f52a0aef67ff01994db128"
+    ],
+    "sealed_write_errno": "EPERM",
+    "replacement_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+    "loader_manifest": {
+      "libpng16.so.16": "b7df856495561b6ec07ca2a1646209cfd0dadba359d6c79d7f17e29c3a9b69f3",
+      "libjpeg.so.8": "112a389c1452c3a51d2fb90960cce8380fd68354a8fbbfd217546e5af7b8ec89",
+      "libwebp.so.7": "3ff80e190eb46aca63ef2c032c56a85da6eb4b55f070f435ecc4558c992e9c00",
+      "libLLVM.so.21.1": "8a051ec0f53b36ed0cf8eae097c519aec8e329fa86e3992a20f8b8304dc174fc",
+      "libblas.so.3": "babdd0d2612d7bd2f0099ac8c82714702fb5bb47b1e2e6fdba819c97c79fc0fd",
+      "libssl.so.3": "113df9c73ec231ca44dc4162ef9df5009be40bf2a521be2a43267eb4bf77b31c",
+      "libcrypto.so.3": "da84c5153ecbfb9cd3df51e81c868353c718f04a126c7bf579569cc3ee13a982",
+      "libstdc++.so.6": "ff0825e113603c3866680d5d52216bc6d8eedf3a59f52a0aef67ff01994db128",
+      "libm.so.6": "df621c68dbfed7e843434ef2faedb9f4d4b0543ad161e9a55eaf4d4ce2443176",
+      "libgcc_s.so.1": "fc9d43b2f6c20e53b009238f767c5b949d202389e20de9e202ea684b4ba3729a",
+      "libc.so.6": "e01b1ce7be2987f3b8560e26d0df2623f9dd5cec17be923ae28a785bc0d32d50",
+      "ld-linux-x86-64.so.2": "8d06f393f4a93bcf9b81145a259524d66a95522a646bf8d7e05b6ffdf2e63dcc",
+      "libz.so.1": "141487afd4eba9d2ec4c105d3c0963a9f4ec12edcedc118d36f36f0ffe468308",
+      "libffi.so.8": "247da4d5d34a91cadcdd6282be4c4644fcb8af001334d2b8a82ecda435418cbf",
+      "libedit.so.2": "81dbdf431b1d828bad9e2511b562310bd3f0bdb1bad998775406d2784426fd66",
+      "libzstd.so.1": "5df4f4df42d76270bb6981fabc7c1fdccd8ad28a23d84d67f73203fb3f537667",
+      "libxml2.so.2": "37ccd41c2833973912ac386d1ed978a291086f1f4c0c66099124d74cc120e0c1",
+      "libopenblas.so.0": "1dedc9fee9ca46eb73e1abc9d989093acbb5bf1bb474fe673af7f0591fa4b2d9",
+      "libtinfo.so.6": "1594d475b771bf8cbb547f0e9b0c842ec37628d42c6747960b4d7c12a4cf4427",
+      "libbsd.so.0": "e4ad21c203d8e8b9b7f49071311339af6b438026e1ad236403e3b379b022f23d",
+      "libicuuc.so.70": "4683f3623dc47a92e862dc3c8770caff81c9f4c7e116bb672fc439737b06d88a",
+      "liblzma.so.5": "447fc3c2e7340c1e8a8bec71ff2474e788b991d2d95d5970bef44e21d3704c4e",
+      "libgfortran.so.5": "f7379c9331de9d66c03b439a070e8056b7419fc4213320d647952b998d026b30",
+      "libmd.so.0": "bb376813876bb214535bbbdac70f2c0c4b00baecb81557dab78a79518248df06",
+      "libicudata.so.70": "c1404396288e178c8db2f30203cb8150e4d2c14cacee9a2883e0092f45399cc8",
+      "libquadmath.so.0": "a962d0383ce4c2a39a81017ffd9e5b51f32fd314e411c09ddd6da21593079a8c"
+    },
+    "stdout": [
+      "symbol=eshkol_object_abi_v1_h8_s0_a8",
+      "version=1",
+      "header_size=8",
+      "subtype_offset=0",
+      "payload_align=8",
+      "runtime_header_size=8"
+    ]
+  },
+  "rollback": {
+    "previous": {
+      "action": [
+        "eshkol-run",
+        "--abi-fingerprint"
+      ],
+      "generation": 0
+    },
+    "current": {
+      "action": [
+        "eshkol-run",
+        "--abi-fingerprint"
+      ],
+      "generation": 1
+    },
+    "fresh_decision": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "R2 CLI ABI header fold",
+          "emit ABI fingerprint",
+          [
+            [
+              "R2 image and live policy",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "bound"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+        "dependencies": {
+          "live policy": "311444fee5553d48bb4a41163532328d3fc57749a50ce98ebfca2eb8a82fc8dc",
+          "loader": "7a3d511cd68ee7ba23e5bc1432081a1bd78f98f6413e0a4cb5dc7a657ac70c67",
+          "operation": "e58096f49461196479c7e36925ed89078c0d5f0b013180dead32c9c19ade918e",
+          "published policy": "9ea3cc7310f223481b26b7f07e67d73af02bbd0b55d5c180a61141574767a9e7",
+          "r2": "ee47e9fe9dfe6557309481f9c78c29ff4bb1acfa4a05f373612b7aeaf1500a35",
+          "sink": "c702c74a97bda701d7a3412b11573202b55507c938cc8ba07ae99b48e2a24f99"
+        }
+      },
+      "scope_id": "e854ef07a15d9874a0ce2092301469eb7f99c3779b77e3b58325520f90ad1db9",
+      "evidence": [
+        {
+          "id": "a597a8c5ada28449c070f9d730ca0ebbfe365e7ef9ce96ddbce1ecde5a3886bf",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "R2 image and live policy",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+          "subject": "R2 CLI ABI header fold",
+          "value": "stale policy",
+          "location": "consumer generation",
+          "inputs": {
+            "r2": "ee47e9fe9dfe6557309481f9c78c29ff4bb1acfa4a05f373612b7aeaf1500a35",
+            "operation": "e58096f49461196479c7e36925ed89078c0d5f0b013180dead32c9c19ade918e",
+            "live policy": "311444fee5553d48bb4a41163532328d3fc57749a50ce98ebfca2eb8a82fc8dc",
+            "published policy": "9ea3cc7310f223481b26b7f07e67d73af02bbd0b55d5c180a61141574767a9e7",
+            "loader": "7a3d511cd68ee7ba23e5bc1432081a1bd78f98f6413e0a4cb5dc7a657ac70c67",
+            "sink": "c702c74a97bda701d7a3412b11573202b55507c938cc8ba07ae99b48e2a24f99"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "e854ef07a15d9874a0ce2092301469eb7f99c3779b77e3b58325520f90ad1db9",
+        "evidence": [
+          "a597a8c5ada28449c070f9d730ca0ebbfe365e7ef9ce96ddbce1ecde5a3886bf"
+        ]
+      },
+      "rule": "R2 image and live policy",
+      "reason": "contract violated",
+      "required": "bound",
+      "observed": "stale policy",
+      "location": "consumer generation",
+      "decision_id": "478aecad32286bd660f00c8b02b0d651e1316595f5307d33cc6b9790e736d36e"
+    }
+  },
+  "refused": {
+    "spent": "unknown or already consumed permission",
+    "restored checkpoint with old ticket": "artifact or authorization scope changed",
+    "restored checkpoint with current ticket": "artifact or authorization scope changed",
+    "ABI ticket presented to heat execution": "unknown or already consumed permission",
+    "same operation on different issuer": "unknown or already consumed permission"
+  },
+  "forbidden_native_launches": 0,
+  "restored_current_policy_ran": true,
+  "translator_rejections": [
+    "module directive",
+    "extra statement",
+    "decorator",
+    "parameter annotation",
+    "default",
+    "variadic",
+    "keyword argument",
+    "loop else",
+    "side effect before release",
+    "identity comparison",
+    "unchecked operand",
+    "additional conjunct",
+    "different return value",
+    "type comment"
+  ],
+  "kernel_refinement": {
+    "python_sha256": "034b347e758c694d60dc11553fe090b2d1002b32048307b4e1aa48292910c139",
+    "extracted_sha256": "a491a461e0534d696527b37aec45cd5eada73a8e12e93a9bf1d53f82e53519e2",
+    "extractor_sha256": "a91cd26130e6aff22e7b3a82e5cce810a2e7145e0715d6e757de3936b950a025",
+    "proof_sha256": "511bde89f8409b55c4518c4f7d645574f3f814485baef4690e37738af0dee221",
+    "rejected_mutants": [
+      "decision_refines",
+      "release_refines"
+    ],
+    "cpython_against_lean_model": {
+      "decision_cases": 121,
+      "release_cases": 81
+    }
+  },
+  "axioms": [
+    "'Verificatum.Authority.release_sound' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.authorize_sound' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.consume_bound' does not depend on any axioms",
+    "'Verificatum.Authority.decision_refines' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.decision_authorizes' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.release_refines' depends on axioms: [propext]"
+  ]
+}

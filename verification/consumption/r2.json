@@ -1,0 +1,130 @@
+{
+  "reference_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "selected_sha256": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+  "site": 1194736,
+  "required_return": 8,
+  "certificate": {
+    "format": "verificatum.native-effect/1",
+    "abi": "Linux x86-64 SysV",
+    "root": "main/abi-header-size-call",
+    "providers": [
+      {
+        "symbol": "main/abi-header-size-call",
+        "entry": 1194736,
+        "bytes": 5,
+        "sha256": "b21eb47ed651aacdc6b5372433e58b6dc8ec1cc5cf16bd1445bf167427b655b7"
+      },
+      {
+        "symbol": "eshkol_abi_runtime_header_size",
+        "entry": 1241984,
+        "bytes": 10,
+        "sha256": "b0dce6798bbd2bff704804cc9f31d69c539a1b333efa878bedd156531142d6dc"
+      }
+    ],
+    "footprint": {
+      "base": "entry.RSP",
+      "offset": -8,
+      "bytes": 8
+    },
+    "outcomes": [
+      "return"
+    ],
+    "reference_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+    "selected_sha256": "8229f4c7a12610a3b5b33c3534d68c9394f86740d545c0b8bf99542fdda0261d",
+    "layout": "eshkol_object_abi_v1_h8_s0_a8",
+    "authority_origin": {
+      "format": "verificatum.authority-origin/1",
+      "claims": {
+        "abi-layout": {
+          "kind": "abi-layout",
+          "subject": "main/abi-header-size-call",
+          "value": "eshkol_object_abi_v1_h8_s0_a8",
+          "authority": "reviewed-release-profile",
+          "target": "reviewed-linux-x86_64-sysv-release",
+          "witness_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e",
+          "source_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e"
+        },
+        "abi-accessor-result": {
+          "kind": "abi-accessor-result",
+          "subject": "main/abi-header-size-call",
+          "value": "eshkol_abi_runtime_header_size=8",
+          "authority": "reviewed-release-profile",
+          "target": "reviewed-linux-x86_64-sysv-release",
+          "witness_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e",
+          "source_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e"
+        },
+        "native-call-effect-policy": {
+          "kind": "native-call-effect-policy",
+          "subject": "main/abi-header-size-call",
+          "value": "{\"footprint\": {\"base\": \"entry.RSP\", \"bytes\": 8, \"offset\": -8}, \"outcomes\": [\"return\"]}",
+          "authority": "reviewed-call-rule",
+          "target": "reviewed-linux-x86_64-sysv-release",
+          "witness_sha256": "cd6b935c80608843840c6ca6d10bb6ee9de42efd97eff2c8f0bf0ea239ead494",
+          "source_sha256": "cd6b935c80608843840c6ca6d10bb6ee9de42efd97eff2c8f0bf0ea239ead494"
+        }
+      }
+    },
+    "target": "reviewed-linux-x86_64-sysv-release",
+    "required_return": 8,
+    "proof_sources": {
+      "LoopInterval": "3294cfe6c2eb4306ad1773c7f1ce203b213103df06981c758bffa716abe2d693",
+      "NativeEffect": "612ab8feacbfbb4e634fc80ef26b2a7ca9576214811852f889425a66cb7fb69a",
+      "Select": "0fef5b4e087ae063f7d899637824aede423f5957a3623eb82df844aed4961b9e",
+      "AbiHeader": "cd6b935c80608843840c6ca6d10bb6ee9de42efd97eff2c8f0bf0ea239ead494"
+    }
+  },
+  "authority_origin": {
+    "format": "verificatum.authority-origin/1",
+    "claims": {
+      "abi-layout": {
+        "kind": "abi-layout",
+        "subject": "main/abi-header-size-call",
+        "value": "eshkol_object_abi_v1_h8_s0_a8",
+        "authority": "reviewed-release-profile",
+        "target": "reviewed-linux-x86_64-sysv-release",
+        "witness_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e",
+        "source_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e"
+      },
+      "abi-accessor-result": {
+        "kind": "abi-accessor-result",
+        "subject": "main/abi-header-size-call",
+        "value": "eshkol_abi_runtime_header_size=8",
+        "authority": "reviewed-release-profile",
+        "target": "reviewed-linux-x86_64-sysv-release",
+        "witness_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e",
+        "source_sha256": "a75bb81217cf16e672ca86fd7233e49c8f31e02c55fd436a15338dcd9db6fd6e"
+      },
+      "native-call-effect-policy": {
+        "kind": "native-call-effect-policy",
+        "subject": "main/abi-header-size-call",
+        "value": "{\"footprint\": {\"base\": \"entry.RSP\", \"bytes\": 8, \"offset\": -8}, \"outcomes\": [\"return\"]}",
+        "authority": "reviewed-call-rule",
+        "target": "reviewed-linux-x86_64-sysv-release",
+        "witness_sha256": "cd6b935c80608843840c6ca6d10bb6ee9de42efd97eff2c8f0bf0ea239ead494",
+        "source_sha256": "cd6b935c80608843840c6ca6d10bb6ee9de42efd97eff2c8f0bf0ea239ead494"
+      }
+    }
+  },
+  "controls": {
+    "missing certificate": "fallback: missing evidence",
+    "wrong returned constant": "fallback: instruction contract",
+    "wrong required result": "fallback: required result binding",
+    "another site's certificate": "fallback: provider binding",
+    "legacy certificate without origin": "fallback: authority origin",
+    "second edit": "fallback: change outside call"
+  },
+  "fingerprint": [
+    "symbol=eshkol_object_abi_v1_h8_s0_a8",
+    "version=1",
+    "header_size=8",
+    "subtype_offset=0",
+    "payload_align=8",
+    "runtime_header_size=8"
+  ],
+  "proof_sources": {
+    "LoopInterval": "3294cfe6c2eb4306ad1773c7f1ce203b213103df06981c758bffa716abe2d693",
+    "NativeEffect": "612ab8feacbfbb4e634fc80ef26b2a7ca9576214811852f889425a66cb7fb69a",
+    "Select": "0fef5b4e087ae063f7d899637824aede423f5957a3623eb82df844aed4961b9e",
+    "AbiHeader": "cd6b935c80608843840c6ca6d10bb6ee9de42efd97eff2c8f0bf0ea239ead494"
+  }
+}

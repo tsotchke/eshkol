@@ -1388,6 +1388,8 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_gamma, feature_size);
+            if (node->input3)
+                eshkol_accumulate_tensor_grad(node->input3, grad_beta, feature_size);
         }
         break;
     }
@@ -1413,6 +1415,8 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
                 eshkol_accumulate_tensor_grad(node->input1, grad_input, input_total);
             if (node->input2)
                 eshkol_accumulate_tensor_grad(node->input2, grad_gamma, feature_size);
+            if (node->input3)
+                eshkol_accumulate_tensor_grad(node->input3, grad_beta, feature_size);
         }
         break;
     }

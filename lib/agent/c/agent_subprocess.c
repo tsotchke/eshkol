@@ -10,8 +10,13 @@
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
@@ -37,6 +42,20 @@
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>  /* kqueue / EVFILT_PROC NOTE_EXIT — zero-thread waiter */
 #endif
+#if defined(__linux__)
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/socket.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#if defined(__has_include)
+#if __has_include(<linux/landlock.h>)
+#include <linux/landlock.h>
+#define ESHKOL_HAS_LINUX_LANDLOCK 1
+#endif
+#endif
+#endif
 #else
 #include <windows.h>
 #include <io.h>
@@ -45,6 +64,7 @@
 #endif
 
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+__attribute__((weak)) int eshkol_capability_runtime_is_active(void) { return 0; }
 #ifdef __APPLE__
 extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak_import));
 extern void eshkol_capability_enforce(const char* capability, const char* operation) __attribute__((weak_import));
@@ -206,6 +226,210 @@ static int process_handle_live(eshkol_subprocess_t* proc, const char* operation)
 #ifndef _WIN32
 /* Forward decl — body below in the Pipe Draining section. */
 static void set_pipes_nonblocking(eshkol_subprocess_t* proc);
+
+/* ── Kernel-Enforced Subprocess Sandbox (Darwin Seatbelt / Linux seccomp+Landlock) ── */
+typedef struct {
+    int active;
+    int strict;
+    int deny_network;
+    int deny_file_write;
+    const char* write_dir;
+} eshkol_subproc_sandbox_spec_t;
+
+static int sandbox_path_is_clean(const char* path) {
+    if (!path || path[0] != '/') return 0;
+    for (const char* p = path; *p; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') return 0;
+    }
+    return 1;
+}
+
+static void eshkol_resolve_subproc_sandbox(eshkol_subproc_sandbox_spec_t* spec) {
+    memset(spec, 0, sizeof(*spec));
+    const char* mode = getenv("ESHKOL_SUBPROC_OS_SANDBOX");
+    if (mode && *mode) {
+        if (strcmp(mode, "0") == 0 || strcmp(mode, "off") == 0 || strcmp(mode, "none") == 0) {
+            return;
+        }
+        if (strcmp(mode, "network") == 0 || strcmp(mode, "no-network") == 0) {
+            spec->active = 1;
+            spec->strict = 1;
+            spec->deny_network = 1;
+        } else if (strcmp(mode, "readonly") == 0 || strcmp(mode, "no-write") == 0 ||
+                   strcmp(mode, "strict") == 0 || strcmp(mode, "1") == 0) {
+            spec->active = 1;
+            spec->strict = 1;
+            spec->deny_network = 1;
+            spec->deny_file_write = 1;
+        }
+    } else if (eshkol_capability_runtime_is_active && eshkol_capability_runtime_is_active() &&
+               eshkol_capability_runtime_allows) {
+        if (!eshkol_capability_runtime_allows("network")) spec->deny_network = 1;
+        if (!eshkol_capability_runtime_allows("file-write")) spec->deny_file_write = 1;
+        if (spec->deny_network || spec->deny_file_write) {
+            spec->active = 1;
+            spec->strict = 1;
+        }
+    }
+    if (spec->active) {
+        const char* wdir = getenv("ESHKOL_SUBPROC_SANDBOX_WRITE_DIR");
+        if (sandbox_path_is_clean(wdir)) {
+            spec->write_dir = wdir;
+        }
+    }
+}
+
+#if defined(__APPLE__)
+static char* eshkol_build_seatbelt_profile(const eshkol_subproc_sandbox_spec_t* spec) {
+    if (!spec || !spec->active) return NULL;
+    char resolved[4096];
+    const char* real_wdir = NULL;
+    if (spec->deny_file_write && spec->write_dir &&
+        realpath(spec->write_dir, resolved) != NULL && sandbox_path_is_clean(resolved)) {
+        real_wdir = resolved;
+    }
+    size_t cap = 512 + (spec->write_dir ? strlen(spec->write_dir) + 64 : 0) +
+                 (real_wdir ? strlen(real_wdir) + 64 : 0);
+    char* prof = (char*)malloc(cap);
+    if (!prof) return NULL;
+    size_t pos = 0;
+    pos += (size_t)snprintf(prof + pos, cap - pos, "(version 1)(allow default)");
+    if (spec->deny_network) {
+        pos += (size_t)snprintf(prof + pos, cap - pos, "(deny network*)");
+    }
+    if (spec->deny_file_write) {
+        pos += (size_t)snprintf(
+            prof + pos, cap - pos,
+            "(deny file-write*)"
+            "(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\")"
+            " (literal \"/dev/dtracehelper\") (literal \"/dev/tty\"))");
+        if (spec->write_dir) {
+            pos += (size_t)snprintf(
+                prof + pos, cap - pos,
+                "(allow file-write* (subpath \"%s\"))", spec->write_dir);
+        }
+        if (real_wdir && (!spec->write_dir || strcmp(real_wdir, spec->write_dir) != 0)) {
+            pos += (size_t)snprintf(
+                prof + pos, cap - pos,
+                "(allow file-write* (subpath \"%s\"))", real_wdir);
+        }
+    }
+    if (pos >= cap) {
+        free(prof);
+        return NULL;
+    }
+    return prof;
+}
+
+static char** eshkol_wrap_argv_with_seatbelt(char* const* orig_argv, const char* profile) {
+    if (!orig_argv || !orig_argv[0] || !profile) return NULL;
+    size_t count = 0;
+    while (orig_argv[count]) count++;
+    char** wrapped = (char**)calloc(count + 4, sizeof(char*));
+    if (!wrapped) return NULL;
+    wrapped[0] = (char*)"/usr/bin/sandbox-exec";
+    wrapped[1] = (char*)"-p";
+    wrapped[2] = (char*)profile;
+    for (size_t i = 0; i < count; ++i) {
+        wrapped[i + 3] = orig_argv[i];
+    }
+    wrapped[count + 3] = NULL;
+    return wrapped;
+}
+#endif /* __APPLE__ */
+
+#if defined(__linux__)
+static int eshkol_apply_linux_sandbox(const eshkol_subproc_sandbox_spec_t* spec) {
+    if (!spec || !spec->active) return 0;
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        return -1;
+    }
+    if (spec->deny_network) {
+#if defined(__x86_64__) || defined(__aarch64__)
+#if defined(__x86_64__)
+        const uint32_t expected_arch = AUDIT_ARCH_X86_64;
+#else
+        const uint32_t expected_arch = AUDIT_ARCH_AARCH64;
+#endif
+        struct sock_filter filter[] = {
+            /* Load architecture */
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (offsetof(struct seccomp_data, arch))),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, expected_arch, 1, 0),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+            /* Load syscall nr */
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (offsetof(struct seccomp_data, nr))),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_socket, 0, 5),
+            /* Load socket domain (args[0] low 32 bits on little-endian) */
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, (offsetof(struct seccomp_data, args[0]))),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 3, 0),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 2, 0),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_PACKET, 1, 0),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 0, 1),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EACCES & SECCOMP_RET_DATA)),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        };
+        struct sock_fprog prog = {
+            .len = (unsigned short)(sizeof(filter) / sizeof(filter[0])),
+            .filter = filter,
+        };
+        if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0) {
+            if (spec->strict) return -1;
+        }
+#endif
+    }
+#if defined(ESHKOL_HAS_LINUX_LANDLOCK) && defined(__NR_landlock_create_ruleset)
+    if (spec->deny_file_write) {
+        long abi = syscall(__NR_landlock_create_ruleset, NULL, 0,
+                           LANDLOCK_CREATE_RULESET_VERSION);
+        if (abi < 1) {
+            if (spec->strict) return -1;
+            return 0;
+        }
+        uint64_t write_access =
+            LANDLOCK_ACCESS_FS_WRITE_FILE |
+            LANDLOCK_ACCESS_FS_REMOVE_DIR |
+            LANDLOCK_ACCESS_FS_REMOVE_FILE |
+            LANDLOCK_ACCESS_FS_MAKE_CHAR |
+            LANDLOCK_ACCESS_FS_MAKE_DIR |
+            LANDLOCK_ACCESS_FS_MAKE_REG |
+            LANDLOCK_ACCESS_FS_MAKE_SOCK |
+            LANDLOCK_ACCESS_FS_MAKE_FIFO |
+            LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+            LANDLOCK_ACCESS_FS_MAKE_SYM;
+#ifdef LANDLOCK_ACCESS_FS_TRUNCATE
+        if (abi >= 3) write_access |= LANDLOCK_ACCESS_FS_TRUNCATE;
+#endif
+        struct landlock_ruleset_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.handled_access_fs = write_access;
+        int ruleset_fd = (int)syscall(__NR_landlock_create_ruleset, &attr, sizeof(attr), 0);
+        if (ruleset_fd < 0) {
+            if (spec->strict) return -1;
+            return 0;
+        }
+        const char* allow_paths[2] = {"/dev/null", spec->write_dir};
+        for (size_t i = 0; i < 2; ++i) {
+            if (!allow_paths[i]) continue;
+            int pfd = open(allow_paths[i], O_PATH | O_CLOEXEC);
+            if (pfd >= 0) {
+                struct landlock_path_beneath_attr beneath;
+                memset(&beneath, 0, sizeof(beneath));
+                beneath.allowed_access = (i == 0) ? LANDLOCK_ACCESS_FS_WRITE_FILE : write_access;
+                beneath.parent_fd = pfd;
+                (void)syscall(__NR_landlock_add_rule, ruleset_fd,
+                              LANDLOCK_RULE_PATH_BENEATH, &beneath, 0);
+                close(pfd);
+            }
+        }
+        int rrc = (int)syscall(__NR_landlock_restrict_self, ruleset_fd, 0);
+        close(ruleset_fd);
+        if (rrc != 0 && spec->strict) return -1;
+    }
+#endif
+    return 0;
+}
+#endif /* __linux__ */
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1049,7 +1273,36 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
      * posix_spawn_file_actions_addchdir_np is 14.0+ only and we
      * still want to compile on 13.x. */
     extern char** environ;
+    eshkol_subproc_sandbox_spec_t sandbox;
+    eshkol_resolve_subproc_sandbox(&sandbox);
+#if defined(__APPLE__)
+    char* seatbelt_profile = NULL;
+    if (sandbox.active) {
+        if (access("/usr/bin/sandbox-exec", X_OK) != 0) {
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
+            close(stdout_pipe[0]); close(stdout_pipe[1]);
+            close(stderr_pipe[0]); close(stderr_pipe[1]);
+            process_abort_spawn(proc);
+            errno = EACCES;
+            return NULL;
+        }
+        seatbelt_profile = eshkol_build_seatbelt_profile(&sandbox);
+        if (!seatbelt_profile) {
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
+            close(stdout_pipe[0]); close(stdout_pipe[1]);
+            close(stderr_pipe[0]); close(stderr_pipe[1]);
+            process_abort_spawn(proc);
+            errno = ENOMEM;
+            return NULL;
+        }
+    }
+#endif
     int no_chdir = (!cwd || !cwd[0] || (cwd[0] == '.' && cwd[1] == '\0'));
+#if defined(__linux__)
+    if (sandbox.active) no_chdir = 0;
+#endif
     pid_t pid;
     int spawn_errno = 0;
 
@@ -1105,18 +1358,48 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
         char** child_env = eshkol_scrub_environ();
         char** env_to_pass = child_env ? child_env : environ;
         if (split_argv) {
-            spawn_errno = posix_spawnp(&pid, split_argv[0], &fa, attr_ptr,
-                                       split_argv, env_to_pass);
+#if defined(__APPLE__)
+            if (seatbelt_profile) {
+                char** sb_argv = eshkol_wrap_argv_with_seatbelt(split_argv, seatbelt_profile);
+                if (!sb_argv) {
+                    spawn_errno = ENOMEM;
+                } else {
+                    spawn_errno = posix_spawn(&pid, "/usr/bin/sandbox-exec", &fa, attr_ptr,
+                                              sb_argv, env_to_pass);
+                    free(sb_argv);
+                }
+            } else
+#endif
+            {
+                spawn_errno = posix_spawnp(&pid, split_argv[0], &fa, attr_ptr,
+                                           split_argv, env_to_pass);
+            }
             free(split_argv[0]); /* underlying buffer from strdup */
             free(split_argv);
         } else {
-            char* sh_argv[] = {(char*)"sh", (char*)"-c", (char*)command, NULL};
-            spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, attr_ptr, sh_argv, env_to_pass);
+            char* sh_argv[] = {(char*)"/bin/sh", (char*)"-c", (char*)command, NULL};
+#if defined(__APPLE__)
+            if (seatbelt_profile) {
+                char** sb_argv = eshkol_wrap_argv_with_seatbelt(sh_argv, seatbelt_profile);
+                if (!sb_argv) {
+                    spawn_errno = ENOMEM;
+                } else {
+                    spawn_errno = posix_spawn(&pid, "/usr/bin/sandbox-exec", &fa, attr_ptr,
+                                              sb_argv, env_to_pass);
+                    free(sb_argv);
+                }
+            } else
+#endif
+            {
+                spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, attr_ptr, sh_argv, env_to_pass);
+            }
         }
         free(child_env);
         posix_spawn_file_actions_destroy(&fa);
 #if defined(__APPLE__)
         posix_spawnattr_destroy(&attr);
+        free(seatbelt_profile);
+        seatbelt_profile = NULL;
 #endif
 
         if (spawn_errno != 0) {
@@ -1135,6 +1418,9 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
+#if defined(__APPLE__)
+            free(seatbelt_profile);
+#endif
             process_abort_spawn(proc);
             return NULL;
         }
@@ -1157,12 +1443,28 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
             close(stdout_pipe[1]);
             close(stderr_pipe[1]);
 
-            if (chdir(cwd) != 0) _exit(126);
+            if (cwd && cwd[0] && !(cwd[0] == '.' && cwd[1] == '\0')) {
+                if (chdir(cwd) != 0) _exit(126);
+            }
             eshkol_unset_env_injection_vars();  /* audit C6 */
             eshkol_apply_subproc_rlimits();     /* audit H7 */
+#if defined(__linux__)
+            if (sandbox.active && eshkol_apply_linux_sandbox(&sandbox) != 0) _exit(126);
+#endif
+#if defined(__APPLE__)
+            if (seatbelt_profile) {
+                execl("/usr/bin/sandbox-exec", "/usr/bin/sandbox-exec",
+                      "-p", seatbelt_profile, "/bin/sh", "-c", command, (char*)NULL);
+                _exit(127);
+            }
+#endif
             execlp("/bin/sh", "sh", "-c", command, (char*)NULL);
             _exit(127);
         }
+#if defined(__APPLE__)
+        free(seatbelt_profile);
+        seatbelt_profile = NULL;
+#endif
     }
 
     /* Parent process */
@@ -1398,6 +1700,32 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
      * much rarer path for Noesis/Moonlab-style benchmark loops,
      * which run from the current dir. */
     extern char** environ;
+    eshkol_subproc_sandbox_spec_t sandbox;
+    eshkol_resolve_subproc_sandbox(&sandbox);
+#if defined(__APPLE__)
+    char* seatbelt_profile = NULL;
+    if (sandbox.active) {
+        if (access("/usr/bin/sandbox-exec", X_OK) != 0) {
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
+            close(stdout_pipe[0]); close(stdout_pipe[1]);
+            close(stderr_pipe[0]); close(stderr_pipe[1]);
+            free(argv[0]); free(argv); process_abort_spawn(proc);
+            errno = EACCES;
+            return NULL;
+        }
+        seatbelt_profile = eshkol_build_seatbelt_profile(&sandbox);
+        if (!seatbelt_profile) {
+            if (!stdin_null) { close(stdin_pipe[0]); close(stdin_pipe[1]); }
+            else close(devnull_fd);
+            close(stdout_pipe[0]); close(stdout_pipe[1]);
+            close(stderr_pipe[0]); close(stderr_pipe[1]);
+            free(argv[0]); free(argv); process_abort_spawn(proc);
+            errno = ENOMEM;
+            return NULL;
+        }
+    }
+#endif
     pid_t pid;
     int spawn_errno = 0;
 
@@ -1407,6 +1735,9 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
      * ~2 ms inside eshkol-run — beats Python's subprocess.run. */
     int no_chdir = (!cwd_arg || !cwd_arg[0] ||
                     (cwd_arg[0] == '.' && cwd_arg[1] == '\0'));
+#if defined(__linux__)
+    if (sandbox.active) no_chdir = 0;
+#endif
     char** owned_env = NULL;
     char** child_env = NULL;
     char** env_to_pass = environ;
@@ -1417,6 +1748,9 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
+#if defined(__APPLE__)
+            free(seatbelt_profile);
+#endif
             free(argv[0]); free(argv); process_abort_spawn(proc);
             errno = EINVAL;
             return NULL;
@@ -1467,7 +1801,21 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
         }
 #endif
 
-        spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, env_to_pass);
+#if defined(__APPLE__)
+        if (seatbelt_profile) {
+            char** sb_argv = eshkol_wrap_argv_with_seatbelt(argv, seatbelt_profile);
+            if (!sb_argv) {
+                spawn_errno = ENOMEM;
+            } else {
+                spawn_errno = posix_spawn(&pid, "/usr/bin/sandbox-exec", &fa, attr_ptr,
+                                          sb_argv, env_to_pass);
+                free(sb_argv);
+            }
+        } else
+#endif
+        {
+            spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, env_to_pass);
+        }
         free(child_env);
         child_env = NULL;
         free_env_overlay(owned_env);
@@ -1475,6 +1823,8 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
         posix_spawn_file_actions_destroy(&fa);
 #if defined(__APPLE__)
         posix_spawnattr_destroy(&attr);
+        free(seatbelt_profile);
+        seatbelt_profile = NULL;
 #else
         if (group_attr_init) posix_spawnattr_destroy(&group_attr);
 #endif
@@ -1501,6 +1851,9 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
             else close(devnull_fd);
             close(stdout_pipe[0]); close(stdout_pipe[1]);
             close(stderr_pipe[0]); close(stderr_pipe[1]);
+#if defined(__APPLE__)
+            free(seatbelt_profile);
+#endif
             free_env_overlay(owned_env);
             free(argv[0]); free(argv); process_abort_spawn(proc);
             return NULL;
@@ -1518,10 +1871,27 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
             dup2(stdout_pipe[1], STDOUT_FILENO);
             dup2(stderr_pipe[1], STDERR_FILENO);
             close(stdout_pipe[1]); close(stderr_pipe[1]);
-            if (chdir(cwd_arg) != 0) _exit(126);
+            if (cwd_arg && cwd_arg[0] && !(cwd_arg[0] == '.' && cwd_arg[1] == '\0')) {
+                if (chdir(cwd_arg) != 0) _exit(126);
+            }
             if (flags & 2) (void)setpgid(0, 0);
             eshkol_unset_env_injection_vars();  /* audit C6 */
             eshkol_apply_subproc_rlimits();     /* audit H7 */
+#if defined(__linux__)
+            if (sandbox.active && eshkol_apply_linux_sandbox(&sandbox) != 0) _exit(126);
+#endif
+#if defined(__APPLE__)
+            if (seatbelt_profile) {
+                char** sb_argv = eshkol_wrap_argv_with_seatbelt(argv, seatbelt_profile);
+                if (!sb_argv) _exit(126);
+                if (packed_env && packed_env[0]) {
+                    execve("/usr/bin/sandbox-exec", sb_argv, env_to_pass);
+                } else {
+                    execv("/usr/bin/sandbox-exec", sb_argv);
+                }
+                _exit(127);
+            }
+#endif
             if (packed_env && packed_env[0]) {
                 execvp_with_env(argv[0], argv, env_to_pass);
             } else {
@@ -1530,6 +1900,10 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
             _exit(127);
         }
         if (pid > 0 && (flags & 2)) (void)setpgid(pid, pid);
+#if defined(__APPLE__)
+        free(seatbelt_profile);
+        seatbelt_profile = NULL;
+#endif
         free_env_overlay(owned_env);
         owned_env = NULL;
     }

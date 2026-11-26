@@ -813,8 +813,15 @@ probe_unverified v14_distribution_pjrt_client_spike \
     'PENDING R7: requires source-bound evidence for the PJRT client spike requirement'
 probe_unverified v14_distribution_xla_multi_device_single_host \
     'PENDING R7: requires source-bound multi-device single-host XLA execution evidence'
-probe_unverified v14_distribution_native_collectives_over_sockets \
-    'PENDING R7: requires source-bound native collective-over-sockets execution evidence'
+if [ -x "$BUILD_DIR_PATH/native_collectives_socket_test" ]; then
+    probe_run v14_distribution_native_collectives_over_sockets \
+        'Native deterministic collectives over v1.4.0 sockets (Owner R7): 4-rank Barrier, Broadcast, AllReduce (SUM/PROD/MIN/MAX), AllGather, ReduceScatter bit-identical 0-ULP with zero FD leaks' \
+        '"$BUILD_DIR_PATH/native_collectives_socket_test"' \
+        '^PASS: native_collectives_socket_test'
+else
+    probe_unverified v14_distribution_native_collectives_over_sockets \
+        'requires native_collectives_socket_test executable in BUILD_DIR'
+fi
 
 echo
 echo "Passed: $((PROBE_TOTAL - PROBE_FAILURES))"

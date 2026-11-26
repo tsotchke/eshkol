@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "operation": "reviewed ABI fingerprint",
+  "fixed": {
+    "executable": "R2 digest; sealed immutable bytes through exec",
+    "argv_env_cwd": "consumer-owned exact values at exec",
+    "inherited_descriptors": "stdin /dev/null; separate stdout and stderr pipes; sealed image descriptor only",
+    "policy": "live owner generation and matching published record at release and result publication",
+    "startup_libraries": "resolved SONAME and content manifest at release; selected library paths checked again before result publication",
+    "output": "six reviewed ABI fields on successful exit with empty stderr"
+  },
+  "permitted_to_vary": {
+    "process_identity": "PID, descriptor numbers, inode numbers, virtual addresses",
+    "timing": "scheduling and pipe delivery within the sink timeout"
+  },
+  "outside": {
+    "later_dynamic_loading": "no lifetime admission rule for dlopen or executable mappings",
+    "other_files": "loader caches, preload configuration and other native file reads",
+    "ipc": "shared memory, additional descriptors opened by the child and external services",
+    "kernel": "kernel interfaces, interpreter behavior, hardware and time between checks"
+  }
+}

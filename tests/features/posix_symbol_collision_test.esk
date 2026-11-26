@@ -1,0 +1,34 @@
+;; Verify that top-level Scheme procedures named after POSIX/libc functions
+;; (`stat`, `open`, `time`, `free`, `read`, `write`) never shadow libc symbols
+;; invoked by the Eshkol runtime (e.g. `file-exists?`, `directory-exists?`).
+
+(require stdlib)
+(require core.files)
+
+(define (stat key)
+  (string-append "scheme-stat:" key))
+
+(define (open x)
+  (+ x 100))
+
+(define (time x)
+  (* x 2))
+
+(define (free x)
+  (- x 1))
+
+(define ok-stat (string=? (stat "probe") "scheme-stat:probe"))
+(define ok-open (= (open 23) 123))
+(define ok-time (= (time 21) 42))
+(define ok-free (= (free 10) 9))
+;; Exercise runtime POSIX stat(2) through file-exists? / directory-exists?.
+(define ok-posix (and (directory-exists? ".") (not (file-exists? "nonexistent-posix-probe-987654"))))
+
+(if (and ok-stat ok-open ok-time ok-free ok-posix)
+    (begin
+      (display "PASS: posix_symbol_collision_test")
+      (newline))
+    (begin
+      (display "FAIL: posix_symbol_collision_test")
+      (newline)
+      (exit 1)))

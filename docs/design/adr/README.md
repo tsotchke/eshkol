@@ -82,6 +82,7 @@ documentation hub lists the same records in
 | [0057](0057-nested-differentiation-in-every-mode.md) | Nested differentiation in every mode | Proposed | 2026-11-08 | `esh_taylor_t::epoch`, `eshkol_ad_nested_seed` in `lib/core/runtime_taylor.c`; `emitForwardColumnGradient`, `emitPassLiveAt` in `lib/backend/autodiff_codegen.cpp`; `eshkol_ad_linear_record` in `lib/core/runtime_autodiff.cpp`; gate `tests/ad/nested_depth_matrix_test.esk` |
 | [0058](0058-exact-tensor-element-type.md) | The exact tensor element type: exact rationals in tensor storage, exact linear-algebra kernels, contagion by operand dtype | Proposed — implemented on native JIT and AOT; the bytecode VM refuses the dtype explicitly | 2026-11-08 | v1.4.0 |
 | [0060](0060-program-entry-and-physical-names.md) | One program-entry rule and Eshkol-owned physical names (implements ADR-0006 section 5) | Proposed | 2026-09-26 | v1.4.0 |
+| [0061](0061-eshkol-verificatum.md) | Eshkol Verificatum — Independent Proof Checking and Verified Refinement | Proposed | 2026-11-20 | Restricted R0 [proof replay](../../../verification/lean-kernel/replay.py) |
 
 ## Numbering
 

@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semantics per lexical scope. (#930)
 - Complete receipt contracts, modularity records, and single-name runtime event
   records across release-evidence gates. (#933)
+- Integrate the v1.4.0-connection wave covering exact mathematics, networking,
+  numeric precision, compiler hardening, and verification gates. (#845)
+- Add Track B networking, O(1) event-loop scaling, bounded native HTTP SSE
+  streaming, Darwin Seatbelt and Linux seccomp/Landlock sandboxing, deterministic
+  socket collectives, Metal FP64 crossover dispatch, Verificatum ADR-0061 proof
+  replay, and shared-library tail-transfer export ordering. (#956)
 
 
 ### Added

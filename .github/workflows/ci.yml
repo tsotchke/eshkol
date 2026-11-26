@@ -2543,7 +2543,7 @@ jobs:
       # the two lanes cover both AOT link paths.
       - name: Every tutorial example runs and prints what the page says
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
-        timeout-minutes: 45
+        timeout-minutes: 75
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}

@@ -2630,6 +2630,8 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   # builtins in system_builtins.c are compiled into libeshkol-runtime.a and
   # every AOT/JIT user link resolves against that archive alone.
   lib/core/event_loop.c
+  lib/core/http_event_server.c
+  lib/core/collectives.c
 )
 
 # The selected event-loop backend is appended rather than listed above because
@@ -3678,7 +3680,10 @@ add_custom_command(
   # on PATH: the hosted runners happen to carry one, a plain Windows node does
   # not, and the stack request has no meaning there anyway (Windows sizes the
   # thread stack at link time).
+  # The compiler finds the trusted stdlib root separately from ESHKOL_PATH.
+  # Name the shipped modules explicitly for builds outside the checkout.
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
+          "ESHKOL_LIB_DIR=${CMAKE_CURRENT_SOURCE_DIR}/lib"
           ${STDLIB_CODEGEN_LAUNCHER}
           $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib"
           --embed-stdlib-identity=${ESHKOL_STDLIB_IDENTITY_SYMBOL} "${STDLIB_SOURCE}"
@@ -3755,9 +3760,6 @@ install(FILES inc/eshkol/backend/tensorcore_codegen.h
 if(TARGET eshkol-runtime)
   install(TARGETS eshkol-runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 endif()
-if(TARGET eshkol-repl-lib)
-  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
-endif()
 install(FILES cmake/FindEshkol.cmake cmake/EshkolCompile.cmake
         DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/cmake)
 # The full (require ...)/(import ...) module-source tree, preserving lib/'s
@@ -3797,6 +3799,7 @@ option(BUILD_REPL "Build the interactive REPL" ON)
 if(REPL_SRC)
   # REPL library
   add_library(eshkol-repl-lib STATIC ${REPL_SRC})
+  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
   target_include_directories(eshkol-repl-lib
     PUBLIC
@@ -9208,11 +9211,32 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_include_directories(eshkol-subprocess-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eshkol-subprocess-stream-test PRIVATE Threads::Threads)
     if(APPLE)
-        target_link_options(eshkol-subprocess-stream-test PRIVATE "-Wl,-U,_eshkol_capability_enforce")
+        target_link_options(eshkol-subprocess-stream-test PRIVATE
+            "-Wl,-U,_eshkol_capability_enforce"
+            "-Wl,-U,_eshkol_capability_runtime_is_active")
     endif()
     add_test(NAME agent-subprocess-stream COMMAND eshkol-subprocess-stream-test)
     set_tests_properties(agent-subprocess-stream PROPERTIES
         TIMEOUT 60 LABELS "resource;subprocess;stream")
+
+    add_executable(eshkol-subprocess-sandbox-test
+        tests/agent/subprocess_sandbox_test.c
+        lib/agent/c/agent_subprocess.c
+        lib/core/capability_policy.cpp
+        lib/core/resource_lease.c
+        lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC}
+        lib/core/runtime_handle.cpp)
+    target_compile_features(eshkol-subprocess-sandbox-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-subprocess-sandbox-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-subprocess-sandbox-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-subprocess-sandbox-test PRIVATE Threads::Threads)
+    if(APPLE)
+        target_link_options(eshkol-subprocess-sandbox-test PRIVATE "-Wl,-U,_eshkol_capability_enforce")
+    endif()
+    add_test(NAME agent-subprocess-sandbox COMMAND eshkol-subprocess-sandbox-test)
+    set_tests_properties(agent-subprocess-sandbox PROPERTIES
+        TIMEOUT 60 LABELS "resource;subprocess;security")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(eshkol-subprocess-stream-watch-failure-test
             tests/agent/subprocess_stream_watch_failure_test.c
@@ -11266,7 +11290,9 @@ endif()
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/cuda_matmul_budget_test.cpp")
     add_executable(cuda_matmul_budget_test tests/backend/cuda_matmul_budget_test.cpp)
     target_compile_features(cuda_matmul_budget_test PRIVATE cxx_std_17)
-    target_include_directories(cuda_matmul_budget_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    target_include_directories(cuda_matmul_budget_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     add_test(NAME cuda_matmul_budget_test COMMAND cuda_matmul_budget_test)
 endif()
 
@@ -14555,7 +14581,8 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # HTTP server / WebSocket / local-socket primitives.  The C source
         # selects Winsock/AF_UNIX or POSIX sockets at compile time.
         if(EXISTS "${AGENT_FFI_DIR}/agent_http_server.c")
-            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_server.c)
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_server.c
+                ${AGENT_FFI_DIR}/agent_http_sse_stream.c)
         endif()
 
         # Additional agent FFI primitives.  Each source owns its platform
@@ -15556,6 +15583,13 @@ if(ESHKOL_PYTHON_BINDINGS)
                 ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "SKIP:|FAIL:")
+            add_test(NAME python_bindings_exactness_boundary
+                     COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/python_exactness_boundary_test.py")
+            set_tests_properties(python_bindings_exactness_boundary PROPERTIES
+                ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "SKIP:|FAIL:")
         endif()
     else()
         message(STATUS "Python bindings: pybind11 not found, skipping")
@@ -15636,6 +15670,44 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 60
         PASS_REGULAR_EXPRESSION "PASS: http_response_framing_test"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    if(UNIX AND NOT EMSCRIPTEN)
+        add_executable(http_event_loop_10k_gate
+            tests/protocol/http_event_loop_10k_gate.c
+            lib/core/http_event_server.c
+            lib/core/event_loop.c
+            ${ESHKOL_EVENT_LOOP_SRC}
+            lib/core/runtime_handle.cpp)
+        target_include_directories(http_event_loop_10k_gate PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core")
+        target_link_libraries(http_event_loop_10k_gate PRIVATE Threads::Threads)
+        add_test(NAME http_event_loop_10k_gate COMMAND http_event_loop_10k_gate)
+        set_tests_properties(http_event_loop_10k_gate PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: http_event_loop_10k_gate"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+
+        add_executable(native_collectives_socket_test
+            tests/protocol/native_collectives_socket_test.c
+            lib/core/collectives.c
+            lib/core/net.c
+            lib/core/resource_lease.c
+            lib/core/event_loop.c
+            ${ESHKOL_EVENT_LOOP_SRC}
+            lib/core/runtime_handle.cpp)
+        target_compile_features(native_collectives_socket_test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(native_collectives_socket_test PRIVATE _GNU_SOURCE)
+        target_include_directories(native_collectives_socket_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core")
+        target_link_libraries(native_collectives_socket_test PRIVATE Threads::Threads)
+        add_test(NAME native_collectives_socket_test COMMAND native_collectives_socket_test)
+        set_tests_properties(native_collectives_socket_test PROPERTIES
+            TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "PASS: native_collectives_socket_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
 
     add_test(
         NAME security_hardening_jit
@@ -17965,6 +18037,82 @@ endif()
 set(ESHKOL_PLATFORM_STAGE tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
 
+# Bounded native HTTP SSE stream tests (PR #954).
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Threads REQUIRED)
+    add_executable(http_sse_adapter_scaffold_test
+        tests/agent/http_sse_adapter_scaffold_test.c
+        tests/agent/http_sse_fixture_support.c
+        lib/agent/c/agent_http_server.c
+        lib/core/resource_lease.c
+        lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC}
+        lib/core/runtime_handle.cpp)
+    target_compile_features(http_sse_adapter_scaffold_test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(http_sse_adapter_scaffold_test PRIVATE _GNU_SOURCE ESHKOL_SSE_ADAPTER_TESTING)
+    target_include_directories(http_sse_adapter_scaffold_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(http_sse_adapter_scaffold_test PRIVATE Threads::Threads)
+    add_test(NAME http_sse_adapter_scaffold_test COMMAND http_sse_adapter_scaffold_test)
+    set_tests_properties(http_sse_adapter_scaffold_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc;sse")
+
+    add_executable(http_sse_stream_test
+        tests/agent/http_sse_stream_test.c
+        tests/agent/http_sse_fixture_support.c
+        lib/agent/c/agent_http_sse_stream.c
+        lib/agent/c/agent_http_server.c
+        lib/agent/c/agent_sse.c
+        lib/core/resource_lease.c lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC} lib/core/runtime_handle.cpp)
+    target_compile_features(http_sse_stream_test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(http_sse_stream_test PRIVATE _GNU_SOURCE)
+    target_include_directories(http_sse_stream_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/lib/agent/c)
+    target_link_libraries(http_sse_stream_test PRIVATE Threads::Threads)
+    add_test(NAME http_sse_stream_test COMMAND http_sse_stream_test)
+    set_tests_properties(http_sse_stream_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc;sse")
+
+    if(ESHKOL_PYTHON3_EXECUTABLE AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE))
+        add_test(NAME http_sse_mixed_loop_test
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/run_http_sse_mixed_loop_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(http_sse_mixed_loop_test PROPERTIES
+            TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "resource;ipc;sse")
+
+        if(TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+            foreach(mode jit aot)
+                add_test(NAME http_sse_scope_${mode}
+                    COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/http_sse_scope.py"
+                        --runner $<TARGET_FILE:eshkol-run>
+                        --link-dir "${CMAKE_CURRENT_BINARY_DIR}" --mode ${mode})
+                set_tests_properties(http_sse_scope_${mode} PROPERTIES
+                    TIMEOUT 300 LABELS "resource;ipc;sse"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+            endforeach()
+            add_test(NAME agent_session_persistence_jit
+                COMMAND ${CMAKE_COMMAND} -E env
+                    "ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                    "ESHKOL_SESSION_TEST_DB=${CMAKE_CURRENT_BINARY_DIR}/agent_session_persistence_jit.db"
+                    $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/session_persistence_test.esk")
+            set_tests_properties(agent_session_persistence_jit PROPERTIES
+                TIMEOUT 120 LABELS "agent;session"
+                PASS_REGULAR_EXPRESSION "PASS: session_persistence_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        endif()
+    endif()
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    add_test(NAME repl_stdlib_global_resolution_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/repl_stdlib_global_resolution_test.sh"
+            $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(repl_stdlib_global_resolution_test PROPERTIES
+        TIMEOUT 120 LABELS "repl;compiler"
+        PASS_REGULAR_EXPRESSION "PASS: repl_stdlib_global_resolution_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
 # Every harness that resolves the compiler, the VM or the compile database by
 # itself reads BUILD_DIR and falls back to a directory literally named "build".
 # Name this build tree for all of them at once, so the suite runs from any

@@ -10,6 +10,9 @@
 
 (provide http-init http-shutdown http-has-ssl?
          http-get http-post http-request
+         http-get-bounded http-request-bounded
+         make-http-cache http-cache? http-cache-clear! http-cache-size
+         http-get-cached http-fetch-provenance
          http-stream-open http-stream-next http-stream-done? http-stream-error
          http-stream-close sse-event-type sse-event-data sse-event-id
          sse-event-retry-ms sse-event-free)
@@ -45,6 +48,9 @@
 
 ;; Error string
 (extern ptr http-error-string i32 :real qllm_http_error_string)
+
+;; Content digest for response provenance (always linked in libeshkol-runtime)
+(extern i32 http-sha256-raw ptr i64 ptr i64 :real eshkol_sha256)
 
 ;; ============================================================================
 ;; FFI Declarations — SSE streaming
@@ -323,3 +329,122 @@
 (define (sse-event-id event) (sse-event-field event "id" ""))
 (define (sse-event-retry-ms event) (sse-event-field event "retry-ms" -1))
 (define (sse-event-free event) #t)  ;; Native storage is freed by http-stream-next.
+
+;; ============================================================================
+;; Bounded Responses, Task-Local Cache, and Provenance Records
+;; ============================================================================
+
+(define (http-sha256-hex data)
+  (let ((buf (make-string 65 #\space)))
+    (let ((rc (http-sha256-raw data (string-byte-length data) buf 65)))
+      (if (= rc 0) (substring buf 0 64) #f))))
+
+(define (http-check-max-bytes max-bytes)
+  (unless (and (integer? max-bytes) (exact? max-bytes) (> max-bytes 0))
+    (error "http: max-bytes must be a positive exact integer" max-bytes)))
+
+(define (http-request-bounded method url headers body max-bytes . timeout)
+  "Perform HTTP request enforcing an explicit upper bound on response bytes.
+   Raises an error if the response body exceeds max-bytes.
+   Returns (status-code . body-string) or #f on transport error."
+  (http-check-max-bytes max-bytes)
+  (let ((res (apply http-request method url headers body timeout)))
+    (if (not res)
+        #f
+        (let ((nbytes (string-byte-length (cdr res))))
+          (if (> nbytes max-bytes)
+              (error "http: response body exceeds max-bytes budget"
+                     (list url nbytes max-bytes))
+              res)))))
+
+(define (http-get-bounded url max-bytes . timeout)
+  "Perform HTTP GET enforcing an explicit max-bytes response ceiling."
+  (apply http-request-bounded "GET" url '() "" max-bytes timeout))
+
+(define (make-http-cache . opts)
+  "Create a task-local HTTP response cache: (make-http-cache [max-entries [ttl-ms]])."
+  (let ((max-entries (if (pair? opts) (car opts) 128))
+        (ttl-ms (if (and (pair? opts) (pair? (cdr opts))) (cadr opts) 300000)))
+    (unless (and (integer? max-entries) (exact? max-entries) (> max-entries 0))
+      (error "http-cache: max-entries must be a positive exact integer" max-entries))
+    (unless (and (integer? ttl-ms) (exact? ttl-ms) (>= ttl-ms 0))
+      (error "http-cache: ttl-ms must be a nonnegative exact integer" ttl-ms))
+    (vector 'http-cache (make-hash-table) max-entries ttl-ms 0)))
+
+(define (http-cache? obj)
+  (and (vector? obj)
+       (= (vector-length obj) 5)
+       (eq? (vector-ref obj 0) 'http-cache)))
+
+(define (http-cache-size cache)
+  (unless (http-cache? cache)
+    (error "http-cache-size: expected an http-cache" cache))
+  (vector-ref cache 4))
+
+(define (http-cache-clear! cache)
+  (unless (http-cache? cache)
+    (error "http-cache-clear!: expected an http-cache" cache))
+  (vector-set! cache 1 (make-hash-table))
+  (vector-set! cache 4 0)
+  #t)
+
+(define (http-fetch-provenance cache url max-bytes . timeout)
+  "Fetch url with an explicit max-bytes ceiling and optional task-local cache.
+   Returns an alist carrying url, status, body, bytes, sha256, fetched-ns,
+   and cached (#t on cache hit, #f on live fetch), or #f on transport error."
+  (http-check-max-bytes max-bytes)
+  (when (and cache (not (http-cache? cache)))
+    (error "http-fetch-provenance: expected an http-cache or #f" cache))
+  (let* ((now-ns (current-time-ns))
+         (table (if cache (vector-ref cache 1) #f))
+         (max-entries (if cache (vector-ref cache 2) 0))
+         (ttl-ns (if cache (* (vector-ref cache 3) 1000000) 0))
+         (hit (if (and table (hash-has-key? table url))
+                  (hash-ref table url)
+                  #f))
+         (hit-valid
+          (and hit
+               (<= (cdr (assoc "bytes" hit)) max-bytes)
+               (or (= ttl-ns 0)
+                   (<= (- now-ns (cdr (assoc "fetched-ns" hit))) ttl-ns)))))
+    (if hit-valid
+        (list (cons "url" (cdr (assoc "url" hit)))
+              (cons "status" (cdr (assoc "status" hit)))
+              (cons "body" (cdr (assoc "body" hit)))
+              (cons "bytes" (cdr (assoc "bytes" hit)))
+              (cons "sha256" (cdr (assoc "sha256" hit)))
+              (cons "fetched-ns" (cdr (assoc "fetched-ns" hit)))
+              (cons "cached" #t))
+        (let ((res (apply http-get-bounded url max-bytes timeout)))
+          (if (not res)
+              #f
+              (let* ((status (car res))
+                     (body (cdr res))
+                     (nbytes (string-byte-length body))
+                     (digest (http-sha256-hex body))
+                     (fetched (current-time-ns))
+                     (record (list (cons "url" url)
+                                   (cons "status" status)
+                                   (cons "body" body)
+                                   (cons "bytes" nbytes)
+                                   (cons "sha256" digest)
+                                   (cons "fetched-ns" fetched)
+                                   (cons "cached" #f))))
+                (when (and cache (= status 200))
+                  (let ((cur-count (vector-ref cache 4))
+                        (existed (hash-has-key? table url)))
+                    (when (and (not existed) (>= cur-count max-entries))
+                      (http-cache-clear! cache)
+                      (set! table (vector-ref cache 1))
+                      (set! cur-count 0))
+                    (hash-set! table url record)
+                    (unless existed
+                      (vector-set! cache 4 (+ cur-count 1)))))
+                record))))))
+
+(define (http-get-cached cache url max-bytes . timeout)
+  "Convenience wrapper around http-fetch-provenance returning (status . body) or #f."
+  (let ((rec (apply http-fetch-provenance cache url max-bytes timeout)))
+    (if rec
+        (cons (cdr (assoc "status" rec)) (cdr (assoc "body" rec)))
+        #f)))

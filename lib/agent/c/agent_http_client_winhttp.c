@@ -51,17 +51,14 @@ static HINTERNET g_http_session = NULL;
 static LONG g_http_init_refs = 0;
 static LONG g_http_active_requests = 0;
 
-static void* http_xmalloc(size_t n) {
-    void* p = malloc(n == 0 ? 1 : n);
-    if (!p) {
-        fprintf(stderr, "agent_http_client_winhttp: out of memory (%zu bytes)\n", n);
-        abort();
-    }
-    return p;
+static void* http_malloc_checked(size_t n) {
+    return malloc(n == 0 ? 1 : n);
 }
 
 static char* http_strdup_n(const char* src, size_t n) {
-    char* out = (char*)http_xmalloc(n + 1);
+    if (n == SIZE_MAX) return NULL;
+    char* out = (char*)http_malloc_checked(n + 1);
+    if (!out) return NULL;
     if (n > 0 && src) memcpy(out, src, n);
     out[n] = '\0';
     return out;
@@ -71,7 +68,9 @@ static wchar_t* utf8_to_wide(const char* text) {
     if (!text) return NULL;
     int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
     if (count <= 0) return NULL;
-    wchar_t* out = (wchar_t*)http_xmalloc((size_t)count * sizeof(wchar_t));
+    if ((size_t)count > SIZE_MAX / sizeof(wchar_t)) return NULL;
+    wchar_t* out = (wchar_t*)http_malloc_checked((size_t)count * sizeof(wchar_t));
+    if (!out) return NULL;
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, out, count) <= 0) {
         free(out);
         return NULL;
@@ -80,7 +79,9 @@ static wchar_t* utf8_to_wide(const char* text) {
 }
 
 static wchar_t* wide_dup_n(const wchar_t* text, DWORD count) {
-    wchar_t* out = (wchar_t*)http_xmalloc(((size_t)count + 1) * sizeof(wchar_t));
+    if ((size_t)count >= SIZE_MAX / sizeof(wchar_t)) return NULL;
+    wchar_t* out = (wchar_t*)http_malloc_checked(((size_t)count + 1) * sizeof(wchar_t));
+    if (!out) return NULL;
     if (count > 0) memcpy(out, text, (size_t)count * sizeof(wchar_t));
     out[count] = L'\0';
     return out;
@@ -125,7 +126,9 @@ static int parse_header_lines(const char* lines, header_array_t* headers) {
                                       (size_t)(headers->count + 1) * sizeof(char*));
         if (!grown) goto invalid;
         headers->items = grown;
-        headers->items[headers->count] = http_strdup_n(cursor, length);
+        char* copy = http_strdup_n(cursor, length);
+        if (!copy) goto invalid;
+        headers->items[headers->count] = copy;
         headers->count++;
         cursor = end ? end + 1 : cursor + length;
     }
@@ -154,7 +157,11 @@ static char* format_windows_error(DWORD code) {
         LocalFree(wide);
         return http_strdup_n("WinHTTP error", 13);
     }
-    char* out = (char*)http_xmalloc((size_t)bytes + 1);
+    char* out = (char*)http_malloc_checked((size_t)bytes + 1);
+    if (!out) {
+        LocalFree(wide);
+        return NULL;
+    }
     WideCharToMultiByte(CP_UTF8, 0, wide, (int)chars, out, bytes, NULL, NULL);
     out[bytes] = '\0';
     LocalFree(wide);
@@ -162,15 +169,22 @@ static char* format_windows_error(DWORD code) {
 }
 
 static qllm_http_response_t* alloc_response(void) {
-    qllm_http_response_t* resp = (qllm_http_response_t*)http_xmalloc(sizeof(*resp));
+    qllm_http_response_t* resp = (qllm_http_response_t*)http_malloc_checked(sizeof(*resp));
+    if (!resp) return NULL;
     memset(resp, 0, sizeof(*resp));
     return resp;
 }
 
 static qllm_http_response_t* error_response(DWORD code) {
     qllm_http_response_t* resp = alloc_response();
+    if (!resp) return NULL;
     resp->error = format_windows_error(code);
     resp->body = http_strdup_n("", 0);
+    if (!resp->body) {
+        free(resp->error);
+        free(resp);
+        return NULL;
+    }
     return resp;
 }
 
@@ -300,11 +314,31 @@ static qllm_http_response_t* perform_request(const wchar_t* method,
         goto done;
     }
     host = wide_dup_n(parts.lpszHostName, parts.dwHostNameLength);
+    if (!host) {
+        failure = ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
+    }
     DWORD path_chars = parts.dwUrlPathLength + parts.dwExtraInfoLength;
+    if (path_chars < parts.dwUrlPathLength) {
+        failure = ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
+    }
     if (path_chars == 0) {
         path = wide_dup_n(L"/", 1);
+        if (!path) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            goto done;
+        }
     } else {
-        path = (wchar_t*)http_xmalloc(((size_t)path_chars + 1) * sizeof(wchar_t));
+        if ((size_t)path_chars >= SIZE_MAX / sizeof(wchar_t)) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            goto done;
+        }
+        path = (wchar_t*)http_malloc_checked(((size_t)path_chars + 1) * sizeof(wchar_t));
+        if (!path) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            goto done;
+        }
         DWORD offset = 0;
         if (parts.dwUrlPathLength > 0) {
             memcpy(path, parts.lpszUrlPath, (size_t)parts.dwUrlPathLength * sizeof(wchar_t));
@@ -374,6 +408,10 @@ static qllm_http_response_t* perform_request(const wchar_t* method,
     }
 
     result = alloc_response();
+    if (!result) {
+        failure = ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
+    }
     DWORD status = 0;
     DWORD status_size = sizeof(status);
     if (!WinHttpQueryHeaders(request,
@@ -425,7 +463,15 @@ static qllm_http_response_t* perform_request(const wchar_t* method,
             goto done;
         }
     }
-    if (!response_body.data) response_body.data = http_strdup_n("", 0);
+    if (!response_body.data) {
+        response_body.data = http_strdup_n("", 0);
+        if (!response_body.data) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            free(result);
+            result = NULL;
+            goto done;
+        }
+    }
     result->body = response_body.data;
     response_body.data = NULL;
     result->body_len = (int64_t)response_body.len;
@@ -528,6 +574,10 @@ const char* qllm_http_error_string(int32_t code) {
     static _Thread_local char buffer[512];
     if (code <= 0) return "no error";
     char* message = format_windows_error((DWORD)code);
+    if (!message) {
+        snprintf(buffer, sizeof(buffer), "WinHTTP error %lu", (unsigned long)code);
+        return buffer;
+    }
     strncpy(buffer, message, sizeof(buffer) - 1);
     buffer[sizeof(buffer) - 1] = '\0';
     free(message);
@@ -545,9 +595,13 @@ typedef struct eshkol_winhttp_stream {
 
 static void set_stream_error(eshkol_winhttp_stream_t* stream, DWORD code) {
     char* message = format_windows_error(code);
-    strncpy(stream->error, message, sizeof(stream->error) - 1);
-    stream->error[sizeof(stream->error) - 1] = '\0';
-    free(message);
+    if (!message) {
+        snprintf(stream->error, sizeof(stream->error), "WinHTTP error %lu", (unsigned long)code);
+    } else {
+        strncpy(stream->error, message, sizeof(stream->error) - 1);
+        stream->error[sizeof(stream->error) - 1] = '\0';
+        free(message);
+    }
     stream->done = 1;
 }
 
@@ -616,11 +670,31 @@ void* eshkol_http_stream_open_bytes(const char* method,
         goto failure;
     }
     host = wide_dup_n(parts.lpszHostName, parts.dwHostNameLength);
+    if (!host) {
+        failure = ERROR_NOT_ENOUGH_MEMORY;
+        goto failure;
+    }
     DWORD path_chars = parts.dwUrlPathLength + parts.dwExtraInfoLength;
+    if (path_chars < parts.dwUrlPathLength) {
+        failure = ERROR_NOT_ENOUGH_MEMORY;
+        goto failure;
+    }
     if (path_chars == 0) {
         path = wide_dup_n(L"/", 1);
+        if (!path) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            goto failure;
+        }
     } else {
-        path = (wchar_t*)http_xmalloc(((size_t)path_chars + 1) * sizeof(wchar_t));
+        if ((size_t)path_chars >= SIZE_MAX / sizeof(wchar_t)) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            goto failure;
+        }
+        path = (wchar_t*)http_malloc_checked(((size_t)path_chars + 1) * sizeof(wchar_t));
+        if (!path) {
+            failure = ERROR_NOT_ENOUGH_MEMORY;
+            goto failure;
+        }
         DWORD offset = 0;
         if (parts.dwUrlPathLength) {
             memcpy(path, parts.lpszUrlPath,

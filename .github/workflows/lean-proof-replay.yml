@@ -1,0 +1,51 @@
+name: Verificatum proof replay
+on:
+  pull_request:
+    paths:
+      - "verification/**"
+      - "lib/core/blc.esk"
+      - "site/static/eshkol-vm.*"
+      - ".github/workflows/lean-proof-replay.yml"
+  merge_group:
+  push:
+    branches: [master]
+    paths:
+      - "verification/**"
+      - "lib/core/blc.esk"
+      - "site/static/eshkol-vm.*"
+      - ".github/workflows/lean-proof-replay.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/verificatum/lean-4.35.0-linux.tar.zst
+          key: verificatum-lean-4.35.0-linux-7289597a
+      - name: Prepare pinned reference tools
+        shell: bash
+        run: |
+          set -eu
+          cache_dir="$HOME/.cache/verificatum"
+          archive="$cache_dir/lean-4.35.0-linux.tar.zst"
+          mkdir -p "$cache_dir"
+          if [[ ! -f "$archive" ]]; then
+            curl -fLsS --retry 3 https://github.com/leanprover/lean4/releases/download/v4.35.0/lean-4.35.0-linux.tar.zst -o "$archive"
+          fi
+          echo "7289597a44543246c9227b8cae501767e095ce17f6d448b95fc4a8dc97268f6d  $archive" | sha256sum -c -
+          tar --zstd -xf "$archive" -C "$RUNNER_TEMP" --wildcards \
+            'lean-4.35.0-linux/bin/*' 'lean-4.35.0-linux/lib/lib*.so*' \
+            'lean-4.35.0-linux/lib/lean/lib*.so*' 'lean-4.35.0-linux/lib/lean/Init*.olean*'
+          echo "$RUNNER_TEMP/lean-4.35.0-linux/bin" >> "$GITHUB_PATH"
+      - name: Replay frozen mt pair
+        run: python3 verification/lean-kernel/replay.py

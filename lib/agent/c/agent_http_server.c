@@ -1254,3 +1254,334 @@ void eshkol_ws_close(int64_t handle) {
     free(ws);
     g_ws[slot] = NULL;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Accepted-HTTP-Connection Ownership Adapter for Server-Side SSE
+ *
+ * Extends the existing loopback HTTP server by transferring sole ownership of
+ * srv->client_fd onto an explicit-loop eshkol_resource_lease. The server keeps
+ * its listener and complete-response path for subsequent connections.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#include "eshkol/agent_http_sse_adapter.h"
+#include "eshkol/core/event_loop.h"
+#include "eshkol/core/resource_lease.h"
+
+struct eshkol_http_sse_adapter {
+    int fd;
+    int64_t loop_handle;
+    int watch_armed;
+    uint64_t watch_cookie;
+    int closed_once;
+    int close_count;
+#ifdef ESHKOL_SSE_ADAPTER_TESTING
+    eshkol_http_sse_adapter_hooks_t hooks;
+    int has_hooks;
+#endif
+};
+
+static int sse_adapter_remove_watch_raw(eshkol_http_sse_adapter_t* adapter, int* out_os_err) {
+    if (out_os_err) *out_os_err = 0;
+    if (!adapter || !adapter->watch_armed) return 0;
+#ifdef ESHKOL_SSE_ADAPTER_TESTING
+    if (adapter->has_hooks && adapter->hooks.watch_remove_override) {
+        int rc = adapter->hooks.watch_remove_override(
+            adapter->loop_handle, adapter->fd, adapter->hooks.ctx);
+        if (rc != 0) {
+            if (out_os_err) *out_os_err = rc > 0 ? rc : EIO;
+            return ESHKOL_IO_SYSTEM;
+        }
+        adapter->watch_armed = 0;
+        return 0;
+    }
+#endif
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(adapter->loop_handle);
+    if (!loop) {
+        if (out_os_err) *out_os_err = EINVAL;
+        return ESHKOL_IO_SYSTEM;
+    }
+    int rc = eshkol_event_loop_remove(loop, adapter->fd);
+    if (rc != ESHKOL_EVENT_LOOP_OK && rc != ESHKOL_EVENT_LOOP_ENOENT) {
+        if (out_os_err) {
+            int err = eshkol_event_loop_last_os_error(loop);
+            *out_os_err = err ? err : EIO;
+        }
+        return ESHKOL_IO_SYSTEM;
+    }
+    adapter->watch_armed = 0;
+    return 0;
+}
+
+static int sse_adapter_cleanup(uintptr_t native,
+                               void* data,
+                               eshkol_resource_cleanup_result_t* result) {
+    (void)native;
+    eshkol_http_sse_adapter_t* adapter = (eshkol_http_sse_adapter_t*)data;
+    if (!adapter) return 0;
+
+    if (adapter->watch_armed) {
+        int os_err = 0;
+        if (sse_adapter_remove_watch_raw(adapter, &os_err) != 0) {
+            if (result) {
+                result->state = ESHKOL_CLEANUP_FAILED;
+                result->stage = ESHKOL_CLEANUP_STAGE_WATCH;
+                result->os_error = os_err;
+                result->retryable = 1;
+            }
+            return ESHKOL_IO_SYSTEM;
+        }
+    }
+
+    int close_err = 0;
+    if (!adapter->closed_once && adapter->fd >= 0) {
+        int fd = adapter->fd;
+        adapter->fd = -1;
+        adapter->closed_once = 1;
+        adapter->close_count += 1;
+#ifdef _WIN32
+        if (closesocket((eshkol_socket_t)fd) != 0) close_err = WSAGetLastError();
+#else
+        if (close(fd) != 0) close_err = errno;
+#endif
+    }
+
+    if (close_err != 0) {
+        if (result) {
+            result->state = ESHKOL_CLEANUP_FAILED;
+            result->stage = ESHKOL_CLEANUP_STAGE_DESCRIPTOR;
+            result->os_error = close_err;
+            result->retryable = 0;
+        }
+#ifndef ESHKOL_SSE_ADAPTER_TESTING
+        free(adapter);
+#endif
+        return ESHKOL_IO_SYSTEM;
+    }
+
+#ifndef ESHKOL_SSE_ADAPTER_TESTING
+    free(adapter);
+#endif
+    return 0;
+}
+
+int eshkol_http_sse_adapter_check_chunk_size(const uint8_t* chunk, size_t chunk_len) {
+    if (!chunk || chunk_len == 0) return ESHKOL_IO_INVALID;
+    if (chunk_len > ESHKOL_SSE_MAX_CHUNK_BYTES) return ESHKOL_IO_TRUNCATED;
+    return 0;
+}
+
+int eshkol_http_sse_adapter_adopt(int64_t server_handle,
+                                  int64_t loop_handle,
+                                  int64_t* out_lease_id,
+                                  eshkol_http_sse_adapter_t** out_adapter) {
+    if (out_lease_id) *out_lease_id = 0;
+    if (out_adapter) *out_adapter = NULL;
+#ifdef _WIN32
+    (void)server_handle;
+    (void)loop_handle;
+    return ESHKOL_IO_UNSUPPORTED;
+#else
+    if (!out_lease_id || !out_adapter || loop_handle <= 0) return ESHKOL_IO_INVALID;
+
+    int slot = http_server_slot(server_handle);
+    if (slot < 0) return ESHKOL_IO_INVALID;
+    HttpServer* srv = g_servers[slot];
+    if (!srv || srv->client_fd == ESHKOL_INVALID_SOCKET) return ESHKOL_IO_INVALID;
+
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(loop_handle);
+    if (!loop || !eshkol_event_loop_is_owner(loop)) return ESHKOL_IO_INVALID;
+
+    int saved_flags = fcntl(srv->client_fd, F_GETFL, 0);
+    if (saved_flags < 0) return ESHKOL_IO_SYSTEM;
+    if (fcntl(srv->client_fd, F_SETFL, saved_flags | O_NONBLOCK) < 0) {
+        return ESHKOL_IO_SYSTEM;
+    }
+#ifdef SO_NOSIGPIPE
+    {
+        int nosig = 1;
+        (void)setsockopt(srv->client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, sizeof(nosig));
+    }
+#endif
+
+    eshkol_http_sse_adapter_t* adapter =
+        (eshkol_http_sse_adapter_t*)calloc(1, sizeof(*adapter));
+    if (!adapter) {
+        (void)fcntl(srv->client_fd, F_SETFL, saved_flags);
+        return ESHKOL_IO_SYSTEM;
+    }
+    adapter->fd = srv->client_fd;
+    adapter->loop_handle = loop_handle;
+
+    int64_t lease_id = eshkol_resource_adopt_on_loop(
+        ESHKOL_HANDLE_KIND_SOCKET,
+        ESHKOL_HTTP_SSE_LEASE_TAG,
+        (uintptr_t)srv->client_fd,
+        sse_adapter_cleanup,
+        adapter,
+        loop_handle,
+        1);
+    if (lease_id <= 0) {
+        free(adapter);
+        (void)fcntl(srv->client_fd, F_SETFL, saved_flags);
+        return (int)lease_id;
+    }
+
+    srv->client_fd = ESHKOL_INVALID_SOCKET;
+    srv->pending_len = 0;
+    *out_lease_id = lease_id;
+    *out_adapter = adapter;
+    return 0;
+#endif
+}
+
+int eshkol_http_sse_adapter_arm_write_watch(eshkol_http_sse_adapter_t* adapter,
+                                            uint64_t cookie) {
+    if (!adapter || adapter->fd < 0) return ESHKOL_IO_INVALID;
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(adapter->loop_handle);
+    if (!loop || !eshkol_event_loop_is_owner(loop)) return ESHKOL_IO_INVALID;
+    /* eshkol_event_loop_add registers or modifies an existing descriptor watch. */
+    int rc = eshkol_event_loop_add(loop, adapter->fd, ESHKOL_EVENT_WRITE, cookie);
+    if (rc != ESHKOL_EVENT_LOOP_OK) return ESHKOL_IO_SYSTEM;
+    adapter->watch_armed = 1;
+    adapter->watch_cookie = cookie;
+    return 0;
+}
+
+int eshkol_http_sse_adapter_disarm_write_watch(eshkol_http_sse_adapter_t* adapter) {
+    if (!adapter) return ESHKOL_IO_INVALID;
+    return sse_adapter_remove_watch_raw(adapter, NULL);
+}
+
+int eshkol_http_sse_adapter_write_step(int64_t lease_id,
+                                       eshkol_http_sse_adapter_t* adapter,
+                                       const uint8_t* bytes,
+                                       size_t len,
+                                       size_t* offset_inout,
+                                       int64_t deadline_ms,
+                                       uint64_t watch_cookie,
+                                       size_t* out_written) {
+    if (out_written) *out_written = 0;
+    if (!adapter || !bytes || !offset_inout) return ESHKOL_IO_INVALID;
+    int size_rc = eshkol_http_sse_adapter_check_chunk_size(bytes, len);
+    if (size_rc != 0) return size_rc;
+    if (*offset_inout > len) return ESHKOL_IO_INVALID;
+    if (*offset_inout == len) {
+        return eshkol_http_sse_adapter_disarm_write_watch(adapter);
+    }
+
+    eshkol_resource_lease_t lease;
+    int borrow_rc = eshkol_resource_borrow(
+        lease_id, ESHKOL_HANDLE_KIND_SOCKET, ESHKOL_HTTP_SSE_LEASE_MASK, &lease);
+    if (borrow_rc != 0) return borrow_rc;
+
+    int rc = 0;
+    int chk = eshkol_resource_check(&lease);
+    if (chk != 0) {
+        rc = chk;
+        goto release_out;
+    }
+
+    if (deadline_ms >= 0) {
+        int32_t rem = eshkol_resource_remaining(deadline_ms);
+        if (rem < 0) {
+            rc = ESHKOL_IO_SYSTEM;
+            goto release_out;
+        }
+        if (rem == 0) {
+            rc = ESHKOL_IO_TIMEOUT;
+            goto release_out;
+        }
+    }
+
+    size_t remaining = len - *offset_inout;
+    const uint8_t* ptr = bytes + *offset_inout;
+    int64_t n = -1;
+#ifdef ESHKOL_SSE_ADAPTER_TESTING
+    if (adapter->has_hooks && adapter->hooks.send_override) {
+        n = adapter->hooks.send_override(adapter->fd, ptr, remaining, adapter->hooks.ctx);
+    } else
+#endif
+    {
+#ifdef _WIN32
+        n = (int64_t)send((eshkol_socket_t)adapter->fd, (const char*)ptr, (int)remaining, 0);
+#elif defined(MSG_NOSIGNAL)
+        n = (int64_t)send(adapter->fd, ptr, remaining, MSG_NOSIGNAL);
+#else
+        n = (int64_t)send(adapter->fd, ptr, remaining, 0);
+#endif
+    }
+
+    if (n > 0) {
+        *offset_inout += (size_t)n;
+        if (out_written) *out_written = (size_t)n;
+        if (*offset_inout == len) {
+            rc = eshkol_http_sse_adapter_disarm_write_watch(adapter);
+        } else {
+            int arm_rc = eshkol_http_sse_adapter_arm_write_watch(adapter, watch_cookie);
+            rc = (arm_rc == 0) ? ESHKOL_SSE_WOULD_BLOCK : arm_rc;
+        }
+    } else if (n == 0) {
+        rc = ESHKOL_IO_RESET;
+    } else {
+#ifdef _WIN32
+        int e = WSAGetLastError();
+        if (e == WSAEWOULDBLOCK) {
+            int arm_rc = eshkol_http_sse_adapter_arm_write_watch(adapter, watch_cookie);
+            rc = (arm_rc == 0) ? ESHKOL_SSE_WOULD_BLOCK : arm_rc;
+        } else {
+            rc = ESHKOL_IO_RESET;
+        }
+#else
+        int e = errno;
+        if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) {
+            int arm_rc = eshkol_http_sse_adapter_arm_write_watch(adapter, watch_cookie);
+            rc = (arm_rc == 0) ? ESHKOL_SSE_WOULD_BLOCK : arm_rc;
+        } else if (e == EPIPE || e == ECONNRESET) {
+            rc = ESHKOL_IO_RESET;
+        } else {
+            rc = ESHKOL_IO_SYSTEM;
+        }
+#endif
+    }
+
+release_out:
+    eshkol_resource_release(&lease);
+    return rc;
+}
+
+int64_t eshkol_http_sse_adapter_request_close(int64_t lease_id) {
+    return eshkol_resource_close_request(
+        lease_id, ESHKOL_HANDLE_KIND_SOCKET, ESHKOL_HTTP_SSE_LEASE_MASK);
+}
+
+int eshkol_http_sse_adapter_cancel(int64_t lease_id) {
+    return eshkol_resource_cancel(
+        lease_id, ESHKOL_HANDLE_KIND_SOCKET, ESHKOL_HTTP_SSE_LEASE_MASK);
+}
+
+int eshkol_http_sse_adapter_fd(const eshkol_http_sse_adapter_t* adapter) {
+    return adapter ? adapter->fd : -1;
+}
+
+int eshkol_http_sse_adapter_watch_armed(const eshkol_http_sse_adapter_t* adapter) {
+    return adapter ? adapter->watch_armed : 0;
+}
+
+#ifdef ESHKOL_SSE_ADAPTER_TESTING
+void eshkol_http_sse_adapter_set_hooks(eshkol_http_sse_adapter_t* adapter,
+                                       const eshkol_http_sse_adapter_hooks_t* hooks) {
+    if (!adapter) return;
+    if (!hooks) {
+        memset(&adapter->hooks, 0, sizeof(adapter->hooks));
+        adapter->has_hooks = 0;
+        return;
+    }
+    adapter->hooks = *hooks;
+    adapter->has_hooks = 1;
+}
+
+int eshkol_http_sse_adapter_close_count(const eshkol_http_sse_adapter_t* adapter) {
+    return adapter ? adapter->close_count : -1;
+}
+#endif
