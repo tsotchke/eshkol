@@ -425,11 +425,16 @@ v1.3.6-evolve meets on v1.4.0-connection. The complete list is the
   eligible tensor operations through the shared WebGPU dispatch seam when the
   browser provides WebGPU, falling back transparently to the CPU VM path
   otherwise.
-- **Mathematics and certified transcript modules.** `core.sheaf`, `core.topos`,
-  `core.cat.*`, `core.geom` (signed-curvature stereographic geometry,
-  ADR-0018), `core.sblc` (Stochastic Binary Lambda Calculus, ADR-0017), and
-  `core.transcript` are available via `(require ...)` and remain opt-in;
-  `core.transcript` is disabled by default and never alters program output.
+- **Full Mathematics Programme and certified transcripts.** Grothendieck
+  three-era libraries (`core.sheaf`, `core.topos`, `core.cat.*`, schemes,
+  derived categories, six-functor formalism), Beyond Frontiers (Hodge theory,
+  Lie and algebraic groups, integrable systems, representation theory,
+  K-theory), Probability Sheaves (`arXiv:2611.30692`), signed-curvature
+  stereographic geometry (`core.geom`, ADR-0018), Stochastic Binary Lambda
+  Calculus (`core.sblc`, ADR-0017), and `core.transcript` are available via
+  `(require ...)` and remain opt-in, alongside 140 machine-checked Lean 4.12.0
+  theorems (ADR-0063) and 86 verified example programs; `core.transcript` is
+  disabled by default and never alters program output.
 - **Canonical language surface and VM parity manifest growth.** The canonical
   language surface is now **1,651** constructs (**1,069** builtins, 100%
   execution-backed coverage, 0 deficit), and `tests/vm_parity/PARITY.tsv`

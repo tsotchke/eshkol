@@ -9,11 +9,16 @@ deterministic socket collectives, compile-time linear handle tracking under
 `--strict-resources` (ADR-0056), narrow-only capability policies with Darwin
 Seatbelt and Linux seccomp/Landlock subprocess sandboxing, arbitrary-depth
 nested differentiation (ADR-0057), exact-rational tensor elements (ADR-0058),
-finite decidable mathematics (`core.sheaf`, `core.topos`, `core.ring`,
-`core.category`, `core.simplicial`, `core.homological`, `core.monoidal`,
-`core.theory`, `core.effective`), Verificatum independent proof replay
-(ADR-0061), and built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
-<!-- source: CHANGELOG.md §1.4.0-connection (#845, #956); RELEASE_NOTES.md -->
+the full Mathematics Programme (Grothendieck three-era libraries across
+`core.sheaf`, `core.topos`, `core.ring`, `core.category`, `core.simplicial`,
+`core.homological`, `core.monoidal`, `core.theory`, `core.effective`, schemes,
+derived categories, and six-functor formalism; Beyond Frontiers spanning Hodge
+theory, Lie/algebraic groups, integrable systems, representation theory, and
+K-theory; Probability Sheaves `arXiv:2611.30692`; Stochastic Binary Lambda
+Calculus), Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with
+140 machine-checked Lean 4.12.0 theorems, 86 verified example programs, and
+built-in zero-dependency PNG/JPEG/BMP/WebP codecs.
+<!-- source: CHANGELOG.md §1.4.0-connection (#845, #956, #958); RELEASE_NOTES.md -->
 
 Eshkol v1.3.6-evolve checks mathematics that machines discovered. That is not a
 metaphor. The FunSearch cap set, the AlphaTensor matrix multiplication

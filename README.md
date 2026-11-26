@@ -721,12 +721,16 @@ runtime foundations.**
 - **Browser WebGPU dispatch**:
   Browser VM tensor operations dispatch through the shared GPU seam via WebGPU
   (ADR-0029), alongside exact browser numerics.
-- **Mathematics & certified transcripts**:
-  Finite sites, sheaves, and Cech/derived cohomology (`core.sheaf`), topos
-  internal language and Kripke-Joyal forcing (`core.topos`), finite categories
-  and Kan extensions (`core.cat.*`), signed-curvature stereographic geometry
-  (`core.geom`), Stochastic Binary Lambda Calculus (`core.sblc`), and
-  content-addressed certified transcripts (`core.transcript`).
+- **Full Mathematics Programme & formal verification**:
+  Grothendieck three-era libraries (finite sites, `core.sheaf`, Cech/derived
+  cohomology, `core.topos` Kripke-Joyal forcing, schemes, derived categories,
+  six-functor formalism, `core.cat.*` Kan extensions), Beyond Frontiers (Hodge
+  theory, Lie and algebraic groups, integrable systems, representation theory,
+  K-theory), Probability Sheaves (`arXiv:2611.30692`), signed-curvature
+  stereographic geometry (`core.geom`, ADR-0018), Stochastic Binary Lambda
+  Calculus (`core.sblc`, ADR-0017), content-addressed certified transcripts
+  (`core.transcript`), independent Lean proof replay (ADR-0061, ADR-0063) with
+  140 machine-checked Lean 4.12.0 theorems, and 86 runnable verified examples.
 - **Accelerator & distributed foundations (W6)**:
   PJRT CPU plugin execution path and socket-backed collective communication
   primitives laying the foundation for v1.4.5-accelerate.

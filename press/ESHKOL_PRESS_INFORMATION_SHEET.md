@@ -4,15 +4,19 @@ For trade-press and academic readers preparing coverage of the v1.4 release
 line — building on v1.3's arbitrary-order automatic differentiation, full R7RS
 conformance, opt-in differentiable quantum computing, multi-shot re-entrant
 continuations, VM region reclamation, and exact machine-discovered mathematics
-witnesses — v1.4.0-connection introduces the resource-sound systems profile:
-managed TCP/UDP/TLS leases (ADR-0055), compile-time linear handle tracking
-(`--strict-resources`, ADR-0056), O(1) event-loop HTTP/WebSocket and bounded
-SSE streaming, unified capability policies with Darwin Seatbelt and Linux
-seccomp/Landlock subprocess sandboxing, arbitrary-depth nested differentiation
-(ADR-0057), exact-rational tensors (ADR-0058), finite decidable mathematics
-(`core.sheaf`/`topos`/`ring`/`category`/`monoidal`/`effective`), Verificatum
-independent proof replay (ADR-0061), built-in image codecs, and the SDNC paper
-artefact.
+witnesses — v1.4.0-connection introduces the resource-sound systems profile and
+the full Mathematics Programme: managed TCP/UDP/TLS leases (ADR-0055),
+compile-time linear handle tracking (`--strict-resources`, ADR-0056), O(1)
+event-loop HTTP/WebSocket and bounded SSE streaming, unified capability
+policies with Darwin Seatbelt and Linux seccomp/Landlock subprocess sandboxing,
+arbitrary-depth nested differentiation (ADR-0057), exact-rational tensors
+(ADR-0058), Grothendieck three-era libraries (`core.sheaf`/`topos`/`ring`/
+`category`/`monoidal`/`effective`, schemes, derived categories, six-functor
+formalism), Beyond Frontiers (Hodge theory, Lie/algebraic groups, integrable
+systems, representation theory, K-theory), Probability Sheaves
+(`arXiv:2611.30692`), Verificatum independent Lean proof replay (ADR-0061,
+ADR-0063) with 140 machine-checked Lean 4.12.0 theorems, 86 verified examples,
+built-in image codecs, and the SDNC paper artefact.
 
 ---
 
@@ -34,6 +38,15 @@ artefact.
 ---
 
 ## Headline
+
+In v1.4.0-connection, Eshkol combines a resource-sound systems profile (linear
+TCP/UDP/TLS/UDS handles, O(1) event-loop HTTP/WebSocket/SSE, Darwin Seatbelt
+and Linux seccomp/Landlock sandboxing, browser WebGPU) with its full exact
+Mathematics Programme: Grothendieck three-era libraries, Beyond Frontiers
+(Hodge theory, Lie/algebraic groups, integrable systems, representation theory,
+K-theory), Probability Sheaves (`arXiv:2611.30692`), exact-rational tensors,
+arbitrary-depth nested differentiation, 140 machine-checked Lean 4.12.0 theorems
+(ADR-0061, ADR-0063), and 86 verified example programs.
 
 In v1.3.6-evolve Eshkol checks mathematics that machines discovered. That is
 not a metaphor. Three published results of AI-driven discovery — the FunSearch

@@ -26,16 +26,21 @@ seccomp/Landlock subprocess sandboxing, a native in-process macOS Keychain
 bridge, full `.eskb` bytecode admission validation, keyed hash tables, and
 RFC-validated HTTP/WebSocket framing.
 
-**Arbitrary-depth AD and exact mathematics.** Differentiation nests to any
-depth in every mode via unique 64-bit perturbation epochs (ADR-0057). Exact
-tensors (`'exact` dtype, ADR-0058) carry exact rationals through linear algebra
-without silent floating-point demotion, joined by `core.curvature` (one
+**Arbitrary-depth AD and the full Mathematics Programme.** Differentiation nests
+to any depth in every mode via unique 64-bit perturbation epochs (ADR-0057).
+Exact tensors (`'exact` dtype, ADR-0058) carry exact rationals through linear
+algebra without silent floating-point demotion, joined by `core.curvature` (one
 real-analytic stereographic chart across every sign of curvature, ADR-0018),
-finite decidable mathematics (`core.sheaf`, `core.topos`, `core.ring`,
+Grothendieck three-era libraries (`core.sheaf`, `core.topos`, `core.ring`,
 `core.category`, `core.simplicial`, `core.homological`, `core.monoidal`,
-`core.theory`, `core.effective`, `core.sblc`), and Verificatum independent
-proof replay (ADR-0061). Built-in PNG/JPEG/BMP/WebP codecs remove all external
-image library dependencies across platforms.
+`core.theory`, `core.effective`, schemes, derived categories, and six-functor
+formalism), Beyond Frontiers (Hodge theory, Lie and algebraic groups, integrable
+systems, representation theory, and K-theory), Probability Sheaves
+(`arXiv:2611.30692`), Stochastic Binary Lambda Calculus (`core.sblc`),
+Verificatum independent Lean proof replay (ADR-0061, ADR-0063) with 140
+machine-checked Lean 4.12.0 theorems, and an expanded suite of 86 verified
+examples. Built-in PNG/JPEG/BMP/WebP codecs remove all external image library
+dependencies across platforms.
 
 The final publication contract is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->,
 with no failed, skipped or infrastructure-only checks, bound to the exact

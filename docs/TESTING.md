@@ -319,11 +319,12 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-For v1.3.6-evolve, full preparation recorded
+For v1.4.0-connection, release qualification requires
 <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->.
 The release workflow rechecks parity at the final SHA. The v1.3.5-evolve
-differential passed 388 checks. The current manifest has **962 rows — 622
-`vm-supported`, 45 `native-only-justified`, 295 `gap`**; verified behavioral divergences are
+differential passed 388 checks and the v1.3.6-evolve preparation snapshot
+recorded 411/411. The current manifest has **997 rows — 630
+`vm-supported`, 45 `native-only-justified`, 322 `gap`**; verified behavioral divergences are
 explicit `gap` rows with reproducible programs under `tests/vm_parity/found/`.
 Superseded figures that older documents quote: 338/338 (the 2026-09-11
 documentation cut) and 188/188 (commit `afbaaf5b`); 184/184 is superseded by

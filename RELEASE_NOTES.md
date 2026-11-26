@@ -15,11 +15,17 @@ all 36 CI checks passed ([run](https://github.com/tsotchke/eshkol/actions/runs/4
   TCP/UDP/TLS socket leases, linear handle tracking (`--strict-resources`),
   deterministic socket collectives, and Darwin Seatbelt / Linux seccomp +
   Landlock subprocess sandboxing. (#845, #956)
-- **Exact mathematics & algebraic calculus.** Finite decidable mathematics
-  (`core.sheaf`, `core.topos`, `core.ring`, `core.category`, `core.simplicial`,
-  `core.homological`), exact-rational affine solution families (`core.exact_linalg`),
-  signed-curvature unified chart (`core.curvature`, ADR-0018), rational heat-stencil
-  verification, and lexical-environment `core.blc` evaluation. (#785, #845, #912, #942, #945)
+- **Full Mathematics Programme & algebraic calculus.** Grothendieck three-era
+  libraries (`core.sheaf`, `core.topos`, `core.ring`, `core.category`,
+  `core.simplicial`, `core.homological`, schemes, derived categories, and
+  six-functor formalism), Beyond Frontiers (Hodge theory, Lie and algebraic
+  groups, integrable systems, representation theory, K-theory), Probability
+  Sheaves (`arXiv:2611.30692`), exact-rational affine solution families
+  (`core.exact_linalg`), signed-curvature unified chart (`core.curvature`,
+  ADR-0018), Stochastic Binary Lambda Calculus (`core.sblc`) & lexical-environment
+  `core.blc` evaluation, rational heat-stencil verification, 140 machine-checked
+  Lean 4.12.0 theorems (ADR-0063), and an expanded 86-example verified suite.
+  (#785, #845, #912, #942, #945, #958)
 - **Compiler, AD, GPU & verification hardening.** Arbitrary-depth nested
   differentiation (ADR-0057), native cross-entropy reverse gradients, Windows
   x64 JIT unwind and continuation restoration, Metal FP64 matmul BLAS crossover
