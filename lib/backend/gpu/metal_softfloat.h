@@ -2257,52 +2257,21 @@ inline df64 sf64_to_df64(sf64 x) {
     return df64{hi, lo};
 }
 
-/** Convert df64 -> sf64: reconstruct an IEEE f64 (as sf64 limb-pair) from
- *  the double-float pair `x` (x.hi + x.lo) via Knuth TwoSum reconstruction. */
+inline sf64 f32_to_sf64(float x);
+
+/** Convert df64 -> sf64: the IEEE f64 nearest to x.hi + x.lo.
+ *
+ *  Each limb converts to sf64 exactly, and sf64_add rounds their sum once,
+ *  to nearest even. The low limb may have either sign: df64_fma and
+ *  df64_add renormalise with TwoSum, which leaves |lo| <= ulp(hi)/2 but
+ *  makes no promise about its sign.
+ *
+ *  NOTE: the previous version added the low limb's magnitude with the sign
+ *  of the high limb and did not renormalise a carry or borrow, so every
+ *  result with a negative low limb (about half of all df64 matmul outputs)
+ *  was off by about 2|lo|, i.e. about 2^-24 relative: single precision. */
 inline sf64 df64_to_sf64(df64 x) {
-    // Quick path: if lo is zero, just convert hi
-    if (x.hi == 0.0f && x.lo == 0.0f) return SF64_ZERO;
-
-    // Use Knuth TwoSum to get exact hi+lo, then pack
-    // The value is exactly hi + lo (by construction)
-
-    // Extract hi as sf64 components
-    uint hi_bits = as_type<uint>(x.hi);
-    bool sign = (hi_bits >> 31) != 0;
-    int hi_exp = int((hi_bits >> 23) & 0xFFu) - 127 + 1023;
-    uint hi_mant = hi_bits & 0x007FFFFFu;
-
-    // Start building the 52-bit mantissa
-    // f32 mantissa is 23 bits (bits 51-29 of f64 mantissa)
-    uint mant_hi = hi_mant >> 3;        // top 20 bits
-    uint mant_lo = (hi_mant & 0x7u) << 29;  // bits 31-29
-
-    // Add lo's contribution
-    if (x.lo != 0.0f) {
-        uint lo_bits = as_type<uint>(x.lo);
-        int lo_exp = int((lo_bits >> 23) & 0xFFu) - 127 + 1023;
-        uint lo_mant = (lo_bits & 0x007FFFFFu) | 0x00800000u;  // with implicit 1
-
-        int shift = hi_exp - lo_exp;  // how far right to shift lo
-        if (shift >= 0 && shift < 52) {
-            // Shift lo's mantissa right by 'shift' bits and add to result
-            // lo's implicit 1 is at bit 23, hi's at bit 52
-            // So lo contributes at bit (52 - shift)
-            uint64_t lo_full = uint64_t(lo_mant) << 29;  // align to 52-bit position
-            if (shift < 64) {
-                lo_full >>= uint(shift);
-            } else {
-                lo_full = 0;
-            }
-            // Add to mantissa
-            uint64_t full_mant = (uint64_t(mant_hi) << 32) | uint64_t(mant_lo);
-            full_mant += lo_full;
-            mant_hi = uint(full_mant >> 32);
-            mant_lo = uint(full_mant);
-        }
-    }
-
-    return sf64_pack(sign, hi_exp, mant_hi & SF64_MANT_HI_MASK, mant_lo);
+    return sf64_add(f32_to_sf64(x.hi), f32_to_sf64(x.lo));
 }
 
 // df64 FMA using native f32 hardware (~10 ops)
