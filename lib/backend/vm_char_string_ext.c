@@ -4,7 +4,7 @@
  *        bytecode VM (ADR-0064 Wave 1B), plus the SRFI-69 `hash-table-ref`
  *        lookup spelling.
  *
- * Reserved native call ID range: 2300-2349.
+ * Reserved native call ID range: 2400-2449.
  *
  * ARCHITECTURE — two layers, deliberately separable:
  *
@@ -252,35 +252,35 @@ static int vm_cse_string_copy_bang(VmRegionStack* rs, VmString* to, int at,
  * ════════════════════════════════════════════════════════════════════════ */
 
 /** @brief Reserved Wave 1B native call ID range (ADR-0064). */
-#define VM_CSE_FID_BASE  2300
-#define VM_CSE_FID_LIMIT 2350
+#define VM_CSE_FID_BASE  2400
+#define VM_CSE_FID_LIMIT 2450
 
 /* Character family */
-#define VM_CSE_CHAR_CI_EQ      2300
-#define VM_CSE_CHAR_CI_LT      2301
-#define VM_CSE_CHAR_CI_GT      2302
-#define VM_CSE_CHAR_CI_LE      2303
-#define VM_CSE_CHAR_CI_GE      2304
-#define VM_CSE_CHAR_FOLDCASE   2305
-#define VM_CSE_DIGIT_VALUE     2306
-#define VM_CSE_CHAR_READY      2307
+#define VM_CSE_CHAR_CI_EQ      2400
+#define VM_CSE_CHAR_CI_LT      2401
+#define VM_CSE_CHAR_CI_GT      2402
+#define VM_CSE_CHAR_CI_LE      2403
+#define VM_CSE_CHAR_CI_GE      2404
+#define VM_CSE_CHAR_FOLDCASE   2405
+#define VM_CSE_DIGIT_VALUE     2406
+#define VM_CSE_CHAR_READY      2407
 /* String comparison family */
-#define VM_CSE_STRING_LE       2310
-#define VM_CSE_STRING_GE       2311
-#define VM_CSE_STRING_GT       2312
-#define VM_CSE_STRING_CI_LT    2313
-#define VM_CSE_STRING_CI_LE    2314
-#define VM_CSE_STRING_CI_GT    2315
-#define VM_CSE_STRING_CI_GE    2316
+#define VM_CSE_STRING_LE       2410
+#define VM_CSE_STRING_GE       2411
+#define VM_CSE_STRING_GT       2412
+#define VM_CSE_STRING_CI_LT    2413
+#define VM_CSE_STRING_CI_LE    2414
+#define VM_CSE_STRING_CI_GT    2415
+#define VM_CSE_STRING_CI_GE    2416
 /* String transformation / search / mutation family */
-#define VM_CSE_STRING_FOLDCASE 2317
-#define VM_CSE_STRING_CONTAINS 2318
-#define VM_CSE_STRING_INDEX    2319
-#define VM_CSE_STRING_SET      2320
-#define VM_CSE_STRING_COPY     2321
-#define VM_CSE_STRING_PORT_P   2322
+#define VM_CSE_STRING_FOLDCASE 2417
+#define VM_CSE_STRING_CONTAINS 2418
+#define VM_CSE_STRING_INDEX    2419
+#define VM_CSE_STRING_SET      2420
+#define VM_CSE_STRING_COPY     2421
+#define VM_CSE_STRING_PORT_P   2422
 /* Hash table lookup */
-#define VM_CSE_HASH_TABLE_REF  2348
+#define VM_CSE_HASH_TABLE_REF  2448
 
 /** @brief Codepoint carried by a character operand.
  * @return The codepoint, or -1 when @p v is not a character-like value.
@@ -431,6 +431,12 @@ static int vm_char_string_ext_dispatch(VM* vm, int fid, int argc, Value* args, V
      *    zero-argument call and the one-argument call agree, and no port
      *    payload is dereferenced on a host without one. ─────────────── */
     case VM_CSE_CHAR_READY:
+        if (argc > 1) {
+            fprintf(stderr, "char-ready? requires 0 or 1 arguments\n");
+            vm->error = 1;
+            *out = BOOL_VAL(0);
+            break;
+        }
         *out = BOOL_VAL(1);
         break;
 
@@ -499,6 +505,13 @@ static int vm_char_string_ext_dispatch(VM* vm, int fid, int argc, Value* args, V
 
     /* ── string-copy! — `(string-copy! to at from [start [end]])` ────── */
     case VM_CSE_STRING_COPY: {
+        if (vm_native_absent(args[0]) || vm_native_absent(args[1]) ||
+            vm_native_absent(args[2])) {
+            fprintf(stderr, "string-copy! requires 3 to 5 arguments\n");
+            vm->error = 1;
+            *out = NIL_VAL;
+            break;
+        }
         VmString* to   = vm_cse_mutable_string(vm, args[0]);
         VmString* from = vm_value_as_string(vm, args[2]);
         if (to && from) {
@@ -527,6 +540,12 @@ static int vm_char_string_ext_dispatch(VM* vm, int fid, int argc, Value* args, V
      *    what HashCodegen::hashRef() lowers, and an absent operand defaults
      *    to #f there too. ────────────────────────────────────────────── */
     case VM_CSE_HASH_TABLE_REF: {
+        if (vm_native_absent(args[0]) || vm_native_absent(args[1])) {
+            fprintf(stderr, "hash-table-ref requires 2 or 3 arguments\n");
+            vm->error = 1;
+            *out = BOOL_VAL(0);
+            break;
+        }
         Value dflt = args[2];
         if (vm_native_absent(dflt)) dflt = BOOL_VAL(0);
         if (is_heap_type(vm, args[0], HEAP_HASH)) {

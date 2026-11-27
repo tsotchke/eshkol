@@ -1015,6 +1015,9 @@ typedef struct VM {
     uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
 
+    /* Per-VM last-error text for ADR-0018 core.curvature typed externs. */
+    const char* curvature_last_error;
+
 
     /* VM-lifetime process handles.  A PTY process is exposed to Scheme as
      * (pid . master-fd), while these slots let native wait/kill/read accept

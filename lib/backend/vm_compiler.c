@@ -1904,7 +1904,7 @@ static int g_vm_bootstrapping_standard_library = 0;
 typedef struct {
     const char* name;
     const char* result;
-    const char* args[6];
+    const char* args[8];
     int n_args;
     const char* real_name;
     int native_id;
@@ -1949,6 +1949,30 @@ static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
     {"sqlite-last-error-raw", "i32", {"i64", "ptr", "i64"}, 3, "eshkol_sqlite_last_error", VM_NATIVE_SQLITE_LAST_ERROR},
     {"sqlite-last-insert-rowid-raw", "i64", {"i64"}, 1, "eshkol_sqlite_last_insert_rowid", VM_NATIVE_SQLITE_LAST_INSERT_ROWID},
     {"sqlite-changes-raw", "i32", {"i64"}, 1, "eshkol_sqlite_changes", VM_NATIVE_SQLITE_CHANGES},
+    /* ADR-0018 signed-curvature stereographic chart (lib/core/curvature.esk) */
+    {"chart-last-error-raw", "ptr", {NULL}, 0, "eshkol_curvature_last_error", 2350},
+    {"chart-convention-id-raw", "i64", {NULL}, 0, "eshkol_curvature_convention_id", 2351},
+    {"chart-alpha-raw", "double", {NULL}, 0, "eshkol_curvature_alpha", 2352},
+    {"chart-check-header-raw", "i32", {"i64", "double", "double"}, 3, "eshkol_curvature_check_header", 2353},
+    {"chart-distance-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_distance", 2354},
+    {"chart-sq-distance-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_sq_distance", 2355},
+    {"chart-conformal-factor-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_conformal_factor", 2356},
+    {"chart-distance-jet-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_distance_jet", 2357},
+    {"chart-sq-distance-jet-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_sq_distance_jet", 2358},
+    {"chart-sq-distance-grad-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_sq_distance_grad", 2359},
+    {"chart-exp-map-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_exp_map", 2360},
+    {"chart-log-map-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_log_map", 2361},
+    {"chart-transport-raw", "i32", {"ptr", "ptr", "ptr", "double", "ptr"}, 5, "eshkol_curvature_transport", 2362},
+    {"chart-mobius-add-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_mobius_add", 2363},
+    {"chart-mobius-scalar-raw", "i32", {"double", "ptr", "double", "ptr"}, 4, "eshkol_curvature_mobius_scalar", 2364},
+    {"chart-project-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_project", 2365},
+    {"chart-riemannian-grad-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_riemannian_grad", 2366},
+    {"chart-attention-raw", "i32", {"ptr", "ptr", "ptr", "double", "double", "ptr", "ptr"}, 7, "eshkol_curvature_attention", 2367},
+    {"chart-sphere-to-chart-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_sphere_to_chart", 2368},
+    {"chart-chart-to-sphere-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_chart_to_sphere", 2369},
+    {"chart-migrate-point-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_migrate_point", 2370},
+    {"chart-migrate-tangent-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_migrate_tangent", 2371},
+    {"chart-migrate-temperature-raw", "i32", {"double", "double", "ptr"}, 3, "eshkol_curvature_migrate_temperature", 2372},
 };
 
 static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
@@ -7163,6 +7187,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * instead of aliasing the number? opcode, which omitted RATIONAL/BIGNUM. */
     if (is_sym(head, "real?") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 1697); return;
+    }
+
+    if (is_sym(head, "ptr->string") && node->n_children == 2 && !vm_head_user_rebound(c, head)) {
+        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 2373); return;
     }
 
     /* `derivative` curried form (ESH-0369): `(derivative f)` with no point is

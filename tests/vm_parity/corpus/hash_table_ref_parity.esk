@@ -1,0 +1,5 @@
+; Graduated from tests/vm_parity/oos/oos_hash_table.esk (ADR-0064 Wave 1).
+(define h (make-hash-table))
+(hash-table-set! h "k" 5)
+(display (hash-table-ref h "k" #f)) (newline)
+(display (hash-table-ref h "missing" #f)) (newline)

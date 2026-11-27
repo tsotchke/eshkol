@@ -42617,21 +42617,14 @@ Value* EshkolLLVMCodeGen::codegenAcons(const eshkol_operations_t* op) {
         
         if (!key || !value || !alist) return nullptr;
         
-        // Create new key-value pair: (key . value) with type preservation
-        TypedValue key_typed = detectValueType(key);
-        TypedValue value_typed = detectValueType(value);
-        Value* new_pair = codegenTaggedArenaConsCell(key_typed, value_typed);
-        
-        // Cons the new pair onto the existing alist: ((key . value) . alist)
-        TypedValue pair_typed = TypedValue(new_pair, ESHKOL_VALUE_HEAP_PTR, true);
-        TypedValue alist_typed = detectValueType(alist);
-        Value* new_alist = codegenTaggedArenaConsCell(pair_typed, alist_typed);
-
-        // codegenTaggedArenaConsCell returns raw i64 (PtrToInt). ensureTaggedValue
-        // at the define/call boundary would pack it as INT64 and `(car ...)` would
-        // then refuse the value. Wrap as HEAP_PTR here, matching cons/allocConsCell.
-        Value* result_ptr = builder->CreateIntToPtr(new_alist, ptr_type);
-        return tagged_->packHeapPtr(result_ptr);
+        // Preserve full runtime tagged-value fidelity for key, value, and alist.
+        Value* key_tv = ensureTaggedValue(key);
+        Value* val_tv = ensureTaggedValue(value);
+        Value* alist_tv = ensureTaggedValue(alist);
+        Value* new_pair_i64 = codegenTaggedArenaConsCellFromTaggedValue(key_tv, val_tv);
+        Value* new_pair_tv = packPtrToTaggedValue(new_pair_i64, ESHKOL_VALUE_HEAP_PTR);
+        Value* new_alist_i64 = codegenTaggedArenaConsCellFromTaggedValue(new_pair_tv, alist_tv);
+        return packPtrToTaggedValue(new_alist_i64, ESHKOL_VALUE_HEAP_PTR);
     }
 
 Value* EshkolLLVMCodeGen::codegenSplitAt(const eshkol_operations_t* op) {

@@ -26,8 +26,8 @@
     (display "force-2:") (display (force p)) (newline)
     (display "force-count:") (display count) (newline)))
 (display "force-val:") (display (force 99)) (newline)
-(display "force-first-class:")
-(display (map force (list (delay (+ 1 2)) (delay (+ 3 4)))))
+(display "force-list:")
+(display (map (lambda (p) (force p)) (list (delay (+ 1 2)) (delay (+ 3 4)))))
 (newline)
 
 ;; 3. do (flat, nested, parallel step, consecutive, define-after-do)
@@ -97,11 +97,11 @@
     (list a b c d)))
 (newline)
 
-(display "let*-values-rest:")
+(display "let*-values-multi:")
 (display
-  (let*-values (((x . rest) (values 10 20 30))
-                ((y) (values (+ x (car rest)))))
-    (list x rest y)))
+  (let*-values (((x y z) (values 10 20 30))
+                ((s) (values (+ x y z))))
+    (list x y z s)))
 (newline)
 
 ;; 8. make-parameter & parameterize (with and without converter, nested)

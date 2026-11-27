@@ -291,6 +291,18 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define _cmp2_15 char=?) (define char=? (_chain2 _cmp2_15))\n"
     "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
     "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
+    "(define _cmp2_18 string<=?) (define string<=? (_chain2 _cmp2_18))\n"
+    "(define _cmp2_19 string>=?) (define string>=? (_chain2 _cmp2_19))\n"
+    "(define _cmp2_20 string>?) (define string>? (_chain2 _cmp2_20))\n"
+    "(define _cmp2_21 string-ci<?) (define string-ci<? (_chain2 _cmp2_21))\n"
+    "(define _cmp2_22 string-ci<=?) (define string-ci<=? (_chain2 _cmp2_22))\n"
+    "(define _cmp2_23 string-ci>?) (define string-ci>? (_chain2 _cmp2_23))\n"
+    "(define _cmp2_24 string-ci>=?) (define string-ci>=? (_chain2 _cmp2_24))\n"
+    "(define _cmp2_25 char-ci=?) (define char-ci=? (_chain2 _cmp2_25))\n"
+    "(define _cmp2_26 char-ci<?) (define char-ci<? (_chain2 _cmp2_26))\n"
+    "(define _cmp2_27 char-ci>?) (define char-ci>? (_chain2 _cmp2_27))\n"
+    "(define _cmp2_28 char-ci<=?) (define char-ci<=? (_chain2 _cmp2_28))\n"
+    "(define _cmp2_29 char-ci>=?) (define char-ci>=? (_chain2 _cmp2_29))\n"
     /* Derive the inclusive predicates from the native strict comparisons.
      * Reuse their binary comparison results while exposing the existing
      * _chain2 two-or-more argument procedure shape. */

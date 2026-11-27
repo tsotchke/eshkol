@@ -61,8 +61,8 @@
 (display (left? (inject-right 1))) (newline)
 (display (right? (inject-right 1))) (newline)
 (display (right? (inject-left 1))) (newline)
-(display (map sum-tag (list (inject-left 1) (inject-right 2)))) (newline)
-(display (map sum-value (list (inject-left 1) (inject-right 2)))) (newline)
+(display (map (lambda (v) (sum-tag v)) (list (inject-left 1) (inject-right 2)))) (newline)
+(display (map (lambda (v) (sum-value v)) (list (inject-left 1) (inject-right 2)))) (newline)
 (display (filter left? (list (inject-left 1) (inject-right 2) (inject-left 3))))
 (newline)
 
