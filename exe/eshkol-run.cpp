@@ -466,11 +466,21 @@ std::string readFileBytes(const std::filesystem::path& path) {
                        std::istreambuf_iterator<char>());
 }
 
+// Length-prefixed so field boundaries cannot be forged by NUL bytes in values.
+// Changing this framing requires bumping the "schema" values.
+static void hashLengthPrefixed(llvm::SHA256& hash, const std::string& bytes) {
+    const uint64_t length = static_cast<uint64_t>(bytes.size());
+    uint8_t encoded[8];
+    for (int i = 0; i < 8; ++i) {
+        encoded[i] = static_cast<uint8_t>(length >> (8 * i));
+    }
+    hash.update(llvm::ArrayRef<uint8_t>(encoded, sizeof(encoded)));
+    hash.update(llvm::StringRef(bytes.data(), bytes.size()));
+}
+
 void hashUpdate(llvm::SHA256& hash, const std::string& label, const std::string& value) {
-    hash.update(llvm::StringRef(label.data(), label.size()));
-    hash.update(llvm::StringRef("\0", 1));
-    hash.update(llvm::StringRef(value.data(), value.size()));
-    hash.update(llvm::StringRef("\0", 1));
+    hashLengthPrefixed(hash, label);
+    hashLengthPrefixed(hash, value);
 }
 
 std::string sha256Hex(llvm::SHA256& hash) {
@@ -635,7 +645,7 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
         canonical_source = source_path;
     }
 
-    hashUpdate(hash, "schema", "eshkol-run-cache-v1");
+    hashUpdate(hash, "schema", "eshkol-run-cache-v2");
     hashUpdate(hash, "source-path", canonical_source.string());
     hashUpdate(hash, "source-bytes", readFileBytes(source_path));
     // Fold in every transitively (load …)ed / (require …)d / (import …)ed
@@ -804,7 +814,7 @@ static std::string aotModuleCacheKey(const std::filesystem::path& source_path,
     char* ir = LLVMPrintModuleToString(generated_module);
     if (!ir) return {};
     llvm::SHA256 hash;
-    hashUpdate(hash, "schema", "eshkol-aot-module-cache-v2-generated-ir");
+    hashUpdate(hash, "schema", "eshkol-aot-module-cache-v3-generated-ir");
     hashUpdate(hash, "input-key",
                makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
                                   unsafe_mode, opt_level, target_triple,
