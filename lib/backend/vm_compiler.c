@@ -687,6 +687,43 @@ static int vm_head_user_rebound(FuncChunk* c, const Node* identifier) {
     return 0;
 }
 
+/* The core module's binary compose is the two-procedure case of this
+ * variadic fallback. An ordinary lexical or module binding takes precedence. */
+static void compile_compose_procedure(FuncChunk* c) {
+    int outer_jump = placeholder(c);
+    int outer = chunk_add_const(c, INT_VAL(VM_PACK_FUNC_ARITY(c->code_len, 255)));
+    chunk_emit(c, OP_PACK_REST, 0);
+    chunk_emit(c, OP_GET_LOCAL, 0);
+    chunk_emit(c, OP_NATIVE_CALL, 136); /* reverse the procedures once */
+
+    int inner_jump = placeholder(c);
+    int inner = chunk_add_const(c, INT_VAL(VM_PACK_FUNC_ARITY(c->code_len, 1)));
+    chunk_emit(c, OP_GET_UPVALUE, 0);   /* local 1: remaining procedures */
+    int loop = c->code_len;
+    chunk_emit(c, OP_GET_LOCAL, 1);
+    chunk_emit(c, OP_NULL_P, 0);
+    int apply = placeholder(c);
+    chunk_emit(c, OP_GET_LOCAL, 0);     /* local 0: result so far */
+    chunk_emit(c, OP_RETURN, 0);
+
+    patch(c, apply, OP_JUMP_IF_FALSE, c->code_len);
+    chunk_emit(c, OP_GET_LOCAL, 1);
+    chunk_emit(c, OP_CAR, 0);
+    chunk_emit(c, OP_GET_LOCAL, 0);
+    chunk_emit(c, OP_CALL, 1);
+    chunk_emit(c, OP_SET_LOCAL, 0);
+    chunk_emit(c, OP_GET_LOCAL, 1);
+    chunk_emit(c, OP_CDR, 0);
+    chunk_emit(c, OP_SET_LOCAL, 1);
+    chunk_emit(c, OP_LOOP, loop);
+
+    patch(c, inner_jump, OP_JUMP, c->code_len);
+    chunk_emit_closure(c, inner, 1);
+    chunk_emit(c, OP_RETURN, 0);
+    patch(c, outer_jump, OP_JUMP, c->code_len);
+    chunk_emit_closure(c, outer, 0);
+}
+
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
         compile_expr(c, node->children[i], 0);
@@ -714,118 +751,70 @@ static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
                ESHKOL_VM_PACKED_SYMBOL_FID_BASE + n_packs);
 }
 
-/**
- * @brief Compile a `(quasiquote node)` template: `(unquote x)` compiles
- *        @c x normally; atoms compile as literal constants (numbers,
- *        quoted symbols via compile_symbol_literal(), strings, booleans);
- *        lists are rebuilt right-to-left via OP_CONS, splicing
- *        `(unquote-splicing x)` elements in via a native "append" call
- *        (native id 73) instead of consing.
- */
-/** @brief True when @p n is an `(unquote-splicing x)` form. */
-static int vm_qq_is_splice(Node* n) {
-    return n && n->type == N_LIST && n->n_children == 2 &&
-           n->children[0]->type == N_SYMBOL &&
-           eshkol_syntax_base_is(n->children[0]->symbol, "unquote-splicing");
+static int vm_qq_form(Node* node, const char* name) {
+    return node && node->type == N_LIST && !node->is_vector &&
+           node->n_children == 2 && is_sym(node->children[0], name);
 }
 
-static void compile_quasiquote(FuncChunk* c, Node* node) {
-    if (!node) { chunk_emit(c, OP_NIL, 0); return; }
+static int vm_is_dot(Node* node) {
+    return !node->is_verbatim && is_sym(node, ".");
+}
 
-    /* (unquote x) -> compile x normally */
-    if (node->type == N_LIST && node->n_children == 2 &&
-        node->children[0]->type == N_SYMBOL && eshkol_syntax_base_is(node->children[0]->symbol, "unquote")) {
+/* Evaluate escapes in template order, then construct the list from its cdr
+ * toward its car. Tracked operands keep binding forms in escapes independent
+ * of the values already on the stack. */
+static void compile_quasiquote(FuncChunk* c, Node* node, int depth) {
+    if (node->type != N_LIST ||
+        (!node->is_vector && node->n_children == 3 &&
+         is_sym(node->children[0], "exact-rational") &&
+         node->children[1]->type == N_NUMBER &&
+         node->children[2]->type == N_NUMBER)) {
+        compile_quote(c, node);
+        return;
+    }
+
+    int splice = vm_qq_form(node, "unquote-splicing");
+    int unquote = vm_qq_form(node, "unquote");
+    if (depth == 1 && (unquote || splice)) {
         compile_expr(c, node->children[1], 0);
         return;
     }
+    if (unquote || splice) depth--;
+    else if (vm_qq_form(node, "quasiquote")) depth++;
 
-    /* Rational literal 1/3 desugars to the list node (exact-rational num
-     * denom) (see the reader's '/' handling in vm_parser.c). Its elements
-     * are plain data — never `,`/`,@` — so route it through compile_quote(),
-     * which builds the same RATIONAL VALUE the evaluated `exact-rational`
-     * special form does (native 330) instead of falling into the generic
-     * list case below and quasiquoting it as the literal 3-element list
-     * (exact-rational 1 3) — SW-168. */
-    if (node->type == N_LIST && !node->is_vector && node->n_children == 3 &&
-        node->children[0]->type == N_SYMBOL &&
-        eshkol_syntax_base_is(node->children[0]->symbol, "exact-rational") &&
-        node->children[1]->type == N_NUMBER &&
-        node->children[2]->type == N_NUMBER) {
-        compile_quote(c, node);
-        return;
+    int start = node->is_vector ? 1 : 0;
+    int end = node->n_children;
+    Node* tail = NULL;
+    if (!node->is_vector && end >= 3 && vm_is_dot(node->children[end - 2])) {
+        tail = node->children[end - 1];
+        end -= 2;
     }
 
-    /* Atom: number — delegate to compile_quote(), which already applies the
-     * full discrimination an evaluated numeric literal needs (is_bignum,
-     * is_char, is_inexact, is_int); this branch used to test only is_int and
-     * numval, so a quasiquoted bignum atom lost its exactness (fell through
-     * to a lossy double) and a quasiquoted #\char atom lost its char tag —
-     * SW-168. */
-    if (node->type == N_NUMBER) {
-        compile_quote(c, node);
-        return;
+    int saved_locals = c->n_locals;
+    for (int i = start; i < end; i++) {
+        compile_quasiquote(c, node->children[i], depth);
+        add_operand_local(c);
     }
-    /* Atom: symbol — quote as string */
-    if (node->type == N_SYMBOL) {
-        compile_symbol_literal(c, node->symbol);
-        return;
-    }
-    /* Atom: string */
-    if (node->type == N_STRING) {
-        compile_expr(c, node, 0);
-        return;
-    }
-    /* Atom: boolean */
-    if (node->type == N_BOOL) {
-        chunk_emit(c, node->numval ? OP_TRUE : OP_FALSE, 0);
-        return;
-    }
+    if (tail) compile_quasiquote(c, tail, depth);
+    else chunk_emit(c, OP_NIL, 0);
+    int tail_slot = add_operand_local(c);
 
-    /* List: accumulate LEFT TO RIGHT in segments.
-     *
-     * This used to build right-to-left, consing literals onto an accumulator
-     * and calling `append` for each `,@`. But native call 73 pops its SECOND
-     * operand from the top of stack (`b = pop, a = pop; result = a ++ b`),
-     * and the accumulator already sat underneath — so every splice computed
-     * `acc ++ spliced` and the spliced elements landed at the END of the
-     * list regardless of where they were written:
-     *
-     *   `(1 ,@xs 5 6)   with xs = (2 3 4)   =>  (1 5 6 2 3 4)   not (1 2 3 4 5 6)
-     *   `(,@a ,@b)                          =>  (p q x y)       not (x y p q)
-     *
-     * Accumulating left to right makes the operand order come out right with
-     * no new opcode: each maximal run of literal elements is built into its
-     * own segment list and appended to the accumulator, and each `,@` is
-     * appended in the position it was written. `append` returns its second
-     * argument unchanged when the first is '(), so the initial empty
-     * accumulator costs nothing. */
-    if (node->type == N_LIST) {
-        chunk_emit(c, OP_NIL, 0); /* accumulator = '() */
-        int i = 0;
-        while (i < node->n_children) {
-            Node* elem = node->children[i];
-            if (vm_qq_is_splice(elem)) {
-                compile_expr(c, elem->children[1], 0);  /* TOS = spliced list */
-                chunk_emit(c, OP_NATIVE_CALL, 73);      /* acc ++ spliced */
-                i++;
-                continue;
-            }
-            /* Maximal run of non-spliced elements [i, j). */
-            int j = i;
-            while (j < node->n_children && !vm_qq_is_splice(node->children[j])) j++;
-            chunk_emit(c, OP_NIL, 0);                   /* segment tail */
-            for (int k = j - 1; k >= i; k--) {
-                compile_quasiquote(c, node->children[k]);
-                chunk_emit(c, OP_CONS, 0);
-            }
-            chunk_emit(c, OP_NATIVE_CALL, 73);          /* acc ++ segment */
-            i = j;
+    for (int i = end - 1; i >= start; i--) {
+        int slot = saved_locals + i - start;
+        if (depth == 1 && vm_qq_form(node->children[i], "unquote-splicing")) {
+            chunk_emit(c, OP_GET_LOCAL, slot);
+            chunk_emit(c, OP_GET_LOCAL, tail_slot);
+            chunk_emit(c, OP_NATIVE_CALL, 135); /* append */
+        } else {
+            chunk_emit(c, OP_GET_LOCAL, tail_slot);
+            chunk_emit(c, OP_GET_LOCAL, slot);
+            chunk_emit(c, OP_CONS, 0);
         }
-        return;
+        chunk_emit(c, OP_SET_LOCAL, tail_slot);
     }
-
-    /* Fallback: emit nil */
-    chunk_emit(c, OP_NIL, 0);
+    if (node->is_vector) chunk_emit(c, OP_NATIVE_CALL, 227); /* list->vector */
+    if (end > start) chunk_emit(c, OP_POPN, end - start);
+    c->n_locals = saved_locals;
 }
 
 /* compile_depth tracked in global context — not in CompilerContext struct
@@ -1915,7 +1904,7 @@ static int g_vm_bootstrapping_standard_library = 0;
 typedef struct {
     const char* name;
     const char* result;
-    const char* args[6];
+    const char* args[8];
     int n_args;
     const char* real_name;
     int native_id;
@@ -1960,6 +1949,30 @@ static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
     {"sqlite-last-error-raw", "i32", {"i64", "ptr", "i64"}, 3, "eshkol_sqlite_last_error", VM_NATIVE_SQLITE_LAST_ERROR},
     {"sqlite-last-insert-rowid-raw", "i64", {"i64"}, 1, "eshkol_sqlite_last_insert_rowid", VM_NATIVE_SQLITE_LAST_INSERT_ROWID},
     {"sqlite-changes-raw", "i32", {"i64"}, 1, "eshkol_sqlite_changes", VM_NATIVE_SQLITE_CHANGES},
+    /* ADR-0018 signed-curvature stereographic chart (lib/core/curvature.esk) */
+    {"chart-last-error-raw", "ptr", {NULL}, 0, "eshkol_curvature_last_error", 2350},
+    {"chart-convention-id-raw", "i64", {NULL}, 0, "eshkol_curvature_convention_id", 2351},
+    {"chart-alpha-raw", "double", {NULL}, 0, "eshkol_curvature_alpha", 2352},
+    {"chart-check-header-raw", "i32", {"i64", "double", "double"}, 3, "eshkol_curvature_check_header", 2353},
+    {"chart-distance-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_distance", 2354},
+    {"chart-sq-distance-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_sq_distance", 2355},
+    {"chart-conformal-factor-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_conformal_factor", 2356},
+    {"chart-distance-jet-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_distance_jet", 2357},
+    {"chart-sq-distance-jet-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_sq_distance_jet", 2358},
+    {"chart-sq-distance-grad-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_sq_distance_grad", 2359},
+    {"chart-exp-map-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_exp_map", 2360},
+    {"chart-log-map-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_log_map", 2361},
+    {"chart-transport-raw", "i32", {"ptr", "ptr", "ptr", "double", "ptr"}, 5, "eshkol_curvature_transport", 2362},
+    {"chart-mobius-add-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_mobius_add", 2363},
+    {"chart-mobius-scalar-raw", "i32", {"double", "ptr", "double", "ptr"}, 4, "eshkol_curvature_mobius_scalar", 2364},
+    {"chart-project-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_project", 2365},
+    {"chart-riemannian-grad-raw", "i32", {"ptr", "ptr", "double", "ptr"}, 4, "eshkol_curvature_riemannian_grad", 2366},
+    {"chart-attention-raw", "i32", {"ptr", "ptr", "ptr", "double", "double", "ptr", "ptr"}, 7, "eshkol_curvature_attention", 2367},
+    {"chart-sphere-to-chart-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_sphere_to_chart", 2368},
+    {"chart-chart-to-sphere-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_chart_to_sphere", 2369},
+    {"chart-migrate-point-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_migrate_point", 2370},
+    {"chart-migrate-tangent-raw", "i32", {"ptr", "double", "ptr"}, 3, "eshkol_curvature_migrate_tangent", 2371},
+    {"chart-migrate-temperature-raw", "i32", {"double", "double", "ptr"}, 3, "eshkol_curvature_migrate_temperature", 2372},
 };
 
 static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
@@ -2958,24 +2971,37 @@ oom:
  *         a converter that raises cannot leave a partially-bound parameter
  *         stack, and cleanup never re-evaluates a parameter expression. */
 static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
-    Node* head = node->children[0];
-    (void)head;
     Node* bindings = node->children[1];
     int saved_locals = c->n_locals;
-    int parameter_slots[64];
-    int raw_value_slots[64];
-    int converted_value_slots[64];
-    int n_bindings = 0;
+    enum { binding_limit = sizeof(((VM*)0)->wind_stack) /
+                           sizeof(((VM*)0)->wind_stack[0]) };
+    int parameter_slots[binding_limit];
+    int raw_value_slots[binding_limit];
+    int converted_value_slots[binding_limit];
+    int n_bindings = bindings->n_children;
 
-    /* Preserve the normal left-to-right evaluation of binding expressions. */
-    for (int i = 0; i < bindings->n_children && n_bindings < 64; i++) {
+    if (bindings->type != N_LIST || bindings->is_vector || n_bindings > binding_limit) {
+        vm_compile_error("parameterize: invalid binding list", NULL);
+        return;
+    }
+    c->scope_depth++;
+    for (int i = 0; i < n_bindings; i++) {
         Node* binding = bindings->children[i];
-        if (binding->type != N_LIST || binding->n_children != 2) continue;
+        if (binding->type != N_LIST || binding->is_vector || binding->n_children != 2) {
+            vm_compile_error("parameterize: expected a parameter and value", NULL);
+            c->n_locals = saved_locals;
+            c->scope_depth--;
+            return;
+        }
         compile_expr(c, binding->children[0], 0);
-        parameter_slots[n_bindings] = add_temporary_local(c, "__parameterize_parameter__");
+        parameter_slots[i] = add_operand_local(c);
         compile_expr(c, binding->children[1], 0);
-        raw_value_slots[n_bindings] = add_temporary_local(c, "__parameterize_raw_value__");
-        n_bindings++;
+        raw_value_slots[i] = add_operand_local(c);
+    }
+    if (n_bindings == 0) {
+        vm_compile_scope_body(c, node, 2, saved_locals, tail);
+        c->scope_depth--;
+        return;
     }
 
     /* Converters run after all binding expressions but before the first push.
@@ -3003,8 +3029,7 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     for (int i = 2; i < node->n_children; i++) {
         if (i > 2 && !vm_is_definition_form(node->children[i - 1]))
             chunk_emit(c, OP_POP, 0);
-        compile_expr(c, node->children[i],
-                     n_bindings == 0 && tail && i == node->n_children - 1);
+        compile_expr(c, node->children[i], 0);
     }
 
     /* Pop each stored parameter in reverse order without re-evaluation. */
@@ -3017,7 +3042,7 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     int n_locals = c->n_locals - saved_locals;
     if (n_locals > 0) chunk_emit(c, OP_POPN, n_locals);
     c->n_locals = saved_locals;
-    return;
+    c->scope_depth--;
 }
 
 /** @brief Emit an exact/minimum arity check for a values packet in
@@ -3060,7 +3085,7 @@ static void compile_bind_values_formals(FuncChunk* c, int result_slot,
 
     int dot = -1;
     for (int i = 0; i < formals->n_children; i++) {
-        if (is_sym(formals->children[i], ".")) { dot = i; break; }
+        if (vm_is_dot(formals->children[i])) { dot = i; break; }
     }
     int fixed = dot >= 0 ? dot : formals->n_children;
     Node* rest = NULL;
@@ -3127,6 +3152,7 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
     int* result_slots = (int*)malloc((size_t)binding_cap * sizeof(*result_slots));
     Node** formals = (Node**)malloc((size_t)binding_cap * sizeof(*formals));
     int n_bindings = 0;
+    c->scope_depth++;
 
     for (int b = 0; b < bindings_list->n_children; b++) {
         Node* binding = bindings_list->children[b];
@@ -3166,6 +3192,7 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
     }
 
     vm_compile_scope_body(c, node, 2, saved_locals, tail);
+    c->scope_depth--;
     free(result_slots);
     free(formals);
 }
@@ -3466,42 +3493,44 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
-/** @brief Compile `(dynamic-wind before thunk after)`: calls @p before,
- *         pushes @p after onto the VM's wind stack (OP_WIND_PUSH) so
- *         non-local exits (continuations, exceptions) still run it, calls
- *         @p thunk, pops the wind entry (OP_WIND_POP), then calls @p after
- *         on the normal-exit path too — leaving @p thunk's result as TOS
- *         after @p after's own (discarded) result is popped. */
-static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
-    Node* head = node->children[0];
-    (void)head; (void)tail;
-    /* Evaluate `before` once and keep the closure: the wind entry has to
-     * record it so a continuation re-entering this extent can run it again
-     * (R7RS rerooting). Recording only `after` made re-entry resume the body
-     * with its setup undone. */
-    compile_expr(c, node->children[1], 0);
-    chunk_emit(c, OP_DUP, 0);
-    chunk_emit(c, OP_CALL, 0);        /* call before() ... */
-    chunk_emit(c, OP_POP, 0);         /* ... and discard its result */
+/* Give each wind entry its own closure identity, even when multiple extents
+ * share a callback. The wrapper also lets the unwinder call any VM procedure. */
+static void compile_wind_callback(FuncChunk* c, int slot) {
+    int jump = placeholder(c);
+    int fn = chunk_add_const(c, INT_VAL(VM_PACK_FUNC_ARITY(c->code_len, 0)));
+    chunk_emit(c, OP_GET_UPVALUE, 0);
+    chunk_emit(c, OP_TAIL_CALL, 0);
+    chunk_emit(c, OP_RETURN, 0);
+    patch(c, jump, OP_JUMP, c->code_len);
+    chunk_emit(c, OP_GET_LOCAL, slot);
+    chunk_emit_closure(c, fn, 1);
+}
 
-    /* Push [before, after] onto the wind stack */
-    compile_expr(c, node->children[3], 0);
-    chunk_emit(c, OP_WIND_PUSH, 0);
+static void compile_form_dynamic_wind(FuncChunk* c, Node* node) {
+    int saved_locals = c->n_locals;
+    compile_operands_tracked(c, node, 1, 3);
 
-    /* Call thunk() */
-    compile_expr(c, node->children[2], 0);
-    chunk_emit(c, OP_CALL, 0);
+    compile_wind_callback(c, saved_locals);
+    int before = add_operand_local(c);
+    compile_wind_callback(c, saved_locals + 2);
+    int after = add_operand_local(c);
 
-    /* Pop wind stack */
-    chunk_emit(c, OP_WIND_POP, 0);
-
-    /* Call after() (normal exit) */
-    compile_expr(c, node->children[3], 0);
+    chunk_emit(c, OP_GET_LOCAL, before);
     chunk_emit(c, OP_CALL, 0);
     chunk_emit(c, OP_POP, 0);
-    /* thunk result is below after result on stack.
-     * After POP of after_result, thunk_result is TOS. */
-    return;
+    chunk_emit(c, OP_GET_LOCAL, before);
+    chunk_emit(c, OP_GET_LOCAL, after);
+    chunk_emit(c, OP_WIND_PUSH, 0);
+
+    chunk_emit(c, OP_GET_LOCAL, saved_locals + 1);
+    chunk_emit(c, OP_CALL, 0);
+    chunk_emit(c, OP_WIND_POP, 0);
+    chunk_emit(c, OP_GET_LOCAL, after);
+    chunk_emit(c, OP_CALL, 0);
+    chunk_emit(c, OP_POP, 0);
+
+    chunk_emit(c, OP_POPN, c->n_locals - saved_locals);
+    c->n_locals = saved_locals;
 }
 
 /** @brief Compile `(delay expr)` / `(delay-force expr)`: builds
@@ -4595,17 +4624,34 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
         Node* b = vars->children[i];
         if (b->type == N_LIST && b->n_children >= 3) scope_nodes[scope_i++] = b->children[2];
     }
-    /* Bind the loop variables, boxing the ones a nested lambda both captures
-     * and `set!`s so every closure shares one cell (SW-34). */
     for (int i = 0; i < vars->n_children; i++) {
-        Node* b = vars->children[i];
-        if (b->type == N_LIST && b->n_children >= 2 && b->children[0]->type == N_SYMBOL) {
-            const char* vname = b->children[0]->symbol;
-            int box = needs_local_boxing(scope_nodes, n_scope, vname);
-            compile_expr(c, b->children[1], 0);
-            if (box) chunk_emit(c, OP_VEC_CREATE, 1);
-            add_local(c, vname);
-            if (box) c->locals[c->n_locals - 1].boxed = 1;
+        Node* binding = vars->children[i];
+        if (binding->type != N_LIST || binding->n_children < 2 ||
+            binding->n_children > 3 || binding->children[0]->type != N_SYMBOL) {
+            vm_compile_error("do: invalid binding", NULL);
+            free(scope_nodes);
+            for (int j = saved_locals; j < c->n_locals; j++) {
+                free(c->locals[j].name);
+                c->locals[j].name = NULL;
+            }
+            c->n_locals = saved_locals;
+            c->scope_depth--;
+            return;
+        }
+        compile_expr(c, binding->children[1], 0);
+        add_operand_local(c);
+    }
+    for (int i = 0; i < vars->n_children; i++) {
+        Local* local = &c->locals[saved_locals + i];
+        const char* name = vars->children[i]->children[0]->symbol;
+        free(local->name);
+        local->name = strdup(name);
+        local->compiler_temporary = 0;
+        local->boxed = needs_local_boxing(scope_nodes, n_scope, name);
+        if (local->boxed) {
+            chunk_emit(c, OP_GET_LOCAL, local->slot);
+            chunk_emit(c, OP_VEC_CREATE, 1);
+            chunk_emit(c, OP_SET_LOCAL, local->slot);
         }
     }
     free(scope_nodes);
@@ -4618,20 +4664,24 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, test->children[0], 0);
         int jbody = placeholder(c);           /* JUMP_IF_FALSE -> body */
 
-        /* Exit arm: the result sequence. Not in tail position when locals
-         * still have to be popped — a TAIL_CALL would skip the OP_POPN. */
-        int result_tail = (n_do_locals > 0) ? 0 : tail;
+        /* The exit sequence shares the loop scope and its tail cleanup. */
+        int prior_cleanup = c->tail_cleanup;
         if (test->n_children >= 2) {
             for (int i = 1; i < test->n_children; i++) {
                 int is_last = (i == test->n_children - 1);
-                compile_expr(c, test->children[i], is_last ? result_tail : 0);
-                if (!is_last && !vm_is_definition_form(node->children[i]))
+                c->tail_cleanup = prior_cleanup + c->n_locals - saved_locals;
+                compile_expr(c, test->children[i], is_last && tail);
+                if (!is_last && !vm_is_definition_form(test->children[i]))
                     chunk_emit(c, OP_POP, 0);
             }
         } else {
             chunk_emit(c, OP_NIL, 0);
         }
-        int jexit = placeholder(c);           /* JUMP -> past body+step */
+        c->tail_cleanup = prior_cleanup;
+        int result_locals = c->n_locals - saved_locals - n_do_locals;
+        if (result_locals > 0) chunk_emit(c, OP_POPN, result_locals);
+        c->n_locals = saved_locals + n_do_locals;
+        int jexit = placeholder(c);
 
         /* Body. */
         patch(c, jbody, OP_JUMP_IF_FALSE, c->code_len);
@@ -4652,7 +4702,7 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
             Node* b = vars->children[i];
             if (b->type == N_LIST && b->n_children >= 3) {
                 compile_expr(c, b->children[2], 0);
-                add_local(c, " do step");
+                add_temporary_local(c, "__do_step__");
                 n_steps++;
             }
         }
@@ -4693,6 +4743,10 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     /* Drop the loop variables, keeping the result on top (LE-10). */
     int scoped_locals = c->n_locals - saved_locals;
     if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    for (int i = saved_locals; i < c->n_locals; i++) {
+        free(c->locals[i].name);
+        c->locals[i].name = NULL;
+    }
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
@@ -5448,6 +5502,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_NIL, 0);
         } else if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
+        } else if (is_sym(node, "compose")) {
+            compile_compose_procedure(c);
         } else if (vm_private_import_matches_unqualified(node->symbol)) {
             vm_compile_error("module-private binding is not visible to this importer",
                              node->symbol);
@@ -6306,8 +6362,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "make-parameter") &&
         (node->n_children == 2 || node->n_children == 3)) {
         compile_expr(c, node->children[1], 0);
-        if (node->n_children == 3) compile_expr(c, node->children[2], 0);
-        else chunk_emit(c, OP_NIL, 0);
+        if (node->n_children == 3) {
+            int saved_locals = c->n_locals;
+            add_operand_local(c);
+            compile_expr(c, node->children[2], 0);
+            c->n_locals = saved_locals;
+        } else {
+            chunk_emit(c, OP_NIL, 0);
+        }
         chunk_emit(c, OP_NATIVE_CALL, 700);
         return;
     }
@@ -6421,7 +6483,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * R7RS: call before(), register after on wind stack, call thunk(),
      * pop wind stack, call after(). If a continuation escapes through
      * this dynamic-wind, the after thunk is called during unwinding. */
-    if (is_sym(head, "dynamic-wind") && node->n_children == 4) { compile_form_dynamic_wind(c, node, tail); return; }
+    if (is_sym(head, "dynamic-wind") && node->n_children == 4) { compile_form_dynamic_wind(c, node); return; }
 
     /* (delay expr) → create a promise: #(#f <thunk>)
      * The thunk is a nullary closure wrapping expr. */
@@ -6947,7 +7009,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (quasiquote datum) — compile with unquote/unquote-splicing support */
     if (is_sym(head, "quasiquote") && node->n_children == 2) {
-        compile_quasiquote(c, node->children[1]);
+        compile_quasiquote(c, node->children[1], 1);
         return;
     }
 
@@ -7133,6 +7195,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * instead of aliasing the number? opcode, which omitted RATIONAL/BIGNUM. */
     if (is_sym(head, "real?") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 1697); return;
+    }
+
+    if (is_sym(head, "ptr->string") && node->n_children == 2 && !vm_head_user_rebound(c, head)) {
+        compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 2373); return;
     }
 
     /* `derivative` curried form (ESH-0369): `(derivative f)` with no point is

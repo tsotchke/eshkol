@@ -213,6 +213,9 @@ static void vm_language_coverage_read(VM* vm, int binding_hash);
 /* Geometric manifold operations (Riemannian, geodesic, Lie groups) */
 #include "vm_geometric.c"
 
+/* ADR-0018 signed-curvature chart externs and Wave 1 reflection builtins */
+#include "vm_curvature_ext.c"
+
 /* Thread pool and parallel primitives (before vm_native so parallel-map can use g_pool) */
 #ifndef ESHKOL_VM_WASM
 #include "vm_parallel.c"
@@ -450,7 +453,7 @@ static const BuiltinDef BUILTINS[] = {
     /* Math (2 arg) — IDs 32-38 */
     {"expt", 32, 2}, {"pow", 32, 2},
     {"_min2", 33, 2}, {"_max2", 34, 2},  /* internal 2-arg; prelude defines variadic min/max */
-    {"modulo", 36, 2}, {"remainder", 37, 2}, {"quotient", 38, 2},
+    {"modulo", 36, 2}, {"%", 36, 2}, {"remainder", 37, 2}, {"quotient", 38, 2},
     /* Predicates — IDs 40-44 */
     {"positive?", 40, 1}, {"negative?", 41, 1},
     {"odd?", 42, 1}, {"even?", 43, 1}, {"zero?", 44, 1},
@@ -541,6 +544,16 @@ static const BuiltinDef BUILTINS[] = {
     {"string=?", 560, 2}, {"string<?", 561, 2}, {"string-ci=?", 562, 2},
     {"string-fill!", 556, 2}, {"string-copy", 566, 1},
     {"string-byte-length", 571, 1},
+    /* Extended string operations — IDs 2410-2422 (ADR-0064 Wave 1B) */
+    {"string<=?", 2410, 2}, {"string>=?", 2411, 2}, {"string>?", 2412, 2},
+    {"string-ci<?", 2413, 2}, {"string-ci<=?", 2414, 2},
+    {"string-ci>?", 2415, 2}, {"string-ci>=?", 2416, 2},
+    {"string-foldcase", 2417, 1},
+    {"string-contains?", 2418, 2},
+    {"string-index", 2419, 2},
+    {"string-set!", 2420, 3},
+    {"string-copy!", 2421, 5, 3},
+    {"string-port?", 2422, 1},
     /* Misc — IDs 236-238 */
     {"boolean=?", 236, 2}, {"error", 237, 1, 0, 1}, {"void", 238, 0},
     {"symbol->string", 184, 1}, {"string->symbol", 185, 1},
@@ -867,7 +880,8 @@ static const BuiltinDef BUILTINS[] = {
     /* Parallel primitives — IDs 620-628 */
     {"parallel-map", 620, 2}, {"parallel-filter", 621, 2},
     {"parallel-fold", 622, 3}, {"parallel-for-each", 623, 2},
-    {"future", 625, 1}, {"force", 626, 1}, {"force-future", 626, 1},
+    {"future", 625, 1}, {"force", 132, 1}, {"force-future", 626, 1},
+    {"procedure-arity", 2380, 1}, {"features", 2381, 0},
     {"future-ready?", 627, 1},
     {"thread-pool-info", 628, 0}, {"thread-pool-size", 628, 0},
     /* Bytevectors — IDs 680-689 */
@@ -887,6 +901,7 @@ static const BuiltinDef BUILTINS[] = {
      * return on a miss, and `(hash-ref table key)` legitimately omits
      * it. The documented arity is 2. */
     {"hash-ref", 661, 3, 2}, {"hash-table-ref/default", 661, 3},
+    {"hash-table-ref", 2448, 3, 2},
     {"hash-set!", 662, 3}, {"hash-table-set!", 662, 3},
     {"hash-delete!", 663, 2}, {"hash-remove!", 663, 2},
     {"hash-table-delete!", 663, 2},
@@ -906,6 +921,11 @@ static const BuiltinDef BUILTINS[] = {
     {"char-lower-case?", 1684, 1}, {"char-upcase", 1685, 1},
     {"char-downcase", 1686, 1},
     {"char=?", 1687, 2}, {"char<?", 1688, 2}, {"char>?", 1689, 2},
+    /* Extended character operations — IDs 2400-2407 (ADR-0064 Wave 1B) */
+    {"char-ci=?", 2400, 2}, {"char-ci<?", 2401, 2}, {"char-ci>?", 2402, 2},
+    {"char-ci<=?", 2403, 2}, {"char-ci>=?", 2404, 2},
+    {"char-foldcase", 2405, 1}, {"digit-value", 2406, 1},
+    {"char-ready?", 2407, 1, -2},
     /* ═══════════════════════════════════════════════════════════════
      * Bitwise operations — IDs 1692-1696, 2200-2202
      * ═══════════════════════════════════════════════════════════════ */
@@ -2391,6 +2411,7 @@ typedef struct {
     VM* vm;
     FuncChunk chunk;
     int initialized;
+    int user_locals_base;
 } ReplSession;
 
 /* Create a REPL session: compile prelude, create VM, run prelude */
@@ -2450,6 +2471,8 @@ static ReplSession* repl_session_create(void) {
 
     /* Remove the HALT — chunk is now the living base for incremental compilation */
     rs->chunk.code_len = halt_pos;
+    rs->user_locals_base = rs->chunk.n_locals;
+    vm_set_user_locals_base(rs->user_locals_base);
 
     rs->initialized = 1;
     return rs;
@@ -2486,6 +2509,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     if (!rs || !rs->initialized) return;
 
     vm_clear_compile_failure();
+    vm_set_user_locals_base(rs->user_locals_base);
 
     /* Reset error flags at start of each eval */
     rs->vm->error = 0;

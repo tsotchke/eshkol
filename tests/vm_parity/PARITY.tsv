@@ -13,14 +13,12 @@
 # name	status	justification
 arena_tape_release	native-only-justified	native operator tapes use an owning arena mark/release interval; the bytecode VM's operator tape is owned by VmRegionStack and is reclaimed by an enclosing VM region (docs/reference/ad/tape.md)
 __arena-used	native-only-justified	native arena introspection probe; bytecode VM has separate region accounting
-%	gap	internal codegen helper name leaked into dispatch
-%make-lazy-promise	gap	internal codegen helper name leaked into dispatch
-%make-lazy-promise-force	gap	internal codegen helper name leaked into dispatch
+%	vm-supported	ADR-0064 Wave 1 verified parity
 *	vm-supported	a negative zero stays inexact: (* -1.0 0.0) is -0.0 at run time and in the constant folder, not the exact integer 0 (corpus/38_numeric_reader_roundtrip.esk); exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is exact, not an inexact fallback (corpus/64_bignum_rational_mixed.esk)
 +	vm-supported	exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is exact, not an inexact fallback (corpus/64_bignum_rational_mixed.esk)
 -	vm-supported	exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is exact, not an inexact fallback (corpus/64_bignum_rational_mixed.esk)
 /	vm-supported	unary / compiles as exact reciprocal division through OP_DIV, evaluating the operand once; corpus/97_unary_division_reciprocal.esk covers exact/inexact reciprocal, side effects, zero divisors and differentiation. exact/exact division yields an exact rational; a zero divisor is fatal ONLY for exact operands - any inexact operand makes it IEEE-754 (+nan.0/inf.0), and a bignum reaches the bignum domain instead of the double path that read it as 0 (corpus/37_float_div_zero.esk, tests/vm_parity/fatal/); exact bignum RATIONALS are representable and exact (SW-18/ESH-0105: VmRational carries bignum halves; corpus/62_exact_bignum_rational.esk, corpus/63_bignum_exact_rational.esk, corpus/64_bignum_rational_mixed.esk); exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is exact, not an inexact fallback (corpus/64_bignum_rational_mixed.esk)
-/rational	gap	no VM name binding
+/rational	vm-supported	ADR-0064 Wave 1 verified parity
 <	vm-supported	
 <=	vm-supported	
 =	vm-supported	
@@ -30,7 +28,7 @@ _format-list	vm-supported
 _region-close-list	vm-supported	
 _region-open	vm-supported	
 abs	vm-supported	stays in the operand's domain: (abs 1/3) is the exact 1/3 (it used to read the rational's heap pointer as 0) and (abs -2.0) stays inexact (corpus/52_numeric_tag_dispatch.esk)
-acons	gap	no VM name binding
+acons	vm-supported	ADR-0064 Wave 1 verified parity
 acos	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to acos(0) (corpus/54_complex_transcendentals.esk)
 acosh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 ad-abs	vm-supported	
@@ -73,11 +71,11 @@ arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step)
 arithmetic-shift	vm-supported	
 asin	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to asin(0) (corpus/54_complex_transcendentals.esk)
 asinh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
-assq	gap	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
-assv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
+assq	vm-supported	ADR-0064 Wave 1 verified parity
+assv	vm-supported	ADR-0064 Wave 1 verified parity
+memv	vm-supported	ADR-0064 Wave 1 verified parity
+partition	vm-supported	ADR-0064 Wave 1 verified parity
+string-contains	vm-supported	ADR-0064 Wave 1 verified parity
 atan	vm-supported	
 atan2	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 atanh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
@@ -140,28 +138,28 @@ cddar	vm-supported
 cdddr	vm-supported	
 cddr	vm-supported	
 cdr	vm-supported	
-ceil	gap	no VM name binding
+ceil	vm-supported	ADR-0064 Wave 1 verified parity
 ceiling	vm-supported	
 celu	gap	ml faculty has no VM fid coverage
 char->integer	vm-supported	
 char-alphabetic?	vm-supported	
-char-ci<=?	gap	extended char ops missing in VM (no char type)
-char-ci<?	gap	extended char ops missing in VM (no char type)
-char-ci=?	gap	extended char ops missing in VM (no char type)
-char-ci>=?	gap	extended char ops missing in VM (no char type)
-char-ci>?	gap	extended char ops missing in VM (no char type)
+char-ci<=?	vm-supported	ADR-0064 Wave 1 verified parity
+char-ci<?	vm-supported	ADR-0064 Wave 1 verified parity
+char-ci=?	vm-supported	ADR-0064 Wave 1 verified parity
+char-ci>=?	vm-supported	ADR-0064 Wave 1 verified parity
+char-ci>?	vm-supported	ADR-0064 Wave 1 verified parity
 char-downcase	vm-supported	
-char-foldcase	gap	extended char ops missing in VM (no char type)
+char-foldcase	vm-supported	ADR-0064 Wave 1 verified parity
 char-lower-case?	vm-supported	
 char-numeric?	vm-supported	
-char-ready?	gap	extended char ops missing in VM (no char type)
+char-ready?	vm-supported	ADR-0064 Wave 1 verified parity
 char-upcase	vm-supported	
 char-upper-case?	vm-supported	
 char-whitespace?	vm-supported	
-char<=?	gap	extended char ops missing in VM (no char type)
+char<=?	vm-supported	ADR-0064 Wave 1 verified parity
 char<?	vm-supported	
 char=?	vm-supported	
-char>=?	gap	extended char ops missing in VM (no char type)
+char>=?	vm-supported	ADR-0064 Wave 1 verified parity
 char>?	vm-supported	
 char?	vm-supported	
 check-grad-health	gap	ml faculty has no VM fid coverage
@@ -172,7 +170,7 @@ close-port	vm-supported
 command-line	vm-supported	
 compiler-fence	native-only-justified	low-level memory/FFI primitive tied to native codegen
 complex?	vm-supported	
-concatenate	gap	no VM name binding
+concatenate	vm-supported	ADR-0064 Wave 1 verified parity
 conjugate	vm-supported	
 conjugate-gradient	gap	ml faculty has no VM fid coverage
 cons	vm-supported	
@@ -220,7 +218,7 @@ dequant-q4_0	gap	ml faculty has no VM fid coverage
 dequant-q8_0	gap	ml faculty has no VM fid coverage
 det	gap	tensor linalg/manipulation fid missing in VM
 diff-lines	vm-supported	
-digit-value	gap	extended char ops missing in VM (no char type)
+digit-value	vm-supported	ADR-0064 Wave 1 verified parity
 directory-delete-recursive	vm-supported	
 directory-exists?	gap	port/file IO surface missing in VM
 directory-list	gap	port/file IO surface missing in VM
@@ -240,12 +238,12 @@ dual?	vm-supported
 einsum	gap	tensor linalg/manipulation fid missing in VM
 elu	gap	ml faculty has no VM fid coverage
 embedding	gap	ml faculty has no VM fid coverage
-emergency-exit	gap	no VM name binding
+emergency-exit	vm-supported	ADR-0064 Wave 1 verified parity
 eof-object	gap	port/file IO surface missing in VM
 eof-object?	vm-supported	
-eq?	gap	symbol identity returns #f (resolved/equal_eq_structural_false.esk)
+eq?	vm-supported	ADR-0064 Wave 1 verified parity
 equal?	vm-supported	deep structural equality over pairs/vectors/tensors/strings/numbers (vm_deep_equal)
-eqv?	gap	aliased to broken eq?/equal? fids (resolved/equal_eq_structural_false.esk)
+eqv?	vm-supported	ADR-0064 Wave 1 verified parity
 error	vm-supported	raises a catchable condition and keeps its text on stderr; it used to set a fatal vm->error that no `guard` could intercept and printed the message onto the program's stdout (corpus/41_tensor_literals.esk)
 eval	gap	eval/environment reflection has no VM binding
 even?	vm-supported	
@@ -254,10 +252,10 @@ event-loop-backend	vm-supported	ESH-0011: reports the compiled-in backend name (
 event-loop-close	vm-supported	ESH-0011: idempotent-observable - closes the kernel object and returns #t, or #f for an already-closed handle, identically on both surfaces
 event-loop-poll	vm-supported	ESH-0011: returns ((fd . events) ...) built in kernel order, empty list on timeout, on both surfaces
 event-loop-remove-fd!	vm-supported	ESH-0011: #t when the descriptor was watched, #f when it was not, on both surfaces
-exact	gap	no VM name binding
+exact	vm-supported	ADR-0064 Wave 1 verified parity
 exact->inexact	vm-supported	
-exact-integer?	gap	no VM name binding
-exact-rational?	gap	no VM name binding
+exact-integer?	vm-supported	ADR-0064 Wave 1 verified parity
+exact-rational?	vm-supported	ADR-0064 Wave 1 verified parity
 exact?	vm-supported	answers for every exact tag - fixnum, ratnum, bignum and i128 (corpus/52_numeric_tag_dispatch.esk)
 executable-exists?	vm-supported	
 executable-path	vm-supported	
@@ -269,13 +267,13 @@ expected-free-energy	vm-supported
 exponential-decay-lr	gap	ml faculty has no VM fid coverage
 expt	vm-supported	exact integer^nonneg-integer stays exact (int, promoting to bignum on overflow); a complex base OR exponent promotes both and takes the principal exp(b log a), matching native — (expt i i) is 0.20787957635076193 on both engines (corpus/54_complex_transcendentals.esk)
 eye	vm-supported	
-fabs	gap	no VM name binding
+fabs	vm-supported	ADR-0064 Wave 1 verified parity
 fact?	vm-supported	
 factor-graph?	vm-supported	
 fast-convolve	gap	signal faculty has no VM fid coverage
 fd-close	vm-supported	
 fd-write	vm-supported	
-features	gap	no VM name binding
+features	vm-supported	ADR-0064 Wave 1 verified parity
 feed-forward	gap	ml faculty has no VM fid coverage
 fft	gap	signal faculty has no VM fid coverage
 fg-add-factor!	vm-supported	
@@ -303,12 +301,12 @@ finite?	vm-supported
 fir-filter	gap	signal faculty has no VM fid coverage
 flatten	vm-supported	
 floor	vm-supported	preserves exactness: (floor 2.5) is the inexact 2.0, not the exact 2 (tests/vm/numeric_tag_dispatch_surface_regression.esk)
-floor-quotient	gap	no VM name binding
-floor-remainder	gap	no VM name binding
-floor/	gap	no VM name binding
+floor-quotient	vm-supported	ADR-0064 Wave 1 verified parity
+floor-remainder	vm-supported	ADR-0064 Wave 1 verified parity
+floor/	vm-supported	ADR-0064 Wave 1 verified parity
 flush-output-port	gap	port/file IO surface missing in VM
 focal-loss	gap	ml faculty has no VM fid coverage
-force	gap	returns raw promise object (resolved/force_returns_promise.esk)
+force	vm-supported	ADR-0064 Wave 1 verified parity
 fork	vm-supported	
 format	vm-supported	
 format-iso8601	vm-supported	
@@ -353,7 +351,7 @@ hash-table-contains?	vm-supported	alias of hash-has-key? (fid 664)
 hash-table-delete!	vm-supported	alias of hash-delete! (fid 663)
 hash-table-exists?	vm-supported	alias of hash-has-key? (fid 664)
 hash-table-keys	vm-supported	alias of hash-keys (fid 665)
-hash-table-ref	gap	hash tables have no VM binding
+hash-table-ref	vm-supported	ADR-0064 Wave 1 verified parity
 hash-table-ref/default	vm-supported	alias of hash-ref (fid 661)
 hash-table-set!	vm-supported	alias of hash-set! (fid 662)
 hash-table-size	vm-supported	alias of hash-count (fid 667)
@@ -403,8 +401,8 @@ inexact	vm-supported	SW-220: first-class VM builtin on every number kind; carrie
 inexact->exact	vm-supported	returns the operand's EXACT value via the same mantissa*2^exp decomposition as the native runtime, including bignum integers and bignum-backed rationals for values outside int64 and subnormal denominators; corpus/55_inexact_exact_exactness.esk covers ordinary, large, and subnormal round trips
 inexact?	vm-supported	
 infinite?	vm-supported	
-inject-left	gap	no VM name binding
-inject-right	gap	no VM name binding
+inject-left	vm-supported	ADR-0064 Wave 1 verified parity
+inject-right	vm-supported	ADR-0064 Wave 1 verified parity
 input-port-open?	gap	port/file IO surface missing in VM
 input-port?	vm-supported	
 integer->char	vm-supported	VAL_CHAR immediate type; #\ literals and char ops carry char-ness so display renders the glyph
@@ -426,13 +424,13 @@ kb?	vm-supported
 kl-div-loss	gap	ml faculty has no VM fid coverage
 l-bfgs	gap	ml faculty has no VM fid coverage
 label-smoothing-loss	gap	ml faculty has no VM fid coverage
-last	gap	no VM name binding
+last	vm-supported	ADR-0064 Wave 1 verified parity
 last-pair	vm-supported	
 layer-norm	vm-supported	forward dual carrier and scalar layer-norm path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 lcm	vm-supported	
 leaky-relu	gap	ml faculty has no VM fid coverage
 lecun-normal!	gap	ml faculty has no VM fid coverage
-left?	gap	no VM name binding
+left?	vm-supported	ADR-0064 Wave 1 verified parity
 length	vm-supported	
 line-reader-close	vm-supported	
 line-reader-poll	vm-supported	
@@ -441,11 +439,11 @@ linear-solve	vm-supported
 linear-warmup-lr	gap	ml faculty has no VM fid coverage
 linspace	vm-supported	
 list	vm-supported	
-list*	gap	no VM name binding
+list*	vm-supported	ADR-0064 Wave 1 verified parity
 list->string	vm-supported	
 list->vector	vm-supported	dedicated native fid 227 (no longer aliased to memq/139)
-list-copy	gap	no VM name binding
-list-set!	gap	no VM name binding
+list-copy	vm-supported	ADR-0064 Wave 1 verified parity
+list-set!	vm-supported	ADR-0064 Wave 1 verified parity
 list?	vm-supported	
 local-timezone-offset	vm-supported	
 log	vm-supported	a complex operand takes the principal complex logarithm from the shared core, and a NEGATIVE EXACT real promotes to log|x| + pi i, matching native; an inexact negative keeps IEEE NaN (corpus/54_complex_transcendentals.esk)
@@ -472,12 +470,12 @@ make-kb	vm-supported
 make-line-reader	vm-supported	
 make-lru-cache	vm-supported	
 make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where the platform has no event loop, raise on an out-of-range max-events
-make-parameter	gap	no VM name binding
+make-parameter	vm-supported	ADR-0064 Wave 1 verified parity
 make-pipe	vm-supported	
 make-polar	vm-supported	
 make-prng	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
-make-promise	gap	no VM name binding
-make-rational	gap	no VM name binding
+make-promise	vm-supported	ADR-0064 Wave 1 verified parity
+make-rational	vm-supported	ADR-0064 Wave 1 verified parity
 make-rectangular	vm-supported	
 make-string	vm-supported	
 make-substitution	vm-supported	
@@ -497,7 +495,7 @@ mish	gap	ml faculty has no VM fid coverage
 mkdir-recursive	vm-supported	
 mkdtemp	vm-supported	
 mkstemp	vm-supported	
-mod	gap	no VM name binding
+mod	vm-supported	ADR-0064 Wave 1 verified parity
 model-load	vm-supported	
 model-save	vm-supported	
 modulo	vm-supported	values, sign conventions and inexact contagion agree on every representation (corpus/50_flonum_integer_division.esk, corpus/77_inexact_division_contagion.esk, resolved/modulo_inexact_collapsed_vm.esk); zero divisors are fatal
@@ -526,7 +524,7 @@ op:CALL_CC	vm-supported	escape continuations verified 2026-07
 op:CALL_WITH_VALUES	vm-supported	verified 2026-07
 op:CASE	vm-supported	vm_compiler special-form dispatch
 op:CASE_LAMBDA	vm-supported	VM dispatches clauses in source order by exact/minimum arity; unmatched calls fail through clause arity checks (corpus/case_lambda_wrong_clause.esk)
-op:COMPOSE	gap	compose undefined in VM
+op:COMPOSE	vm-supported	ADR-0064 Wave 1 verified parity
 op:COND	vm-supported	vm_compiler special-form dispatch
 op:COND_EXPAND	native-only-justified	parse-time form handled by the native front-end
 op:CURL	vm-supported	exact forward-mode curl on both engines, arity-resolved and shape-resolved identically (corpus/72_curl_field_shapes.esk, PASSED on native, vm-src and vm-eskb). The three items that blocked this row are closed, each with a cell in that corpus: (1) native no longer SIGSEGVs on a list-returning field — the Jacobian's OUTPUT dispatch was "heap subtype VECTOR? else read it as a tensor", so a cons cell had its car/cdr words loaded as a tensor's dims/elements pointers; (2) the arity convention is now ONE rule on both sides, the same one op:GRADIENT already used — arity 1 takes the whole point (the shape docs/reference/ad/operators.md:30 prescribes and every worked example writes), arity N takes N spread scalars — where before native rejected the N-arg field at the LLVM verifier and the VM could not call the arity-1 field at all; (3) VM curl answered a silent () for a (vector …) or #(…) point, having carried its own extractor that saw only VAL_PAIR/VAL_TENSOR, and now uses the shared vm_ad_extract_point its siblings use (ledger LE-12). Both engines admit n>=2 with the same 2-form embedding. Exactness is pinned by the grad(xyz) cell, which the pre-2026-08-26 central difference answered 1.1102230246251565e-09 for. STILL NATIVE-ONLY: a field that returns a (tensor …) — native differentiates it, the VM raises a named diagnostic because VmTensor holds bare doubles and drops every tangent at construction (.icc/ad-carrier-manifest.yaml fork_debt.blocked_on).
@@ -549,8 +547,8 @@ op:DNC_PRED	gap	core.dnc has no VM fids
 op:DNC_READ	gap	core.dnc has no VM fids
 op:DNC_READ_GRAD	gap	core.dnc has no VM fids
 op:DNC_WRITE	gap	core.dnc has no VM fids
-op:DO	gap	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (resolved/do_composition_broken.esk, resolved/consecutive_do_state_leak.esk, resolved/define_after_do_corrupted.esk)
-op:DYNAMIC_WIND	gap	after-thunk runs twice (resolved/dynamic_wind_after_twice.esk)
+op:DO	vm-supported	ADR-0064 Wave 1 verified parity
+op:DYNAMIC_WIND	vm-supported	ADR-0064 Wave 1 verified parity
 op:EXPECTED_FREE_ENERGY	vm-supported	BUILTINS fid 526
 op:EXTERN	native-only-justified	C FFI declaration — native codegen only by design
 op:EXTERN_VAR	native-only-justified	C FFI declaration — native codegen only by design
@@ -582,7 +580,7 @@ op:LETREC	vm-supported	vm_compiler special-form dispatch
 op:LETREC_STAR	vm-supported	vm_compiler special-form dispatch (verified 2026-07)
 op:LETREC_SYNTAX	vm-supported	corpus/92_macro_definition_scope.esk: recursive group, definition/caller environments, scoped restoration
 op:LET_STAR	vm-supported	vm_compiler special-form dispatch
-op:LET_STAR_VALUES	gap	same family as op:LET_VALUES silent-wrong divergence
+op:LET_STAR_VALUES	vm-supported	ADR-0064 Wave 1 verified parity
 op:LET_SYNTAX	vm-supported	corpus/92_macro_definition_scope.esk and corpus/93_macro_hygiene_matrix.esk: scoped registration and hygienic macro/value bindings
 op:LET_VALUES	vm-supported	verified by corpus/28_multiple_values_complete.esk across vm-src and vm-eskb
 op:LOGIC_VAR	vm-supported	task #100: a ?-prefixed token is a logic variable bare AND inside quoted data on both substrates; logic-var? answers #t for `?x` and `'?x` and #f for a ?-prefixed STRING, a plain symbol and every other value. Was a gap because the VM's three logic-variable representations disagreed (KB matcher wanted a "?"-string, unify wanted a raw int id, logic-var? wanted a HEAP_LOGIC_VAR nothing constructed) and native had no codegen arm for a quoted logic variable. Pinned by corpus/54_logic_var_kb_query.esk
@@ -590,7 +588,7 @@ op:LOGIC_VAR_PRED	vm-supported	BUILTINS fid 501
 op:MAKE_FACT	vm-supported	prelude wrapper over _make-fact1 fid 507
 op:MAKE_FACTOR_GRAPH	vm-supported	prelude wrapper over _make-fg2 fid 520
 op:MAKE_KB	vm-supported	BUILTINS fid 509
-op:MAKE_PARAMETER	gap	make-parameter undefined in VM
+op:MAKE_PARAMETER	vm-supported	ADR-0064 Wave 1 verified parity
 op:MAKE_SUBST	vm-supported	BUILTINS fid 505
 op:MAKE_WORKSPACE	vm-supported	BUILTINS fid 540
 op:MATCH	vm-supported	Ordered pattern clauses with lexical bindings (corpus/match_patterns.esk)
@@ -598,7 +596,7 @@ op:MOVE	native-only-justified	OALR ownership — native-arena construct
 op:MUL	vm-supported	OP_MUL bytecode
 op:OR	vm-supported	vm_compiler special-form dispatch
 op:OWNED	native-only-justified	OALR ownership — native-arena construct
-op:PARAMETERIZE	gap	depends on make-parameter; fids 702/703 exist but surface incomplete
+op:PARAMETERIZE	vm-supported	ADR-0064 Wave 1 verified parity
 op:PROVIDE	vm-supported	(provide …) and (export …) name bindings that are already globals of the VM's single top level, so they emit no binding code — but they DO emit a nil placeholder, because the top-level and body compilers POP after any form that bound nothing and returning empty made that POP discard a live value
 op:QUASIQUOTE	vm-supported	vm_compiler quasiquote expansion (tail splicing verified; mid-template splicing diverges: see op:UNQUOTE_SPLICING)
 op:QUOTE	vm-supported	vm_compiler special-form dispatch
@@ -625,7 +623,7 @@ op:TYPE_ANNOTATION	native-only-justified	static type syntax, erased before codeg
 op:UNIFY	vm-supported	BUILTINS fid 502
 op:UNLESS	vm-supported	vm_compiler special-form dispatch
 op:UNQUOTE	vm-supported	vm_compiler quasiquote expansion
-op:UNQUOTE_SPLICING	gap	mid-template splicing reorders elements (resolved/splice_middle_order.esk)
+op:UNQUOTE_SPLICING	vm-supported	ADR-0064 Wave 1 verified parity
 op:VALUES	vm-supported	values + call-with-values verified 2026-07
 op:WALK	vm-supported	task #100: resolves binding chains (?a -> ?b -> 99), returns an unbound variable and a non-variable unchanged, and returns a sub-term binding as the list it came from. Was a gap because the VM's walk only dereferenced a raw VAL_INT term. Pinned by corpus/54_logic_var_kb_query.esk
 op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
@@ -676,7 +674,7 @@ prevent-sleep	vm-supported
 prng-random	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
 prng-random-integer	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
 prng?	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
-procedure-arity	gap	no VM name binding
+procedure-arity	vm-supported	ADR-0064 Wave 1 verified parity
 procedure?	vm-supported	
 process-kill	vm-supported	
 process-kill-tree	vm-supported	
@@ -701,7 +699,7 @@ rand	vm-supported	Variadic tensor random generation uses the same canonical seed
 randint	gap	PRNG surface has no VM binding
 randn	gap	PRNG surface has no VM binding
 random	vm-supported	Uses the shared drand48-compatible runtime state across native AOT/JIT and the VM (corpus/58_rng_seed_parity.esk)
-range	gap	no VM name binding
+range	vm-supported	ADR-0064 Wave 1 verified parity
 rational?	vm-supported	
 rationalize	vm-supported	
 read	vm-supported	
@@ -727,12 +725,12 @@ region-open	native-only-justified	#341 region handles: see region-close. Open/cl
 region-open?	vm-supported	
 relu	vm-supported	
 remainder	vm-supported	values, truncated-remainder sign convention and inexact contagion agree on every representation (corpus/50_flonum_integer_division.esk, corpus/77_inexact_division_contagion.esk); ±0.0 divisors are fatal (fatal/remainder_inexact_zero.esk, fatal/remainder_inexact_negative_zero.esk)
-remove	gap	no VM name binding
-remq	gap	no VM name binding
-remv	gap	no VM name binding
+remove	vm-supported	ADR-0064 Wave 1 verified parity
+remq	vm-supported	ADR-0064 Wave 1 verified parity
+remv	vm-supported	ADR-0064 Wave 1 verified parity
 reshape	vm-supported	
 reverse	vm-supported	
-right?	gap	no VM name binding
+right?	vm-supported	ADR-0064 Wave 1 verified parity
 rmsprop-step	gap	ml faculty has no VM fid coverage
 rotary-embedding	gap	ml faculty has no VM fid coverage
 round	vm-supported	
@@ -771,57 +769,57 @@ socket-send	vm-supported
 softmax	vm-supported	
 softplus	gap	ml faculty has no VM fid coverage
 split	gap	tensor linalg/manipulation fid missing in VM
-split-at	gap	no VM name binding
+split-at	vm-supported	ADR-0064 Wave 1 verified parity
 sqrt	vm-supported	a complex operand takes the principal complex square root from the shared core <eshkol/core/complex_math.h> that the native back end also calls, and a NEGATIVE EXACT real promotes into the complex domain per docs/reference/language/numeric-tower.md ((sqrt -1) is +i on both engines); an inexact negative keeps IEEE NaN. as_number() used to answer 0 for a complex, so the VM silently computed sqrt(0) (corpus/54_complex_transcendentals.esk)
 square	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 squeeze	gap	tensor linalg/manipulation fid missing in VM
 stack	gap	tensor linalg/manipulation fid missing in VM
 step-decay-lr	gap	ml faculty has no VM fid coverage
-string	gap	extended string surface missing in VM
+string	vm-supported	ADR-0064 Wave 1 verified parity
 string->list	vm-supported	
 string->number	vm-supported	reads R7RS <infnan> (+inf.0/-inf.0/+nan.0/-nan.0, any radix) and exact <ratio> "n/d", and rejects the C-only spellings inf/infinity/nan that strtod accepts, so every printed number reads back (corpus/38_numeric_reader_roundtrip.esk)
 string->symbol	vm-supported
 string->utf8	vm-supported	
 string-append	vm-supported	
-string-ci<=?	gap	extended string surface missing in VM
-string-ci<?	gap	extended string surface missing in VM
+string-ci<=?	vm-supported	ADR-0064 Wave 1 verified parity
+string-ci<?	vm-supported	ADR-0064 Wave 1 verified parity
 string-ci=?	vm-supported	
-string-ci>=?	gap	extended string surface missing in VM
-string-ci>?	gap	extended string surface missing in VM
-string-contains?	gap	extended string surface missing in VM
+string-ci>=?	vm-supported	ADR-0064 Wave 1 verified parity
+string-ci>?	vm-supported	ADR-0064 Wave 1 verified parity
+string-contains?	vm-supported	ADR-0064 Wave 1 verified parity
 string-copy	vm-supported	
-string-copy!	gap	extended string surface missing in VM
+string-copy!	vm-supported	ADR-0064 Wave 1 verified parity
 string-display-width	vm-supported	
 string-downcase	vm-supported	
 string-ends-with?	vm-supported	
 string-fill!	vm-supported	
-string-foldcase	gap	extended string surface missing in VM
-string-for-each	gap	extended string surface missing in VM
-string-index	gap	extended string surface missing in VM
+string-foldcase	vm-supported	ADR-0064 Wave 1 verified parity
+string-for-each	vm-supported	ADR-0064 Wave 1 verified parity
+string-index	vm-supported	ADR-0064 Wave 1 verified parity
 string-index-of	vm-supported	
 string-length	vm-supported	
-string-map	gap	extended string surface missing in VM
+string-map	vm-supported	ADR-0064 Wave 1 verified parity
 string-pad-left	vm-supported	
 string-pad-right	vm-supported	
-string-port?	gap	extended string surface missing in VM
+string-port?	vm-supported	ADR-0064 Wave 1 verified parity
 string-ref	vm-supported	
-string-set!	gap	extended string surface missing in VM
+string-set!	vm-supported	ADR-0064 Wave 1 verified parity
 string-split	vm-supported	
 string-truncate-display	vm-supported	
 string-upcase	vm-supported	
-string<=?	gap	extended string surface missing in VM
+string<=?	vm-supported	ADR-0064 Wave 1 verified parity
 string<?	vm-supported	
 string=?	vm-supported	
-string>=?	gap	extended string surface missing in VM
-string>?	gap	extended string surface missing in VM
+string>=?	vm-supported	ADR-0064 Wave 1 verified parity
+string>?	vm-supported	ADR-0064 Wave 1 verified parity
 string?	vm-supported	
 substitution?	vm-supported	
 substring	vm-supported	
-sum-tag	gap	no VM name binding
-sum-value	gap	no VM name binding
+sum-tag	vm-supported	ADR-0064 Wave 1 verified parity
+sum-value	vm-supported	ADR-0064 Wave 1 verified parity
 swish	gap	ml faculty has no VM fid coverage
 symbol->string	vm-supported
-symbol=?	gap	no VM name binding
+symbol=?	vm-supported	ADR-0064 Wave 1 verified parity
 symbol?	vm-supported	
 symlink-create	vm-supported	
 symlink-read	vm-supported	
@@ -906,15 +904,15 @@ thread-pool-size	vm-supported
 thread-pool-stats	native-only-justified	parallel runtime is native-only
 tile	gap	tensor linalg/manipulation fid missing in VM
 time	gap	time surface has no VM binding
-trace	gap	no VM name binding
+trace	vm-supported	ADR-0064 Wave 1 verified parity
 train-test-split	gap	ml faculty has no VM fid coverage
 transpose	vm-supported	MATERIALIZES the transpose; it used to return a strided view sharing the source buffer, so every LINEAR reader (printer, tensor-data, flatten, matmul, element-wise kernels) returned the untransposed elements under the transposed shape (corpus/41_tensor_literals.esk)
 triplet-loss	gap	ml faculty has no VM fid coverage
-trunc	gap	no VM name binding
+trunc	vm-supported	ADR-0064 Wave 1 verified parity
 truncate	vm-supported	
-truncate-quotient	gap	no VM name binding
-truncate-remainder	gap	no VM name binding
-truncate/	gap	no VM name binding
+truncate-quotient	vm-supported	ADR-0064 Wave 1 verified parity
+truncate-remainder	vm-supported	ADR-0064 Wave 1 verified parity
+truncate/	vm-supported	ADR-0064 Wave 1 verified parity
 ts-available	vm-supported	
 ts-node-children	vm-supported	
 ts-node-text	vm-supported	
@@ -947,7 +945,7 @@ vector->tensor	gap	tensor linalg/manipulation fid missing in VM
 vector-append	vm-supported	LE-16: defined in the VM prelude (vm_prelude_source.h) as a direct loop over vector-ref/vector-set!/vector-length, deliberately not via append/map/apply (a forward reference to append, defined later in the same prelude, was resolved eagerly and silently dropped every vector past the first two)
 vector-copy	vm-supported	LE-16: defined in the VM prelude with the R7RS optional start/end range form; verified byte-identical to native across both tensor-backed #(...) literals and vector/make-vector vectors (corpus/78_vector_copy_family.esk)
 vector-copy!	vm-supported	LE-16: defined in the VM prelude with the R7RS optional start/end range form (corpus/78_vector_copy_family.esk)
-vector-fill!	gap	no VM name binding
+vector-fill!	vm-supported	ADR-0064 Wave 1 verified parity
 vector-for-each	vm-supported	Variadic VM prelude wrapper converts every vector to a list and delegates to generic for-each; stops at the shortest vector.
 vector-length	vm-supported	
 vector-map	vm-supported	Variadic VM prelude wrapper converts every vector to a list and delegates to generic map; returns a Scheme vector and stops at the shortest vector.
@@ -986,28 +984,28 @@ xavier-uniform!	gap	ml faculty has no VM fid coverage
 zero-grad!	gap	ml faculty has no VM fid coverage
 zero?	vm-supported	
 zeros	vm-supported	
-chart-convention-id	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-alpha	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-make-geometry-header	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-geometry-header-check	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-distance	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-sq-distance	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-conformal-factor	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-distance-jet	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-sq-distance-jet	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-sq-distance-gradient	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-exp-map	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-log-map	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-transport	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-mobius-add	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-mobius-scalar	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-project	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-riemannian-grad	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-default-temperature	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-attention	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart-attention-weights	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-sphere->chart	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-chart->sphere	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-migrate-legacy-ball-point	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-migrate-legacy-ball-tangent	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
-migrate-legacy-temperature	gap	Planned for v1.4.1: core.curvature (docs/reference/stdlib/curvature.md) binds the shared ADR-0018 core through typed externs the bytecode VM does not resolve yet; on the VM the same chart is reached through the geometry ops (geodesic-distance, curvature-gradient, geodesic-attention-forward), which tests/vm/signed_curvature_surface.esk checks against the same binary128 reference values
+chart-convention-id	vm-supported	ADR-0064 Wave 1 verified parity
+chart-alpha	vm-supported	ADR-0064 Wave 1 verified parity
+make-geometry-header	vm-supported	ADR-0064 Wave 1 verified parity
+geometry-header-check	vm-supported	ADR-0064 Wave 1 verified parity
+chart-distance	vm-supported	ADR-0064 Wave 1 verified parity
+chart-sq-distance	vm-supported	ADR-0064 Wave 1 verified parity
+chart-conformal-factor	vm-supported	ADR-0064 Wave 1 verified parity
+chart-distance-jet	vm-supported	ADR-0064 Wave 1 verified parity
+chart-sq-distance-jet	vm-supported	ADR-0064 Wave 1 verified parity
+chart-sq-distance-gradient	vm-supported	ADR-0064 Wave 1 verified parity
+chart-exp-map	vm-supported	ADR-0064 Wave 1 verified parity
+chart-log-map	vm-supported	ADR-0064 Wave 1 verified parity
+chart-transport	vm-supported	ADR-0064 Wave 1 verified parity
+chart-mobius-add	vm-supported	ADR-0064 Wave 1 verified parity
+chart-mobius-scalar	vm-supported	ADR-0064 Wave 1 verified parity
+chart-project	vm-supported	ADR-0064 Wave 1 verified parity
+chart-riemannian-grad	vm-supported	ADR-0064 Wave 1 verified parity
+chart-default-temperature	vm-supported	ADR-0064 Wave 1 verified parity
+chart-attention	vm-supported	ADR-0064 Wave 1 verified parity
+chart-attention-weights	vm-supported	ADR-0064 Wave 1 verified parity
+sphere->chart	vm-supported	ADR-0064 Wave 1 verified parity
+chart->sphere	vm-supported	ADR-0064 Wave 1 verified parity
+migrate-legacy-ball-point	vm-supported	ADR-0064 Wave 1 verified parity
+migrate-legacy-ball-tangent	vm-supported	ADR-0064 Wave 1 verified parity
+migrate-legacy-temperature	vm-supported	ADR-0064 Wave 1 verified parity

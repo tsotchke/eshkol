@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
 HERE = Path(__file__).resolve().parent
-RECEIPT_SHA256 = "94ba7b47536a8924599970b0e36797369115b06c83d533861c7178be21599c29"
+RECEIPT_SHA256 = "8d3017950bd8f8430da6db33fe9b192b78af08d7467195cf00f3cf7758b7bfda"
 DIGESTS = {
     "mt.ndjson": "d4cb6b03bc24222a3c3c1608158da7aedbc466602d63bfee40ac31a41eb7d664",
     "mt-wrong-body.ndjson": "f834bcebd6b66b0d4a6350b99b3d446dc619e154c0951bec44104462b1dd5b5d",

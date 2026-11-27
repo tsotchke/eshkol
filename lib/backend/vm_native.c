@@ -10335,6 +10335,8 @@ static void vm_dispatch_sqlite_extern(VM* vm, int fid) {
     }
 }
 
+#include "vm_char_string_ext.c"
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
@@ -21697,9 +21699,16 @@ tensor_inverse_done:
     }
 
     default:
+        /* Check Wave 1B extended char, string, and hash-table ops (2400-2449) */
+        if (vm_char_string_ext_dispatch_stack(vm, fid)) break;
         /* Check geometric manifold operations (804-861) */
         if (fid >= 804 && fid <= 861) {
             vm_dispatch_geometric(vm, fid);
+            break;
+        }
+        /* Check ADR-0018 curvature externs and Wave 1 reflection (2350-2399) */
+        if (fid >= 2350 && fid <= 2399) {
+            vm_dispatch_curvature_ext(vm, fid);
             break;
         }
         /* Unknown native ID — warn but don't crash */

@@ -34,6 +34,8 @@ typedef struct {
     VmParameterValue current_value;
     VmParameterValue converter;  /* VAL_NIL when absent */
     VmParameterValue* save_stack;
+    uint64_t* binding_ids;
+    uint64_t next_binding_id;
     int stack_depth;
     int stack_cap;
 } VmParameter;
@@ -57,8 +59,10 @@ VmParameter* vm_param_make(VmRegionStack* rs, const void* default_val,
     p->stack_depth = 0;
     p->stack_cap = PARAM_INITIAL_STACK;
     p->save_stack = (VmParameterValue*)vm_alloc(
-        rs, (size_t)p->stack_cap * sizeof(VmParameterValue));
+        rs, (size_t)p->stack_cap * (sizeof(VmParameterValue) + sizeof(uint64_t)));
     if (!p->save_stack) return NULL;
+    p->binding_ids = (uint64_t*)(p->save_stack + p->stack_cap);
+    p->next_binding_id = 0;
     return p;
 }
 
@@ -83,27 +87,51 @@ void vm_param_converter_ref(const VmParameter* p, void* out) {
  *        apply it to @p new_value before calling this (this module has no
  *        VM-level closure-call capability).
  */
-void vm_param_push(VmRegionStack* rs, VmParameter* p, const void* new_value) {
-    if (!p) return;
+int vm_param_push(VmRegionStack* rs, VmParameter* p, const void* new_value) {
+    if (!p) return 0;
 
     /* Grow stack if needed */
     if (p->stack_depth >= p->stack_cap) {
         int new_cap = p->stack_cap * 2;
         VmParameterValue* new_stack = (VmParameterValue*)vm_alloc(
-            rs, (size_t)new_cap * sizeof(VmParameterValue));
+            rs, (size_t)new_cap * (sizeof(VmParameterValue) + sizeof(uint64_t)));
         if (!new_stack) {
             fprintf(stderr, "ERROR: parameterize stack growth failed\n");
-            return;
+            return 0;
         }
+        uint64_t* new_ids = (uint64_t*)(new_stack + new_cap);
         memcpy(new_stack, p->save_stack,
                (size_t)p->stack_depth * sizeof(VmParameterValue));
+        memcpy(new_ids, p->binding_ids,
+               (size_t)p->stack_depth * sizeof(uint64_t));
+        p->binding_ids = new_ids;
         p->save_stack = new_stack;
         p->stack_cap = new_cap;
     }
 
     /* Save current value */
+    p->binding_ids[p->stack_depth] = ++p->next_binding_id;
     p->save_stack[p->stack_depth++] = p->current_value;
     if (new_value) memcpy(&p->current_value, new_value, sizeof(p->current_value));
+    return 1;
+}
+
+static uint64_t vm_param_binding_id(const VmParameter* p, int offset) {
+    return p && offset < p->stack_depth
+        ? p->binding_ids[p->stack_depth - 1 - offset] : 0;
+}
+
+static void vm_param_binding_ref(const VmParameter* p, int offset, void* out) {
+    if (offset == 0) vm_param_ref(p, out);
+    else memcpy(out, &p->save_stack[p->stack_depth - offset],
+                sizeof(VmParameterValue));
+}
+
+static int vm_param_reenter(VmRegionStack* rs, VmParameter* p, const void* value,
+                           uint64_t id) {
+    if (!vm_param_push(rs, p, value)) return 0;
+    p->binding_ids[p->stack_depth - 1] = id;
+    return 1;
 }
 
 /** @brief Native call 703: `parameterize` exit — restore @p p's value from

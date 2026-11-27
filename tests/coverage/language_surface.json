@@ -20,6 +20,7 @@
         "core.capabilities",
         "core.control.effects",
         "core.control.trampoline",
+        "core.curvature",
         "core.data.base64",
         "core.data.csv",
         "core.data.dataframe",
@@ -4771,6 +4772,476 @@
             {
               "name": "trampoline",
               "line": 18
+            }
+          ]
+        },
+        {
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "required_by": [
+            "stdlib"
+          ],
+          "stdlib_visibility": "stdlib_root_required_module",
+          "requires": [],
+          "exports": [
+            {
+              "name": "chart->sphere",
+              "line": 33,
+              "definition_line": 218,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 218,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-alpha",
+              "line": 26,
+              "definition_line": 94,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 94,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-attention",
+              "line": 32,
+              "definition_line": 198,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 198,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-attention-weights",
+              "line": 32,
+              "definition_line": 204,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 204,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-conformal-factor",
+              "line": 28,
+              "definition_line": 123,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 123,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-convention-id",
+              "line": 26,
+              "definition_line": 93,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 93,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-default-temperature",
+              "line": 32,
+              "definition_line": 179,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 179,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-distance",
+              "line": 28,
+              "definition_line": 115,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 115,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-distance-jet",
+              "line": 29,
+              "definition_line": 128,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 128,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-exp-map",
+              "line": 30,
+              "definition_line": 145,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 145,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-log-map",
+              "line": 30,
+              "definition_line": 149,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 149,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-mobius-add",
+              "line": 31,
+              "definition_line": 157,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 157,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-mobius-scalar",
+              "line": 31,
+              "definition_line": 161,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 161,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-project",
+              "line": 31,
+              "definition_line": 165,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 165,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-riemannian-grad",
+              "line": 31,
+              "definition_line": 169,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 169,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-sq-distance",
+              "line": 28,
+              "definition_line": 119,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 119,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-sq-distance-gradient",
+              "line": 29,
+              "definition_line": 139,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 139,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-sq-distance-jet",
+              "line": 29,
+              "definition_line": 133,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 133,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "chart-transport",
+              "line": 30,
+              "definition_line": 153,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 153,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "geometry-header-check",
+              "line": 27,
+              "definition_line": 103,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 103,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "make-geometry-header",
+              "line": 27,
+              "definition_line": 97,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 97,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "migrate-legacy-ball-point",
+              "line": 34,
+              "definition_line": 223,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 223,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "migrate-legacy-ball-tangent",
+              "line": 34,
+              "definition_line": 227,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 227,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "migrate-legacy-temperature",
+              "line": 35,
+              "definition_line": 232,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 232,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            },
+            {
+              "name": "sphere->chart",
+              "line": 33,
+              "definition_line": 214,
+              "definition_origin": {
+                "module": "core.curvature",
+                "path": "lib/core/curvature.esk",
+                "line": 214,
+                "chain": [
+                  "core.curvature"
+                ]
+              }
+            }
+          ],
+          "top_level_definitions": [
+            {
+              "name": "chart->sphere",
+              "line": 218
+            },
+            {
+              "name": "chart-alpha",
+              "line": 94
+            },
+            {
+              "name": "chart-attention",
+              "line": 198
+            },
+            {
+              "name": "chart-attention-run",
+              "line": 187
+            },
+            {
+              "name": "chart-attention-shape",
+              "line": 181
+            },
+            {
+              "name": "chart-attention-weights",
+              "line": 204
+            },
+            {
+              "name": "chart-check!",
+              "line": 63
+            },
+            {
+              "name": "chart-conformal-factor",
+              "line": 123
+            },
+            {
+              "name": "chart-convention-id",
+              "line": 93
+            },
+            {
+              "name": "chart-default-temperature",
+              "line": 179
+            },
+            {
+              "name": "chart-distance",
+              "line": 115
+            },
+            {
+              "name": "chart-distance-jet",
+              "line": 128
+            },
+            {
+              "name": "chart-exp-map",
+              "line": 145
+            },
+            {
+              "name": "chart-log-map",
+              "line": 149
+            },
+            {
+              "name": "chart-mobius-add",
+              "line": 157
+            },
+            {
+              "name": "chart-mobius-scalar",
+              "line": 161
+            },
+            {
+              "name": "chart-project",
+              "line": 165
+            },
+            {
+              "name": "chart-real",
+              "line": 68
+            },
+            {
+              "name": "chart-riemannian-grad",
+              "line": 169
+            },
+            {
+              "name": "chart-scalar",
+              "line": 81
+            },
+            {
+              "name": "chart-size",
+              "line": 73
+            },
+            {
+              "name": "chart-sq-distance",
+              "line": 119
+            },
+            {
+              "name": "chart-sq-distance-gradient",
+              "line": 139
+            },
+            {
+              "name": "chart-sq-distance-jet",
+              "line": 133
+            },
+            {
+              "name": "chart-transport",
+              "line": 153
+            },
+            {
+              "name": "chart-vector",
+              "line": 86
+            },
+            {
+              "name": "chart-zeros",
+              "line": 78
+            },
+            {
+              "name": "geometry-header-check",
+              "line": 103
+            },
+            {
+              "name": "make-geometry-header",
+              "line": 97
+            },
+            {
+              "name": "migrate-legacy-ball-point",
+              "line": 223
+            },
+            {
+              "name": "migrate-legacy-ball-tangent",
+              "line": 227
+            },
+            {
+              "name": "migrate-legacy-temperature",
+              "line": 232
+            },
+            {
+              "name": "sphere->chart",
+              "line": 214
             }
           ]
         },
@@ -13727,40 +14198,44 @@
               "line": 121
             },
             {
+              "module": "core.curvature",
+              "line": 122
+            },
+            {
               "module": "core.exact_linalg",
-              "line": 125
+              "line": 126
             },
             {
               "module": "core.symbolic",
-              "line": 129
+              "line": 130
             },
             {
               "module": "core.pde.ns-residual",
-              "line": 135
+              "line": 136
             },
             {
               "module": "core.ad.taylor_models",
-              "line": 143
+              "line": 144
             },
             {
               "module": "core.ad.interval_jet",
-              "line": 150
-            },
-            {
-              "module": "core.ad.compact_bounds",
               "line": 151
             },
             {
-              "module": "core.torus",
+              "module": "core.ad.compact_bounds",
               "line": 152
             },
             {
-              "module": "core.ad.interval_tensor",
+              "module": "core.torus",
               "line": 153
             },
             {
+              "module": "core.ad.interval_tensor",
+              "line": 154
+            },
+            {
               "module": "ml.optimization",
-              "line": 156
+              "line": 157
             }
           ],
           "exports": [],
@@ -13779,27 +14254,27 @@
             },
             {
               "name": "current-time-us",
-              "line": 166
+              "line": 167
             },
             {
               "name": "random-normal-tensor",
-              "line": 162
+              "line": 163
             },
             {
               "name": "random-tensor",
-              "line": 159
+              "line": 160
             },
             {
               "name": "time-it",
-              "line": 180
+              "line": 181
             },
             {
               "name": "time-ns",
-              "line": 170
+              "line": 171
             },
             {
               "name": "time-us",
-              "line": 176
+              "line": 177
             }
           ]
         }
@@ -13812,14 +14287,14 @@
     }
   },
   "counts": {
-    "builtins_total": 1069,
-    "builtins_in_vm_table": 800,
-    "builtins_in_llvm_aot_dispatch": 811,
-    "builtins_aot_only": 247,
+    "builtins_total": 1070,
+    "builtins_in_vm_table": 858,
+    "builtins_in_llvm_aot_dispatch": 812,
+    "builtins_aot_only": 190,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 122,
     "ast_ops": 114,
-    "prelude": 637
+    "prelude": 698
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -13829,7 +14304,7 @@
     "geometry": 56,
     "list_pair": 53,
     "io_port": 52,
-    "misc": 45,
+    "misc": 46,
     "string_char": 42,
     "consciousness": 35,
     "vector": 24,
@@ -13969,10 +14444,13 @@
   "builtins": [
     {
       "name": "%",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        36
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -14069,6 +14547,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -14492,6 +14971,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -16098,6 +16578,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -16225,50 +16706,65 @@
     },
     {
       "name": "char-ci<=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2403
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "char-ci<?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2401
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "char-ci=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2400
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "char-ci>=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2404
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "char-ci>?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2402
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -16288,10 +16784,13 @@
     },
     {
       "name": "char-foldcase",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2405
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -16324,10 +16823,13 @@
     },
     {
       "name": "char-ready?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2407
+      ],
+      "arity": 1,
+      "min_arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -16565,6 +17067,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -17278,10 +17781,13 @@
     },
     {
       "name": "digit-value",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2406
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -17669,6 +18175,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
@@ -17893,6 +18400,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -17916,6 +18424,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -17926,6 +18435,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -18087,6 +18597,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -18140,6 +18651,19 @@
         "native_llvm"
       ],
       "category": "ffi_system"
+    },
+    {
+      "name": "features",
+      "ids": [
+        2381
+      ],
+      "arity": 0,
+      "min_arity": 0,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "feed-forward",
@@ -18528,6 +19052,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -18538,6 +19063,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -18548,6 +19074,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -18575,7 +19102,7 @@
     {
       "name": "force",
       "ids": [
-        626
+        132
       ],
       "arity": 1,
       "min_arity": 1,
@@ -19241,10 +19768,13 @@
     },
     {
       "name": "hash-table-ref",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2448
+      ],
+      "arity": 3,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
@@ -19930,6 +20460,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "misc_core"
@@ -19940,6 +20471,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "misc_core"
@@ -20289,6 +20821,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -20358,6 +20891,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -20454,6 +20988,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -20972,6 +21507,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -21415,6 +21951,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -22297,10 +22834,13 @@
     },
     {
       "name": "procedure-arity",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2380
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "misc_core"
@@ -22953,6 +23493,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -22963,6 +23504,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -22973,6 +23515,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -23104,6 +23647,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -23704,6 +24248,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -23892,20 +24437,26 @@
     },
     {
       "name": "string-ci<=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2414
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "string-ci<?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2413
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -23925,20 +24476,26 @@
     },
     {
       "name": "string-ci>=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2416
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "string-ci>?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2415
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -23957,10 +24514,13 @@
     },
     {
       "name": "string-contains?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2418
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -23980,10 +24540,13 @@
     },
     {
       "name": "string-copy!",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2421
+      ],
+      "arity": 5,
+      "min_arity": 3,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -24042,10 +24605,13 @@
     },
     {
       "name": "string-foldcase",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2417
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -24056,16 +24622,20 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
     },
     {
       "name": "string-index",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2419
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -24114,6 +24684,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -24146,10 +24717,13 @@
     },
     {
       "name": "string-port?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2422
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -24193,10 +24767,13 @@
     },
     {
       "name": "string-set!",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2420
+      ],
+      "arity": 3,
+      "min_arity": 3,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -24254,10 +24831,13 @@
     },
     {
       "name": "string<=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2410
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -24290,20 +24870,26 @@
     },
     {
       "name": "string>=?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2411
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
     },
     {
       "name": "string>?",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        2412
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -24388,6 +24974,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -25427,6 +26014,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
@@ -25482,6 +26070,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -25505,6 +26094,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -25515,6 +26105,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -25525,6 +26116,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -25930,6 +26522,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "vector"
@@ -27875,6 +28468,16 @@
       "binding_category": "unknown"
     },
     {
+      "name": "/rational",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "__keyword-arg",
       "category": "misc",
       "also_builtin": false,
@@ -27987,6 +28590,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "stdlib:lib/stdlib.esk#__keyword-member?"
+    },
+    {
+      "name": "acons",
+      "category": "list_pair",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "adam",
@@ -33401,6 +34014,16 @@
       "binding_identity": "core.list.compound:lib/core/list/compound.esk#cddr"
     },
     {
+      "name": "ceil",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "char<=?",
       "category": "predicate",
       "also_builtin": true,
@@ -33419,6 +34042,1336 @@
       ],
       "provenance": [],
       "binding_category": "unknown"
+    },
+    {
+      "name": "chart->sphere",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 33,
+          "defined_at_top_level": true,
+          "definition_line": 218,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 218,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart->sphere",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart->sphere",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart->sphere",
+            "line": 218,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 33,
+          "defined_at_top_level": true,
+          "definition_line": 218,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 218,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart->sphere",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart->sphere",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart->sphere",
+            "line": 218,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart->sphere"
+    },
+    {
+      "name": "chart-alpha",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 26,
+          "defined_at_top_level": true,
+          "definition_line": 94,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 94,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-alpha",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-alpha",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-alpha",
+            "line": 94,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 26,
+          "defined_at_top_level": true,
+          "definition_line": 94,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 94,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-alpha",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-alpha",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-alpha",
+            "line": 94,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-alpha"
+    },
+    {
+      "name": "chart-attention",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 32,
+          "defined_at_top_level": true,
+          "definition_line": 198,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 198,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-attention",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-attention",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-attention",
+            "line": 198,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 32,
+          "defined_at_top_level": true,
+          "definition_line": 198,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 198,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-attention",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-attention",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-attention",
+            "line": 198,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-attention"
+    },
+    {
+      "name": "chart-attention-weights",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 32,
+          "defined_at_top_level": true,
+          "definition_line": 204,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 204,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-attention-weights",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-attention-weights",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-attention-weights",
+            "line": 204,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 32,
+          "defined_at_top_level": true,
+          "definition_line": 204,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 204,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-attention-weights",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-attention-weights",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-attention-weights",
+            "line": 204,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-attention-weights"
+    },
+    {
+      "name": "chart-conformal-factor",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 28,
+          "defined_at_top_level": true,
+          "definition_line": 123,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 123,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-conformal-factor",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-conformal-factor",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-conformal-factor",
+            "line": 123,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 28,
+          "defined_at_top_level": true,
+          "definition_line": 123,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 123,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-conformal-factor",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-conformal-factor",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-conformal-factor",
+            "line": 123,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-conformal-factor"
+    },
+    {
+      "name": "chart-convention-id",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 26,
+          "defined_at_top_level": true,
+          "definition_line": 93,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 93,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-convention-id",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-convention-id",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-convention-id",
+            "line": 93,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 26,
+          "defined_at_top_level": true,
+          "definition_line": 93,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 93,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-convention-id",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-convention-id",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-convention-id",
+            "line": 93,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-convention-id"
+    },
+    {
+      "name": "chart-default-temperature",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 32,
+          "defined_at_top_level": true,
+          "definition_line": 179,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 179,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-default-temperature",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-default-temperature",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-default-temperature",
+            "line": 179,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 32,
+          "defined_at_top_level": true,
+          "definition_line": 179,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 179,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-default-temperature",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-default-temperature",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-default-temperature",
+            "line": 179,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-default-temperature"
+    },
+    {
+      "name": "chart-distance",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 28,
+          "defined_at_top_level": true,
+          "definition_line": 115,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 115,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-distance",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-distance",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-distance",
+            "line": 115,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 28,
+          "defined_at_top_level": true,
+          "definition_line": 115,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 115,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-distance",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-distance",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-distance",
+            "line": 115,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-distance"
+    },
+    {
+      "name": "chart-distance-jet",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 29,
+          "defined_at_top_level": true,
+          "definition_line": 128,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 128,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-distance-jet",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-distance-jet",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-distance-jet",
+            "line": 128,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 29,
+          "defined_at_top_level": true,
+          "definition_line": 128,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 128,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-distance-jet",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-distance-jet",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-distance-jet",
+            "line": 128,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-distance-jet"
+    },
+    {
+      "name": "chart-exp-map",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 30,
+          "defined_at_top_level": true,
+          "definition_line": 145,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 145,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-exp-map",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-exp-map",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-exp-map",
+            "line": 145,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 30,
+          "defined_at_top_level": true,
+          "definition_line": 145,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 145,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-exp-map",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-exp-map",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-exp-map",
+            "line": 145,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-exp-map"
+    },
+    {
+      "name": "chart-log-map",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 30,
+          "defined_at_top_level": true,
+          "definition_line": 149,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 149,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-log-map",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-log-map",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-log-map",
+            "line": 149,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 30,
+          "defined_at_top_level": true,
+          "definition_line": 149,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 149,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-log-map",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-log-map",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-log-map",
+            "line": 149,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-log-map"
+    },
+    {
+      "name": "chart-mobius-add",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 157,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 157,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-mobius-add",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-mobius-add",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-mobius-add",
+            "line": 157,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 157,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 157,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-mobius-add",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-mobius-add",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-mobius-add",
+            "line": 157,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-mobius-add"
+    },
+    {
+      "name": "chart-mobius-scalar",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 161,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 161,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-mobius-scalar",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-mobius-scalar",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-mobius-scalar",
+            "line": 161,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 161,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 161,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-mobius-scalar",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-mobius-scalar",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-mobius-scalar",
+            "line": 161,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-mobius-scalar"
+    },
+    {
+      "name": "chart-project",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 165,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 165,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-project",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-project",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-project",
+            "line": 165,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 165,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 165,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-project",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-project",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-project",
+            "line": 165,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-project"
+    },
+    {
+      "name": "chart-riemannian-grad",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 169,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 169,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-riemannian-grad",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-riemannian-grad",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-riemannian-grad",
+            "line": 169,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 31,
+          "defined_at_top_level": true,
+          "definition_line": 169,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 169,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-riemannian-grad",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-riemannian-grad",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-riemannian-grad",
+            "line": 169,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-riemannian-grad"
+    },
+    {
+      "name": "chart-sq-distance",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 28,
+          "defined_at_top_level": true,
+          "definition_line": 119,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 119,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-sq-distance",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-sq-distance",
+            "line": 119,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 28,
+          "defined_at_top_level": true,
+          "definition_line": 119,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 119,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-sq-distance",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-sq-distance",
+            "line": 119,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance"
+    },
+    {
+      "name": "chart-sq-distance-gradient",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 29,
+          "defined_at_top_level": true,
+          "definition_line": 139,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 139,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-sq-distance-gradient",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance-gradient",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-sq-distance-gradient",
+            "line": 139,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 29,
+          "defined_at_top_level": true,
+          "definition_line": 139,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 139,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-sq-distance-gradient",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance-gradient",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-sq-distance-gradient",
+            "line": 139,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance-gradient"
+    },
+    {
+      "name": "chart-sq-distance-jet",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 29,
+          "defined_at_top_level": true,
+          "definition_line": 133,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 133,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-sq-distance-jet",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance-jet",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-sq-distance-jet",
+            "line": 133,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 29,
+          "defined_at_top_level": true,
+          "definition_line": 133,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 133,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-sq-distance-jet",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance-jet",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-sq-distance-jet",
+            "line": 133,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-sq-distance-jet"
+    },
+    {
+      "name": "chart-transport",
+      "category": "string_char",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 30,
+          "defined_at_top_level": true,
+          "definition_line": 153,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 153,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-transport",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-transport",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-transport",
+            "line": 153,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 30,
+          "defined_at_top_level": true,
+          "definition_line": 153,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 153,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "chart-transport",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#chart-transport",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "chart-transport",
+            "line": 153,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#chart-transport"
     },
     {
       "name": "christoffel-symbol",
@@ -34469,6 +36422,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.functional.compose:lib/core/functional/compose.esk#compose3"
+    },
+    {
+      "name": "concatenate",
+      "category": "tensor_ad",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "conjugate-gradient",
@@ -36122,11 +38085,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 166,
+          "line": 167,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 166,
+            "line": 167,
             "chain": [
               "stdlib"
             ]
@@ -36138,7 +38101,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "current-time-us",
-            "line": 166,
+            "line": 167,
             "chain": [
               "stdlib"
             ]
@@ -37350,6 +39313,16 @@
       "binding_identity": "core.list.compound:lib/core/list/compound.esk#eighth"
     },
     {
+      "name": "emergency-exit",
+      "category": "ffi_system",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "emit!",
       "category": "misc",
       "also_builtin": false,
@@ -37499,6 +39472,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.list.higher_order:lib/core/list/higher_order.esk#every"
+    },
+    {
+      "name": "exact",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "exact-affine-solve",
@@ -37709,6 +39692,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.numeric_extras:lib/core/numeric_extras.esk#exact-integer-sqrt"
+    },
+    {
+      "name": "exact-integer?",
+      "category": "predicate",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "exact-inverse",
@@ -38341,6 +40334,16 @@
       "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-rank"
     },
     {
+      "name": "exact-rational?",
+      "category": "predicate",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "exact-solve",
       "category": "misc",
       "also_builtin": false,
@@ -38409,6 +40412,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-solve"
+    },
+    {
+      "name": "fabs",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "fast-convolve",
@@ -39041,6 +41054,36 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.functional.flip:lib/core/functional/flip.esk#flip"
+    },
+    {
+      "name": "floor-quotient",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "floor-remainder",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "floor/",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "fold",
@@ -39687,6 +41730,76 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.operators.compare:lib/core/operators/compare.esk#ge"
+    },
+    {
+      "name": "geometry-header-check",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 27,
+          "defined_at_top_level": true,
+          "definition_line": 103,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 103,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "geometry-header-check",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#geometry-header-check",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "geometry-header-check",
+            "line": 103,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 27,
+          "defined_at_top_level": true,
+          "definition_line": 103,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 103,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "geometry-header-check",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#geometry-header-check",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "geometry-header-check",
+            "line": 103,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#geometry-header-check"
     },
     {
       "name": "gradient-descent",
@@ -42250,6 +44363,26 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.ad.interval_jet:lib/core/ad/interval_jet.esk#ijet?"
+    },
+    {
+      "name": "inject-left",
+      "category": "misc_core",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "inject-right",
+      "category": "misc_core",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "interval-abs",
@@ -47613,6 +49746,16 @@
       "binding_identity": "ml.optimization:lib/ml/optimization.esk#l-bfgs"
     },
     {
+      "name": "last",
+      "category": "list_pair",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "le",
       "category": "misc",
       "also_builtin": false,
@@ -47681,6 +49824,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.operators.compare:lib/core/operators/compare.esk#le"
+    },
+    {
+      "name": "left?",
+      "category": "predicate",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "length",
@@ -47824,6 +49977,16 @@
     },
     {
       "name": "list",
+      "category": "list_pair",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "list*",
       "category": "list_pair",
       "also_builtin": true,
       "sources": [
@@ -48413,6 +50576,76 @@
       "binding_category": "unknown"
     },
     {
+      "name": "make-geometry-header",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 27,
+          "defined_at_top_level": true,
+          "definition_line": 97,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 97,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "make-geometry-header",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#make-geometry-header",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "make-geometry-header",
+            "line": 97,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 27,
+          "defined_at_top_level": true,
+          "definition_line": 97,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 97,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "make-geometry-header",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#make-geometry-header",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "make-geometry-header",
+            "line": 97,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#make-geometry-header"
+    },
+    {
       "name": "make-hyperbolic-manifold",
       "category": "geometry",
       "also_builtin": false,
@@ -48622,6 +50855,26 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.list.generate:lib/core/list/generate.esk#make-list"
+    },
+    {
+      "name": "make-promise",
+      "category": "control_flow",
+      "also_builtin": false,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "make-rational",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "make-spherical-manifold",
@@ -50194,7 +52447,227 @@
       "binding_identity": "core.manifold:lib/core/manifold.esk#metric-component"
     },
     {
+      "name": "migrate-legacy-ball-point",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 34,
+          "defined_at_top_level": true,
+          "definition_line": 223,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 223,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "migrate-legacy-ball-point",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-ball-point",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "migrate-legacy-ball-point",
+            "line": 223,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 34,
+          "defined_at_top_level": true,
+          "definition_line": 223,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 223,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "migrate-legacy-ball-point",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-ball-point",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "migrate-legacy-ball-point",
+            "line": 223,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-ball-point"
+    },
+    {
+      "name": "migrate-legacy-ball-tangent",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 34,
+          "defined_at_top_level": true,
+          "definition_line": 227,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 227,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "migrate-legacy-ball-tangent",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-ball-tangent",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "migrate-legacy-ball-tangent",
+            "line": 227,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 34,
+          "defined_at_top_level": true,
+          "definition_line": 227,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 227,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "migrate-legacy-ball-tangent",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-ball-tangent",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "migrate-legacy-ball-tangent",
+            "line": 227,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-ball-tangent"
+    },
+    {
+      "name": "migrate-legacy-temperature",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 35,
+          "defined_at_top_level": true,
+          "definition_line": 232,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 232,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "migrate-legacy-temperature",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-temperature",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "migrate-legacy-temperature",
+            "line": 232,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 35,
+          "defined_at_top_level": true,
+          "definition_line": 232,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 232,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "migrate-legacy-temperature",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-temperature",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "migrate-legacy-temperature",
+            "line": 232,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#migrate-legacy-temperature"
+    },
+    {
       "name": "min",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "mod",
       "category": "numeric",
       "also_builtin": true,
       "sources": [
@@ -54225,11 +56698,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 162,
+          "line": 163,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 162,
+            "line": 163,
             "chain": [
               "stdlib"
             ]
@@ -54241,7 +56714,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-normal-tensor",
-            "line": 162,
+            "line": 163,
             "chain": [
               "stdlib"
             ]
@@ -54263,11 +56736,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 159,
+          "line": 160,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 159,
+            "line": 160,
             "chain": [
               "stdlib"
             ]
@@ -54279,7 +56752,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-tensor",
-            "line": 159,
+            "line": 160,
             "chain": [
               "stdlib"
             ]
@@ -54392,6 +56865,36 @@
     {
       "name": "region-open",
       "category": "memory_region",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "remove",
+      "category": "list_pair",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "remq",
+      "category": "list_pair",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "remv",
+      "category": "list_pair",
       "also_builtin": true,
       "sources": [
         "vm_bootstrap"
@@ -54678,6 +57181,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.manifold:lib/core/manifold.esk#riemann-component"
+    },
+    {
+      "name": "right?",
+      "category": "predicate",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "rn*",
@@ -57911,6 +60424,86 @@
       "binding_identity": "core.plot:lib/core/plot.esk#sparkline"
     },
     {
+      "name": "sphere->chart",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 33,
+          "defined_at_top_level": true,
+          "definition_line": 214,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 214,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "sphere->chart",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#sphere->chart",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "sphere->chart",
+            "line": 214,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.curvature",
+          "path": "lib/core/curvature.esk",
+          "line": 33,
+          "defined_at_top_level": true,
+          "definition_line": 214,
+          "definition_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "line": 214,
+            "chain": [
+              "core.curvature"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "sphere->chart",
+          "binding_category": "procedure",
+          "binding_identity": "core.curvature:lib/core/curvature.esk#sphere->chart",
+          "resolved_binding_origin": {
+            "module": "core.curvature",
+            "path": "lib/core/curvature.esk",
+            "name": "sphere->chart",
+            "line": 214,
+            "chain": [
+              "core.curvature"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.curvature:lib/core/curvature.esk#sphere->chart"
+    },
+    {
+      "name": "split-at",
+      "category": "list_pair",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "stream->list",
       "category": "misc",
       "also_builtin": false,
@@ -60101,6 +62694,16 @@
       "binding_identity": "core.strings:lib/core/strings.esk#string-find"
     },
     {
+      "name": "string-for-each",
+      "category": "string_char",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "string-index",
       "category": "string_char",
       "also_builtin": true,
@@ -60309,6 +62912,16 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.strings:lib/core/strings.esk#string-last-index"
+    },
+    {
+      "name": "string-map",
+      "category": "string_char",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "string-repeat",
@@ -61081,8 +63694,38 @@
       "binding_identity": "core.operators.arithmetic:lib/core/operators/arithmetic.esk#sub"
     },
     {
+      "name": "sum-tag",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "sum-value",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "swish",
       "category": "misc",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "symbol=?",
+      "category": "predicate",
       "also_builtin": true,
       "sources": [
         "vm_bootstrap"
@@ -61843,11 +64486,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 180,
+          "line": 181,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 180,
+            "line": 181,
             "chain": [
               "stdlib"
             ]
@@ -61859,7 +64502,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-it",
-            "line": 180,
+            "line": 181,
             "chain": [
               "stdlib"
             ]
@@ -61881,11 +64524,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 170,
+          "line": 171,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 170,
+            "line": 171,
             "chain": [
               "stdlib"
             ]
@@ -61897,7 +64540,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-ns",
-            "line": 170,
+            "line": 171,
             "chain": [
               "stdlib"
             ]
@@ -61919,11 +64562,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 176,
+          "line": 177,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 176,
+            "line": 177,
             "chain": [
               "stdlib"
             ]
@@ -61935,7 +64578,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-us",
-            "line": 176,
+            "line": 177,
             "chain": [
               "stdlib"
             ]
@@ -67436,6 +70079,16 @@
       "binding_identity": "core.torus:lib/core/torus.esk#torus-zero?"
     },
     {
+      "name": "trace",
+      "category": "ffi_system",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
       "name": "trampoline",
       "category": "misc",
       "also_builtin": false,
@@ -67504,6 +70157,46 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.control.trampoline:lib/core/control/trampoline.esk#trampoline"
+    },
+    {
+      "name": "trunc",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "truncate-quotient",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "truncate-remainder",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "truncate/",
+      "category": "numeric",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "uncurry2",
@@ -67957,6 +70650,16 @@
     },
     {
       "name": "vector-copy!",
+      "category": "vector",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "vector-fill!",
       "category": "vector",
       "also_builtin": true,
       "sources": [

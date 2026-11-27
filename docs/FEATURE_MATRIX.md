@@ -5,7 +5,7 @@
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
 **Language surface count (canonical):** the declared language surface is
-**1,651** constructs. The generated manifest records 1,069 builtins,
+**1,679** constructs. The generated manifest records 1,070 builtins,
 122 special forms, 114 internal AST operations and 637 prelude records;
 the categories overlap, and the public count deduplicates names and excludes
 internal-only entries. See `tests/coverage/language_surface.json` and
@@ -486,7 +486,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,069 builtins across a 1,651-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,070 builtins across a 1,679-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -860,7 +860,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (122 special forms, 1,069 builtins — 1,651-construct canonical surface, see "Language surface count" below)
+- Core language (122 special forms, 1,070 builtins — 1,679-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)

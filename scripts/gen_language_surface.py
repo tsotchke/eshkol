@@ -233,7 +233,7 @@ def extract_llvm_dispatch():
         text = _strip_c_comments(fh.read())
     names = set(re.findall(r'func_name\s*==\s*"([^"]+)"', text))
     # a few dispatch strings are internal markers, not user-callable builtins
-    NOISE = {"target-intrinsic", "sum-tag", "sum-value", "features",
+    NOISE = {"target-intrinsic", "sum-tag", "sum-value",
              "__arena-used"}
     return {n for n in names if n not in NOISE}
 

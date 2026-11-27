@@ -1,0 +1,161 @@
+; ADR-0064 Wave 1A — the prelude surface the native LLVM backend lowers in
+; call position only, now reachable as first-class VALUES on the bytecode VM
+; and in the generated WASM prelude image.
+;
+; Every line prints a deterministic transcript so the three axes (native
+; JIT/AOT, vm-src, vm-eskb) and the WASM bundle compare byte for byte. The
+; checks are chosen so that a NAME with no value binding aborts loudly rather
+; than answering a plausible-looking wrong value: each operator is exercised
+; both in call position and as a value handed to map / apply / filter.
+
+; ── SRFI-1 list operations ───────────────────────────────────────────────
+(display (acons 'a 1 '((b . 2)))) (newline)
+(display (acons 'k 'v '())) (newline)
+(display (list* 1 2 3 4)) (newline)
+(display (list* 7)) (newline)
+(display (list* 1 '(2 3))) (newline)
+(display (last '(1 2 3))) (newline)
+(display (last '(9))) (newline)
+(display (last '())) (newline)
+(display (map last (list '(1 2) '(3 4 5)))) (newline)
+(display (remove 3 '(1 2 3 4 3 5))) (newline)
+(display (remove even? '(1 2 3 4 5 6))) (newline)
+(display (remq 'b '(a b c b))) (newline)
+(display (remv 2 '(1 2 3 2))) (newline)
+(display (remove (lambda (x) (> x 3)) '(1 2 3 4 5))) (newline)
+(display (split-at '(1 2 3 4 5) 2)) (newline)
+(display (split-at '(1 2 3) 0)) (newline)
+(display (split-at '(1 2 3) 9)) (newline)
+(display (car (split-at '(a b c d) 3))) (newline)
+(display (cdr (split-at '(a b c d) 3))) (newline)
+
+; ── Association and member variants already carried by the stdlib closure ─
+(display (assq 'b '((a . 1) (b . 2) (c . 3)))) (newline)
+(display (assq 'z '((a . 1)))) (newline)
+(display (assv 2 '((1 . one) (2 . two)))) (newline)
+(display (memv 3 '(1 2 3 4))) (newline)
+(display (memv 9 '(1 2 3))) (newline)
+(display (partition even? '(1 2 3 4 5 6))) (newline)
+(display (list-copy '(1 2 3))) (newline)
+(display (list-copy '())) (newline)
+(display (string-contains "hello world" "world")) (newline)
+(display (string-contains "hello" "zz")) (newline)
+(display (range 0 5)) (newline)
+(display (range 2 6)) (newline)
+(let ((xs (list 1 2 3)))
+  (list-set! xs 1 99)
+  (display xs) (newline))
+
+; ── Vectors ──────────────────────────────────────────────────────────────
+(let ((v (make-vector 4 0)))
+  (vector-fill! v 7)
+  (display v) (newline))
+(display (vector-length (make-vector 3 1))) (newline)
+
+; ── Sum types (Either) ───────────────────────────────────────────────────
+(display (sum-tag (inject-left 42))) (newline)
+(display (sum-tag (inject-right 42))) (newline)
+(display (sum-value (inject-left 'oops))) (newline)
+(display (sum-value (inject-right 99))) (newline)
+(display (left? (inject-left 1))) (newline)
+(display (left? (inject-right 1))) (newline)
+(display (right? (inject-right 1))) (newline)
+(display (right? (inject-left 1))) (newline)
+(display (map (lambda (v) (sum-tag v)) (list (inject-left 1) (inject-right 2)))) (newline)
+(display (map (lambda (v) (sum-value v)) (list (inject-left 1) (inject-right 2)))) (newline)
+(display (filter left? (list (inject-left 1) (inject-right 2) (inject-left 3))))
+(newline)
+
+; ── Symbols ──────────────────────────────────────────────────────────────
+(display (symbol=? 'a 'a)) (newline)
+(display (symbol=? 'a 'b)) (newline)
+(display (symbol=? 'q 'q 'q)) (newline)
+
+; ── Exactness and the rational tower ─────────────────────────────────────
+(display (exact 2.0)) (newline)
+(display (exact 5)) (newline)
+(display (exact-integer? 7)) (newline)
+(display (exact-integer? 7.0)) (newline)
+(display (exact-integer? "seven")) (newline)
+(display (exact-rational? 3)) (newline)
+(display (exact-rational? 2.5)) (newline)
+(display (exact-rational? 'sym)) (newline)
+(display (make-rational 3 4)) (newline)
+(display (/rational 6 8)) (newline)
+(display (numerator (make-rational 3 4))) (newline)
+(display (denominator (/rational 6 8))) (newline)
+(display (map exact-integer? (list 1 2.0 3))) (newline)
+
+; ── R7RS 6.2.6 integer division ──────────────────────────────────────────
+(display (floor-quotient 7 2)) (newline)
+(display (floor-quotient -7 2)) (newline)
+(display (floor-remainder 7 2)) (newline)
+(display (floor-remainder -7 2)) (newline)
+(display (truncate-quotient 7 2)) (newline)
+(display (truncate-quotient -7 2)) (newline)
+(display (truncate-remainder 7 2)) (newline)
+(display (truncate-remainder -7 2)) (newline)
+(display (map floor-quotient (list 7 -7) (list 2 2))) (newline)
+(display (map truncate-remainder (list 7 -7) (list 2 2))) (newline)
+(call-with-values (lambda () (floor/ 7 2))
+                  (lambda (q r) (display q) (display " ") (display r) (newline)))
+(call-with-values (lambda () (floor/ -7 2))
+                  (lambda (q r) (display q) (display " ") (display r) (newline)))
+(call-with-values (lambda () (truncate/ 7 2))
+                  (lambda (q r) (display q) (display " ") (display r) (newline)))
+(call-with-values (lambda () (truncate/ -7 2))
+                  (lambda (q r) (display q) (display " ") (display r) (newline)))
+
+; ── Short numeric spellings ──────────────────────────────────────────────
+(display (mod 7 3)) (newline)
+(display (mod -7 3)) (newline)
+(display (ceil 2.25)) (newline)
+(display (ceil -2.25)) (newline)
+(display (trunc 2.75)) (newline)
+(display (trunc -2.75)) (newline)
+(display (fabs -2.5)) (newline)
+(display (fabs 2.5)) (newline)
+(display (map mod (list 7 8) (list 3 3))) (newline)
+(display (map fabs (list -1.5 1.5))) (newline)
+
+; ── Promises ─────────────────────────────────────────────────────────────
+(display (force (make-promise 11))) (newline)
+(display (promise? (make-promise 11))) (newline)
+; `force` is exercised in call position only: on the VM the NAME force is
+; bound to the force-future builtin (native 626) rather than to promise
+; forcing, which is a separate value-position gap outside this wave.
+(display (force (make-promise 'sym))) (newline)
+(display (force (make-promise (+ 20 2)))) (newline)
+
+; ── Strings over user closures ───────────────────────────────────────────
+(display (string-map char-upcase "abc")) (newline)
+(display (string-map (lambda (c) c) "xyz")) (newline)
+(string-for-each (lambda (c) (display c) (display ".")) "abc") (newline)
+(display (apply string-map (list char-downcase "ABC"))) (newline)
+
+; ── Tensors ──────────────────────────────────────────────────────────────
+(display (trace (make-tensor (list 2 2) 1.5))) (newline)
+(display (trace (make-tensor (list 2 3) 2.0))) (newline)
+(display (trace (make-tensor (list 4) 1.0))) (newline)
+(display (tensor-shape (concatenate 0 (make-tensor (list 2 2) 1.0)
+                                      (make-tensor (list 3 2) 2.0))))
+(newline)
+(display (tensor-shape (concatenate 1 (make-tensor (list 2 2) 1.0)
+                                      (make-tensor (list 2 3) 2.0))))
+(newline)
+(let ((joined (concatenate 0 (make-tensor (list 1 2) 5.0)
+                             (make-tensor (list 2 2) 6.0))))
+  (display (tensor-ref joined 0)) (display " ")
+  (display (tensor-ref joined 1)) (display " ")
+  (display (tensor-ref joined 2)) (display " ")
+  (display (tensor-ref joined 5)) (newline))
+(let ((joined (concatenate 1 (make-tensor (list 2 1) 3.0)
+                             (make-tensor (list 2 2) 4.0))))
+  (display (tensor-ref joined 0)) (display " ")
+  (display (tensor-ref joined 1)) (display " ")
+  (display (tensor-ref joined 3)) (newline))
+
+; ── Runtime ──────────────────────────────────────────────────────────────
+; emergency-exit terminates the process, so the transcript checks that the
+; name carries a procedure value rather than calling it.
+(display (procedure? emergency-exit)) (newline)

@@ -85,6 +85,7 @@ documentation hub lists the same records in
 | [0061](0061-eshkol-verificatum.md) | Eshkol Verificatum — Independent Proof Checking and Verified Refinement | Proposed | 2026-11-20 | Restricted R0 [proof replay](../../../verification/lean-kernel/replay.py) |
 | [0062](0062-operator-algebras-sigma-cstar-cp-instruments.md) | Operator algebras, $\sigma C^*$-algebras, exact Choi–PSD $\sigma$CP-instruments, and noncommutative Giry semantics | Accepted — implemented in `core.operator` | 2026-11-25 | `lib/core/operator.esk`, `lib/core/operator/`; suite `tests/stdlib/operator_cstar_cp_test.esk` |
 | [0063](0063-hodge-theory-algebraic-groups-integrable-systems.md) | Computable Hodge theory, diffeomorphic algebraic groups, and exact integrable systems | Accepted — implemented in `core.hodge`, `core.alg_group`, `core.integrable` | 2026-11-25 | `lib/core/hodge.esk`, `lib/core/alg_group.esk`, `lib/core/integrable.esk`; suites `hodge_cycles_periods_test.esk`, `alg_group_diffeo_git_test.esk`, `integrable_lax_hitchin_qybe_test.esk`, `hodge_hitchin_lean4_test.esk` |
+| [0064](0064-architectural-vm-parity-unification.md) | Architectural VM Parity Unification (Zero-Gap Single-Source Runtime) | Accepted | 2026-11-26 | `scripts/check_wasm_size_budget.py`, 4-wave VM parity unification (`PARITY.tsv` 322 → 0 gaps) |
 
 ## Numbering
 

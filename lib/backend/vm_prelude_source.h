@@ -291,6 +291,18 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define _cmp2_15 char=?) (define char=? (_chain2 _cmp2_15))\n"
     "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
     "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
+    "(define _cmp2_18 string<=?) (define string<=? (_chain2 _cmp2_18))\n"
+    "(define _cmp2_19 string>=?) (define string>=? (_chain2 _cmp2_19))\n"
+    "(define _cmp2_20 string>?) (define string>? (_chain2 _cmp2_20))\n"
+    "(define _cmp2_21 string-ci<?) (define string-ci<? (_chain2 _cmp2_21))\n"
+    "(define _cmp2_22 string-ci<=?) (define string-ci<=? (_chain2 _cmp2_22))\n"
+    "(define _cmp2_23 string-ci>?) (define string-ci>? (_chain2 _cmp2_23))\n"
+    "(define _cmp2_24 string-ci>=?) (define string-ci>=? (_chain2 _cmp2_24))\n"
+    "(define _cmp2_25 char-ci=?) (define char-ci=? (_chain2 _cmp2_25))\n"
+    "(define _cmp2_26 char-ci<?) (define char-ci<? (_chain2 _cmp2_26))\n"
+    "(define _cmp2_27 char-ci>?) (define char-ci>? (_chain2 _cmp2_27))\n"
+    "(define _cmp2_28 char-ci<=?) (define char-ci<=? (_chain2 _cmp2_28))\n"
+    "(define _cmp2_29 char-ci>=?) (define char-ci>=? (_chain2 _cmp2_29))\n"
     /* Derive the inclusive predicates from the native strict comparisons.
      * Reuse their binary comparison results while exposing the existing
      * _chain2 two-or-more argument procedure shape. */
@@ -372,6 +384,208 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (tensor-max t . args) (_tensor-reduce-max t args))\n"
     "(define (tensor-min t . args) (_tensor-reduce-min t args))\n"
     "(define (bytevector . bytes)\n"
-    "  (let ((result (_bytevector-from-list bytes))) result))\n";
+    "  (let ((result (_bytevector-from-list bytes))) result))\n"
+    /* ── ADR-0064 Wave 1A: value bindings for names the native LLVM backend
+     * lowers in call position only. Everything below is expressed over
+     * primitives the VM already carries (opcodes, BUILTINS[] rows and the
+     * compiler's head-symbol special forms), so the desktop VM and the
+     * generated WASM prelude image gain the same surface at once.
+     *
+     * Naming convention: a name the vm_compiler.c head-symbol dispatch
+     * already lowers (floor-quotient, make-promise, exact-rational, …) is
+     * reached through a differently-spelled helper. The helper's body is the
+     * special form; binding the public name to the helper then gives the
+     * name a first-class VALUE without depending on whether the dispatcher
+     * consults its special-form table before or after local resolution. */
+    /* ── SRFI-1 list operations ───────────────────────────────────────── */
+    /* (acons key value alist) = ((key . value) . alist), the pair shape
+     * codegenAcons builds. */
+    "(define (acons key value alist) (cons (cons key value) alist))\n"
+    /* (list* a b c d) = (a b c . d); one argument is returned unchanged,
+     * matching codegenListStar's single-argument arm. */
+    "(define (list* first . rest)\n"
+    "  (if (null? rest)\n"
+    "      first\n"
+    "      (let __ls ((head first) (tail rest))\n"
+    "        (if (null? (cdr tail))\n"
+    "            (cons head (car tail))\n"
+    "            (cons head (__ls (car tail) (cdr tail)))))))\n"
+    /* codegenLast answers the empty list with '() rather than raising. */
+    "(define (last lst)\n"
+    "  (if (null? lst) (list)\n"
+    "      (if (null? (cdr lst)) (car lst) (last (cdr lst)))))\n"
+    /* codegenRemove's two modes: a procedure operand is CALLED and the
+     * elements it accepts are dropped; any other operand is COMPARED, under
+     * equal? (remove), eqv? (remv) or eq? (remq). */
+    "(define (__eshkol-remove-with same p lst)\n"
+    "  (if (procedure? p)\n"
+    "      (filter (lambda (x) (not (p x))) lst)\n"
+    "      (filter (lambda (x) (not (same x p))) lst)))\n"
+    "(define (remove p lst) (__eshkol-remove-with equal? p lst))\n"
+    "(define (remv p lst) (__eshkol-remove-with eqv? p lst))\n"
+    "(define (remq p lst) (__eshkol-remove-with eq? p lst))\n"
+    /* codegenSplitAt returns ONE pair (prefix . suffix), not two values, and
+     * stops at the end of a list shorter than the index — exactly the
+     * take/drop pair defined earlier in this prelude. */
+    "(define (split-at lst k) (cons (take lst k) (drop lst k)))\n"
+    /* ── Vectors ──────────────────────────────────────────────────────── */
+    /* R7RS (vector-fill! v fill [start [end]]) over the vector-set! /
+     * vector-length primitives the VM already has, returning unspecified.
+     * CollectionCodegen::vectorFill admits the two-argument form only, so
+     * the optional range is a VM-side superset rather than a divergence on
+     * any call the native backend accepts. */
+    "(define (vector-fill! v fill . rest)\n"
+    "  (let* ((len (vector-length v))\n"
+    "         (start (if (pair? rest) (car rest) 0))\n"
+    "         (end (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) len)))\n"
+    "    (let __vf ((i start))\n"
+    "      (if (< i end)\n"
+    "          (begin (vector-set! v i fill) (__vf (+ i 1)))\n"
+    "          (if #f #f)))))\n"
+    /* ── Sum types (Either) ───────────────────────────────────────────── */
+    /* codegenSumInject / codegenSumTag / codegenSumValue / codegenSumPredicate
+     * carry no dedicated runtime representation: a sum value IS an ordinary
+     * cons cell (tag . value) with an exact-integer tag, 0 for left and 1 for
+     * right, and the accessors are car / cdr. */
+    "(define (inject-left value) (cons 0 value))\n"
+    "(define (inject-right value) (cons 1 value))\n"
+    "(define (sum-tag s) (car s))\n"
+    "(define (sum-value s) (cdr s))\n"
+    "(define (left? s) (= (car s) 0))\n"
+    "(define (right? s) (= (car s) 1))\n"
+    /* ── Symbols ──────────────────────────────────────────────────────── */
+    /* R7RS 6.5: symbol=? takes two or more arguments. Symbols are interned,
+     * so identity IS equality — the same comparison codegenSymbolEq emits —
+     * and the chain shape comes from the _chain2 combinator above. */
+    "(define _symbol-eq-2 (lambda (a b) (eq? a b)))\n"
+    "(define symbol=? (_chain2 _symbol-eq-2))\n"
+    /* ── Exactness and the rational tower ─────────────────────────────── */
+    /* R7RS (exact z) IS (inexact->exact z). */
+    "(define (exact x) (inexact->exact x))\n"
+    /* Native answers #f for a non-number rather than raising, so both
+     * predicates keep a number? guard ahead of the exactness test. An exact
+     * value is a fixnum, a bignum or a reduced rational, which is precisely
+     * the exact half of the rational tower. */
+    "(define (exact-integer? x) (and (number? x) (exact? x) (integer? x)))\n"
+    "(define (exact-rational? x) (and (number? x) (exact? x) (rational? x)))\n"
+    /* R7RS 6.2.6 integer division. The VM already carries a fully typed
+     * implementation of each of the four (fixnum / bignum / i128 / flonum
+     * arms), reached through the compiler's head-symbol lowering; these give
+     * the same four names a first-class value. */
+    "(define (__eshkol-floor-quotient-2 n d) (floor-quotient n d))\n"
+    "(define floor-quotient __eshkol-floor-quotient-2)\n"
+    "(define (__eshkol-floor-remainder-2 n d) (floor-remainder n d))\n"
+    "(define floor-remainder __eshkol-floor-remainder-2)\n"
+    "(define (__eshkol-truncate-quotient-2 n d) (truncate-quotient n d))\n"
+    "(define truncate-quotient __eshkol-truncate-quotient-2)\n"
+    "(define (__eshkol-truncate-remainder-2 n d) (truncate-remainder n d))\n"
+    "(define truncate-remainder __eshkol-truncate-remainder-2)\n"
+    /* floor/ and truncate/ return TWO values, as the native backend's
+     * multi-value packing does; call-with-values / let-values unpack them. */
+    "(define (floor/ n d)\n"
+    "  (values (__eshkol-floor-quotient-2 n d) (__eshkol-floor-remainder-2 n d)))\n"
+    "(define (truncate/ n d)\n"
+    "  (values (__eshkol-truncate-quotient-2 n d) (__eshkol-truncate-remainder-2 n d)))\n"
+    /* The short spellings the native backend accepts as aliases: `mod` is
+     * `modulo`, `ceil` is `ceiling`, `trunc` is `truncate`. `fabs` is NOT
+     * `abs` — codegenAbs preserves an exact integer argument's type while
+     * codegenMathFunction("fabs") always answers a flonum, so the inexact
+     * coercion is part of the name's meaning. */
+    "(define (mod n d) (modulo n d))\n"
+    "(define (ceil x) (ceiling x))\n"
+    "(define (trunc x) (truncate x))\n"
+    "(define (fabs x) (exact->inexact (abs x)))\n"
+    /* make-rational / /rational build an EXACT rational. The VM's exact
+     * constructor is the `exact-rational` head-symbol lowering the reader
+     * already desugars `1/3` into, so both names reach the one normalising
+     * constructor (reduced, positive denominator, denominator 1 collapsing
+     * to a plain integer) rather than a second copy of it. */
+    "(define (__eshkol-make-rational-2 n d) (exact-rational n d))\n"
+    "(define make-rational __eshkol-make-rational-2)\n"
+    "(define /rational __eshkol-make-rational-2)\n"
+    /* ── Promises ─────────────────────────────────────────────────────── */
+    /* (make-promise v) wraps an already-available value in a promise, as the
+     * native allocation of a forced promise does. The operand is evaluated
+     * before `delay` ever sees it, so the thunk is a constant one and `force`
+     * answers v. Native wraps unconditionally — it does not return an operand
+     * that is already a promise — and this follows it. */
+    "(define (__eshkol-make-promise-1 v) (delay v))\n"
+    "(define make-promise __eshkol-make-promise-1)\n"
+    /* ── Strings over user closures ───────────────────────────────────── */
+    /* string-map / string-for-each walk ONE string and call the closure with
+     * each character, like the native lowering; string-for-each answers '()
+     * and string-map answers the mapped string. Built on the lockstep map /
+     * for-each arms defined at the top of this prelude so the closure calls
+     * stay on the same VM-safe path vector-map and vector-for-each use. */
+    "(define (string-map f s) (list->string (__eshkol-map1 f (string->list s))))\n"
+    "(define (string-for-each f s)\n"
+    "  (begin (__eshkol-for-each1 f (string->list s)) (list)))\n"
+    /* ── Tensors ──────────────────────────────────────────────────────── */
+    /* (trace m) is the LINEAR-ALGEBRA trace: the sum of the diagonal of a
+     * rank-2 tensor, over min(rows, cols) terms, as a flonum. A tensor of any
+     * other rank answers 0.0, which is what codegenTrace's non-2-D arm does
+     * rather than raising. */
+    "(define (trace m)\n"
+    "  (let ((s (tensor-shape m)))\n"
+    "    (if (not (= (length s) 2))\n"
+    "        0.0\n"
+    "        (let* ((rows (car s))\n"
+    "               (cols (cadr s))\n"
+    "               (n (if (< rows cols) rows cols)))\n"
+    "          (let __tr ((i 0) (acc 0.0))\n"
+    "            (if (< i n)\n"
+    "                (__tr (+ i 1) (+ acc (tensor-ref m (* i (+ cols 1)))))\n"
+    "                acc))))))\n"
+    /* (concatenate axis t1 t2 ...) joins rank-n tensors along AXIS, the
+     * stride-aware copy TensorCodegen::concatenate emits: the result keeps
+     * the first operand's shape with dimension AXIS replaced by the sum of
+     * the operands' AXIS dimensions, and each operand contributes a block of
+     * (its axis extent * inner stride) elements per outer position. Native
+     * requires an axis and at least two tensors. */
+    "(define (__eshkol-shape-product dims) (fold-left * 1 dims))\n"
+    "(define (concatenate axis . tensors)\n"
+    "  (if (or (null? tensors) (null? (cdr tensors)))\n"
+    "      (error \"concatenate: requires an axis and at least two tensors\")\n"
+    "      (let* ((shape (tensor-shape (car tensors)))\n"
+    "             (prefix (take shape axis))\n"
+    "             (suffix (drop shape (+ axis 1)))\n"
+    "             (outer (__eshkol-shape-product prefix))\n"
+    "             (inner (__eshkol-shape-product suffix))\n"
+    "             (extents (__eshkol-map1 (lambda (t)\n"
+    "                                       (list-ref (tensor-shape t) axis))\n"
+    "                                     tensors))\n"
+    "             (total (fold-left + 0 extents))\n"
+    "             (out (make-tensor (append prefix (cons total suffix)) 0.0))\n"
+    "             (dest-block (* total inner)))\n"
+    "        (let __cc ((ts tensors) (offset 0))\n"
+    "          (if (null? ts)\n"
+    "              out\n"
+    "              (let* ((t (car ts))\n"
+    "                     (extent (list-ref (tensor-shape t) axis))\n"
+    "                     (src-block (* extent inner)))\n"
+    "                (let __co ((o 0))\n"
+    "                  (if (< o outer)\n"
+    "                      (begin\n"
+    "                        (let __ci ((j 0))\n"
+    "                          (if (< j src-block)\n"
+    "                              (begin\n"
+    "                                (tensor-set! out\n"
+    "                                             (+ (* o dest-block)\n"
+    "                                                (* offset inner) j)\n"
+    "                                             (tensor-ref t\n"
+    "                                                         (+ (* o src-block) j)))\n"
+    "                                (__ci (+ j 1)))\n"
+    "                              (if #f #f)))\n"
+    "                        (__co (+ o 1)))\n"
+    "                      (if #f #f)))\n"
+    "                (__cc (cdr ts) (+ offset extent))))))))\n"
+    /* ── Runtime ──────────────────────────────────────────────────────── */
+    /* R7RS (emergency-exit [obj]) terminates with the given status, zero when
+     * omitted. The native lowering reaches _exit directly; the VM has one
+     * process-termination builtin, which this folds the optional argument
+     * onto. A VM native that bypasses the runtime's shutdown hooks the way
+     * _exit does is recorded as a follow-up for the Wave 1 integrator. */
+    "(define (emergency-exit . args)\n"
+    "  (exit (if (null? args) 0 (car args))))\n";
 
 #endif /* ESHKOL_VM_PRELUDE_SOURCE_H */
