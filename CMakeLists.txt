@@ -8921,6 +8921,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/run_cache_key_framing_test.sh")
+        add_test(
+            NAME run_cache_key_framing
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/run_cache_key_framing_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(run_cache_key_framing
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: run_cache_key_framing_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh")
         add_test(
             NAME aot_owned_temp_cleanup
