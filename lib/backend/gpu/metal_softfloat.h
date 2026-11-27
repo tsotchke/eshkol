@@ -510,11 +510,16 @@ sf64 sf64_add(sf64 a, sf64 b) {
         int shift = clz64(sigZ) - 1;  // -1 targets bit 62
         if (shift > 0) {
             sigZ = shl64(sigZ, shift);
-            expZ -= shift;
         } else if (shift < 0) {
             sigZ = shr64_jam(sigZ, -shift);
-            expZ -= shift;
         }
+        // The operands carried their leading 1 at bit 63 for exponent expZ,
+        // and the result is packed with its leading 1 at bit 62 for the same
+        // exponent (the same-sign branch moves 63 -> 62 without touching
+        // expZ). A difference whose leading 1 sits at bit 62 - shift
+        // therefore has exponent expZ - shift - 1. Subtracting only `shift`
+        // returned every effective subtraction doubled: 3.0 - 1.0 = 4.0.
+        expZ -= shift + 1;
     }
 
     // Leading 1 is now at bit 62 (bit 30 of sigZ.x)
@@ -2224,73 +2229,49 @@ inline df64 sf64_to_df64(sf64 x) {
         return df64{hi, 0.0f};
     }
 
-    // Count leading zeros in the remaining mantissa to normalize
-    int lo_lz = clz(lo_mant_raw) - 3;  // 32-bit clz minus 3 (since only 29 bits)
-    if (lo_lz < 0) lo_lz = 0;
-
-    int lo_exp_unbiased = exp_unbiased - 23 - lo_lz;  // 23 bits already consumed by hi
-    int lo_exp_f32 = lo_exp_unbiased + 127;
+    // The residual low bits are exactly  lo_mant_raw * 2^(exp_unbiased - 52).
+    // Reconstruct that as an f32 from the true position of its MSB.
+    //
+    // NOTE: the previous version used exp_unbiased-23 for the low exponent
+    // (off by one -> lo came out 2x too large) and left the implicit-1 bit in
+    // the stored mantissa (>>6 kept bit p instead of the 23 bits below it).
+    // Both errors compounded so that hi+lo disagreed with x at the ~2^-24
+    // level: the "lo" limb was effectively noise and the whole df64 (HIGH)
+    // tier delivered fp32-grade precision (~1e-7 rel error) instead of the
+    // advertised ~48-bit. See lib/backend/gpu/metal_softfloat.h df64 header.
+    int p = 31 - clz(lo_mant_raw);              // MSB index of residual, 0..28
+    int lo_exp_f32 = (exp_unbiased - 52 + p) + 127;
 
     float lo;
     if (lo_exp_f32 <= 0) {
-        lo = 0.0f;  // Underflow — too small for f32
+        lo = 0.0f;  // Underflow — too small for a normal f32
     } else {
-        // Normalize: shift left by lo_lz, then take top 23 bits
-        uint lo_shifted = lo_mant_raw << lo_lz;
-        uint lo_mant_23 = (lo_shifted >> 6) & 0x007FFFFFu;  // top 23 of 29 bits
-        uint lo_bits = sign_bit | (uint(lo_exp_f32 & 0xFF) << 23) | lo_mant_23;
+        // 23 fraction bits below the MSB (implicit 1 = bit p, not stored)
+        uint frac = (p >= 23) ? (lo_mant_raw >> uint(p - 23))
+                              : (lo_mant_raw << uint(23 - p));
+        frac &= 0x007FFFFFu;
+        uint lo_bits = sign_bit | (uint(lo_exp_f32 & 0xFF) << 23) | frac;
         lo = as_type<float>(lo_bits);
     }
 
     return df64{hi, lo};
 }
 
-/** Convert df64 -> sf64: reconstruct an IEEE f64 (as sf64 limb-pair) from
- *  the double-float pair `x` (x.hi + x.lo) via Knuth TwoSum reconstruction. */
+inline sf64 f32_to_sf64(float x);
+
+/** Convert df64 -> sf64: the IEEE f64 nearest to x.hi + x.lo.
+ *
+ *  Each limb converts to sf64 exactly, and sf64_add rounds their sum once,
+ *  to nearest even. The low limb may have either sign: df64_fma and
+ *  df64_add renormalise with TwoSum, which leaves |lo| <= ulp(hi)/2 but
+ *  makes no promise about its sign.
+ *
+ *  NOTE: the previous version added the low limb's magnitude with the sign
+ *  of the high limb and did not renormalise a carry or borrow, so every
+ *  result with a negative low limb (about half of all df64 matmul outputs)
+ *  was off by about 2|lo|, i.e. about 2^-24 relative: single precision. */
 inline sf64 df64_to_sf64(df64 x) {
-    // Quick path: if lo is zero, just convert hi
-    if (x.hi == 0.0f && x.lo == 0.0f) return SF64_ZERO;
-
-    // Use Knuth TwoSum to get exact hi+lo, then pack
-    // The value is exactly hi + lo (by construction)
-
-    // Extract hi as sf64 components
-    uint hi_bits = as_type<uint>(x.hi);
-    bool sign = (hi_bits >> 31) != 0;
-    int hi_exp = int((hi_bits >> 23) & 0xFFu) - 127 + 1023;
-    uint hi_mant = hi_bits & 0x007FFFFFu;
-
-    // Start building the 52-bit mantissa
-    // f32 mantissa is 23 bits (bits 51-29 of f64 mantissa)
-    uint mant_hi = hi_mant >> 3;        // top 20 bits
-    uint mant_lo = (hi_mant & 0x7u) << 29;  // bits 31-29
-
-    // Add lo's contribution
-    if (x.lo != 0.0f) {
-        uint lo_bits = as_type<uint>(x.lo);
-        int lo_exp = int((lo_bits >> 23) & 0xFFu) - 127 + 1023;
-        uint lo_mant = (lo_bits & 0x007FFFFFu) | 0x00800000u;  // with implicit 1
-
-        int shift = hi_exp - lo_exp;  // how far right to shift lo
-        if (shift >= 0 && shift < 52) {
-            // Shift lo's mantissa right by 'shift' bits and add to result
-            // lo's implicit 1 is at bit 23, hi's at bit 52
-            // So lo contributes at bit (52 - shift)
-            uint64_t lo_full = uint64_t(lo_mant) << 29;  // align to 52-bit position
-            if (shift < 64) {
-                lo_full >>= uint(shift);
-            } else {
-                lo_full = 0;
-            }
-            // Add to mantissa
-            uint64_t full_mant = (uint64_t(mant_hi) << 32) | uint64_t(mant_lo);
-            full_mant += lo_full;
-            mant_hi = uint(full_mant >> 32);
-            mant_lo = uint(full_mant);
-        }
-    }
-
-    return sf64_pack(sign, hi_exp, mant_hi & SF64_MANT_HI_MASK, mant_lo);
+    return sf64_add(f32_to_sf64(x.hi), f32_to_sf64(x.lo));
 }
 
 // df64 FMA using native f32 hardware (~10 ops)
