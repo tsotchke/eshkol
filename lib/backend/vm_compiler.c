@@ -4630,6 +4630,10 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
             binding->n_children > 3 || binding->children[0]->type != N_SYMBOL) {
             vm_compile_error("do: invalid binding", NULL);
             free(scope_nodes);
+            for (int j = saved_locals; j < c->n_locals; j++) {
+                free(c->locals[j].name);
+                c->locals[j].name = NULL;
+            }
             c->n_locals = saved_locals;
             c->scope_depth--;
             return;
@@ -4739,6 +4743,10 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     /* Drop the loop variables, keeping the result on top (LE-10). */
     int scoped_locals = c->n_locals - saved_locals;
     if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    for (int i = saved_locals; i < c->n_locals; i++) {
+        free(c->locals[i].name);
+        c->locals[i].name = NULL;
+    }
     c->n_locals = saved_locals;
     c->scope_depth--;
     return;
