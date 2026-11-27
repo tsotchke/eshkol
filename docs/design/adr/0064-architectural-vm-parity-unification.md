@@ -1,3 +1,16 @@
+---
+kind: explanation
+status: current
+owner-area: vm
+since: v1.4.0-connection
+sources:
+  - lib/backend/eshkol_vm.c
+  - lib/backend/vm_char_string_ext.c
+  - lib/backend/vm_curvature_ext.c
+  - lib/backend/vm_prelude_source.h
+  - scripts/vm_parity_audit.py
+  - tests/vm_parity/PARITY.tsv
+---
 # ADR-0064: Architectural VM Parity Unification (Zero-Gap Single-Source Runtime)
 
 - **Status:** Accepted (Target: `v1.4.0-connection`, supervised under Tsotchke-chan architectural gates)

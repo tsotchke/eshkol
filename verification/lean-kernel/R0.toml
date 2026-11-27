@@ -57,6 +57,6 @@ domain = "Exhaustive subcorpus: all 1..4-node bodies in width 3 by all 1..3-node
 "Binders.lean" = "91d562dda3f9bb297cf12cfa50fe7bec9ab0be386745dd71026e86bbbad368bc"
 "Typing.lean" = "2587483bce8dcd7fe2a9e46f972e77557ed998fa273d3146f3180e73a417d5c3"
 "binder-replay.cjs" = "724beae0626371048f74594c971b55653538789ef49d24163ac41be7c18b172f"
-"../../site/static/eshkol-vm.wasm" = "34da7d11efd17bf59ff242b03ac12b257b44cfcf95f48d2a9aaf7b8dca013582"
+"../../site/static/eshkol-vm.wasm" = "97a3bea41564abf6a09a917882a0f0b2429e55b77bb3ec3c0b0c3272eb95d9ae"
 "../../site/static/eshkol-vm.js" = "987279e2fe19b1d0a78dd1442706c29ca8c14f6ef3915e4fc9810adc40995a6a"
 "../../lib/core/blc.esk" = "377fd102c5d5cac33007f310679c927868008dfd39c86f63dbd69278dfc36213"
