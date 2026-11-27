@@ -314,7 +314,8 @@ for test_file in tests/gpu/*.esk; do
     fi
     # This regression executes metal_softfloat.h, which is not built by the
     # CUDA/CPU backends. Do not count absent Metal execution as a pass.
-    if [ "$test_name" = "sf64_div_quotient_regression_test.esk" ] &&
+    if { [ "$test_name" = "sf64_div_quotient_regression_test.esk" ] ||
+         [ "$test_name" = "sf64_add_subtraction_regression_test.esk" ]; } &&
        [ "$(uname -s)" != "Darwin" ]; then
         printf "Testing %-50s " "$test_name"
         echo -e "${YELLOW}SKIPPED — Metal-only regression; not measured on this platform${NC}"
