@@ -510,11 +510,16 @@ sf64 sf64_add(sf64 a, sf64 b) {
         int shift = clz64(sigZ) - 1;  // -1 targets bit 62
         if (shift > 0) {
             sigZ = shl64(sigZ, shift);
-            expZ -= shift;
         } else if (shift < 0) {
             sigZ = shr64_jam(sigZ, -shift);
-            expZ -= shift;
         }
+        // The operands carried their leading 1 at bit 63 for exponent expZ,
+        // and the result is packed with its leading 1 at bit 62 for the same
+        // exponent (the same-sign branch moves 63 -> 62 without touching
+        // expZ). A difference whose leading 1 sits at bit 62 - shift
+        // therefore has exponent expZ - shift - 1. Subtracting only `shift`
+        // returned every effective subtraction doubled: 3.0 - 1.0 = 4.0.
+        expZ -= shift + 1;
     }
 
     // Leading 1 is now at bit 62 (bit 30 of sigZ.x)

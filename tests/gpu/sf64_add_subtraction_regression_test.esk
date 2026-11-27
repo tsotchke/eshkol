@@ -1,0 +1,108 @@
+;; Regression: sf64_add must not double the result of an effective subtraction.
+;;
+;; Guards the fix in lib/backend/gpu/metal_softfloat.h where sf64_add, on its
+;; different-signs branch, normalised the difference to bit 62 but adjusted
+;; the exponent as if the operands had carried their leading 1 at bit 62.
+;; They carry it at bit 63 (shifted left by 11 for guard bits), so every
+;; effective subtraction came back with its exponent one too high:
+;;
+;;      3.0 - 1.0     -> 4.0     (want 2.0)
+;;     10.0 - 3.0     -> 14.0    (want 7.0)
+;;      1.0 - 0.25    -> 1.5     (want 0.75)
+;;
+;; These values were obtained by compiling the MSL source of sf64_add for the
+;; host with binary32 semantics; same-sign addition was exact there, which is
+;; why tests that add positive operands only never saw it.
+;;
+;; sf64_add is not only the ADD op: sf64_sub, the elementwise SUB op, the exp,
+;; log and trigonometric range reductions, tanh, the reductions, and the df64
+;; write-back all route through it.
+;;
+;; Both sides of every comparison are correctly-rounded IEEE subtraction of
+;; the same two doubles, so they must agree bit for bit.
+;;
+;; HOW THE SUBTRACTION REACHES THE METAL KERNEL. Tensor subtraction
+;; dispatches to the GPU only above BOTH the XLA elementwise threshold and the
+;; GPU threshold, each 100000 elements by default, so the tensors here are
+;; 400x400 = 160000. The guards below refuse to grade anything unless Metal
+;; is the live backend and the dispatch threshold admits that element count.
+;;
+;; Verdict grammar: every check prints "PASS: <name>" or "FAIL: <name> ..."
+;; and increments sub-failures; the process exits non-zero if any failed
+;; (see scripts/run_gpu_tests.sh header for the full contract). On GPU-less
+;; hosts the guard emits only SKIP and exits 0.
+
+(extern i32 gpu-init :real eshkol_gpu_init)
+(extern i32 gpu-backend :real eshkol_gpu_get_backend)
+(extern i32 gpu-should-use i64 :real eshkol_gpu_should_use)
+
+(display "=== SF64 Add Subtraction Regression ===") (newline)
+
+(define n 160000)   ;; 400x400, above both dispatch thresholds
+(define rows 400)
+(define cols 400)
+
+(define gpu-ready (gpu-init))
+(define backend (gpu-backend))
+
+;; ESHKOL_GPU_METAL = 1 in inc/eshkol/backend/gpu/gpu_memory.h. sf64_add is
+;; Metal's software f64; CUDA subtracts in hardware and never runs this code.
+(define metal-live (and (= gpu-ready 1) (= backend 1)))
+
+(when (not metal-live)
+    (begin
+      (display "SKIP: Metal is not the live GPU backend (eshkol_gpu_init=")
+      (display gpu-ready)
+      (display ", eshkol_gpu_get_backend=")
+      (display backend)
+      (display "); sf64_add is Metal's software f64 and cannot run here")
+      (newline)
+      (exit 0)))
+
+(when (= (gpu-should-use n) 0)
+    (begin
+      (display "SKIP: the GPU dispatch threshold rejects ")
+      (display n)
+      (display " elements, so tensor subtraction would stay on the CPU and this check would be vacuous")
+      (newline)
+      (exit 0)))
+
+(define sub-failures 0)
+(define (note-fail!) (set! sub-failures (+ sub-failures 1)))
+
+(define (check-exact name got want)
+  (if (= got want)
+      (begin (display "PASS: ") (display name) (display " (") (display got) (display ")") (newline))
+      (begin (note-fail!)
+             (display "FAIL: ") (display name)
+             (display " (got ") (display got)
+             (display ", want ") (display want) (display ")") (newline))))
+
+;; A[i] = i+1 over 400x400: A[0,2] = 3, A[0,9] = 10, A[399,399] = 160000.
+(define A (reshape (arange 1 (+ n 1)) rows cols))
+(define ONE (reshape (ones n) rows cols))
+
+;; --- Subtracting one: the difference keeps the exponent of the minuend or
+;;     drops it by one, so both normalisation cases occur. ---
+(define minus-one (tensor-sub A ONE))
+(check-exact "3.0 - 1.0"           (tensor-get minus-one 0 2)     (- 3.0 1.0))
+(check-exact "10.0 - 1.0"          (tensor-get minus-one 0 9)     (- 10.0 1.0))
+(check-exact "160000.0 - 1.0"      (tensor-get minus-one 399 399) (- 160000.0 1.0))
+
+;; --- Near cancellation: A - (A + 1) = -1 everywhere, a difference far
+;;     smaller than either operand. ---
+(define cancel (tensor-sub A (tensor-add A ONE)))
+(check-exact "160000.0 - 160001.0" (tensor-get cancel 399 399) (- 160000.0 160001.0))
+(check-exact "3.0 - 4.0"           (tensor-get cancel 0 2)       (- 3.0 4.0))
+
+;; --- Mixed signs through addition: ONE - A at [0,2] is 1 - 3 = -2. ---
+(define negated (tensor-sub ONE A))
+(check-exact "1.0 - 3.0"           (tensor-get negated 0 2)      (- 1.0 3.0))
+
+(display "=== SF64 Add Subtraction Regression Complete ===") (newline)
+(display "Results: ") (display sub-failures) (display " failed") (newline)
+(if (= sub-failures 0)
+    (begin (display "PASS: sf64_add_subtraction_regression_test") (newline) (exit 0))
+    (begin (display "FAIL: sf64_add_subtraction_regression_test (")
+           (display sub-failures) (display " check(s) failed)") (newline)
+           (exit 1)))
