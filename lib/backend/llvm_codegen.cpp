@@ -14367,12 +14367,12 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
                     }
                 }
             }
-            // memcpy(to + at, from, copy_len)
+            // memmove(to + at, from, copy_len) — R7RS 6.7 permits overlapping to == from
             Value* dest = builder->CreateGEP(int8_type, to_ptr, at_idx);
-            llvm::FunctionCallee memcpy_fn = module->getOrInsertFunction("memcpy",
+            llvm::FunctionCallee memmove_fn = module->getOrInsertFunction("memmove",
                 FunctionType::get(PointerType::getUnqual(*context),
                     {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type}, false));
-            builder->CreateCall(memcpy_fn, {dest, from_ptr, copy_len});
+            builder->CreateCall(memmove_fn, {dest, from_ptr, copy_len});
             co_return packNullToTaggedValue();
         }
         // Extended string functions (dispatched to StringIOCodegen)
